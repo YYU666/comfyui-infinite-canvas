@@ -133,79 +133,80 @@ export function buildReferenceWorkflow(options) {
 }
 
 export const CHARACTER_SWAP_MODELS = {
-  characterLora: 'minimax_h3_character_swap_v1.1_ref2va_fro.safetensors',
-  dmdLora: 'minimax_h3_dmd_ref2va_8step_turbo_pruned.safetensors',
+  characterLora: 'h3_character_swap_v1.5.safetensors',
+  turboLora: 'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
   samCheckpoint: 'sam3.1_multiplex_fp16.safetensors',
+  clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+  videoVae: 'minimax_h3_video_vae_fp16.safetensors',
 };
 
-export const CHARACTER_SWAP_APPEARANCE_LOCK = 'This is a full-character replacement, not a face swap or head swap. <Picture 1> is the sole authority for the character appearance. Copy the entire person as one indivisible identity: exact facial structure, facial features, skin tone, hairstyle, hair length and color, body shape, body proportions, and every visible clothing item and accessory. Preserve the exact garment types, neckline, straps, sleeves, fit, fabric, colors, patterns, layering, garment length, waist styling, lower-body clothing and footwear. Never copy the guide subject body or clothing. Do not beautify, redesign, complete, extend or replace the outfit; do not turn a top into a dress, add a skirt, or invent a new fashion style. Only the pose, gestures and performance change to follow the guide video.';
-
 export function buildCharacterSwapPrompt(details = '', target = '') {
-  const appearance = details.trim() || 'person with the exact same visible identity, facial structure, facial features, skin tone, hairstyle, hair color, body shape, body proportions, clothing and accessories';
-  const guideSubject = target.trim() || 'the main subject';
-  return `body_swap: subject_definitions: <Subject 1> is the ${appearance} shown in <Picture 1>, whose identity, face, head, hair or fur, skin, body shape, proportions and clothing define the character in the target video. The guide video provides the scene and the performance only: its background, environment, lighting, camera, framing, body pose, hand and arm movement, head rotation, gaze direction, lip movement and facial expression, frame by frame; only ${guideSubject} of the guide video is replaced: its complete face, hair, body and clothing become <Subject 1>.  summary: [video generation + reference] Replace ${guideSubject} with the complete person from <Picture 1>, not only the face, keeping the scene, camera and complete motion and performance of the guide video.  detailed_description: [Shot 1] <Subject 1> takes the exact place of ${guideSubject} and moves with the same timing, body pose, gestures, head motion, gaze, speech and facial expressions, while keeping the complete identity from <Picture 1>: facial structure, hair or fur, skin, body shape, body proportions and all clothing stay stable and unchanged in every frame. The background, lighting, colors and camera of the guide video are preserved. Prevent identity drift, body-shape changes, clothing changes, texture crawling and flicker. ${CHARACTER_SWAP_APPEARANCE_LOCK}`;
-}
-
-function ensureCharacterSwapAppearanceLock(prompt) {
-  const clean = prompt.trim();
-  return clean.includes('This is a full-character replacement, not a face swap or head swap.') ? clean : `${clean} ${CHARACTER_SWAP_APPEARANCE_LOCK}`;
+  const subject = target.trim() || 'the selected person';
+  const appearance = details.trim();
+  return `Replace only ${subject} with the complete reference character, including face, hair, body shape and the exact visible outfit. Preserve the source performance, scene, other people, camera and original audio.${appearance ? ` Reference details: ${appearance}` : ''}`;
 }
 
 export function buildCharacterSwapWorkflow(options) {
   const guide = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'video');
   const identity = options.references?.find((ref) => ref.slot === 'identity' && ref.kind === 'image');
-  if (!guide || !identity) throw new Error('角色替换需要连接一段源视频和一张单人身份图。');
+  if (!guide || !identity) throw new Error('角色替换需要连接一段源视频和一张包含全身与穿搭的单人参考图。');
   const [width, height] = resolveDimensions(options.ratio, options.resolution);
   const length = durationToFrames(options.duration || 5);
-  const prompt = ensureCharacterSwapAppearanceLock(options.prompt?.trim().startsWith('body_swap:')
-    ? options.prompt.trim()
-    : buildCharacterSwapPrompt(options.prompt, options.targetDescription));
-  const graph = {
-    '1': { class_type: 'UNETLoader', inputs: { unet_name: MODEL_INFO.referenceUnet, weight_dtype: 'default' } },
-    '2': { class_type: 'LoraLoaderModelOnly', inputs: { model: ['1', 0], lora_name: CHARACTER_SWAP_MODELS.dmdLora, strength_model: 1 } },
-    '17': { class_type: 'LoraLoaderModelOnly', inputs: { model: ['2', 0], lora_name: CHARACTER_SWAP_MODELS.characterLora, strength_model: 1 } },
-    '3': { class_type: 'MiniMaxH3SigmaShift', inputs: { model: ['17', 0], shift_video: 12, shift_audio: 3 } },
-    '4': { class_type: 'CLIPLoader', inputs: { clip_name: MODEL_INFO.clip, type: 'minimax', device: 'default' } },
-    '5': { class_type: 'VAELoader', inputs: { vae_name: MODEL_INFO.videoVae } },
-    '6': { class_type: 'VAELoader', inputs: { vae_name: MODEL_INFO.audioVae } },
-    '7': { class_type: 'MiniMaxH3ReferenceToVideo', inputs: {
-      clip: ['4', 0], vae: ['5', 0], audio_vae: ['6', 0], prompt, width, height, length,
-      ref_image_size: options.refImageSize || 'max', ref_images: { ref_image_0: ['100', 0] },
+  const prompt = buildCharacterSwapPrompt(options.prompt, options.targetDescription);
+  const selection = options.targetSelection || (options.targetIndex ? 'index' : 'largest');
+  return {
+    model: { class_type: 'UNETLoader', inputs: { unet_name: MODEL_INFO.referenceUnet, weight_dtype: 'default' } },
+    shift: { class_type: 'MiniMaxH3SigmaShift', inputs: { model: ['model', 0], shift_video: 12, shift_audio: 3 } },
+    attention: { class_type: 'ModelAttentionBackend', inputs: { model: ['shift', 0], attention: 'comfy kitchen attention' } },
+    text: { class_type: 'CLIPLoader', inputs: { clip_name: CHARACTER_SWAP_MODELS.clip, type: 'minimax', device: 'default' } },
+    text_device: { class_type: 'SelectCLIPDevice', inputs: { clip: ['text', 0], device: 'gpu:0' } },
+    text_memory: { class_type: 'H3RelayTextMemory', inputs: { clip: ['text_device', 0] } },
+    video_vae: { class_type: 'VAELoader', inputs: { vae_name: CHARACTER_SWAP_MODELS.videoVae } },
+    audio_vae: { class_type: 'VAELoader', inputs: { vae_name: MODEL_INFO.audioVae } },
+    turbo: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['attention', 0], lora_name: CHARACTER_SWAP_MODELS.turboLora, strength_model: 1 } },
+    adapter: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['turbo', 0], lora_name: CHARACTER_SWAP_MODELS.characterLora, strength_model: 1 } },
+    source: { class_type: 'LoadVideo', inputs: { file: guide.name } },
+    components: { class_type: 'GetVideoComponents', inputs: { video: ['source', 0] } },
+    scale: { class_type: 'ImageScale', inputs: { image: ['components', 0], upscale_method: 'lanczos', width, height, crop: 'disabled' } },
+    frames: { class_type: 'ImageFromBatch', inputs: { image: ['scale', 0], batch_index: 0, length } },
+    source_audio: { class_type: 'TrimAudioDuration', inputs: { audio: ['components', 1], start_index: 0, duration: length / 24 } },
+    dimensions: { class_type: 'GetImageSize', inputs: { image: ['frames', 0] } },
+    reference: { class_type: 'LoadImage', inputs: { image: identity.name } },
+    sam: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: CHARACTER_SWAP_MODELS.samCheckpoint } },
+    subject: { class_type: 'CLIPTextEncode', inputs: { clip: ['sam', 1], text: options.targetQuery || 'person' } },
+    first_frame: { class_type: 'ImageFromBatch', inputs: { image: ['frames', 0], batch_index: 0, length: 1 } },
+    detect: { class_type: 'SAM3_Detect', inputs: { model: ['sam', 0], image: ['first_frame', 0], conditioning: ['subject', 0], threshold: 0.35, refine_iterations: 2, individual_masks: true } },
+    select: { class_type: 'H3RelaySelectMask', inputs: { masks: ['detect', 0], selection, index: Number(options.targetIndex || 0) } },
+    track: { class_type: 'SAM3_VideoTrack', inputs: { model: ['sam', 0], images: ['frames', 0], initial_mask: ['select', 0], conditioning: ['subject', 0], detection_threshold: 0.5, max_objects: 1, detect_interval: 1 } },
+    mask: { class_type: 'SAM3_TrackToMask', inputs: { track_data: ['track', 0], object_indices: '' } },
+    recover: { class_type: 'H3RelayRecoverMasks', inputs: { masks: ['mask', 0], images: ['frames', 0], source_frames: length, model: ['sam', 0], conditioning: ['subject', 0], selection: ['select', 1], recover_empty_frames: true } },
+    expand_mask: { class_type: 'H3RelayExpandMask', inputs: { masks: ['recover', 0], images: ['frames', 0], source_frames: length, expansion_px: 64 } },
+    plan: { class_type: 'H3RelayWindowPlan', inputs: { source_frames: length, window_frames: '124', history_frames: '18', seed: Number(options.seed), schedule: 'adaptive', seed_mode: 'fixed', seed_overrides: '{}' } },
+    start: { class_type: 'StartLoop', inputs: { mode: 'simple', 'mode.num_iterations': ['plan', 2], cache_iterations: false } },
+    window: { class_type: 'H3RelayWindowInputs', inputs: { source: ['frames', 0], window: ['plan', 3], iteration_index: ['start', 0], previous: ['start', 4], reference_history: true, fps: 24, resize_anchor: true, history_audio_mode: 'source', source_audio: ['source_audio', 0], mask: ['expand_mask', 0] } },
+    reference_conditioning: { class_type: 'MiniMaxH3ReferenceToVideo', inputs: {
+      clip: ['text_memory', 0], prompt, width: ['dimensions', 0], height: ['dimensions', 1], length: ['window', 8],
+      ref_image_size: 'match', 'ref_videos.ref_video_0': ['window', 5], 'ref_images.ref_image_0': ['reference', 0],
+      vae: ['video_vae', 0], audio_vae: ['audio_vae', 0], 'ref_audios.ref_audio_0': ['window', 6],
     } },
-    '18': { class_type: 'EmptyMiniMaxH3LatentAV', inputs: { width, height, length } },
-    '19': { class_type: 'MiniMaxH3AddGuide', inputs: {
-      positive: ['7', 0], latent: ['18', 0], frame_idx: 0, vae: ['5', 0], audio_vae: ['6', 0],
-      image: ['104', 0], audio: ['105', 0],
-    } },
-    '8': { class_type: 'CFGGuider', inputs: { model: ['3', 0], positive: ['19', 0], negative: ['19', 0], cfg: 1 } },
-    '9': { class_type: 'RandomNoise', inputs: { noise_seed: Number(options.seed) } },
-    '10': { class_type: 'KSamplerSelect', inputs: { sampler_name: 'euler' } },
-    '11': { class_type: 'BasicScheduler', inputs: { model: ['3', 0], scheduler: 'simple', steps: 8, denoise: 1 } },
-    '12': { class_type: 'SamplerCustomAdvanced', inputs: { noise: ['9', 0], guider: ['8', 0], sampler: ['10', 0], sigmas: ['11', 0], latent_image: ['18', 0] } },
-    '13': { class_type: 'VAEDecode', inputs: { samples: ['12', 0], vae: ['5', 0] } },
-    '15': { class_type: 'CreateVideo', inputs: { images: options.preserveBackground ? ['23', 0] : ['13', 0], fps: 24, audio: ['105', 0], codec: 'h264' } },
-    '16': { class_type: 'SaveVideo', inputs: { video: ['15', 0], filename_prefix: 'video/H3_CharacterSwap', format: 'mp4', codec: 'auto' } },
-    '100': { class_type: 'LoadImage', inputs: { image: identity.name } },
-    '101': { class_type: 'LoadVideo', inputs: { file: guide.name } },
-    '102': { class_type: 'GetVideoComponents', inputs: { video: ['101', 0] } },
-    '103': { class_type: 'ImageScale', inputs: { image: ['102', 0], upscale_method: 'lanczos', width, height, crop: 'disabled' } },
-    '104': { class_type: 'ImageFromBatch', inputs: { image: ['103', 0], batch_index: 0, length } },
-    '105': { class_type: 'TrimAudioDuration', inputs: { audio: ['102', 1], start_index: 0, duration: length / 24 } },
+    history: { class_type: 'H3RelayApplyHistory', inputs: { positive: ['reference_conditioning', 0], latent: ['reference_conditioning', 1], vae: ['video_vae', 0], audio_vae: ['audio_vae', 0], frames: ['window', 3], history_frames: ['window', 7], first_frame_guide: false, target_audio_guide: true, audio: ['window', 4] } },
+    encode_source: { class_type: 'VAEEncode', inputs: { pixels: ['window', 0], vae: ['video_vae', 0] } },
+    edit_mask: { class_type: 'H3RelayApplyEditMask', inputs: { latent: ['history', 1], source_latent: ['encode_source', 0], mask: ['window', 1] } },
+    guide: { class_type: 'MiniMaxH3AddGuide', inputs: { positive: ['history', 0], latent: ['edit_mask', 0], frame_idx: 0, audio_vae: ['audio_vae', 0], audio: ['window', 2] } },
+    sampling_memory: { class_type: 'H3RelaySamplingMemory', inputs: { model: ['adapter', 0], latent: ['edit_mask', 0], conditioning: ['guide', 0], activation_memory_gib: 17 } },
+    noise: { class_type: 'RandomNoise', inputs: { noise_seed: ['window', 10] } },
+    guider: { class_type: 'CFGGuider', inputs: { model: ['sampling_memory', 0], positive: ['guide', 0], negative: ['guide', 0], cfg: 1 } },
+    sampler: { class_type: 'KSamplerSelect', inputs: { sampler_name: 'er_sde' } },
+    schedule: { class_type: 'BasicScheduler', inputs: { model: ['adapter', 0], scheduler: 'normal', steps: 8, denoise: 1 } },
+    sample: { class_type: 'SamplerCustomAdvanced', inputs: { noise: ['noise', 0], guider: ['guider', 0], sampler: ['sampler', 0], sigmas: ['schedule', 0], latent_image: ['edit_mask', 0] } },
+    separate: { class_type: 'LTXVSeparateAVLatent', inputs: { av_latent: ['sample', 0] } },
+    decode: { class_type: 'VAEDecode', inputs: { samples: ['separate', 0], vae: ['video_vae', 0] } },
+    append: { class_type: 'H3RelayAppendWindow', inputs: { frames: ['decode', 0], window: ['window', 12], previous: ['start', 4] } },
+    end: { class_type: 'EndLoop', inputs: { output_value: ['append', 0], next_iteration_value: ['append', 0], accumulate: false } },
+    finish: { class_type: 'H3RelayFinishWindows', inputs: { state: ['end', 0], audio_mode: 'source', source_audio: ['source_audio', 0] } },
+    video: { class_type: 'CreateVideo', inputs: { images: ['finish', 0], fps: ['finish', 2], audio: ['finish', 1] } },
+    save: { class_type: 'SaveVideo', inputs: { video: ['video', 0], filename_prefix: 'video/H3_CharacterSwap', format: 'mp4', 'format.codec': 'h264', 'format.codec.encoding': 're-encode', 'format.codec.encoding.crf': 16 } },
   };
-  if (options.preserveBackground) {
-    Object.assign(graph, {
-      '20': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: CHARACTER_SWAP_MODELS.samCheckpoint } },
-      '21': { class_type: 'CLIPTextEncode', inputs: { clip: ['20', 1], text: options.targetQuery || 'person' } },
-      '22': { class_type: 'ImageFromBatch', inputs: { image: ['104', 0], batch_index: 0, length: 1 } },
-      '24': { class_type: 'SAM3_Detect', inputs: { model: ['20', 0], image: ['22', 0], conditioning: ['21', 0], threshold: 0.35, refine_iterations: 2, individual_masks: true } },
-      '25': { class_type: 'SAM3_VideoTrack', inputs: { images: ['104', 0], model: ['20', 0], initial_mask: ['24', 0], detection_threshold: 0.35, max_objects: 8, detect_interval: 1 } },
-      '26': { class_type: 'SAM3_TrackToMask', inputs: { track_data: ['25', 0], object_indices: String(options.targetIndex ?? 0) } },
-      '27': { class_type: 'GrowMaskWithBlur', inputs: { mask: ['26', 0], expand: 8, incremental_expandrate: 0, tapered_corners: true, flip_input: false, blur_radius: 12, lerp_alpha: 1, decay_factor: 1 } },
-      '23': { class_type: 'ImageCompositeMasked', inputs: { destination: ['104', 0], source: ['13', 0], x: 0, y: 0, resize_source: true, mask: ['27', 0] } },
-      '28': { class_type: 'SAM3_TrackPreview', inputs: { track_data: ['25', 0], images: ['104', 0], opacity: 0.5, fps: 24 } },
-    });
-  }
-  return graph;
 }
 
 async function parseResponse(response) {

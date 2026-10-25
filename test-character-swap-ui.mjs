@@ -51,7 +51,7 @@ const videoNode = page.locator(`.react-flow__node[data-id="${videoId}"]`);
 const imageNode = page.locator(`.react-flow__node[data-id="${imageId}"]`);
 const swapNode = page.locator(`.react-flow__node[data-id="${swapId}"]`);
 await videoNode.locator('input[type=file]').setInputFiles('D:/H3_Workbench/references/workbench/web_20261025_1fda623ee994.mp4');
-await imageNode.locator('input[type=file]').setInputFiles('D:/H3_Workbench/references/workbench/reference-character-portrait.png');
+await imageNode.locator('input[type=file]').setInputFiles('D:/H3_Workbench/references/workbench/reference-character-sheet.png');
 await page.waitForTimeout(800);
 
 await page.getByTitle('适应画布', { exact: true }).click();
@@ -77,6 +77,7 @@ const prompt = 'Female, oval face, large brown eyes, long black half-up hair, la
 await toolbar.locator('.h3-prompt').fill(prompt);
 await toolbar.getByLabel('换人目标').fill('the smaller white mannequin on the right');
 await toolbar.getByLabel('SAM 识别').fill('white mannequin');
+await toolbar.getByLabel('目标位置').selectOption('rightmost');
 assert.equal(await toolbar.locator('.h3-prompt').textContent(), prompt, 'Prompt remains editable');
 await page.screenshot({ path: '../comparison/character-swap-ui.png', fullPage: true });
 
@@ -89,17 +90,17 @@ await toolbar.locator('.node-generate').click();
 await page.waitForTimeout(1500);
 assert.ok(submitted, 'Workflow submitted from swap UI');
 const graph = submitted.prompt;
-assert.equal(graph['17'].inputs.lora_name, 'minimax_h3_character_swap_v1.1_ref2va_fro.safetensors');
-assert.equal(graph['19'].class_type, 'MiniMaxH3AddGuide');
-assert.deepEqual(graph['19'].inputs.image, ['104', 0]);
-assert.equal(graph['104'].inputs.length, 124);
-assert.equal(graph['105'].class_type, 'TrimAudioDuration');
-assert.equal(graph['21'].inputs.text, 'white mannequin');
-assert.ok(graph['7'].inputs.prompt.startsWith('body_swap:'));
-assert.ok(graph['7'].inputs.prompt.includes('This is a full-character replacement, not a face swap or head swap.'));
-assert.ok(graph['7'].inputs.prompt.includes('do not turn a top into a dress, add a skirt'));
-assert.equal(graph['100'].inputs.image, 'workbench/reference-character-portrait.png');
-assert.equal(graph['101'].inputs.file, 'workbench/web_20261025_1fda623ee994.mp4');
+assert.equal(graph.adapter.inputs.lora_name, 'h3_character_swap_v1.5.safetensors');
+assert.equal(graph.guide.class_type, 'MiniMaxH3AddGuide');
+assert.equal(graph.edit_mask.class_type, 'H3RelayApplyEditMask');
+assert.deepEqual(graph.sample.inputs.latent_image, ['edit_mask', 0]);
+assert.equal(graph.frames.inputs.length, 124);
+assert.equal(graph.source_audio.class_type, 'TrimAudioDuration');
+assert.equal(graph.subject.inputs.text, 'white mannequin');
+assert.equal(graph.select.inputs.selection, 'rightmost');
+assert.ok(graph.reference_conditioning.inputs.prompt.includes('complete reference character'));
+assert.equal(graph.reference.inputs.image, 'workbench/reference-character-sheet.png');
+assert.equal(graph.source.inputs.file, 'workbench/web_20261025_1fda623ee994.mp4');
 
 const report = {
   swapId,
@@ -109,10 +110,11 @@ const report = {
   mediaBodyDrag: true,
   promptEditable: true,
   guideAndIdentityConnected: true,
-  characterSwapLora: true,
-  addGuide: true,
-  samTarget: graph['21'].inputs.text,
-  trimmedFrames: graph['104'].inputs.length,
+  characterSwapV15: true,
+  latentEditMask: true,
+  samTarget: graph.subject.inputs.text,
+  targetSelection: graph.select.inputs.selection,
+  trimmedFrames: graph.frames.inputs.length,
   originalAudioTrimmed: true,
   browserErrors: errors,
 };

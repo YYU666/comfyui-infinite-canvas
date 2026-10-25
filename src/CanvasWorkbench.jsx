@@ -305,11 +305,11 @@ function GeneratorNode({ id, data, selected }) {
       </> : <div className="generator-placeholder">
         {running ? <LoaderCircle className="spin" size={29} /> : <WandSparkles size={29} />}
         <strong>{running ? data.stage || '正在准备本地模型' : mode === 'swap' ? '源视频换人 · 保留动作、镜头与原音轨' : mode === 'reference' ? '用图、文、音、视频共同定义新镜头' : mode === 'frames' ? '首尾帧生成视频' : '输入提示词生成视频'}</strong>
-        <span>{running ? `${data.progress || 0}% · 可随时取消` : mode === 'swap' ? 'Character Swap v1.1 · AddGuide · SAM3.1' : 'MiniMax H3 · 本地生成 · 24 FPS'}</span>
+        <span>{running ? `${data.progress || 0}% · 可随时取消` : mode === 'swap' ? 'Character Swap v1.5 · 潜空间遮罩 · SAM3.1' : 'MiniMax H3 · 本地生成 · 24 FPS'}</span>
       </div>}
       {running && <div className="generation-overlay"><div><i style={{ width: `${data.progress || 3}%` }} /></div><span>{data.stage} · {data.progress || 0}%</span></div>}
     </div>
-    <div className="generator-subline"><span>{data.ratio} · {resolution} · {data.duration} 秒</span><b>{data.status === 'done' ? '已完成' : mode === 'swap' ? 'H3 换人 v1.1' : 'H3 INT8'}</b></div>
+    <div className="generator-subline"><span>{data.ratio} · {resolution} · {data.duration} 秒</span><b>{data.status === 'done' ? '已完成' : mode === 'swap' ? 'H3 换人 v1.5' : 'H3 INT8'}</b></div>
     {data.error && <div className="generator-error">{data.error}</div>}
     {mode === 'reference' ? <Handle type="target" position={Position.Left} id="references" className="neo-handle target" /> : mode === 'frames' ? <>
       <Handle type="target" position={Position.Left} id="first" className="neo-handle target frame-first" />
@@ -348,21 +348,23 @@ function GeneratorNode({ id, data, selected }) {
         placeholder={mode === 'swap' ? '留空自动锁定参考人物的面部、发型、体型和整套穿搭，不只换脸；也可补充可见特征……' : mode === 'reference' ? '输入文字或 @ 参考内容，自由组合图、文、音、视频……\n例如：@角色参考 在雨夜街道回头，电影感，环境雨声。' : '描述主体、动作、镜头和声音……'}
       />
       {mode === 'swap' && <div className="swap-settings">
-        <label>换人目标<input value={data.targetDescription || ''} disabled={running} onChange={(e) => updateNode(id, { targetDescription: e.target.value })} placeholder="例如：左侧穿红衣的人；单人可留空" /></label>
-        {data.preserveBackground && <><label>SAM 识别<input value={data.targetQuery || 'person'} disabled={running} onChange={(e) => updateNode(id, { targetQuery: e.target.value })} placeholder="person" /></label><label className="target-index">编号<input type="number" min="0" max="63" value={data.targetIndex ?? 0} disabled={running} onChange={(e) => updateNode(id, { targetIndex: Math.max(0, Number(e.target.value)) })} /></label></>}
+        <label>换人目标<input value={data.targetDescription || ''} disabled={running} onChange={(e) => updateNode(id, { targetDescription: e.target.value })} placeholder="例如：右侧白色假人；单人可留空" /></label>
+        <label>SAM 识别<input value={data.targetQuery || 'person'} disabled={running} onChange={(e) => updateNode(id, { targetQuery: e.target.value })} placeholder="person" /></label>
+        <label>目标位置<select aria-label="目标位置" value={data.targetSelection || 'largest'} disabled={running} onChange={(e) => updateNode(id, { targetSelection: e.target.value })}><option value="largest">最大主体</option><option value="leftmost">最左侧</option><option value="rightmost">最右侧</option><option value="index">按编号</option></select></label>
+        {(data.targetSelection || 'largest') === 'index' && <label className="target-index">编号<input type="number" min="0" max="63" value={data.targetIndex ?? 0} disabled={running} onChange={(e) => updateNode(id, { targetIndex: Math.max(0, Number(e.target.value)) })} /></label>}
       </div>}
       <div className="creator-params">
         <div className="param-group">
           <label className="param-pill"><Zap size={12} /><select aria-label="画幅比例" value={data.ratio} disabled={running} onChange={(e) => updateNode(id, { ratio: e.target.value })}>{['16:9','9:16','1:1','4:3','3:4','21:9'].map((x) => <option key={x}>{x}</option>)}</select><ChevronDown size={11} /></label>
           <label className="param-pill" title={`输出尺寸 ${outputWidth} × ${outputHeight}；分辨率越高，显存占用和生成时间越长`}><Maximize2 size={12} /><select aria-label="分辨率" value={resolution} disabled={running} onChange={(e) => updateNode(id, { resolution: e.target.value })}>{['480P','720P','1080P'].map((x) => <option key={x} value={x}>{x}</option>)}</select><ChevronDown size={11} /></label>
           <label className="param-pill"><Clock3 size={12} /><select aria-label="视频时长" value={data.duration} disabled={running} onChange={(e) => updateNode(id, { duration: Number(e.target.value) })}>{[5,6,7,8,9,10,11,12,13,14,15].map((x) => <option key={x} value={x}>{x} 秒</option>)}</select><ChevronDown size={11} /></label>
-          {mode === 'swap' ? <span className="param-pill active" title="作者指定的 DMD、Euler、Simple、CFG 1"><Zap size={12} />DMD 8 步</span> : <button className={`param-pill turbo-pill ${data.turbo ? 'active' : ''}`} disabled={running} title={data.turbo ? 'Turbo 适合快速看构图；角色或动作参考不准确时请切换标准模式' : '标准模式使用 beta 调度，参考身份与动作更稳定'} onClick={() => updateNode(id, { turbo: !data.turbo })}><Zap size={12} />{data.turbo ? `${mode === 'reference' ? 4 : 8} 步 Turbo` : '标准 20 步'}</button>}
-          {['reference', 'swap'].includes(mode) && <button className={`param-pill ${data.refImageSize === 'max' ? 'active' : ''}`} onClick={() => updateNode(id, { refImageSize: data.refImageSize === 'max' ? 'match' : 'max' })} title="高保真参考更慢，但保留更多主体细节"><Layers3 size={12} />{data.refImageSize === 'max' ? '高保真' : '均衡'}</button>}
-          {mode === 'swap' && <button className={`param-pill ${data.preserveBackground ? 'active' : ''}`} disabled={running} onClick={() => updateNode(id, { preserveBackground: !data.preserveBackground })} title="SAM3.1 跟踪目标并将人物回填到原片，保留蒙版外背景"><Crosshair size={12} />{data.preserveBackground ? '背景保护' : '整片生成'}</button>}
+          {mode === 'swap' ? <span className="param-pill active" title="Akatz 官方参数：FL2V Turbo、ER-SDE、Normal、CFG 1"><Zap size={12} />v1.5 · 8 步</span> : <button className={`param-pill turbo-pill ${data.turbo ? 'active' : ''}`} disabled={running} title={data.turbo ? 'Turbo 适合快速看构图；角色或动作参考不准确时请切换标准模式' : '标准模式使用 beta 调度，参考身份与动作更稳定'} onClick={() => updateNode(id, { turbo: !data.turbo })}><Zap size={12} />{data.turbo ? `${mode === 'reference' ? 4 : 8} 步 Turbo` : '标准 20 步'}</button>}
+          {mode === 'reference' && <button className={`param-pill ${data.refImageSize === 'max' ? 'active' : ''}`} onClick={() => updateNode(id, { refImageSize: data.refImageSize === 'max' ? 'match' : 'max' })} title="高保真参考更慢，但保留更多主体细节"><Layers3 size={12} />{data.refImageSize === 'max' ? '高保真' : '均衡'}</button>}
+          {mode === 'swap' && <span className="param-pill active" title="SAM3.1 遮罩直接作用于源视频 latent，而非生成后回填"><Crosshair size={12} />潜空间保护</span>}
         </div>
         {running ? <button className="send-button cancel" onClick={() => cancelNode(id)} title="取消生成"><Square size={15} fill="currentColor" /></button> : <button className="send-button node-generate" onClick={() => generateNode(id)} disabled={!serverOnline} title="本地生成"><ArrowUp size={17} /></button>}
       </div>
-      <div className="creator-footnote"><span>{mode === 'swap' ? '使用清晰单人身份图，不要四宫格；输出保留原音轨' : mode === 'reference' ? `已连接 ${refs.length} 个素材 · 本地上限 9 图 / 3 视频 / 3 音频` : mode === 'frames' ? '首尾帧是次要模式，从图片节点连线到对应端口' : '无需参考素材，直接通过文字生成'}</span><b>本地免费</b></div>
+      <div className="creator-footnote"><span>{mode === 'swap' ? '使用清晰单人多视图或全身图，须看见脸、体型和完整穿搭；保留原音轨' : mode === 'reference' ? `已连接 ${refs.length} 个素材 · 本地上限 9 图 / 3 视频 / 3 音频` : mode === 'frames' ? '首尾帧是次要模式，从图片节点连线到对应端口' : '无需参考素材，直接通过文字生成'}</span><b>本地免费</b></div>
     </NodeToolbar>
   </div>;
 }
