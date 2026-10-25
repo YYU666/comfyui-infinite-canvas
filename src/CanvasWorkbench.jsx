@@ -665,7 +665,7 @@ function CanvasInner({ onSimpleMode }) {
           </div>}
           <div className="canvas-control-pill">
             <button className={gridVisible ? 'active' : ''} onClick={() => setGridVisible(!gridVisible)} title="显示或隐藏网格"><Grid2X2 size={15} /></button>
-            <button className={miniMapVisible ? 'active' : ''} onClick={() => setMiniMapVisible(!miniMapVisible)} title="小地图"><MapIcon size={14} /></button>
+            <button className={miniMapVisible ? 'active' : ''} onClick={() => setMiniMapVisible(!miniMapVisible)} title="小地图"><MapIcon size={15} /></button>
             <button className={zoomMenuOpen ? 'zoom-button active' : 'zoom-button'} onClick={() => setZoomMenuOpen(!zoomMenuOpen)} title="缩放" aria-expanded={zoomMenuOpen}><Search size={13} /><span>{zoom}%</span></button>
           </div>
           <button className="round-control" onClick={() => fitView({ duration: 350, padding: 0.15 })} title="节点定位"><Crosshair size={16} /></button>
@@ -698,7 +698,7 @@ function CanvasInner({ onSimpleMode }) {
         </button>)}{!historyItems.length && <div className="library-empty"><Film size={26} /><span>还没有 H3 视频作品</span></div>}</div>
       </aside>}
       {pinOpen && <aside className="floating-pins">
-        <div className="floating-panel-title"><span><Pin size={14} />Pin 关键节点</span><button onClick={() => setPinOpen(false)}><X size={15} /></button></div>
+        <div className="floating-panel-title"><span><Pin size={14} />Pin 关键节点</span><button onClick={() => setPinOpen(false)}><X size={14} /></button></div>
         <p>把常用角色、设定和生成节点固定在这里。</p>
         {pinnedNodes.map((node) => <button key={node.id} onClick={() => focusNode(node.id)}><Crosshair size={13} /><span>{node.data.title}</span><small>{node.type === 'generator' ? '生成' : KIND_LABEL[node.data.kind] || '备注'}</small></button>)}
         {!pinnedNodes.length && <div className="library-empty"><Pin size={22} /><span>选中节点后点击 Pin 标记</span></div>}
