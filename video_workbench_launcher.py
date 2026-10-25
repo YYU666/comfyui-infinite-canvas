@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -76,6 +77,39 @@ def validate_video_url(value):
     return value
 
 
+def import_douyin_with_browser(url, output_dir, stem):
+    """Resolve public Douyin pages in a clean browser session, without profile cookies."""
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("没有找到 Node.js，无法启用抖音公开页面解析。")
+    file_path = (output_dir / f"{stem}.mp4").resolve()
+    command = [node, str(HERE / "browser_video_import.mjs"), "--url", url, "--output", str(file_path)]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+    except subprocess.TimeoutExpired as exc:
+        file_path.unlink(missing_ok=True)
+        raise RuntimeError("抖音视频加载超时，请换较短的视频，或下载后手动上传。") from exc
+    if result.returncode:
+        file_path.unlink(missing_ok=True)
+        lines = [line.strip() for line in result.stderr.splitlines() if line.strip()]
+        detail = lines[-1][:350] if lines else "公开页面未返回可下载的视频"
+        raise RuntimeError(f"无法解析这个抖音公开视频。请确认作品公开且未失效；也可以下载后手动上传。\n{detail}")
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    try:
+        metadata = json.loads(lines[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        file_path.unlink(missing_ok=True)
+        raise RuntimeError("抖音视频解析完成，但没有返回有效的文件信息。") from exc
+    if output_dir.resolve() not in file_path.parents or not file_path.is_file():
+        raise RuntimeError("抖音视频下载完成，但文件位置无效。")
+    size = file_path.stat().st_size
+    if not size or size > MAX_VIDEO_BYTES or int(metadata.get("size", 0)) != size:
+        file_path.unlink(missing_ok=True)
+        raise RuntimeError("抖音视频文件不完整或超过 250 MB，请重试或手动上传。")
+    title = str(metadata.get("title") or "抖音视频参考")
+    return {"name": file_path.name, "subfolder": "workbench", "title": title[:120], "size": size, "sourceUrl": url}
+
+
 def import_video(share_text):
     url = validate_video_url(extract_share_url(share_text))
     output_dir = ROOT / "ComfyUI" / "input" / "workbench"
@@ -95,6 +129,9 @@ def import_video(share_text):
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("视频加载超时，请换较短的视频，或下载后手动上传。") from exc
     if result.returncode:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+        if host == "douyin.com" or host.endswith(".douyin.com"):
+            return import_douyin_with_browser(url, output_dir, stem)
         lines = [line.strip() for line in result.stderr.splitlines() if line.strip()]
         detail = lines[-1][:350] if lines else "网站未返回可下载的视频"
         raise RuntimeError(f"无法加载这个视频链接。请确认视频公开可访问；也可以下载后手动上传。\n{detail}")
