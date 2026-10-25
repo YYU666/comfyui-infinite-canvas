@@ -14,7 +14,7 @@ import {
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, cancelPrompt, createClientId,
   extractVideos, getHardwareMetrics, getHistory, getSystemStats, importVideoFromUrl, openProgressSocket,
-  optimizePrompt as requestPromptOptimization, queuePrompt, resolveDimensions, uploadMedia,
+  openFileLocation as requestFileLocation, optimizePrompt as requestPromptOptimization, queuePrompt, resolveDimensions, uploadMedia,
 } from './workbench-api';
 import './canvas.css';
 import PromptEditor from './PromptEditor';
@@ -371,6 +371,7 @@ function CanvasInner({ onSimpleMode }) {
   const [zoomMenuOpen, setZoomMenuOpen] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(() => localStorage.getItem(SNAP_KEY) !== 'false');
   const [addMenu, setAddMenu] = useState(null);
+  const [nodeMenu, setNodeMenu] = useState(null);
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
   const filesRef = useRef({});
@@ -668,11 +669,11 @@ function CanvasInner({ onSimpleMode }) {
   }, [setEdges]);
 
   useEffect(() => {
-    if (!addMenu) return;
-    const closeOnEscape = (event) => { if (event.key === 'Escape') setAddMenu(null); };
+    if (!addMenu && !nodeMenu) return;
+    const closeOnEscape = (event) => { if (event.key === 'Escape') { setAddMenu(null); setNodeMenu(null); } };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [addMenu]);
+  }, [addMenu, nodeMenu]);
 
   const resetCanvas = () => {
     if (!window.confirm('新建空白画布？当前画布会被替换，但已经生成的视频文件不会删除。')) return;
@@ -684,16 +685,48 @@ function CanvasInner({ onSimpleMode }) {
       x: Math.max(8, Math.min(screenPoint.x, window.innerWidth - 253)),
       y: Math.max(8, Math.min(screenPoint.y, window.innerHeight - 390)),
     };
+    setNodeMenu(null);
     setAddMenu({ ...point, flow: screenToFlowPosition(screenPoint) });
   };
   const openAddMenu = (event) => {
     if (event.target.closest('.react-flow__node,button,input,textarea,.react-flow__controls,.react-flow__minimap,.node-top-toolbar,.creator-toolbar')) return;
     placeAddMenu({ x: event.clientX, y: event.clientY });
   };
+  const nodeFileLocation = (node) => {
+    if (node.data.output && node.data.filename) return { kind: 'output', name: `${node.data.subfolder ? `${node.data.subfolder}/` : ''}${node.data.filename}` };
+    if (node.data.remoteName) return { kind: 'input', name: node.data.remoteName };
+    if (node.data.resultUrl) {
+      const params = new URL(node.data.resultUrl).searchParams;
+      const filename = params.get('filename');
+      if (filename) return { kind: params.get('type') || 'output', name: `${params.get('subfolder') ? `${params.get('subfolder')}/` : ''}${filename}` };
+    }
+    return null;
+  };
   const openContextMenu = (event) => {
-    if (event.target.closest('input,textarea,select,button,a,video,audio,[contenteditable="true"],.node-top-toolbar,.creator-toolbar,.add-node-menu')) return;
+    if (event.target.closest('input,textarea,select,button,a,[contenteditable="true"],.node-top-toolbar,.creator-toolbar,.add-node-menu,.node-context-menu')) return;
     event.preventDefault();
+    const nodeElement = event.target.closest('.react-flow__node');
+    const node = nodesRef.current.find((item) => item.id === nodeElement?.dataset.id);
+    if (node) {
+      setAddMenu(null);
+      setNodeMenu({
+        x: Math.max(8, Math.min(event.clientX, window.innerWidth - 238)),
+        y: Math.max(8, Math.min(event.clientY, window.innerHeight - 135)),
+        nodeId: node.id, title: node.data.title || '节点', file: nodeFileLocation(node), status: 'idle', error: null,
+      });
+      return;
+    }
     placeAddMenu({ x: event.clientX, y: event.clientY });
+  };
+  const openNodeLocation = async () => {
+    if (!nodeMenu?.file || nodeMenu.status === 'opening') return;
+    setNodeMenu((menu) => ({ ...menu, status: 'opening', error: null }));
+    try {
+      await requestFileLocation(nodeMenu.file);
+      setNodeMenu(null);
+    } catch (error) {
+      setNodeMenu((menu) => ({ ...menu, status: 'error', error: error.message || '无法打开文件位置。' }));
+    }
   };
   const focusNode = (id) => {
     const node = nodesRef.current.find((item) => item.id === id);
@@ -737,7 +770,7 @@ function CanvasInner({ onSimpleMode }) {
       </header>
       <main className="neo-canvas-wrap"
         onDragOver={(e) => e.preventDefault()}
-        onPointerDownCapture={(event) => { if (event.button === 0 && !event.target.closest('.add-node-menu')) setAddMenu(null); }}
+        onPointerDownCapture={(event) => { if (event.button === 0 && !event.target.closest('.add-node-menu,.node-context-menu')) { setAddMenu(null); setNodeMenu(null); } }}
         onContextMenuCapture={openContextMenu}
         onDrop={(e) => {
           e.preventDefault();
@@ -799,6 +832,21 @@ function CanvasInner({ onSimpleMode }) {
           <button onClick={() => addNode('video', {}, addMenu.flow)}><i><Video size={17} /></i><span>视频素材<small>动作、运镜或内容参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('audio', {}, addMenu.flow)}><i><Music2 size={17} /></i><span>音频素材<small>音色、配乐或声音参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('note', {}, addMenu.flow)}><i><Type size={17} /></i><span>文本备注<small>分镜与创作设定</small></span><Plus size={13} /></button>
+        </div>}
+        {nodeMenu && <div className="add-node-menu node-context-menu" role="menu" aria-label="节点操作"
+          style={{ left: nodeMenu.x, top: nodeMenu.y }}
+          onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
+          onDoubleClick={(event) => event.stopPropagation()}>
+          <div className="add-menu-title">{nodeMenu.title}
+            <button onClick={() => setNodeMenu(null)} aria-label="关闭节点菜单"><X size={13} /></button>
+          </div>
+          <button disabled={!nodeMenu.file || nodeMenu.status === 'opening'} onClick={openNodeLocation}>
+            <i><FolderOpen size={17} /></i>
+            <span>{nodeMenu.status === 'opening' ? '正在打开……' : '打开文件位置'}
+              <small>{nodeMenu.file ? '在资源管理器中定位文件' : '上传素材或生成后可定位'}</small>
+            </span>
+          </button>
+          {nodeMenu.error && <p className="node-menu-error">{nodeMenu.error}</p>}
         </div>}
       </main>
       {libraryOpen && <aside className="floating-library">

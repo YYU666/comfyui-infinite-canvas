@@ -233,6 +233,9 @@
 .add-node-menu > button > i { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 8px; background: rgba(255,255,255,.055); color: #9999a1; }
 .add-node-menu > button > span { flex: 1; font-size: 11px; }
 .add-node-menu small { display: block; margin-top: 3px; color: #65656c; font-size: 8px; }
+.node-context-menu { width: 230px; }
+.node-context-menu > button:disabled { opacity: .45; cursor: not-allowed; }
+.node-menu-error { padding: 7px 8px; color: #d58f86; font-size: 9px; line-height: 1.5; }
 .empty-canvas { position: absolute; left: 50%; top: 44%; transform: translate(-50%,-50%); display: flex; align-items: center; flex-direction: column; gap: 12px; color: #5f5f66; }
 .empty-canvas strong { color: #aaaab0; font-size: 15px; font-weight: 500; }
 .empty-canvas span { font-size: 10px; }

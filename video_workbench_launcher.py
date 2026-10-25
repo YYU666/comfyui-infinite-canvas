@@ -267,6 +267,21 @@ def optimize_h3_prompt(payload):
     return {"prompt": optimized, "model": os.environ.get("H3_DEEPSEEK_MODEL", "deepseek-flash")}
 
 
+def open_file_location(payload):
+    kind = str(payload.get("kind", ""))
+    name = str(payload.get("name", "")).replace("\\", "/").strip("/")
+    if kind not in {"input", "output"} or not name or name.startswith("../") or "/../" in name:
+        raise ValueError("文件位置无效。")
+    base = INPUT_DIR if kind == "input" else OUTPUT_DIR
+    file_path = (base / name).resolve()
+    if base.resolve() not in file_path.parents or not file_path.is_file():
+        raise ValueError("文件不存在，或尚未保存到 D 盘。请先上传素材或完成一次生成。")
+    if os.name != "nt":
+        raise RuntimeError("当前系统不支持自动打开文件位置。")
+    subprocess.Popen(["explorer.exe", f"/select,{file_path}"], close_fds=True)
+    return {"opened": True, "path": str(file_path)}
+
+
 class WorkbenchHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
@@ -299,7 +314,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
-        if path not in {"/api/import-video", "/api/optimize-prompt"}:
+        if path not in {"/api/import-video", "/api/optimize-prompt", "/api/open-file-location"}:
             self.send_json(404, {"error": "接口不存在"})
             return
         try:
@@ -309,6 +324,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             if path == "/api/import-video":
                 result = import_video(str(payload.get("url", "")).strip())
+            elif path == "/api/open-file-location":
+                result = open_file_location(payload)
             else:
                 result = optimize_h3_prompt(payload)
             self.send_json(200, result)

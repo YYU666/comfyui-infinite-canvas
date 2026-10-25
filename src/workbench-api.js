@@ -184,6 +184,14 @@ export async function optimizePrompt(options) {
   return parseResponse(response);
 }
 
+export async function openFileLocation(options) {
+  const response = await fetch('/api/open-file-location', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+  });
+  return parseResponse(response);
+}
+
 export function uploadImage(file) {
   return uploadMedia(file, 'image');
 }
