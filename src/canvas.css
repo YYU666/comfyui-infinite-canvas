@@ -169,6 +169,11 @@
 .canvas-control-pill button, .round-control { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 15px; color: #85858c; }
 .canvas-control-pill button:hover, .canvas-control-pill button.active, .round-control:hover { background: rgba(255,255,255,.07); color: #eee; }
 .canvas-control-pill .zoom-button { width: 62px; display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 9px; }
+.zoom-menu { position: absolute; left: 0; bottom: 46px; height: 39px; display: flex; align-items: center; gap: 2px; padding: 4px 6px; border: 1px solid rgba(255,255,255,.08); border-radius: 13px; background: rgba(24,24,27,.98); box-shadow: 0 9px 28px #0006; backdrop-filter: blur(14px); }
+.zoom-menu button { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 8px; color: #929299; }
+.zoom-menu button:hover { background: rgba(255,255,255,.07); color: #fff; }
+.zoom-menu .zoom-current { width: 50px; font-size: 10px; }
+.zoom-menu > i { width: 1px; height: 17px; margin: 0 3px; background: rgba(255,255,255,.09); }
 .round-control { width: 36px; height: 36px; border: 1px solid rgba(255,255,255,.055); background: rgba(24,24,27,.96); }
 .canvas-dock { position: absolute; z-index: 20; left: 62%; bottom: 15px; transform: translateX(-50%); display: flex; align-items: center; gap: 3px; padding: 5px; border: 1px solid rgba(255,255,255,.06); border-radius: 23px; background: rgba(24,24,27,.97); box-shadow: 0 7px 28px #0005; }
 .canvas-dock > button { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 16px; color: #88888f; }

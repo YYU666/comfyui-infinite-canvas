@@ -7,7 +7,7 @@ import '@xyflow/react/dist/style.css';
 import {
   ArrowDownToLine, ArrowUp, AudioLines, Check, ChevronDown, CircleHelp, Clock3,
   Crosshair, Film, FolderOpen, Grid2X2, History, Image as ImageIcon, Layers3,
-  Library, Link2, LoaderCircle, Map as MapIcon, Maximize2, MoreHorizontal, MousePointer2,
+  Library, Link2, LoaderCircle, Magnet, Map as MapIcon, Maximize2, Minus, MoreHorizontal, MousePointer2,
   Music2, Pin, Plus, RefreshCw, Search, Settings2, Sparkles, Square, Trash2,
   Type, Upload, Video, WandSparkles, X, Zap,
 } from 'lucide-react';
@@ -21,6 +21,7 @@ import './canvas.css';
 const CANVAS_KEY = 'h3-infinite-canvas-v2';
 const OLD_CANVAS_KEY = 'h3-infinite-canvas-v1';
 const NAME_KEY = 'h3-canvas-name-v1';
+const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
 const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const DEFAULT_GENERATOR = {
@@ -340,12 +341,14 @@ function CanvasInner({ onSimpleMode }) {
   const [gridVisible, setGridVisible] = useState(true);
   const [miniMapVisible, setMiniMapVisible] = useState(false);
   const [zoom, setZoom] = useState(Math.round((saved.viewport?.zoom || 1) * 100));
+  const [zoomMenuOpen, setZoomMenuOpen] = useState(false);
+  const [snapEnabled, setSnapEnabled] = useState(() => localStorage.getItem(SNAP_KEY) !== 'false');
   const [addMenu, setAddMenu] = useState(null);
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
   const filesRef = useRef({});
   const clientId = useMemo(createClientId, []);
-  const { screenToFlowPosition, fitView, setCenter } = useReactFlow();
+  const { screenToFlowPosition, fitView, setCenter, zoomIn, zoomOut, zoomTo } = useReactFlow();
 
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { edgesRef.current = edges; }, [edges]);
@@ -634,7 +637,9 @@ function CanvasInner({ onSimpleMode }) {
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
           defaultViewport={saved.viewport} fitView={!localStorage.getItem(CANVAS_KEY) && !localStorage.getItem(OLD_CANVAS_KEY)}
           fitViewOptions={{ padding: 0.16, maxZoom: 0.85 }}
-          minZoom={0.12} maxZoom={1.8} zoomOnDoubleClick={false} deleteKeyCode={['Backspace','Delete']}
+          minZoom={0.12} maxZoom={1.8} zoomOnScroll zoomOnPinch zoomOnDoubleClick={false}
+          panOnDrag panOnScroll={false} selectionOnDrag={false} deleteKeyCode={['Backspace','Delete']}
+          snapToGrid={snapEnabled} snapGrid={[22, 22]}
           onMove={(_, viewport) => setZoom(Math.round(viewport.zoom * 100))}
           onMoveEnd={(_, viewport) => { saved.viewport = viewport; localStorage.setItem(CANVAS_KEY, JSON.stringify(canvasSnapshot(nodesRef.current, edgesRef.current, viewport))); }}
           defaultEdgeOptions={{ style: { stroke: '#77777e', strokeWidth: 1.5 }, type: 'smoothstep' }}
@@ -646,10 +651,17 @@ function CanvasInner({ onSimpleMode }) {
         </ReactFlow>
         {!nodes.length && <button className="empty-canvas" onClick={(e) => setAddMenu({ x: e.clientX, y: e.clientY, flow: screenToFlowPosition({ x: e.clientX, y: e.clientY }) })}><Plus size={28} /><strong>双击画布开始创作</strong><span>或点击右下角添加节点</span></button>}
         <div className="canvas-bottom-left">
+          {zoomMenuOpen && <div className="zoom-menu">
+            <button onClick={() => zoomOut({ duration: 160 })} title="缩小"><Minus size={14} /></button>
+            <button className="zoom-current" onClick={() => zoomTo(1, { duration: 200 })} title="恢复到 100%">{zoom}%</button>
+            <button onClick={() => zoomIn({ duration: 160 })} title="放大"><Plus size={14} /></button>
+            <i />
+            <button onClick={() => { fitView({ duration: 350, padding: 0.15 }); setZoomMenuOpen(false); }} title="适应全部节点"><Maximize2 size={14} /></button>
+          </div>}
           <div className="canvas-control-pill">
             <button className={gridVisible ? 'active' : ''} onClick={() => setGridVisible(!gridVisible)} title="显示或隐藏网格"><Grid2X2 size={15} /></button>
             <button className={miniMapVisible ? 'active' : ''} onClick={() => setMiniMapVisible(!miniMapVisible)} title="小地图"><MapIcon size={15} /></button>
-            <button className="zoom-button" onClick={() => fitView({ duration: 350, padding: 0.15 })} title="适应全部节点"><Search size={13} /><span>{zoom}%</span></button>
+            <button className={zoomMenuOpen ? 'zoom-button active' : 'zoom-button'} onClick={() => setZoomMenuOpen(!zoomMenuOpen)} title="缩放" aria-expanded={zoomMenuOpen}><Search size={13} /><span>{zoom}%</span></button>
           </div>
           <button className="round-control" onClick={() => fitView({ duration: 350, padding: 0.15 })} title="节点定位"><Crosshair size={16} /></button>
           <button className="round-control" onClick={resetCanvas} title="新建画布"><CircleHelp size={16} /></button>
@@ -659,6 +671,7 @@ function CanvasInner({ onSimpleMode }) {
           <button className={libraryOpen ? 'active' : ''} onClick={() => { setLibraryOpen(!libraryOpen); setPinOpen(false); }} title="本地作品"><FolderOpen size={17} /></button>
           <button onClick={() => { setLibraryOpen(true); refreshLibrary(); }} title="生成历史"><History size={17} /></button>
           <button onClick={() => fitView({ duration: 350, padding: 0.15 })} title="适应画布"><Crosshair size={17} /></button>
+          <button className={snapEnabled ? 'active' : ''} aria-pressed={snapEnabled} onClick={() => { const next = !snapEnabled; setSnapEnabled(next); localStorage.setItem(SNAP_KEY, String(next)); }} title="自动吸附"><Magnet size={16} /></button>
           <button onClick={onSimpleMode} title="工作台设置与简易模式"><Settings2 size={17} /></button>
           <button className={pinOpen ? 'active' : ''} onClick={() => { setPinOpen(!pinOpen); setLibraryOpen(false); }} title={`Pin 节点 ${pinnedNodes.length}`}><Pin size={16} /></button>
         </div>
