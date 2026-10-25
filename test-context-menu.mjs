@@ -27,7 +27,7 @@ const menu = page.getByRole('menu', { name: '添加节点' });
 
 await page.mouse.click(420, 610, { button: 'right' });
 await menu.waitFor({ state: 'visible' });
-assert.equal(await menu.locator(':scope > button').count(), 5, 'Right-click menu contains all five node types');
+assert.equal(await menu.locator(':scope > button').count(), 6, 'Right-click menu contains all six node types');
 let box = await menu.boundingBox();
 assert.ok(Math.abs(box.x - 420) < 2 && Math.abs(box.y - 610) < 2, 'Menu opens at the mouse position');
 

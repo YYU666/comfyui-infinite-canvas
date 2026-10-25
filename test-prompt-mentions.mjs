@@ -45,6 +45,12 @@ assert.equal(storedPrompt, originalPrompt, 'Underlying prompt preserves referenc
 
 await editor.click();
 await page.keyboard.press('Control+End');
+const cdp = await page.context().newCDPSession(page);
+await cdp.send('Input.imeSetComposition', { text: '中文', selectionStart: 2, selectionEnd: 2 });
+await cdp.send('Input.insertText', { text: '中文' });
+await page.waitForTimeout(650);
+storedPrompt = await page.evaluate(() => JSON.parse(localStorage.getItem('h3-infinite-canvas-v2')).nodes.find(node => node.id === 'gen').data.prompt);
+assert.ok(storedPrompt.endsWith('中文'), 'Chinese IME composition commits without being interrupted');
 await page.keyboard.type('，@女');
 const mentionMenu = page.locator('.mention-menu');
 await mentionMenu.waitFor({ state: 'visible' });

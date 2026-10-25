@@ -109,6 +109,7 @@ const PromptEditor = forwardRef(function PromptEditor({ value, onChange, items, 
   const editorRef = useRef(null);
   const savedMentionRange = useRef(null);
   const blurTimer = useRef(null);
+  const composingRef = useRef(false);
   const onChangeRef = useRef(onChange);
   const itemsRef = useRef(items);
   const [mention, setMention] = useState({ open: false, query: '' });
@@ -117,6 +118,7 @@ const PromptEditor = forwardRef(function PromptEditor({ value, onChange, items, 
   itemsRef.current = items;
   const itemSignature = items.map((node) => `${node.id}:${node.data.title}:${node.data.kind}:${node.data.url}`).join('|');
   const filteredItems = items.filter((node) => node.data.title?.toLowerCase().includes(mention.query.toLowerCase()));
+  const closeMention = () => setMention((old) => old.open || old.query ? { open: false, query: '' } : old);
 
   const emitChange = () => {
     const next = readPrompt(editorRef.current);
@@ -126,7 +128,7 @@ const PromptEditor = forwardRef(function PromptEditor({ value, onChange, items, 
 
   useEffect(() => {
     const editor = editorRef.current;
-    if (!editor) return;
+    if (!editor || composingRef.current) return;
     if (readPrompt(editor) !== value) renderPrompt(editor, value, itemsRef.current);
     else {
       editor.querySelectorAll('.prompt-mention').forEach((chip) => {
@@ -148,28 +150,46 @@ const PromptEditor = forwardRef(function PromptEditor({ value, onChange, items, 
   }, [value, itemSignature]);
 
   const updateMention = () => {
+    if (composingRef.current) return;
     const selection = window.getSelection();
     const editor = editorRef.current;
     if (!selection?.rangeCount || !selection.isCollapsed || !editor?.contains(selection.anchorNode)) {
-      setMention({ open: false, query: '' });
+      closeMention();
       return;
     }
     const range = selection.getRangeAt(0);
     if (range.startContainer.nodeType !== Node.TEXT_NODE) {
-      setMention({ open: false, query: '' });
+      closeMention();
       return;
     }
     const before = range.startContainer.nodeValue.slice(0, range.startOffset);
     const match = before.match(/@([^\s@]*)$/);
     if (!match) {
-      setMention({ open: false, query: '' });
+      closeMention();
       return;
     }
     const mentionRange = range.cloneRange();
     mentionRange.setStart(range.startContainer, range.startOffset - match[0].length);
     savedMentionRange.current = mentionRange;
-    setMention({ open: true, query: match[1] });
+    setMention((old) => old.open && old.query === match[1] ? old : { open: true, query: match[1] });
   };
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return undefined;
+    const compositionStart = () => { composingRef.current = true; closeMention(); };
+    const compositionEnd = () => {
+      composingRef.current = false;
+      emitChange();
+      updateMention();
+    };
+    editor.addEventListener('compositionstart', compositionStart);
+    editor.addEventListener('compositionend', compositionEnd);
+    return () => {
+      editor.removeEventListener('compositionstart', compositionStart);
+      editor.removeEventListener('compositionend', compositionEnd);
+    };
+  }, []);
 
   const insertReference = (node) => {
     const editor = editorRef.current;
@@ -226,12 +246,17 @@ const PromptEditor = forwardRef(function PromptEditor({ value, onChange, items, 
       aria-disabled={disabled}
       data-placeholder={placeholder}
       spellCheck={false}
-      onInput={() => { emitChange(); updateMention(); }}
+      onInput={(event) => {
+        if (event.nativeEvent.isComposing) return;
+        composingRef.current = false;
+        emitChange();
+        updateMention();
+      }}
       onKeyUp={updateMention}
       onSelect={updateMention}
       onClick={clickEditor}
       onMouseDown={(event) => { if (event.target.closest('.prompt-mention-remove')) event.preventDefault(); }}
-      onKeyDown={(event) => { if (event.key === 'Escape') setMention({ open: false, query: '' }); }}
+      onKeyDown={(event) => { if (event.key === 'Escape' && !composingRef.current) closeMention(); }}
       onPaste={(event) => {
         event.preventDefault();
         document.execCommand('insertText', false, event.clipboardData.getData('text/plain'));

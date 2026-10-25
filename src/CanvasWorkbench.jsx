@@ -14,7 +14,7 @@ import {
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, cancelPrompt, createClientId,
   extractVideos, getHistory, getSystemStats, importVideoFromUrl, openProgressSocket,
-  queuePrompt, uploadMedia,
+  optimizePrompt as requestPromptOptimization, queuePrompt, uploadMedia,
 } from './workbench-api';
 import './canvas.css';
 import PromptEditor from './PromptEditor';
@@ -53,6 +53,7 @@ function migrateCanvas(value) {
       return { ...node, type: 'media', data: { ...node.data, kind, title: node.data.title === '首帧素材' ? '角色参考' : node.data.title } };
     }
     if (node.type === 'video') return { ...node, type: 'media', data: { ...node.data, kind: 'video', output: true } };
+    if (node.type === 'prompt') return { ...node, data: { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...node.data } };
     if (node.type === 'note') return { ...node, data: node.data.title === '从这里开始' ? { ...node.data, text: '① 上传图片、视频或音频素材\n② 选中全能参考，用 + 添加或连线素材\n③ 输入 @ 名称引用角色、动作或声音\n④ 点击右下角箭头，本地生成视频\n\n首尾帧已收进次要模式。' } : node };
     return null;
   }).filter(Boolean);
@@ -62,7 +63,7 @@ function migrateCanvas(value) {
     return {
       ...edge,
       sourceHandle: ['image', 'video'].includes(edge.sourceHandle) ? 'ref' : edge.sourceHandle,
-      targetHandle: isReference && ['first', 'last'].includes(edge.targetHandle) ? 'references' : ['first', 'last', 'preview'].includes(edge.targetHandle) ? edge.targetHandle : 'references',
+      targetHandle: isReference && ['first', 'last'].includes(edge.targetHandle) ? 'references' : ['first', 'last', 'preview', 'prompt'].includes(edge.targetHandle) ? edge.targetHandle : 'references',
     };
   }).filter((edge) => nodes.some((n) => n.id === edge.source) && nodes.some((n) => n.id === edge.target));
   return { ...value, nodes, edges };
@@ -131,7 +132,7 @@ function remoteMediaUrl(path) {
 
 function NodeTitle({ id, data, kind }) {
   const { updateNode, togglePin } = useContext(NodeContext);
-  const Icon = kind === 'generator' ? WandSparkles : kind === 'note' ? Type : KIND_ICON[data.kind] || Film;
+  const Icon = kind === 'generator' ? WandSparkles : kind === 'prompt' ? Sparkles : kind === 'note' ? Type : KIND_ICON[data.kind] || Film;
   return <div className="neo-node-title">
     <Icon size={14} />
     <input className="nodrag" value={data.title || ''} aria-label="节点名称" onChange={(e) => updateNode(id, { title: e.target.value })} />
@@ -180,6 +181,25 @@ function NoteNode({ id, data, selected }) {
       <span>{importing ? '正在解析并下载到本机，请保持窗口开启……' : '支持 App 复制的一整段分享内容，会自动提取短链接。'}</span>
       {error && <p className="video-url-error">{error}</p>}
     </form>}
+  </div>;
+}
+
+function PromptOptimizerNode({ id, data, selected }) {
+  const { updateNode, optimizePromptNode, getPromptTarget } = useContext(NodeContext);
+  const target = getPromptTarget(id);
+  const running = data.status === 'optimizing';
+  const canOptimize = target && !running && (data.idea?.trim() || target.data.prompt?.trim());
+  return <div className={`prompt-optimizer-shell ${selected ? 'selected' : ''} ${data.pinned ? 'pinned' : ''}`}>
+    <NodeTitle id={id} data={data} kind="prompt" /><NodeActions id={id} data={data} selected={selected} />
+    <div className="prompt-optimizer-body">
+      <div className="optimizer-label"><span>自然语言创意</span><b>DeepSeek · 官方 H3 规范</b></div>
+      <textarea className="optimizer-idea nodrag nowheel" value={data.idea || ''} disabled={running} onChange={(event) => updateNode(id, { idea: event.target.value, status: 'idle', error: null })} placeholder="例如：让图片里的女孩模仿视频中的舞蹈，在雨夜街道回头，镜头缓慢推进，保留环境雨声……" />
+      <div className={`optimizer-connection ${target ? 'connected' : ''}`}><Link2 size={12} /><span>{target ? `已连接：${target.data.title} · ${target.data.duration} 秒 · ${target.data.ratio}` : '将右侧 ✦ 端口连接到生成节点左侧 ✦ 端口'}</span></div>
+      {data.error && <div className="optimizer-error">{data.error}</div>}
+      <button className="optimizer-run nodrag" disabled={!canOptimize} onClick={() => optimizePromptNode(id)}>{running ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}<span>{running ? '正在按 H3 规范改写……' : data.optimizedPrompt ? '重新优化并填入' : '优化并填入生成节点'}</span></button>
+      {data.optimizedPrompt && <details className="optimizer-result"><summary><Check size={12} />已填入生成节点，可在提示词框继续微调</summary><pre>{data.optimizedPrompt}</pre></details>}
+    </div>
+    <Handle type="source" position={Position.Right} id="prompt" className="neo-handle source prompt-source" title="连接到视频生成节点的提示词端口" />
   </div>;
 }
 
@@ -276,6 +296,7 @@ function GeneratorNode({ id, data, selected }) {
       <Handle type="target" position={Position.Left} id="first" className="neo-handle target frame-first" />
       <Handle type="target" position={Position.Left} id="last" className="neo-handle target frame-last" />
     </> : null}
+    <Handle type="target" position={Position.Left} id="prompt" className="neo-handle target prompt-target" title="连接 H3 提示词优化" />
     <Handle type="source" position={Position.Right} id="video" className="neo-handle source" />
 
     <NodeToolbar isVisible={selected} position={Position.Bottom} offset={12} className="creator-toolbar nodrag">
@@ -314,7 +335,7 @@ function GeneratorNode({ id, data, selected }) {
   </div>;
 }
 
-const nodeTypes = { note: NoteNode, media: MediaNode, generator: GeneratorNode };
+const nodeTypes = { note: NoteNode, media: MediaNode, generator: GeneratorNode, prompt: PromptOptimizerNode };
 
 function CanvasInner({ onSimpleMode }) {
   const saved = useMemo(readCanvas, []);
@@ -406,6 +427,39 @@ function CanvasInner({ onSimpleMode }) {
   }, []);
 
   const getMentionItems = useCallback((id) => nodesRef.current.filter((node) => node.type === 'media' && node.id !== id && node.data.title), []);
+  const getPromptTarget = useCallback((id) => {
+    const edge = edgesRef.current.find((item) => item.source === id && item.targetHandle === 'prompt');
+    const target = nodesRef.current.find((node) => node.id === edge?.target);
+    return target?.type === 'generator' ? target : null;
+  }, []);
+
+  const optimizePromptNode = useCallback(async (id) => {
+    const promptNode = nodesRef.current.find((node) => node.id === id);
+    const target = getPromptTarget(id);
+    if (!promptNode || !target) {
+      updateNode(id, { status: 'error', error: '请先把此节点右侧 ✦ 端口连接到生成节点左侧 ✦ 端口。' });
+      return;
+    }
+    const descriptors = referenceDescriptors(getReferences(target.id));
+    const toTags = (text) => descriptors.reduce((result, { node, tag }) => result.split(`@${node.data.title}`).join(tag), text || '');
+    const toMentions = (text) => descriptors.reduce((result, { node, tag }) => result.split(tag).join(`@${node.data.title}`), text || '');
+    updateNode(id, { status: 'optimizing', error: null });
+    try {
+      const result = await requestPromptOptimization({
+        idea: promptNode.data.idea || '',
+        currentPrompt: toTags(target.data.prompt),
+        mode: target.data.mode || 'reference',
+        duration: target.data.duration || 5,
+        ratio: target.data.ratio || '16:9',
+        references: descriptors.map(({ node, kind, tag }) => ({ title: node.data.title, kind, tag, slot: node.data.slot })),
+      });
+      const optimized = target.data.mode === 'reference' ? toMentions(result.prompt) : result.prompt;
+      updateNode(id, { status: 'done', optimizedPrompt: optimized, model: result.model, syncedAt: Date.now(), error: null });
+      updateNode(target.id, { prompt: optimized, error: null });
+    } catch (error) {
+      updateNode(id, { status: 'error', error: error.message || '提示词优化失败，请重试。' });
+    }
+  }, [getPromptTarget, getReferences, updateNode]);
 
   const completeGeneration = useCallback(async (id, promptId) => {
     try {
@@ -515,6 +569,7 @@ function CanvasInner({ onSimpleMode }) {
     const id = uid(type);
     let data;
     if (type === 'generator') data = { ...DEFAULT_GENERATOR, ...extra };
+    else if (type === 'prompt') data = { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...extra };
     else if (type === 'note') data = { title: '创作备注', text: '', ...extra };
     else {
       const kind = extra.kind || type;
@@ -563,6 +618,10 @@ function CanvasInner({ onSimpleMode }) {
   const onConnect = useCallback((connection) => {
     const source = nodesRef.current.find((node) => node.id === connection.source);
     const target = nodesRef.current.find((node) => node.id === connection.target);
+    if (source?.type === 'prompt' && target?.type === 'generator' && connection.targetHandle === 'prompt') {
+      setEdges((items) => addEdge({ ...connection, sourceHandle: 'prompt', id: `edge-${connection.source}-${connection.target}-prompt-${Date.now()}` }, items.filter((edge) => !(edge.target === connection.target && edge.targetHandle === 'prompt') && !(edge.source === connection.source && edge.sourceHandle === 'prompt'))));
+      return;
+    }
     if (source?.type !== 'media' || target?.type !== 'generator') return;
     const mode = target.data.mode || 'reference';
     if (mode === 'reference' && connection.targetHandle === 'references') {
@@ -590,7 +649,7 @@ function CanvasInner({ onSimpleMode }) {
   const placeAddMenu = (screenPoint) => {
     const point = {
       x: Math.max(8, Math.min(screenPoint.x, window.innerWidth - 253)),
-      y: Math.max(8, Math.min(screenPoint.y, window.innerHeight - 330)),
+      y: Math.max(8, Math.min(screenPoint.y, window.innerHeight - 390)),
     };
     setAddMenu({ ...point, flow: screenToFlowPosition(screenPoint) });
   };
@@ -610,7 +669,7 @@ function CanvasInner({ onSimpleMode }) {
     setPinOpen(false);
   };
 
-  const context = { updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMentionItems, attachFilesToGenerator, importVideoReference };
+  const context = { updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference };
   const pinnedNodes = nodes.filter((node) => node.data.pinned);
   return <NodeContext.Provider value={context}>
     <div className="neo-app">
@@ -686,6 +745,7 @@ function CanvasInner({ onSimpleMode }) {
         {addMenu && <div className="add-node-menu" role="menu" aria-label="添加节点" style={{ left: addMenu.x, top: addMenu.y }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}>
           <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>
           <button onClick={() => addNode('generator', {}, addMenu.flow)}><i><WandSparkles size={17} /></i><span>全能参考<small>图、文、音、视频多元素生成</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('prompt', {}, addMenu.flow)}><i><Sparkles size={17} /></i><span>提示词优化<small>自然语言转 MiniMax H3 专用提示词</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('image', {}, addMenu.flow)}><i><ImageIcon size={17} /></i><span>图片素材<small>角色、场景、风格参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('video', {}, addMenu.flow)}><i><Video size={17} /></i><span>视频素材<small>动作、运镜或内容参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('audio', {}, addMenu.flow)}><i><Music2 size={17} /></i><span>音频素材<small>音色、配乐或声音参考</small></span><Plus size={13} /></button>

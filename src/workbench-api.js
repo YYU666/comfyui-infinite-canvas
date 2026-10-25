@@ -163,6 +163,14 @@ export async function importVideoFromUrl(url) {
   return parseResponse(response);
 }
 
+export async function optimizePrompt(options) {
+  const response = await fetch('/api/optimize-prompt', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+  });
+  return parseResponse(response);
+}
+
 export function uploadImage(file) {
   return uploadMedia(file, 'image');
 }

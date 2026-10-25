@@ -6,6 +6,7 @@ __pycache__/
 .env.*
 !.env.example
 *.local
+*.key
 *.log
 *-cookies.txt
 *-test-report.json

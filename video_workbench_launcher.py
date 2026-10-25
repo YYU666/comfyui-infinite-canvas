@@ -148,6 +148,103 @@ def import_video(share_text):
     return {"name": file_path.name, "subfolder": "workbench", "title": title[:120], "size": file_path.stat().st_size, "sourceUrl": url}
 
 
+def load_deepseek_key():
+    configured = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if configured:
+        return configured
+    key_file = HERE / "deepseek.key"
+    if key_file.is_file():
+        return key_file.read_text(encoding="utf-8-sig").strip()
+    raise RuntimeError("尚未配置 DeepSeek 密钥，请先完成本机后端配置。")
+
+
+def optimize_h3_prompt(payload):
+    idea = str(payload.get("idea", "")).strip()
+    current_prompt = str(payload.get("currentPrompt", "")).strip()
+    if not idea and not current_prompt:
+        raise ValueError("请先写下想生成的画面，或先在生成节点里输入提示词。")
+    if len(idea) > 6000 or len(current_prompt) > 16000:
+        raise ValueError("提示词内容过长，请精简后再优化。")
+    mode = payload.get("mode") if payload.get("mode") in {"reference", "text", "frames"} else "reference"
+    duration = max(4, min(15, int(payload.get("duration") or 5)))
+    ratio = str(payload.get("ratio") or "16:9")[:12]
+    references = []
+    for item in (payload.get("references") or [])[:15]:
+        if not isinstance(item, dict):
+            continue
+        tag = str(item.get("tag", ""))
+        if not re.fullmatch(r"<(?:Picture|Video|Audio) [1-9][0-9]*>", tag):
+            continue
+        references.append({
+            "tag": tag,
+            "kind": str(item.get("kind", ""))[:10],
+            "slot": str(item.get("slot", ""))[:12],
+            "title": str(item.get("title", ""))[:160],
+        })
+    guide_name = "ref-en.txt" if mode == "reference" else "base-en.txt"
+    guide = (HERE / "prompt_guides" / guide_name).read_text(encoding="utf-8")
+    structure = (
+        "Use all six Ref2VA sections in the official order: subject_definitions, summary, "
+        "retention_analysis, detailed_description, overall_soundscape, non_diegetic_music."
+        if mode == "reference" else
+        "Use integrated_multimodal_description, overall_soundscape, and non_diegetic_music "
+        "in the official order. Add the required first/last-frame alignment instruction when applicable."
+    )
+    system = (
+        "You rewrite a user's natural-language idea into a production-ready MiniMax H3 prompt. "
+        "Follow the official guide below exactly. Return only the final prompt, without Markdown fences, "
+        "analysis, prefaces, or notes. Write structural sections in English; preserve user-provided dialogue, "
+        "lyrics, and visible scene text in their original language. Keep the requested duration and aspect ratio. "
+        "Preserve the user's creative intent and explicit constraints. Resolve contradictory wording conservatively "
+        "instead of repeating incompatible instructions. Use observable actions in playback order and do not add "
+        "unnecessary cuts, characters, dialogue, or music. Use only supplied reference labels such as <Picture 1>, "
+        "<Video 1>, and <Audio 1>; never invent reference numbers or replace them with filenames. "
+        f"For this request, {structure}\n\nOFFICIAL MINIMAX H3 GUIDE:\n{guide}"
+    )
+    user = json.dumps({
+        "mode": {"reference": "Ref2VA", "text": "T2VA", "frames": "FL2VA/I2VA according to connected frame slots"}[mode],
+        "durationSeconds": duration,
+        "aspectRatio": ratio,
+        "naturalLanguageIdea": idea,
+        "currentPromptToImprove": current_prompt,
+        "referencesInConnectionOrder": references,
+    }, ensure_ascii=False)
+    request = urllib.request.Request(
+        "https://api.deepseek.com/chat/completions",
+        data=json.dumps({
+            "model": os.environ.get("H3_DEEPSEEK_MODEL", "deepseek-flash"),
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "reasoning_effort": "none",
+            "temperature": 0.7,
+            "max_tokens": 6000,
+            "response_format": {"type": "text"},
+            "stream": False,
+        }).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {load_deepseek_key()}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=150) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8")).get("error", {}).get("message", "")
+        except Exception:
+            detail = ""
+        raise RuntimeError(f"DeepSeek 请求失败 ({exc.code})：{detail[:260] or '请检查密钥额度或稍后重试。'}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError("无法连接 DeepSeek，请检查网络后重试。") from exc
+    optimized = str(result.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+    optimized = re.sub(r"^```(?:text|markdown)?\s*|\s*```$", "", optimized).strip()
+    required = ["subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:"] if mode == "reference" else ["integrated_multimodal_description:", "overall_soundscape:", "non_diegetic_music:"]
+    if not optimized or any(header not in optimized for header in required):
+        raise RuntimeError("AI 返回的 H3 结构不完整，请重试。")
+    return {"prompt": optimized, "model": os.environ.get("H3_DEEPSEEK_MODEL", "deepseek-flash")}
+
+
 class WorkbenchHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
@@ -162,22 +259,25 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if urllib.parse.urlparse(self.path).path != "/api/import-video":
+        path = urllib.parse.urlparse(self.path).path
+        if path not in {"/api/import-video", "/api/optimize-prompt"}:
             self.send_json(404, {"error": "接口不存在"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > 16384:
+            if length <= 0 or length > 65536:
                 raise ValueError("请求内容无效。")
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            url = str(payload.get("url", "")).strip()
-            result = import_video(url)
+            if path == "/api/import-video":
+                result = import_video(str(payload.get("url", "")).strip())
+            else:
+                result = optimize_h3_prompt(payload)
             self.send_json(200, result)
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
         except Exception as exc:
-            print(f"视频链接导入失败：{exc}", file=sys.stderr)
-            self.send_json(500, {"error": "本地视频导入失败，请稍后重试或手动上传。"})
+            print(f"本地工作台请求失败：{exc}", file=sys.stderr)
+            self.send_json(500, {"error": "本地服务暂时无法完成请求，请稍后重试。"})
 
 
 def main():
