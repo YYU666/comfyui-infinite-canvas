@@ -152,6 +152,11 @@ export function getSystemStats() {
   return comfyFetch('/system_stats');
 }
 
+export async function getHardwareMetrics() {
+  const response = await fetch('/api/hardware-metrics');
+  return parseResponse(response);
+}
+
 export async function uploadMedia(file, kind = 'image') {
   const form = new FormData();
   form.append('image', file, file.name);

@@ -26,6 +26,17 @@
 .neo-project-pill > i { width: 1px; height: 17px; margin: 0 3px; background: rgba(255,255,255,.1); }
 .neo-project-pill input { width: 132px; border: 0; outline: 0; background: transparent; color: #ededee; font-size: 12px; font-weight: 550; }
 .save-indicator { width: 23px; height: 23px; display: grid; place-items: center; color: #8c8c92; }
+.neo-header-right { display: flex; align-items: center; gap: 8px; }
+.hardware-monitor { height: 42px; display: flex; align-items: center; gap: 13px; padding: 6px 11px; border: 1px solid rgba(255,255,255,.07); border-radius: 12px; background: rgba(25,25,28,.88); box-shadow: 0 5px 24px rgba(0,0,0,.2); backdrop-filter: blur(16px); pointer-events: auto; }
+.hardware-metric { width: 132px; display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 8px; row-gap: 4px; }
+.hardware-metric > span { display: flex; align-items: center; gap: 4px; color: #85858d; font-size: 8px; white-space: nowrap; }
+.hardware-metric > span svg { color: #a5a5ad; }
+.hardware-metric > strong { color: #e4e4e7; font-size: 9px; font-weight: 600; line-height: 1; white-space: nowrap; }
+.hardware-metric > strong small { color: #7e7e86; font-size: 8px; font-weight: 450; }
+.hardware-metric.cpu-metric { width: 57px; }
+.hardware-bar { grid-column: 1 / -1; height: 2px; overflow: hidden; border-radius: 2px; background: rgba(255,255,255,.08); }
+.hardware-bar i { display: block; height: 100%; border-radius: inherit; background: #aaaab2; transition: width .5s ease; }
+.cpu-metric .hardware-bar i { background: #8f9f8a; }
 .neo-header-actions { display: flex; align-items: center; gap: 6px; padding: 4px; border: 1px solid rgba(255,255,255,.06); border-radius: 22px; background: rgba(25,25,28,.82); backdrop-filter: blur(16px); }
 .neo-header-actions button { height: 30px; min-width: 30px; padding: 0 8px; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 16px; color: #94949b; font-size: 10px; }
 .neo-header-actions button:hover { background: rgba(255,255,255,.07); color: #fff; }

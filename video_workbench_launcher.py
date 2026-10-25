@@ -20,6 +20,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import imageio_ffmpeg
+import psutil
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -275,6 +276,23 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path != "/api/hardware-metrics":
+            super().do_GET()
+            return
+        try:
+            memory = psutil.virtual_memory()
+            self.send_json(200, {
+                "cpuPercent": round(psutil.cpu_percent(interval=None), 1),
+                "ramTotal": memory.total,
+                "ramUsed": memory.total - memory.available,
+                "timestamp": int(time.time() * 1000),
+            })
+        except Exception as exc:
+            print(f"硬件状态读取失败：{exc}", file=sys.stderr)
+            self.send_json(500, {"error": "暂时无法读取 CPU 使用率。"})
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path

@@ -6,14 +6,14 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   ArrowDownToLine, ArrowUp, AudioLines, Check, ChevronDown, CircleHelp, Clock3,
-  Crosshair, Film, FolderOpen, Grid2X2, History, Image as ImageIcon, Layers3,
-  Library, Link2, LoaderCircle, Magnet, Map as MapIcon, Maximize2, Minus, MoreHorizontal, MousePointer2,
+  Cpu, Crosshair, Film, FolderOpen, Grid2X2, History, Image as ImageIcon, Layers3,
+  Library, Link2, LoaderCircle, Magnet, Map as MapIcon, Maximize2, MemoryStick, Minus, MoreHorizontal, MousePointer2,
   Music2, Pin, Plus, RefreshCw, Search, Settings2, Sparkles, Square, Trash2,
   Type, Upload, Video, WandSparkles, X, Zap,
 } from 'lucide-react';
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, cancelPrompt, createClientId,
-  extractVideos, getHistory, getSystemStats, importVideoFromUrl, openProgressSocket,
+  extractVideos, getHardwareMetrics, getHistory, getSystemStats, importVideoFromUrl, openProgressSocket,
   optimizePrompt as requestPromptOptimization, queuePrompt, resolveDimensions, uploadMedia,
 } from './workbench-api';
 import './canvas.css';
@@ -32,6 +32,7 @@ const DEFAULT_GENERATOR = {
 };
 const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' };
 const KIND_ICON = { image: ImageIcon, video: Video, audio: Music2 };
+const formatGb = (bytes) => Number.isFinite(bytes) ? (bytes / 1024 ** 3).toFixed(1) : '--';
 
 function initialCanvas() {
   return {
@@ -360,6 +361,7 @@ function CanvasInner({ onSimpleMode }) {
   const [projectName, setProjectName] = useState(() => localStorage.getItem(NAME_KEY) || '我的本地创作');
   const [saveState, setSaveState] = useState('已保存');
   const [server, setServer] = useState({ online: false, label: '正在连接' });
+  const [metrics, setMetrics] = useState({ vramUsed: null, vramTotal: null, cpuPercent: null, ramUsed: null, ramTotal: null });
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [historyItems, setHistoryItems] = useState([]);
@@ -525,12 +527,27 @@ function CanvasInner({ onSimpleMode }) {
 
   const checkServer = useCallback(async () => {
     try {
-      const stats = await getSystemStats();
-      const gpu = stats?.devices?.[0]?.name?.replace(/^cuda:\d+\s*/, '').replace(/\s*:\s*cudaMallocAsync$/, '') || '本地 GPU';
+      const [stats, hardware] = await Promise.all([getSystemStats(), getHardwareMetrics().catch(() => null)]);
+      const device = stats?.devices?.[0];
+      const gpu = device?.name?.replace(/^cuda:\d+\s*/, '').replace(/\s*:\s*cudaMallocAsync$/, '') || '本地 GPU';
       setServer({ online: true, label: gpu });
-    } catch { setServer({ online: false, label: 'ComfyUI 未连接' }); }
+      setMetrics({
+        vramUsed: device ? device.vram_total - device.vram_free : null,
+        vramTotal: device?.vram_total ?? null,
+        cpuPercent: hardware?.cpuPercent ?? null,
+        ramUsed: hardware?.ramUsed ?? null,
+        ramTotal: hardware?.ramTotal ?? null,
+      });
+    } catch {
+      setServer({ online: false, label: 'ComfyUI 未连接' });
+      setMetrics({ vramUsed: null, vramTotal: null, cpuPercent: null, ramUsed: null, ramTotal: null });
+    }
   }, []);
-  useEffect(() => { checkServer(); }, [checkServer]);
+  useEffect(() => {
+    checkServer();
+    const interval = setInterval(checkServer, 3000);
+    return () => clearInterval(interval);
+  }, [checkServer]);
 
   const refreshLibrary = useCallback(async () => {
     try {
@@ -687,6 +704,8 @@ function CanvasInner({ onSimpleMode }) {
 
   const context = { updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference };
   const pinnedNodes = nodes.filter((node) => node.data.pinned);
+  const vramPercent = metrics.vramTotal ? Math.min(100, Math.max(0, metrics.vramUsed / metrics.vramTotal * 100)) : 0;
+  const cpuPercent = Number.isFinite(metrics.cpuPercent) ? Math.min(100, Math.max(0, metrics.cpuPercent)) : 0;
   return <NodeContext.Provider value={context}>
     <div className="neo-app">
       <header className="neo-header">
@@ -696,10 +715,24 @@ function CanvasInner({ onSimpleMode }) {
           <input value={projectName} onChange={(e) => setProjectName(e.target.value)} aria-label="画布项目名称" />
           <span className="save-indicator" title={saveState}><Check size={13} /></span>
         </div>
-        <div className="neo-header-actions">
-          <button className={`server-status ${server.online ? 'online' : ''}`} onClick={checkServer} title={server.label}><i />{server.online ? '本地已连接' : '本地未连接'}</button>
-          <button onClick={onSimpleMode} title="切换简易模式"><MousePointer2 size={15} /></button>
-          <button onClick={() => window.open('http://127.0.0.1:8188','_blank')} title="打开 ComfyUI 高级节点"><MoreHorizontal size={17} /></button>
+        <div className="neo-header-right">
+          <div className="hardware-monitor" aria-label="硬件状态" title={`${server.label} · 系统内存 ${formatGb(metrics.ramUsed)} / ${formatGb(metrics.ramTotal)} GB · 每 3 秒刷新`}>
+            <div className="hardware-metric">
+              <span><MemoryStick size={12} />GPU 显存</span>
+              <strong>{formatGb(metrics.vramUsed)} <small>/ {formatGb(metrics.vramTotal)} GB</small></strong>
+              <div className="hardware-bar"><i style={{ width: `${vramPercent}%` }} /></div>
+            </div>
+            <div className="hardware-metric cpu-metric">
+              <span><Cpu size={12} />CPU</span>
+              <strong>{Number.isFinite(metrics.cpuPercent) ? `${Math.round(metrics.cpuPercent)}%` : '--'}</strong>
+              <div className="hardware-bar"><i style={{ width: `${cpuPercent}%` }} /></div>
+            </div>
+          </div>
+          <div className="neo-header-actions">
+            <button className={`server-status ${server.online ? 'online' : ''}`} onClick={checkServer} title={server.label}><i />{server.online ? '本地已连接' : '本地未连接'}</button>
+            <button onClick={onSimpleMode} title="切换简易模式"><MousePointer2 size={15} /></button>
+            <button onClick={() => window.open('http://127.0.0.1:8188','_blank')} title="打开 ComfyUI 高级节点"><MoreHorizontal size={17} /></button>
+          </div>
         </div>
       </header>
       <main className="neo-canvas-wrap"
