@@ -2,9 +2,9 @@
   --neo-bg: #111113;
   --neo-panel: rgba(24, 24, 27, .98);
   --neo-soft: #232326;
-  --neo-line: rgba(255, 255, 255, .09);
+  --neo-line: rgba(255,255,255,.09);
   --neo-text: #f2f2f3;
-  --neo-muted: rgba(255, 255, 255, .48);
+  --neo-muted: rgba(255,255,255,.48);
   position: relative;
   height: 100vh;
   min-width: 760px;
@@ -61,12 +61,15 @@
 .media-shell.selected .media-preview, .generator-shell.selected .generator-preview, .note-shell.selected textarea { border-color: rgba(255,255,255,.55); box-shadow: 0 0 0 1px rgba(255,255,255,.08), 0 10px 32px rgba(0,0,0,.25); }
 .media-shell.pinned .media-preview::after, .generator-shell.pinned .generator-preview::after { content: ""; position: absolute; inset: 7px 7px auto auto; width: 5px; height: 5px; border-radius: 50%; background: #d2b77e; box-shadow: 0 0 0 3px rgba(210,183,126,.15); pointer-events: none; }
 .media-preview img, .media-preview video { width: 100%; height: 100%; display: block; object-fit: contain; background: #0c0c0e; }
+.media-drag-surface { position: absolute; inset: 0; z-index: 1; cursor: grab; touch-action: none; user-select: none; }
+.media-drag-surface:active { cursor: grabbing; }
+.media-drag-surface.video-surface { bottom: 38px; }
 .media-preview.empty { border-style: dashed; }
 .media-empty { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 7px; color: #6d6d75; }
 .media-empty strong { color: #97979e; font-size: 11px; font-weight: 500; }
 .media-empty span { font-size: 9px; color: #5f5f66; }
 .media-empty:hover { background: rgba(255,255,255,.025); color: #b7b7bd; }
-.media-replace, .media-download { position: absolute; top: 7px; right: 7px; height: 24px; display: flex; align-items: center; gap: 4px; padding: 0 7px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px; background: rgba(16,16,18,.72); color: rgba(255,255,255,.72); font-size: 9px; opacity: 0; backdrop-filter: blur(8px); transition: opacity .15s; }
+.media-replace, .media-download { position: absolute; top: 7px; right: 7px; z-index: 2; height: 24px; display: flex; align-items: center; gap: 4px; padding: 0 7px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px; background: rgba(16,16,18,.72); color: rgba(255,255,255,.72); font-size: 9px; opacity: 0; backdrop-filter: blur(8px); transition: opacity .15s; }
 .media-download { right: auto; left: 7px; padding: 0; width: 24px; justify-content: center; color: #ddd; }
 .media-preview:hover .media-replace, .media-preview:hover .media-download { opacity: 1; }
 .media-replace:hover { color: #fff; background: rgba(45,45,49,.9); }

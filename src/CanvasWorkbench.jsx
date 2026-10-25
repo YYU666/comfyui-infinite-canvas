@@ -116,7 +116,7 @@ async function restoreFile(id) {
 async function deleteStoredFile(id) {
   try {
     const db = await mediaDb();
-    db.transaction('files', 'readwrite').objectStore('files').delete(id);
+    db.transaction('files').objectStore('files').delete(id);
     db.close();
   } catch { /* Storage cleanup is best-effort. */ }
 }
@@ -181,9 +181,27 @@ function NoteNode({ id, data, selected }) {
   </div>;
 }
 
+function MediaDragSurface({ videoRef, video = false }) {
+  const pressOrigin = useRef(null);
+  const togglePlayback = (event) => {
+    if (!video || event.detail > 1) return;
+    const origin = pressOrigin.current;
+    if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 6) return;
+    const element = videoRef.current;
+    if (!element) return;
+    if (element.paused) element.play().catch(() => {});
+    else element.pause();
+  };
+  return <div className={`media-drag-surface ${video ? 'video-surface' : ''}`}
+    title={video ? '拖动移动节点；单击播放或暂停' : '拖动移动节点'}
+    onPointerDown={(event) => { pressOrigin.current = { x: event.clientX, y: event.clientY }; }}
+    onClick={togglePlayback} />;
+}
+
 function MediaNode({ id, data, selected }) {
   const { chooseMedia, togglePin } = useContext(NodeContext);
   const input = useRef(null);
+  const videoRef = useRef(null);
   const kind = data.kind || 'image';
   const Icon = KIND_ICON[kind];
   const accept = kind === 'image' ? 'image/png,image/jpeg,image/webp' : kind === 'video' ? 'video/*' : 'audio/*';
@@ -194,8 +212,9 @@ function MediaNode({ id, data, selected }) {
       onDrop={(e) => { e.preventDefault(); e.stopPropagation(); const file = [...(e.dataTransfer.files || [])].find((item) => item.type.startsWith(`${kind}/`)); if (file) chooseMedia(id, file); }}>
       {data.url ? <>
         {kind === 'image' && <img src={data.url} alt={data.title} draggable={false} />}
-        {kind === 'video' && <video className="nodrag" src={data.url} controls preload="metadata" playsInline />}
+        {kind === 'video' && <video ref={videoRef} className="nodrag" src={data.url} controls preload="metadata" playsInline />}
         {kind === 'audio' && <div className="audio-content"><span><AudioLines size={25} /></span><strong>{data.title}</strong><audio className="nodrag" src={data.url} controls preload="metadata" /></div>}
+        {['image', 'video'].includes(kind) && <MediaDragSurface videoRef={videoRef} video={kind === 'video'} />}
       </> : <button className="media-empty nodrag" onClick={() => input.current?.click()}><Icon size={26} /><strong>添加{KIND_LABEL[kind]}素材</strong><span>点击或拖入画布</span></button>}
       <button className="media-replace nodrag" onClick={() => input.current?.click()} title="替换素材"><RefreshCw size={12} /><span>替换</span></button>
       {data.output && <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>}
@@ -224,6 +243,7 @@ function GeneratorNode({ id, data, selected }) {
   const [mention, setMention] = useState({ open: false, query: '', start: 0, end: 0 });
   const promptRef = useRef(null);
   const uploadRef = useRef(null);
+  const resultVideoRef = useRef(null);
   const running = ['uploading', 'queued', 'running', 'finishing'].includes(data.status);
   const mode = data.mode || 'reference';
   const refs = getReferences(id);
@@ -249,7 +269,10 @@ function GeneratorNode({ id, data, selected }) {
   return <div className={`generator-shell h3-node ${selected ? 'selected' : ''} ${running ? 'running' : ''} ${data.pinned ? 'pinned' : ''}`}>
     <NodeTitle id={id} data={data} kind="generator" /><NodeActions id={id} data={data} selected={selected} generator />
     <div className="generator-preview">
-      {data.resultUrl ? <video className="nodrag" src={data.resultUrl} controls preload="metadata" playsInline /> : <div className="generator-placeholder">
+      {data.resultUrl ? <>
+        <video ref={resultVideoRef} className="nodrag" src={data.resultUrl} controls preload="metadata" playsInline />
+        <MediaDragSurface videoRef={resultVideoRef} video />
+      </> : <div className="generator-placeholder">
         {running ? <LoaderCircle className="spin" size={29} /> : <WandSparkles size={29} />}
         <strong>{running ? data.stage || '正在准备本地模型' : mode === 'reference' ? '用图、文、音、视频共同定义新镜头' : mode === 'frames' ? '首尾帧生成视频' : '输入提示词生成视频'}</strong>
         <span>{running ? `${data.progress || 0}% · 可随时取消` : 'MiniMax H3 · 本地生成 · 24 FPS'}</span>
