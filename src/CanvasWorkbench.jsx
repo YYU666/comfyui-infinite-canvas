@@ -592,15 +592,33 @@ function CanvasInner({ onSimpleMode }) {
     setEdges((items) => addEdge({ ...connection, sourceHandle: 'ref', id: `edge-${connection.source}-${connection.target}-${connection.targetHandle}-${Date.now()}` }, items.filter((edge) => mode === 'reference' ? !(edge.source === connection.source && edge.target === connection.target && edge.targetHandle === connection.targetHandle) : !(edge.target === connection.target && edge.targetHandle === connection.targetHandle))));
   }, [setEdges]);
 
+  useEffect(() => {
+    if (!addMenu) return;
+    const closeOnEscape = (event) => { if (event.key === 'Escape') setAddMenu(null); };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [addMenu]);
+
   const resetCanvas = () => {
     if (!window.confirm('新建空白画布？当前画布会被替换，但已经生成的视频文件不会删除。')) return;
     const fresh = initialCanvas();
     setNodes(fresh.nodes); setEdges(fresh.edges); setTimeout(() => fitView({ duration: 300 }), 60);
   };
+  const placeAddMenu = (screenPoint) => {
+    const point = {
+      x: Math.max(8, Math.min(screenPoint.x, window.innerWidth - 253)),
+      y: Math.max(8, Math.min(screenPoint.y, window.innerHeight - 330)),
+    };
+    setAddMenu({ ...point, flow: screenToFlowPosition(screenPoint) });
+  };
   const openAddMenu = (event) => {
     if (event.target.closest('.react-flow__node,button,input,textarea,.react-flow__controls,.react-flow__minimap,.node-top-toolbar,.creator-toolbar')) return;
-    const point = { x: Math.min(event.clientX, window.innerWidth - 250), y: Math.min(event.clientY, window.innerHeight - 410) };
-    setAddMenu({ ...point, flow: screenToFlowPosition(point) });
+    placeAddMenu({ x: event.clientX, y: event.clientY });
+  };
+  const openContextMenu = (event) => {
+    if (event.target.closest('input,textarea,select,button,a,video,audio,.node-top-toolbar,.creator-toolbar,.add-node-menu')) return;
+    event.preventDefault();
+    placeAddMenu({ x: event.clientX, y: event.clientY });
   };
   const focusNode = (id) => {
     const node = nodesRef.current.find((item) => item.id === id);
@@ -628,6 +646,8 @@ function CanvasInner({ onSimpleMode }) {
       </header>
       <main className="neo-canvas-wrap"
         onDragOver={(e) => e.preventDefault()}
+        onPointerDownCapture={(event) => { if (event.button === 0 && !event.target.closest('.add-node-menu')) setAddMenu(null); }}
+        onContextMenuCapture={openContextMenu}
         onDrop={(e) => {
           e.preventDefault();
           [...(e.dataTransfer.files || [])].forEach((file, index) => {
@@ -680,8 +700,8 @@ function CanvasInner({ onSimpleMode }) {
           <button onClick={onSimpleMode} title="工作台设置与简易模式"><Settings2 size={17} /></button>
           <button className={pinOpen ? 'active' : ''} onClick={() => { setPinOpen(!pinOpen); setLibraryOpen(false); }} title={`Pin 节点 ${pinnedNodes.length}`}><Pin size={16} /></button>
         </div>
-        {addMenu && <div className="add-node-menu" style={{ left: addMenu.x, top: addMenu.y }} onDoubleClick={(e) => e.stopPropagation()}>
-          <div className="add-menu-title">添加节点 <button onClick={() => setAddMenu(null)}><X size={13} /></button></div>
+        {addMenu && <div className="add-node-menu" role="menu" aria-label="添加节点" style={{ left: addMenu.x, top: addMenu.y }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}>
+          <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>
           <button onClick={() => addNode('generator', {}, addMenu.flow)}><i><WandSparkles size={17} /></i><span>全能参考<small>图、文、音、视频多元素生成</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('image', {}, addMenu.flow)}><i><ImageIcon size={17} /></i><span>图片素材<small>角色、场景、风格参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('video', {}, addMenu.flow)}><i><Video size={17} /></i><span>视频素材<small>动作、运镜或内容参考</small></span><Plus size={13} /></button>
