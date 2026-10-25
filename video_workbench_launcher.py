@@ -4,6 +4,7 @@ import functools
 import ipaddress
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -49,6 +50,17 @@ def wait_for_comfy(process, timeout=180):
     raise RuntimeError("等待 ComfyUI 启动超时，请查看 comfyui_workbench.log。")
 
 
+SHARE_URL_PATTERN = re.compile(r"https?://[^\s<>\"'，。！？；、【】（）]+", re.IGNORECASE)
+
+
+def extract_share_url(value):
+    """Accept either a plain URL or the full text copied from a mobile sharing sheet."""
+    match = SHARE_URL_PATTERN.search(value.strip())
+    if not match:
+        raise ValueError("没有检测到视频链接，请粘贴 App 里“复制链接”得到的完整内容。")
+    return match.group(0).rstrip(".,!?;，。！？；、)]}")
+
+
 def validate_video_url(value):
     parsed = urllib.parse.urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
@@ -64,8 +76,8 @@ def validate_video_url(value):
     return value
 
 
-def import_video(url):
-    validate_video_url(url)
+def import_video(share_text):
+    url = validate_video_url(extract_share_url(share_text))
     output_dir = ROOT / "ComfyUI" / "input" / "workbench"
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"web_{time.strftime('%Y%m%d')}_{uuid.uuid4().hex[:12]}"
@@ -96,7 +108,7 @@ def import_video(url):
         file_path.unlink(missing_ok=True)
         raise RuntimeError("视频超过 250 MB，请下载并剪辑后再上传。")
     title = lines[0] if len(lines) > 1 else file_path.stem
-    return {"name": file_path.name, "subfolder": "workbench", "title": title[:120], "size": file_path.stat().st_size}
+    return {"name": file_path.name, "subfolder": "workbench", "title": title[:120], "size": file_path.stat().st_size, "sourceUrl": url}
 
 
 class WorkbenchHandler(SimpleHTTPRequestHandler):

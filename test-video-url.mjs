@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
 const sourceUrl = 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4';
+const shareText = `5.84 复制打开抖音，看看【测试作品】${sourceUrl} 复制此链接，打开 App 观看`;
 const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true, args: ['--no-sandbox'] });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
 const errors = [];
@@ -20,7 +21,7 @@ await page.evaluate(() => {
 });
 await page.reload({ waitUntil: 'networkidle' });
 await page.waitForSelector('.server-status.online', { timeout: 30000 });
-await page.locator('#video-url-input').fill(sourceUrl);
+await page.locator('#video-url-input').fill(shareText);
 await page.getByRole('button', { name: '加载视频链接', exact: true }).click();
 await page.waitForSelector('.media-video video', { timeout: 180000 });
 assert.equal(await page.locator('.media-video .neo-node-title input').inputValue(), 'flower');

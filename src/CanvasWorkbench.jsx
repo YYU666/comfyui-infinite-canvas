@@ -170,12 +170,12 @@ function NoteNode({ id, data, selected }) {
     <NodeTitle id={id} data={data} kind="note" /><NodeActions id={id} data={data} selected={selected} />
     <textarea className="nodrag nowheel" value={data.text || ''} onChange={(e) => updateNode(id, { text: e.target.value })} placeholder="写下分镜、角色设定或创作备注……" />
     {isGuide && <form className="video-url-import nodrag nowheel" onSubmit={submitUrl} onDoubleClick={(event) => event.stopPropagation()}>
-      <label htmlFor="video-url-input"><Link2 size={13} />从视频链接加载参考</label>
+      <label htmlFor="video-url-input"><Link2 size={13} />手机分享链接加载参考</label>
       <div className="video-url-row">
-        <input id="video-url-input" type="url" value={url} disabled={importing} onChange={(event) => setUrl(event.target.value)} placeholder="粘贴视频网站或 MP4 链接" required />
-        <button type="submit" disabled={importing || !url.trim()} title="下载并连接为视频参考" aria-label="加载视频链接">{importing ? <LoaderCircle className="spin" size={14} /> : <ArrowDownToLine size={14} />}</button>
+        <input id="video-url-input" type="text" inputMode="url" autoComplete="off" spellCheck={false} value={url} disabled={importing} onChange={(event) => setUrl(event.target.value)} placeholder="粘贴抖音 / 小红书分享文字或链接" required />
+        <button type="submit" disabled={importing || !url.trim()} title="提取链接并连接为视频参考" aria-label="加载视频链接">{importing ? <LoaderCircle className="spin" size={14} /> : <ArrowDownToLine size={14} />}</button>
       </div>
-      <span>{importing ? '正在下载到本机，较大的视频需要等待……' : '公开视频可直接加载；需登录的视频请先下载。'}</span>
+      <span>{importing ? '正在解析并下载到本机，请保持窗口开启……' : '支持 App 复制的一整段分享内容，会自动提取短链接。'}</span>
       {error && <p className="video-url-error">{error}</p>}
     </form>}
   </div>;
@@ -540,7 +540,7 @@ function CanvasInner({ onSimpleMode }) {
     const position = { x: generator.position.x - 340, y: generator.position.y + 220 + videoCount * 210 };
     const id = addNode('video', {
       title: result.title || '在线视频参考', name: result.name, remoteName,
-      url: remoteMediaUrl(remoteName), sourceUrl: url, localFile: false,
+      url: remoteMediaUrl(remoteName), sourceUrl: result.sourceUrl || url, localFile: false,
     }, position);
     setEdges((items) => addEdge({ id: `edge-${id}-${generator.id}`, source: id, target: generator.id, sourceHandle: 'ref', targetHandle: 'references' }, items));
     return id;
