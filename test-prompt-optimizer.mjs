@@ -71,6 +71,12 @@ assert.ok(generator.data.prompt.includes('@舞蹈参考'), 'Video tag converts b
 assert.ok(!generator.data.prompt.includes('<Picture 1>'), 'Generator does not show raw Picture tags');
 assert.ok(saved.edges.some(edge => edge.source === 'optimizer' && edge.target === 'gen' && edge.targetHandle === 'prompt'));
 await page.locator('[data-id="gen"] .generator-preview').click();
+const resolutionSelect = page.getByLabel('分辨率');
+await resolutionSelect.selectOption('720P');
+assert.equal(await resolutionSelect.inputValue(), '720P');
+await page.waitForTimeout(650);
+saved = await page.evaluate(() => JSON.parse(localStorage.getItem('h3-infinite-canvas-v2')));
+assert.equal(saved.nodes.find(node => node.id === 'gen').data.resolution, '720P', 'Resolution selection persists on the generator');
 const editor = page.getByRole('textbox', { name: '视频提示词' });
 assert.equal(await editor.locator('.prompt-mention').count(), 2, 'Optimized references render as thumbnail chips');
 assert.ok(!(await editor.textContent()).includes('@主角'), 'Optimized prompt does not expose long raw mention tokens');

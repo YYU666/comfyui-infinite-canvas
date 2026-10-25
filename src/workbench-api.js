@@ -17,6 +17,14 @@ export const RATIOS = {
   '3:4': [544, 736],
   '21:9': [960, 416],
 };
+export const RESOLUTION_SCALES = { '480P': 1, '720P': 1.5, '1080P': 2.25 };
+
+export function resolveDimensions(ratio = '16:9', resolution = '480P') {
+  const [baseWidth, baseHeight] = RATIOS[ratio] || RATIOS['16:9'];
+  const scale = RESOLUTION_SCALES[resolution] || RESOLUTION_SCALES['480P'];
+  const snap = (value) => Math.max(32, Math.round(value * scale / 32) * 32);
+  return [snap(baseWidth), snap(baseHeight)];
+}
 
 export function durationToFrames(seconds) {
   return Math.max(5, Math.min(362, 5 + 17 * Math.round((Number(seconds) * 24 - 5) / 17)));
@@ -27,7 +35,7 @@ export function createClientId() {
 }
 
 export function buildWorkflow(options) {
-  const [width, height] = RATIOS[options.ratio] || RATIOS['16:9'];
+  const [width, height] = resolveDimensions(options.ratio, options.resolution);
   const turbo = options.turbo !== false;
   const modelOutput = turbo ? ['2', 0] : ['1', 0];
   const graph = {
@@ -72,7 +80,7 @@ export function compileReferencePrompt(prompt, references = []) {
 }
 
 export function buildReferenceWorkflow(options) {
-  const [width, height] = RATIOS[options.ratio] || RATIOS['16:9'];
+  const [width, height] = resolveDimensions(options.ratio, options.resolution);
   const turbo = options.turbo !== false;
   const references = options.references || [];
   const graph = {

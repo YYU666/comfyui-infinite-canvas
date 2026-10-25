@@ -14,7 +14,7 @@ import {
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, cancelPrompt, createClientId,
   extractVideos, getHistory, getSystemStats, importVideoFromUrl, openProgressSocket,
-  optimizePrompt as requestPromptOptimization, queuePrompt, uploadMedia,
+  optimizePrompt as requestPromptOptimization, queuePrompt, resolveDimensions, uploadMedia,
 } from './workbench-api';
 import './canvas.css';
 import PromptEditor from './PromptEditor';
@@ -26,7 +26,7 @@ const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
 const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const DEFAULT_GENERATOR = {
-  title: '全能参考', mode: 'reference', prompt: '', ratio: '16:9', duration: 5,
+  title: '全能参考', mode: 'reference', prompt: '', ratio: '16:9', resolution: '480P', duration: 5,
   turbo: true, refImageSize: 'match', seed: 42, randomSeed: true,
   status: 'idle', progress: 0, stage: '', pinned: false, runs: [],
 };
@@ -284,6 +284,8 @@ function GeneratorNode({ id, data, selected }) {
   const refs = getReferences(id);
   const descriptors = referenceDescriptors(refs);
   const mentionItems = getMentionItems(id);
+  const resolution = data.resolution || '480P';
+  const [outputWidth, outputHeight] = resolveDimensions(data.ratio, resolution);
   const switchMode = (nextMode) => updateNode(id, { mode: nextMode, error: null });
 
   return <div className={`generator-shell h3-node ${selected ? 'selected' : ''} ${running ? 'running' : ''} ${data.pinned ? 'pinned' : ''}`}>
@@ -299,7 +301,7 @@ function GeneratorNode({ id, data, selected }) {
       </div>}
       {running && <div className="generation-overlay"><div><i style={{ width: `${data.progress || 3}%` }} /></div><span>{data.stage} · {data.progress || 0}%</span></div>}
     </div>
-    <div className="generator-subline"><span>{data.ratio} · {data.duration} 秒</span><b>{data.status === 'done' ? '已完成' : 'H3 INT8'}</b></div>
+    <div className="generator-subline"><span>{data.ratio} · {resolution} · {data.duration} 秒</span><b>{data.status === 'done' ? '已完成' : 'H3 INT8'}</b></div>
     {data.error && <div className="generator-error">{data.error}</div>}
     {mode === 'reference' ? <Handle type="target" position={Position.Left} id="references" className="neo-handle target" /> : mode === 'frames' ? <>
       <Handle type="target" position={Position.Left} id="first" className="neo-handle target frame-first" />
@@ -332,8 +334,9 @@ function GeneratorNode({ id, data, selected }) {
       />
       <div className="creator-params">
         <div className="param-group">
-          <label className="param-pill"><Zap size={12} /><select value={data.ratio} disabled={running} onChange={(e) => updateNode(id, { ratio: e.target.value })}>{['16:9','9:16','1:1','4:3','3:4','21:9'].map((x) => <option key={x}>{x}</option>)}</select><ChevronDown size={11} /></label>
-          <label className="param-pill"><Clock3 size={12} /><select value={data.duration} disabled={running} onChange={(e) => updateNode(id, { duration: Number(e.target.value) })}>{[5,6,7,8,9,10,11,12,13,14,15].map((x) => <option key={x} value={x}>{x} 秒</option>)}</select><ChevronDown size={11} /></label>
+          <label className="param-pill"><Zap size={12} /><select aria-label="画幅比例" value={data.ratio} disabled={running} onChange={(e) => updateNode(id, { ratio: e.target.value })}>{['16:9','9:16','1:1','4:3','3:4','21:9'].map((x) => <option key={x}>{x}</option>)}</select><ChevronDown size={11} /></label>
+          <label className="param-pill" title={`输出尺寸 ${outputWidth} × ${outputHeight}；分辨率越高，显存占用和生成时间越长`}><Maximize2 size={12} /><select aria-label="分辨率" value={resolution} disabled={running} onChange={(e) => updateNode(id, { resolution: e.target.value })}>{['480P','720P','1080P'].map((x) => <option key={x} value={x}>{x}</option>)}</select><ChevronDown size={11} /></label>
+          <label className="param-pill"><Clock3 size={12} /><select aria-label="视频时长" value={data.duration} disabled={running} onChange={(e) => updateNode(id, { duration: Number(e.target.value) })}>{[5,6,7,8,9,10,11,12,13,14,15].map((x) => <option key={x} value={x}>{x} 秒</option>)}</select><ChevronDown size={11} /></label>
           <button className={`param-pill turbo-pill ${data.turbo ? 'active' : ''}`} disabled={running} onClick={() => updateNode(id, { turbo: !data.turbo })}><Zap size={12} />{data.turbo ? `${mode === 'reference' ? 4 : 8} 步 Turbo` : '标准 30 步'}</button>
           {mode === 'reference' && <button className={`param-pill ${data.refImageSize === 'max' ? 'active' : ''}`} onClick={() => updateNode(id, { refImageSize: data.refImageSize === 'max' ? 'match' : 'max' })} title="高保真参考更慢，但保留更多主体细节"><Layers3 size={12} />{data.refImageSize === 'max' ? '高保真' : '均衡'}</button>}
         </div>
