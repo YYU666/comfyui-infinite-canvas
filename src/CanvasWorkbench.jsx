@@ -17,6 +17,7 @@ import {
   queuePrompt, uploadMedia,
 } from './workbench-api';
 import './canvas.css';
+import PromptEditor from './PromptEditor';
 
 const CANVAS_KEY = 'h3-infinite-canvas-v2';
 const OLD_CANVAS_KEY = 'h3-infinite-canvas-v1';
@@ -246,30 +247,14 @@ function GeneratorNode({ id, data, selected }) {
     updateNode, generateNode, cancelNode, serverOnline, getReferences,
     getMentionItems, attachFilesToGenerator,
   } = useContext(NodeContext);
-  const [mention, setMention] = useState({ open: false, query: '', start: 0, end: 0 });
-  const promptRef = useRef(null);
+  const promptEditorRef = useRef(null);
   const uploadRef = useRef(null);
   const resultVideoRef = useRef(null);
   const running = ['uploading', 'queued', 'running', 'finishing'].includes(data.status);
   const mode = data.mode || 'reference';
   const refs = getReferences(id);
   const descriptors = referenceDescriptors(refs);
-  const mentionItems = getMentionItems(id).filter((item) => item.data.title?.toLowerCase().includes(mention.query.toLowerCase()));
-
-  const promptChanged = (e) => {
-    const prompt = e.target.value;
-    updateNode(id, { prompt });
-    const cursor = e.target.selectionStart;
-    const before = prompt.slice(0, cursor);
-    const match = before.match(/@([^\s@]*)$/);
-    setMention(match ? { open: true, query: match[1], start: cursor - match[0].length, end: cursor } : { open: false, query: '', start: 0, end: 0 });
-  };
-  const insertMention = (title) => {
-    const next = `${data.prompt.slice(0, mention.start)}@${title} ${data.prompt.slice(mention.end)}`;
-    updateNode(id, { prompt: next });
-    setMention({ open: false, query: '', start: 0, end: 0 });
-    requestAnimationFrame(() => promptRef.current?.focus());
-  };
+  const mentionItems = getMentionItems(id);
   const switchMode = (nextMode) => updateNode(id, { mode: nextMode, error: null });
 
   return <div className={`generator-shell h3-node ${selected ? 'selected' : ''} ${running ? 'running' : ''} ${data.pinned ? 'pinned' : ''}`}>
@@ -299,24 +284,22 @@ function GeneratorNode({ id, data, selected }) {
         <span className="local-model"><i />MiniMax H3</span>
       </div>
       {mode === 'reference' && <div className="reference-strip">
-        {descriptors.map(({ node, kind, tag }) => <button key={node.id} className={`reference-chip ${kind}`} onClick={() => insertMention(node.data.title)} title={`${tag} · 点击插入提示词`}>
-          {node.data.url && kind === 'image' ? <img src={node.data.url} alt="" /> : React.createElement(KIND_ICON[kind], { size: 13 })}
+        {descriptors.map(({ node, kind, tag }) => <button key={node.id} className={`reference-chip ${kind}`} onClick={() => promptEditorRef.current?.insertReference(node)} title={`${tag} · 点击插入提示词`}>
+          {node.data.url && kind === 'image' ? <img src={node.data.url} alt="" /> : node.data.url && kind === 'video' ? <video src={node.data.url} muted playsInline preload="metadata" /> : React.createElement(KIND_ICON[kind], { size: 13 })}
           <span>@{node.data.title}</span><X size={11} onClick={(e) => { e.stopPropagation(); updateNode(id, { prompt: data.prompt.replaceAll(`@${node.data.title}`, '').replace(/ {2,}/g, ' ') }); }} />
         </button>)}
         {descriptors.length < 15 && <button className="add-reference" onClick={() => uploadRef.current?.click()} title="添加图片、视频或音频"><Plus size={17} /></button>}
         <input ref={uploadRef} hidden type="file" multiple accept="image/*,video/*,audio/*" onChange={(e) => { attachFilesToGenerator(id, [...(e.target.files || [])]); e.target.value = ''; }} />
       </div>}
       {mode === 'frames' && <div className="reference-strip frame-strip"><span><i />首帧：{refs.find((n) => n.data.slot === 'first')?.data.title || '连接一张图片'}</span><span><i />尾帧：{refs.find((n) => n.data.slot === 'last')?.data.title || '连接一张图片（可选）'}</span></div>}
-      <div className="prompt-editor-wrap">
-        <textarea ref={promptRef} className="h3-prompt nowheel" value={data.prompt || ''} onChange={promptChanged} disabled={running}
-          onBlur={() => setTimeout(() => setMention((old) => ({ ...old, open: false })), 180)}
-          placeholder={mode === 'reference' ? '输入文字或 @ 参考内容，自由组合图、文、音、视频……\n例如：@角色参考 在雨夜街道回头，电影感，环境雨声。' : '描述主体、动作、镜头和声音……'} />
-        {mention.open && <div className="mention-menu">
-          <div className="mention-heading"><Search size={12} />引用画布素材 <span>@ 检索</span></div>
-          {mentionItems.map((node) => <button key={node.id} onMouseDown={(e) => e.preventDefault()} onClick={() => insertMention(node.data.title)}>{React.createElement(KIND_ICON[node.data.kind] || Film, { size: 14 })}<span>{node.data.title}<small>{KIND_LABEL[node.data.kind] || '视频'} · 点击引用</small></span><Plus size={13} /></button>)}
-          {!mentionItems.length && <p>没有找到同名素材，可以先上传或添加节点。</p>}
-        </div>}
-      </div>
+      <PromptEditor
+        ref={promptEditorRef}
+        value={data.prompt || ''}
+        onChange={(prompt) => updateNode(id, { prompt })}
+        items={mentionItems}
+        disabled={running}
+        placeholder={mode === 'reference' ? '输入文字或 @ 参考内容，自由组合图、文、音、视频……\n例如：@角色参考 在雨夜街道回头，电影感，环境雨声。' : '描述主体、动作、镜头和声音……'}
+      />
       <div className="creator-params">
         <div className="param-group">
           <label className="param-pill"><Zap size={12} /><select value={data.ratio} disabled={running} onChange={(e) => updateNode(id, { ratio: e.target.value })}>{['16:9','9:16','1:1','4:3','3:4','21:9'].map((x) => <option key={x}>{x}</option>)}</select><ChevronDown size={11} /></label>
@@ -616,7 +599,7 @@ function CanvasInner({ onSimpleMode }) {
     placeAddMenu({ x: event.clientX, y: event.clientY });
   };
   const openContextMenu = (event) => {
-    if (event.target.closest('input,textarea,select,button,a,video,audio,.node-top-toolbar,.creator-toolbar,.add-node-menu')) return;
+    if (event.target.closest('input,textarea,select,button,a,video,audio,[contenteditable="true"],.node-top-toolbar,.creator-toolbar,.add-node-menu')) return;
     event.preventDefault();
     placeAddMenu({ x: event.clientX, y: event.clientY });
   };
