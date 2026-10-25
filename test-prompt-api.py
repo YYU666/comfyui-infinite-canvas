@@ -28,6 +28,7 @@ required = [
 assert all(section in prompt for section in required), prompt
 assert "<Picture 1>" in prompt, prompt
 assert "<Video 1>" in prompt, prompt
+assert "<Picture 1>" not in prompt.split("detailed_description:", 1)[1], prompt
 assert "N/A" in prompt, prompt
 report = {"status": 200, "model": result.get("model"), "sections": required, "prompt": prompt}
 Path("../prompt_api_test_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

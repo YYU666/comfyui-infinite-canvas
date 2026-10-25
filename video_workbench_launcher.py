@@ -199,6 +199,17 @@ def optimize_h3_prompt(payload):
         "instead of repeating incompatible instructions. Use observable actions in playback order and do not add "
         "unnecessary cuts, characters, dialogue, or music. Use only supplied reference labels such as <Picture 1>, "
         "<Video 1>, and <Audio 1>; never invent reference numbers or replace them with filenames. "
+        "For every image-defined main character, subject_definitions must preserve identity across face, hairstyle, "
+        "outfit, colors, and body proportions. Use concrete visible traits only when the user explicitly supplied them; "
+        "never invent or change hair color, clothing, location, time of day, or other visual facts that cannot be known "
+        "from the text. When no traits were supplied, require the same face, hairstyle, outfit, colors, and proportions "
+        "as the bound image instead of guessing. Treat all views in a character sheet as one subject, never as separate people "
+        "or a request to reproduce the sheet layout. Bind <Picture N> to <Subject N> only in subject_definitions and "
+        "retention_analysis; inside detailed_description use <Subject N> and repeated visual anchors, not <Picture N>. "
+        "When a reference video supplies only choreography, camera movement, or timing, explicitly transfer those "
+        "attributes to the image-defined subject and do not inherit the source actor's face, body, mask, costume, colors, "
+        "green-screen background, or other visual appearance unless the user requests it. Keep motion-reference actors "
+        "out of the target scene unless the user explicitly asks them to appear. "
         f"For this request, {structure}\n\nOFFICIAL MINIMAX H3 GUIDE:\n{guide}"
     )
     user = json.dumps({
@@ -242,6 +253,13 @@ def optimize_h3_prompt(payload):
     required = ["subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:"] if mode == "reference" else ["integrated_multimodal_description:", "overall_soundscape:", "non_diegetic_music:"]
     if not optimized or any(header not in optimized for header in required):
         raise RuntimeError("AI 返回的 H3 结构不完整，请重试。")
+    if mode == "reference":
+        detail_start = optimized.find("detailed_description:")
+        bindings = re.findall(r"(<Subject [1-9][0-9]*>)[^\n]*?(<Picture [1-9][0-9]*>)", optimized[:detail_start])
+        prefix, detail = optimized[:detail_start], optimized[detail_start:]
+        for subject, picture in bindings:
+            detail = detail.replace(picture, subject)
+        optimized = prefix + detail
     return {"prompt": optimized, "model": os.environ.get("H3_DEEPSEEK_MODEL", "deepseek-flash")}
 
 

@@ -11,12 +11,14 @@ for (const [ratio, [w, h]] of Object.entries(api.RATIOS)) {
 const base = { prompt: 'test', ratio: '16:9', duration: 5, seed: 42, turbo: true };
 const turbo = api.buildWorkflow(base);
 assert.equal(turbo['11'].inputs.steps, 8);
+assert.equal(turbo['11'].inputs.scheduler, 'beta');
 assert.equal(turbo['3'].inputs.model[0], '2');
 assert.equal(turbo['7'].inputs.length, 124);
 const standard = api.buildWorkflow({ ...base, turbo: false });
 assert.equal(standard['2'], undefined);
 assert.equal(standard['3'].inputs.model[0], '1');
-assert.equal(standard['11'].inputs.steps, 30);
+assert.equal(standard['11'].inputs.steps, 20);
+assert.equal(standard['11'].inputs.scheduler, 'beta');
 const image = api.buildWorkflow({ ...base, firstFrame: 'workbench/a.png', lastFrame: 'workbench/b.png' });
 assert.deepEqual(image['7'].inputs.first_frame, ['17', 0]);
 assert.deepEqual(image['7'].inputs.last_frame, ['18', 0]);

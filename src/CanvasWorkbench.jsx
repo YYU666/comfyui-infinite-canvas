@@ -27,7 +27,7 @@ const NodeContext = createContext(null);
 const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const DEFAULT_GENERATOR = {
   title: '全能参考', mode: 'reference', prompt: '', ratio: '16:9', resolution: '480P', duration: 5,
-  turbo: true, refImageSize: 'match', seed: 42, randomSeed: true,
+  turbo: false, refImageSize: 'max', referenceSettingsVersion: 3, seed: 42, randomSeed: true,
   status: 'idle', progress: 0, stage: '', pinned: false, runs: [],
 };
 const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' };
@@ -47,7 +47,11 @@ function initialCanvas() {
 function migrateCanvas(value) {
   if (!value?.nodes?.length) return initialCanvas();
   const nodes = value.nodes.map((node) => {
-    if (node.type === 'generator' || node.type === 'h3') return { ...node, type: 'generator', data: { ...DEFAULT_GENERATOR, ...node.data, title: node.data.title === 'H3 视频生成' ? '全能参考' : node.data.title, mode: node.data.mode || 'reference' } };
+    if (node.type === 'generator' || node.type === 'h3') {
+      const data = { ...DEFAULT_GENERATOR, ...node.data, title: node.data.title === 'H3 视频生成' ? '全能参考' : node.data.title, mode: node.data.mode || 'reference' };
+      if (data.mode === 'reference' && node.data.referenceSettingsVersion !== 3) Object.assign(data, { turbo: false, refImageSize: 'max', referenceSettingsVersion: 3 });
+      return { ...node, type: 'generator', data };
+    }
     if (node.type === 'media' || node.type === 'image') {
       const kind = node.data.kind || 'image';
       return { ...node, type: 'media', data: { ...node.data, kind, title: node.data.title === '首帧素材' ? '角色参考' : node.data.title } };
@@ -337,7 +341,7 @@ function GeneratorNode({ id, data, selected }) {
           <label className="param-pill"><Zap size={12} /><select aria-label="画幅比例" value={data.ratio} disabled={running} onChange={(e) => updateNode(id, { ratio: e.target.value })}>{['16:9','9:16','1:1','4:3','3:4','21:9'].map((x) => <option key={x}>{x}</option>)}</select><ChevronDown size={11} /></label>
           <label className="param-pill" title={`输出尺寸 ${outputWidth} × ${outputHeight}；分辨率越高，显存占用和生成时间越长`}><Maximize2 size={12} /><select aria-label="分辨率" value={resolution} disabled={running} onChange={(e) => updateNode(id, { resolution: e.target.value })}>{['480P','720P','1080P'].map((x) => <option key={x} value={x}>{x}</option>)}</select><ChevronDown size={11} /></label>
           <label className="param-pill"><Clock3 size={12} /><select aria-label="视频时长" value={data.duration} disabled={running} onChange={(e) => updateNode(id, { duration: Number(e.target.value) })}>{[5,6,7,8,9,10,11,12,13,14,15].map((x) => <option key={x} value={x}>{x} 秒</option>)}</select><ChevronDown size={11} /></label>
-          <button className={`param-pill turbo-pill ${data.turbo ? 'active' : ''}`} disabled={running} onClick={() => updateNode(id, { turbo: !data.turbo })}><Zap size={12} />{data.turbo ? `${mode === 'reference' ? 4 : 8} 步 Turbo` : '标准 30 步'}</button>
+          <button className={`param-pill turbo-pill ${data.turbo ? 'active' : ''}`} disabled={running} title={data.turbo ? 'Turbo 适合快速看构图；角色或动作参考不准确时请切换标准模式' : '标准模式使用 beta 调度，参考身份与动作更稳定'} onClick={() => updateNode(id, { turbo: !data.turbo })}><Zap size={12} />{data.turbo ? `${mode === 'reference' ? 4 : 8} 步 Turbo` : '标准 20 步'}</button>
           {mode === 'reference' && <button className={`param-pill ${data.refImageSize === 'max' ? 'active' : ''}`} onClick={() => updateNode(id, { refImageSize: data.refImageSize === 'max' ? 'match' : 'max' })} title="高保真参考更慢，但保留更多主体细节"><Layers3 size={12} />{data.refImageSize === 'max' ? '高保真' : '均衡'}</button>}
         </div>
         {running ? <button className="send-button cancel" onClick={() => cancelNode(id)} title="取消生成"><Square size={15} fill="currentColor" /></button> : <button className="send-button node-generate" onClick={() => generateNode(id)} disabled={!serverOnline} title="本地生成"><ArrowUp size={17} /></button>}
