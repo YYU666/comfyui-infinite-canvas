@@ -185,15 +185,24 @@ function NoteNode({ id, data, selected }) {
 }
 
 function PromptOptimizerNode({ id, data, selected }) {
-  const { updateNode, optimizePromptNode, getPromptTarget } = useContext(NodeContext);
+  const { updateNode, optimizePromptNode, getPromptTarget, getMentionItems } = useContext(NodeContext);
   const target = getPromptTarget(id);
   const running = data.status === 'optimizing';
   const canOptimize = target && !running && (data.idea?.trim() || target.data.prompt?.trim());
+  const mentionItems = target ? getMentionItems(target.id) : [];
   return <div className={`prompt-optimizer-shell ${selected ? 'selected' : ''} ${data.pinned ? 'pinned' : ''}`}>
     <NodeTitle id={id} data={data} kind="prompt" /><NodeActions id={id} data={data} selected={selected} />
     <div className="prompt-optimizer-body">
       <div className="optimizer-label"><span>自然语言创意</span><b>DeepSeek · 官方 H3 规范</b></div>
-      <textarea className="optimizer-idea nodrag nowheel" value={data.idea || ''} disabled={running} onChange={(event) => updateNode(id, { idea: event.target.value, status: 'idle', error: null })} placeholder="例如：让图片里的女孩模仿视频中的舞蹈，在雨夜街道回头，镜头缓慢推进，保留环境雨声……" />
+      <PromptEditor
+        className="optimizer-idea"
+        ariaLabel="自然语言创意"
+        value={data.idea || ''}
+        disabled={running}
+        onChange={(idea) => updateNode(id, { idea, status: 'idle', error: null })}
+        items={mentionItems}
+        placeholder="输入创意，或输入 @ 引用图片、视频和音频素材……"
+      />
       <div className={`optimizer-connection ${target ? 'connected' : ''}`}><Link2 size={12} /><span>{target ? `已连接：${target.data.title} · ${target.data.duration} 秒 · ${target.data.ratio}` : '将右侧 ✦ 端口连接到生成节点左侧 ✦ 端口'}</span></div>
       {data.error && <div className="optimizer-error">{data.error}</div>}
       <button className="optimizer-run nodrag" disabled={!canOptimize} onClick={() => optimizePromptNode(id)}>{running ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}<span>{running ? '正在按 H3 规范改写……' : data.optimizedPrompt ? '重新优化并填入' : '优化并填入生成节点'}</span></button>

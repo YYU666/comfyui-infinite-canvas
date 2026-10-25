@@ -105,7 +105,7 @@ function renderPrompt(root, value, items) {
   appendPlainText(root, value.slice(plainStart));
 }
 
-const PromptEditor = forwardRef(function PromptEditor({ value, onChange, items, disabled, placeholder }, ref) {
+const PromptEditor = forwardRef(function PromptEditor({ value, onChange, items, disabled, placeholder, className = '', ariaLabel = '视频提示词' }, ref) {
   const editorRef = useRef(null);
   const savedMentionRange = useRef(null);
   const blurTimer = useRef(null);
@@ -237,11 +237,11 @@ const PromptEditor = forwardRef(function PromptEditor({ value, onChange, items, 
   return <div className="prompt-editor-wrap">
     <div
       ref={editorRef}
-      className={`h3-prompt rich-prompt nodrag nowheel ${empty ? 'is-empty' : ''}`}
+      className={`${className} h3-prompt rich-prompt nodrag nowheel ${empty ? 'is-empty' : ''}`}
       contentEditable={!disabled}
       suppressContentEditableWarning
       role="textbox"
-      aria-label="视频提示词"
+      aria-label={ariaLabel}
       aria-multiline="true"
       aria-disabled={disabled}
       data-placeholder={placeholder}

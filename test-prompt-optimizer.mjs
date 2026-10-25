@@ -39,7 +39,7 @@ await page.evaluate(() => {
     nodes: [
       { id: 'image', type: 'media', position: { x: 30, y: 40 }, data: { kind: 'image', title: '主角', url: '', name: '' } },
       { id: 'video', type: 'media', position: { x: 30, y: 280 }, data: { kind: 'video', title: '舞蹈参考', url: '', name: '' } },
-      { id: 'optimizer', type: 'prompt', position: { x: 420, y: 400 }, data: { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle' } },
+      { id: 'optimizer', type: 'prompt', position: { x: 420, y: 400 }, data: { title: 'H3 提示词优化', idea: '@主角 模仿@舞蹈参考 跳舞，最后回头，不要配乐。', optimizedPrompt: '', status: 'idle' } },
       { id: 'gen', type: 'generator', position: { x: 900, y: 100 }, selected: true, data: { title: '全能参考', mode: 'reference', prompt: '', ratio: '9:16', duration: 15, turbo: true, status: 'idle', runs: [] } },
     ],
     edges: [
@@ -51,8 +51,12 @@ await page.evaluate(() => {
   }));
 });
 await page.reload({ waitUntil: 'networkidle' });
-await page.locator('[data-id="optimizer"] .optimizer-idea').fill('让图片主角参考视频跳舞，最后回头，不要配乐。');
-await page.locator('[data-id="optimizer"] .optimizer-run').click();
+const optimizerEditor = page.getByRole('textbox', { name: '自然语言创意' });
+assert.equal(await optimizerEditor.locator('.prompt-mention').count(), 2, 'Optimizer renders existing references as thumbnail chips');
+assert.ok(!(await optimizerEditor.textContent()).includes('@主角'), 'Optimizer hides raw mention tokens');
+const optimizerButton = page.locator('[data-id="optimizer"] .optimizer-run');
+assert.equal(await optimizerButton.evaluate(element => getComputedStyle(element).color), 'rgb(28, 28, 30)', 'Optimizer button uses dark readable text');
+await optimizerButton.click();
 await page.locator('[data-id="optimizer"] .optimizer-result').waitFor({ state: 'visible' });
 await page.waitForTimeout(500);
 assert.equal(requestPayload.mode, 'reference');
