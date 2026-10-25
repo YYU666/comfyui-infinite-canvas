@@ -26,6 +26,9 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 COMFY_URL = "http://127.0.0.1:8188"
 WEB_URL = "http://127.0.0.1:8790"
+DATA_DIR = Path(os.environ.get("H3_WORKBENCH_DATA_DIR", r"D:\H3_Workbench"))
+INPUT_DIR = DATA_DIR / "references"
+OUTPUT_DIR = DATA_DIR / "generated"
 MAX_VIDEO_BYTES = 250 * 1024 * 1024
 
 
@@ -113,7 +116,7 @@ def import_douyin_with_browser(url, output_dir, stem):
 
 def import_video(share_text):
     url = validate_video_url(extract_share_url(share_text))
-    output_dir = ROOT / "ComfyUI" / "input" / "workbench"
+    output_dir = INPUT_DIR / "workbench"
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"web_{time.strftime('%Y%m%d')}_{uuid.uuid4().hex[:12]}"
     command = [
@@ -318,18 +321,23 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 
 def main():
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
+    (INPUT_DIR / "workbench").mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     comfy_process = None
     log = None
     try:
         try:
-            cors, _ = api_status()
+            cors, stats = api_status()
             if cors != WEB_URL:
                 raise RuntimeError("ComfyUI 已在运行，但缺少工作台跨域权限。请关闭原 ComfyUI 窗口后，再用本启动器重新打开。")
+            argv = stats.get("system", {}).get("argv", [])
+            if str(INPUT_DIR) not in argv or str(OUTPUT_DIR) not in argv:
+                raise RuntimeError(f"当前 ComfyUI 未使用工作台存储目录。请关闭原 ComfyUI 后重新启动，素材应存到 {DATA_DIR}。")
             print("检测到已配置好的 ComfyUI，直接连接。")
         except urllib.error.URLError:
             command = [
                 str(ROOT / "python_embeded" / "python.exe"), "-s", str(ROOT / "ComfyUI" / "main.py"),
-                "--windows-standalone-build", "--output-directory", r"D:\ComfyUI_Output",
+                "--windows-standalone-build", "--output-directory", str(OUTPUT_DIR), "--input-directory", str(INPUT_DIR),
                 "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch",
                 "--enable-cors-header", WEB_URL,
             ]
