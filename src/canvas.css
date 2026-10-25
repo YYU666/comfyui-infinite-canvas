@@ -94,6 +94,20 @@
 .note-shell { width: 270px; }
 .note-shell textarea { width: 270px; height: 160px; resize: vertical; padding: 13px; border: 1px solid rgba(255,255,255,.1); border-radius: 13px; outline: 0; background: rgba(28,27,25,.9); color: #c9c4b9; font-size: 11px; line-height: 1.8; }
 .note-shell textarea::placeholder { color: #6b675f; }
+.guide-note, .guide-note textarea { width: 310px; }
+.guide-note textarea { height: 150px; }
+.video-url-import { margin-top: 8px; padding: 11px; border: 1px solid rgba(255,255,255,.09); border-radius: 12px; background: rgba(24,24,27,.96); box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.video-url-import > label { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: #b9b9bf; font-size: 10px; }
+.video-url-import > label svg { color: #85858d; }
+.video-url-row { display: flex; align-items: center; gap: 6px; }
+.video-url-row input { min-width: 0; height: 32px; flex: 1; padding: 0 9px; border: 1px solid rgba(255,255,255,.09); border-radius: 8px; outline: 0; background: #141416; color: #e4e4e7; font-size: 10px; }
+.video-url-row input:focus { border-color: rgba(255,255,255,.32); }
+.video-url-row input::placeholder { color: #5f5f66; }
+.video-url-row button { width: 32px; height: 32px; flex-shrink: 0; display: grid; place-items: center; border-radius: 8px; background: #e8e8ea; color: #19191b; }
+.video-url-row button:hover { background: #fff; }
+.video-url-row button:disabled { background: #39393e; color: #6d6d74; }
+.video-url-import > span { display: block; margin-top: 7px; color: #626269; font-size: 8px; line-height: 1.5; }
+.video-url-error { margin: 8px 0 0; padding: 7px 8px; border-radius: 7px; background: rgba(115,55,48,.22); color: #d79b93; font-size: 9px; line-height: 1.5; white-space: pre-line; word-break: break-word; }
 .node-top-toolbar { display: flex; align-items: center; padding: 4px !important; border: 1px solid var(--neo-line) !important; border-radius: 20px !important; background: var(--neo-panel) !important; box-shadow: 0 7px 25px rgba(0,0,0,.25); color: #aaaab0; }
 .node-top-toolbar > button, .node-history-wrap > button { height: 27px; min-width: 27px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 7px; border-radius: 14px; color: #96969d; font-size: 9px; }
 .node-top-toolbar button:hover { background: rgba(255,255,255,.07); color: #fff; }

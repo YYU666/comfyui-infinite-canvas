@@ -155,6 +155,14 @@ export async function uploadMedia(file, kind = 'image') {
   return result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
 }
 
+export async function importVideoFromUrl(url) {
+  const response = await fetch('/api/import-video', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  return parseResponse(response);
+}
+
 export function uploadImage(file) {
   return uploadMedia(file, 'image');
 }

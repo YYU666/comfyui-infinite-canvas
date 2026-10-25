@@ -7,13 +7,14 @@ import '@xyflow/react/dist/style.css';
 import {
   ArrowDownToLine, ArrowUp, AudioLines, Check, ChevronDown, CircleHelp, Clock3,
   Crosshair, Film, FolderOpen, Grid2X2, History, Image as ImageIcon, Layers3,
-  Library, LoaderCircle, Map as MapIcon, Maximize2, MoreHorizontal, MousePointer2,
+  Library, Link2, LoaderCircle, Map as MapIcon, Maximize2, MoreHorizontal, MousePointer2,
   Music2, Pin, Plus, RefreshCw, Search, Settings2, Sparkles, Square, Trash2,
   Type, Upload, Video, WandSparkles, X, Zap,
 } from 'lucide-react';
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, cancelPrompt, createClientId,
-  extractVideos, getHistory, getSystemStats, openProgressSocket, queuePrompt, uploadMedia,
+  extractVideos, getHistory, getSystemStats, importVideoFromUrl, openProgressSocket,
+  queuePrompt, uploadMedia,
 } from './workbench-api';
 import './canvas.css';
 
@@ -152,10 +153,31 @@ function NodeActions({ id, data, generator, selected }) {
 }
 
 function NoteNode({ id, data, selected }) {
-  const { updateNode } = useContext(NodeContext);
-  return <div className={`note-shell ${selected ? 'selected' : ''}`}>
+  const { updateNode, importVideoReference } = useContext(NodeContext);
+  const [url, setUrl] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState('');
+  const isGuide = id === 'welcome';
+  const submitUrl = async (event) => {
+    event.preventDefault();
+    if (!url.trim() || importing) return;
+    setImporting(true); setError('');
+    try { await importVideoReference(url.trim()); setUrl(''); }
+    catch (reason) { setError(reason.message || '视频加载失败，请重试。'); }
+    finally { setImporting(false); }
+  };
+  return <div className={`note-shell ${isGuide ? 'guide-note' : ''} ${selected ? 'selected' : ''}`}>
     <NodeTitle id={id} data={data} kind="note" /><NodeActions id={id} data={data} selected={selected} />
     <textarea className="nodrag nowheel" value={data.text || ''} onChange={(e) => updateNode(id, { text: e.target.value })} placeholder="写下分镜、角色设定或创作备注……" />
+    {isGuide && <form className="video-url-import nodrag nowheel" onSubmit={submitUrl} onDoubleClick={(event) => event.stopPropagation()}>
+      <label htmlFor="video-url-input"><Link2 size={13} />从视频链接加载参考</label>
+      <div className="video-url-row">
+        <input id="video-url-input" type="url" value={url} disabled={importing} onChange={(event) => setUrl(event.target.value)} placeholder="粘贴视频网站或 MP4 链接" required />
+        <button type="submit" disabled={importing || !url.trim()} title="下载并连接为视频参考" aria-label="加载视频链接">{importing ? <LoaderCircle className="spin" size={14} /> : <ArrowDownToLine size={14} />}</button>
+      </div>
+      <span>{importing ? '正在下载到本机，较大的视频需要等待……' : '公开视频可直接加载；需登录的视频请先下载。'}</span>
+      {error && <p className="video-url-error">{error}</p>}
+    </form>}
   </div>;
 }
 
@@ -504,6 +526,26 @@ function CanvasInner({ onSimpleMode }) {
     });
   }, [addNode, chooseMedia, setEdges]);
 
+  const importVideoReference = useCallback(async (url) => {
+    const generator = nodesRef.current.find((node) => node.type === 'generator' && node.selected)
+      || nodesRef.current.find((node) => node.type === 'generator');
+    if (!generator) throw new Error('请先在画布中添加一个全能参考节点。');
+    if ((generator.data.mode || 'reference') !== 'reference') throw new Error('请先把生成节点切换到“全能参考”模式。');
+    const videoCount = edgesRef.current.filter((edge) => edge.target === generator.id && edge.targetHandle === 'references')
+      .map((edge) => nodesRef.current.find((node) => node.id === edge.source))
+      .filter((node) => node?.data.kind === 'video').length;
+    if (videoCount >= 3) throw new Error('每个全能参考节点最多连接 3 段视频。');
+    const result = await importVideoFromUrl(url);
+    const remoteName = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
+    const position = { x: generator.position.x - 340, y: generator.position.y + 220 + videoCount * 210 };
+    const id = addNode('video', {
+      title: result.title || '在线视频参考', name: result.name, remoteName,
+      url: remoteMediaUrl(remoteName), sourceUrl: url, localFile: false,
+    }, position);
+    setEdges((items) => addEdge({ id: `edge-${id}-${generator.id}`, source: id, target: generator.id, sourceHandle: 'ref', targetHandle: 'references' }, items));
+    return id;
+  }, [addNode, setEdges]);
+
   const onConnect = useCallback((connection) => {
     const source = nodesRef.current.find((node) => node.id === connection.source);
     const target = nodesRef.current.find((node) => node.id === connection.target);
@@ -536,7 +578,7 @@ function CanvasInner({ onSimpleMode }) {
     setPinOpen(false);
   };
 
-  const context = { updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMentionItems, attachFilesToGenerator };
+  const context = { updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMentionItems, attachFilesToGenerator, importVideoReference };
   const pinnedNodes = nodes.filter((node) => node.data.pinned);
   return <NodeContext.Provider value={context}>
     <div className="neo-app">
