@@ -96,6 +96,8 @@ assert.equal(graph['104'].inputs.length, 124);
 assert.equal(graph['105'].class_type, 'TrimAudioDuration');
 assert.equal(graph['21'].inputs.text, 'white mannequin');
 assert.ok(graph['7'].inputs.prompt.startsWith('body_swap:'));
+assert.ok(graph['7'].inputs.prompt.includes('This is a full-character replacement, not a face swap or head swap.'));
+assert.ok(graph['7'].inputs.prompt.includes('do not turn a top into a dress, add a skirt'));
 assert.equal(graph['100'].inputs.image, 'workbench/reference-character-portrait.png');
 assert.equal(graph['101'].inputs.file, 'workbench/web_20261025_1fda623ee994.mp4');
 

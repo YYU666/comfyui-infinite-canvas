@@ -138,10 +138,17 @@ export const CHARACTER_SWAP_MODELS = {
   samCheckpoint: 'sam3.1_multiplex_fp16.safetensors',
 };
 
+export const CHARACTER_SWAP_APPEARANCE_LOCK = 'This is a full-character replacement, not a face swap or head swap. <Picture 1> is the sole authority for the character appearance. Copy the entire person as one indivisible identity: exact facial structure, facial features, skin tone, hairstyle, hair length and color, body shape, body proportions, and every visible clothing item and accessory. Preserve the exact garment types, neckline, straps, sleeves, fit, fabric, colors, patterns, layering, garment length, waist styling, lower-body clothing and footwear. Never copy the guide subject body or clothing. Do not beautify, redesign, complete, extend or replace the outfit; do not turn a top into a dress, add a skirt, or invent a new fashion style. Only the pose, gestures and performance change to follow the guide video.';
+
 export function buildCharacterSwapPrompt(details = '', target = '') {
-  const appearance = details.trim() || 'person with the exact visible facial structure, facial features, hairstyle, hair color, body proportions and clothing';
+  const appearance = details.trim() || 'person with the exact same visible identity, facial structure, facial features, skin tone, hairstyle, hair color, body shape, body proportions, clothing and accessories';
   const guideSubject = target.trim() || 'the main subject';
-  return `body_swap: subject_definitions: <Subject 1> is the ${appearance} shown in <Picture 1>, whose identity, face, head, hair or fur, skin, body shape, proportions and clothing define the character in the target video. The guide video provides the scene and the performance: its background, environment, lighting, camera, framing, body pose, hand and arm movement, head rotation, gaze direction, lip movement and facial expression, frame by frame; only ${guideSubject} of the guide video is replaced: its face, hair, body and clothing become <Subject 1>.  summary: [video generation + reference] Replace ${guideSubject} with <Subject 1>, keeping the scene, camera and the complete motion and performance of the guide video.  detailed_description: [Shot 1] <Subject 1> takes the exact place of ${guideSubject} and moves with the same timing, body pose, gestures, head motion, gaze, speech and facial expressions, while keeping the complete identity from <Picture 1>: facial structure, hair or fur, skin, body shape and clothing stay stable in every frame. The background, lighting, colors and camera of the guide video are preserved. Prevent identity drift, clothing changes, texture crawling and flicker.`;
+  return `body_swap: subject_definitions: <Subject 1> is the ${appearance} shown in <Picture 1>, whose identity, face, head, hair or fur, skin, body shape, proportions and clothing define the character in the target video. The guide video provides the scene and the performance only: its background, environment, lighting, camera, framing, body pose, hand and arm movement, head rotation, gaze direction, lip movement and facial expression, frame by frame; only ${guideSubject} of the guide video is replaced: its complete face, hair, body and clothing become <Subject 1>.  summary: [video generation + reference] Replace ${guideSubject} with the complete person from <Picture 1>, not only the face, keeping the scene, camera and complete motion and performance of the guide video.  detailed_description: [Shot 1] <Subject 1> takes the exact place of ${guideSubject} and moves with the same timing, body pose, gestures, head motion, gaze, speech and facial expressions, while keeping the complete identity from <Picture 1>: facial structure, hair or fur, skin, body shape, body proportions and all clothing stay stable and unchanged in every frame. The background, lighting, colors and camera of the guide video are preserved. Prevent identity drift, body-shape changes, clothing changes, texture crawling and flicker. ${CHARACTER_SWAP_APPEARANCE_LOCK}`;
+}
+
+function ensureCharacterSwapAppearanceLock(prompt) {
+  const clean = prompt.trim();
+  return clean.includes('This is a full-character replacement, not a face swap or head swap.') ? clean : `${clean} ${CHARACTER_SWAP_APPEARANCE_LOCK}`;
 }
 
 export function buildCharacterSwapWorkflow(options) {
@@ -150,9 +157,9 @@ export function buildCharacterSwapWorkflow(options) {
   if (!guide || !identity) throw new Error('角色替换需要连接一段源视频和一张单人身份图。');
   const [width, height] = resolveDimensions(options.ratio, options.resolution);
   const length = durationToFrames(options.duration || 5);
-  const prompt = options.prompt?.trim().startsWith('body_swap:')
+  const prompt = ensureCharacterSwapAppearanceLock(options.prompt?.trim().startsWith('body_swap:')
     ? options.prompt.trim()
-    : buildCharacterSwapPrompt(options.prompt, options.targetDescription);
+    : buildCharacterSwapPrompt(options.prompt, options.targetDescription));
   const graph = {
     '1': { class_type: 'UNETLoader', inputs: { unet_name: MODEL_INFO.referenceUnet, weight_dtype: 'default' } },
     '2': { class_type: 'LoraLoaderModelOnly', inputs: { model: ['1', 0], lora_name: CHARACTER_SWAP_MODELS.dmdLora, strength_model: 1 } },

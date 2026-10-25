@@ -188,9 +188,12 @@ def optimize_h3_prompt(payload):
     guide_name = "ref-en.txt" if mode in {"reference", "swap"} else "base-en.txt"
     guide = (HERE / "prompt_guides" / guide_name).read_text(encoding="utf-8")
     structure = (
-        "This is Character Swap v1.1, not ordinary Ref2VA. Start with 'body_swap:'. Use exactly three sections: "
+        "This is Character Swap v1.1, not ordinary Ref2VA and never a face-only or head-only swap. Start with 'body_swap:'. Use exactly three sections: "
         "subject_definitions, summary, detailed_description. Bind only the identity image as <Picture 1> and "
-        "<Subject 1>. Describe only user-supplied visible face, hair, body and clothing traits; never invent them. "
+        "<Subject 1>. Copy the entire person as one indivisible identity: exact face, hair, skin, body shape, body proportions, "
+        "all visible clothing and accessories. Preserve exact garment types, neckline, straps, sleeves, fit, fabric, colors, "
+        "patterns, layers, length, lower-body clothing and footwear. Never beautify, redesign, extend or replace the outfit; "
+        "never turn a top into a dress, add a skirt, or copy body or clothing from the guide. Describe only user-supplied visible traits. "
         "The AddGuide source video alone supplies scene, camera, framing, pose, gestures, head motion, gaze, lip "
         "movement and facial expression frame by frame. Preserve the original scene and audio; do not write music."
         if mode == "swap" else

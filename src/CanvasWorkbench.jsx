@@ -345,7 +345,7 @@ function GeneratorNode({ id, data, selected }) {
         onChange={(prompt) => updateNode(id, { prompt })}
         items={mentionItems}
         disabled={running}
-        placeholder={mode === 'swap' ? '描述身份图中人物的面部、发型、体型和服装；留空则直接以图片为准……' : mode === 'reference' ? '输入文字或 @ 参考内容，自由组合图、文、音、视频……\n例如：@角色参考 在雨夜街道回头，电影感，环境雨声。' : '描述主体、动作、镜头和声音……'}
+        placeholder={mode === 'swap' ? '留空自动锁定参考人物的面部、发型、体型和整套穿搭，不只换脸；也可补充可见特征……' : mode === 'reference' ? '输入文字或 @ 参考内容，自由组合图、文、音、视频……\n例如：@角色参考 在雨夜街道回头，电影感，环境雨声。' : '描述主体、动作、镜头和声音……'}
       />
       {mode === 'swap' && <div className="swap-settings">
         <label>换人目标<input value={data.targetDescription || ''} disabled={running} onChange={(e) => updateNode(id, { targetDescription: e.target.value })} placeholder="例如：左侧穿红衣的人；单人可留空" /></label>
