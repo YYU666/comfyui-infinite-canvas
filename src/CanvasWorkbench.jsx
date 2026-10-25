@@ -182,21 +182,26 @@ function NoteNode({ id, data, selected }) {
   </div>;
 }
 
-function MediaDragSurface({ videoRef, video = false }) {
+function MediaDragSurface({ videoRef, video = false, onActivate }) {
   const pressOrigin = useRef(null);
-  const togglePlayback = (event) => {
-    if (!video || event.detail > 1) return;
+  const activate = (event) => {
+    if (event.detail > 1) return;
     const origin = pressOrigin.current;
     if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 6) return;
+    if (onActivate) { onActivate(); return; }
+    if (!video) return;
     const element = videoRef.current;
     if (!element) return;
     if (element.paused) element.play().catch(() => {});
     else element.pause();
   };
   return <div className={`media-drag-surface ${video ? 'video-surface' : ''}`}
-    title={video ? '拖动移动节点；单击播放或暂停' : '拖动移动节点'}
+    role={onActivate ? 'button' : undefined} tabIndex={onActivate ? 0 : undefined}
+    aria-label={onActivate ? '添加素材' : undefined}
+    title={onActivate ? '拖动移动节点；单击添加素材' : video ? '拖动移动节点；单击播放或暂停' : '拖动移动节点'}
     onPointerDown={(event) => { pressOrigin.current = { x: event.clientX, y: event.clientY }; }}
-    onClick={togglePlayback} />;
+    onKeyDown={(event) => { if (onActivate && ['Enter', ' '].includes(event.key)) { event.preventDefault(); onActivate(); } }}
+    onClick={activate} />;
 }
 
 function MediaNode({ id, data, selected }) {
@@ -216,7 +221,7 @@ function MediaNode({ id, data, selected }) {
         {kind === 'video' && <video ref={videoRef} className="nodrag" src={data.url} controls preload="metadata" playsInline />}
         {kind === 'audio' && <div className="audio-content"><span><AudioLines size={25} /></span><strong>{data.title}</strong><audio className="nodrag" src={data.url} controls preload="metadata" /></div>}
         {['image', 'video'].includes(kind) && <MediaDragSurface videoRef={videoRef} video={kind === 'video'} />}
-      </> : <button className="media-empty nodrag" onClick={() => input.current?.click()}><Icon size={26} /><strong>添加{KIND_LABEL[kind]}素材</strong><span>点击或拖入画布</span></button>}
+      </> : <div className="media-empty"><Icon size={26} /><strong>添加{KIND_LABEL[kind]}素材</strong><span>单击添加 · 按住拖动节点</span><MediaDragSurface onActivate={() => input.current?.click()} /></div>}
       <button className="media-replace nodrag" onClick={() => input.current?.click()} title="替换素材"><RefreshCw size={12} /><span>替换</span></button>
       {data.output && <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>}
     </div>
@@ -660,7 +665,7 @@ function CanvasInner({ onSimpleMode }) {
           </div>}
           <div className="canvas-control-pill">
             <button className={gridVisible ? 'active' : ''} onClick={() => setGridVisible(!gridVisible)} title="显示或隐藏网格"><Grid2X2 size={15} /></button>
-            <button className={miniMapVisible ? 'active' : ''} onClick={() => setMiniMapVisible(!miniMapVisible)} title="小地图"><MapIcon size={15} /></button>
+            <button className={miniMapVisible ? 'active' : ''} onClick={() => setMiniMapVisible(!miniMapVisible)} title="小地图"><MapIcon size={14} /></button>
             <button className={zoomMenuOpen ? 'zoom-button active' : 'zoom-button'} onClick={() => setZoomMenuOpen(!zoomMenuOpen)} title="缩放" aria-expanded={zoomMenuOpen}><Search size={13} /><span>{zoom}%</span></button>
           </div>
           <button className="round-control" onClick={() => fitView({ duration: 350, padding: 0.15 })} title="节点定位"><Crosshair size={16} /></button>
@@ -693,7 +698,7 @@ function CanvasInner({ onSimpleMode }) {
         </button>)}{!historyItems.length && <div className="library-empty"><Film size={26} /><span>还没有 H3 视频作品</span></div>}</div>
       </aside>}
       {pinOpen && <aside className="floating-pins">
-        <div className="floating-panel-title"><span><Pin size={14} />Pin 关键节点</span><button onClick={() => setPinOpen(false)}><X size={14} /></button></div>
+        <div className="floating-panel-title"><span><Pin size={14} />Pin 关键节点</span><button onClick={() => setPinOpen(false)}><X size={15} /></button></div>
         <p>把常用角色、设定和生成节点固定在这里。</p>
         {pinnedNodes.map((node) => <button key={node.id} onClick={() => focusNode(node.id)}><Crosshair size={13} /><span>{node.data.title}</span><small>{node.type === 'generator' ? '生成' : KIND_LABEL[node.data.kind] || '备注'}</small></button>)}
         {!pinnedNodes.length && <div className="library-empty"><Pin size={22} /><span>选中节点后点击 Pin 标记</span></div>}
