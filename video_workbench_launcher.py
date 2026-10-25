@@ -169,7 +169,7 @@ def optimize_h3_prompt(payload):
         raise ValueError("请先写下想生成的画面，或先在生成节点里输入提示词。")
     if len(idea) > 6000 or len(current_prompt) > 16000:
         raise ValueError("提示词内容过长，请精简后再优化。")
-    mode = payload.get("mode") if payload.get("mode") in {"reference", "text", "frames"} else "reference"
+    mode = payload.get("mode") if payload.get("mode") in {"reference", "swap", "text", "frames"} else "reference"
     duration = max(4, min(15, int(payload.get("duration") or 5)))
     ratio = str(payload.get("ratio") or "16:9")[:12]
     references = []
@@ -185,9 +185,15 @@ def optimize_h3_prompt(payload):
             "slot": str(item.get("slot", ""))[:12],
             "title": str(item.get("title", ""))[:160],
         })
-    guide_name = "ref-en.txt" if mode == "reference" else "base-en.txt"
+    guide_name = "ref-en.txt" if mode in {"reference", "swap"} else "base-en.txt"
     guide = (HERE / "prompt_guides" / guide_name).read_text(encoding="utf-8")
     structure = (
+        "This is Character Swap v1.1, not ordinary Ref2VA. Start with 'body_swap:'. Use exactly three sections: "
+        "subject_definitions, summary, detailed_description. Bind only the identity image as <Picture 1> and "
+        "<Subject 1>. Describe only user-supplied visible face, hair, body and clothing traits; never invent them. "
+        "The AddGuide source video alone supplies scene, camera, framing, pose, gestures, head motion, gaze, lip "
+        "movement and facial expression frame by frame. Preserve the original scene and audio; do not write music."
+        if mode == "swap" else
         "Use all six Ref2VA sections in the official order: subject_definitions, summary, "
         "retention_analysis, detailed_description, overall_soundscape, non_diegetic_music."
         if mode == "reference" else
@@ -217,7 +223,7 @@ def optimize_h3_prompt(payload):
         f"For this request, {structure}\n\nOFFICIAL MINIMAX H3 GUIDE:\n{guide}"
     )
     user = json.dumps({
-        "mode": {"reference": "Ref2VA", "text": "T2VA", "frames": "FL2VA/I2VA according to connected frame slots"}[mode],
+        "mode": {"reference": "Ref2VA", "swap": "Character Swap v1.1 with AddGuide", "text": "T2VA", "frames": "FL2VA/I2VA according to connected frame slots"}[mode],
         "durationSeconds": duration,
         "aspectRatio": ratio,
         "naturalLanguageIdea": idea,
@@ -254,7 +260,7 @@ def optimize_h3_prompt(payload):
         raise RuntimeError("无法连接 DeepSeek，请检查网络后重试。") from exc
     optimized = str(result.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
     optimized = re.sub(r"^```(?:text|markdown)?\s*|\s*```$", "", optimized).strip()
-    required = ["subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:"] if mode == "reference" else ["integrated_multimodal_description:", "overall_soundscape:", "non_diegetic_music:"]
+    required = ["body_swap:", "subject_definitions:", "summary:", "detailed_description:"] if mode == "swap" else ["subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:"] if mode == "reference" else ["integrated_multimodal_description:", "overall_soundscape:", "non_diegetic_music:"]
     if not optimized or any(header not in optimized for header in required):
         raise RuntimeError("AI 返回的 H3 结构不完整，请重试。")
     if mode == "reference":
