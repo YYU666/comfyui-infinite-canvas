@@ -177,6 +177,41 @@ export function buildImageWorkflow(options) {
   return graph;
 }
 
+export const IDENTITY_EDIT_MODEL = {
+  unet: 'krea2_turbo_fp8_scaled.safetensors',
+  lora: 'krea2_identity_edit_v2.safetensors',
+  quadViewLora: 'Krea2-四视图QuadView_krea2_v1.safetensors',
+};
+
+export function buildIdentityEditWorkflow(options) {
+  const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
+  if (!source) throw new Error('母图编辑需要连接一张人物或场景母图。');
+  const [width, height] = resolveImageDimensions(options.ratio || '16:9');
+  const useQuadView = options.quadView === true;
+  return {
+    model: { class_type: 'UNETLoader', inputs: { unet_name: IDENTITY_EDIT_MODEL.unet, weight_dtype: 'default' } },
+    identity: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: IDENTITY_EDIT_MODEL.lora, strength_model: 1 } },
+    text: { class_type: 'CLIPLoader', inputs: { clip_name: IMAGE_MODEL.clip, type: 'krea2', device: 'default' } },
+    vae: { class_type: 'VAELoader', inputs: { vae_name: IMAGE_MODEL.vae } },
+    source: { class_type: 'LoadImage', inputs: { image: source.name } },
+    encode: { class_type: 'VAEEncode', inputs: { pixels: ['source', 0], vae: ['vae', 0] } },
+    latent: { class_type: 'EmptySD3LatentImage', inputs: { width, height, batch_size: 1 } },
+    positive: { class_type: 'Krea2EditGroundedEncode', inputs: { clip: ['text', 0], prompt: options.prompt.trim(), image: ['source', 0], grounding_px: Number(options.groundingPx || 1024) } },
+    negative: { class_type: 'Krea2EditGroundedEncode', inputs: { clip: ['text', 0], prompt: '', image: ['source', 0], grounding_px: Number(options.groundingPx || 1024) } },
+    patch: { class_type: 'Krea2EditModelPatch', inputs: {
+      model: [useQuadView ? 'quadview' : 'identity', 0], source_latent: ['encode', 0], vae: ['vae', 0], source_image: ['source', 0], target_latent: ['latent', 0],
+      ref_boost: Number(options.refBoost ?? 4), ref_boost_a: 1, fit_mode: 'fit', ref_position: options.refPosition || 'beside (right of target)', ref_position_a: 'aligned (trained)',
+    } },
+    sample: { class_type: 'KSampler', inputs: {
+      model: ['patch', 0], seed: Number(options.seed), steps: 8, cfg: 1, sampler_name: 'euler', scheduler: 'simple',
+      positive: ['positive', 0], negative: ['negative', 0], latent_image: ['latent', 0], denoise: 1,
+    } },
+    decode: { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } },
+    save: { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'image/H3_IdentityV2' } },
+    ...(useQuadView ? { quadview: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['identity', 0], lora_name: IDENTITY_EDIT_MODEL.quadViewLora, strength_model: Number(options.quadViewStrength ?? 0.7) } } } : {}),
+  };
+}
+
 export function buildImageHdWorkflow(options) {
   const guide = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
   if (!guide) throw new Error('图片高清需要连接一张本地生成或导入的图片。');
@@ -452,7 +487,7 @@ export function extractVideos(historyEntry) {
 }
 
 export function extractImages(historyEntry) {
-  return extractMedia(historyEntry, 'image').filter((file) => /^H3_Image(?:_HD)?_\d+_/i.test(file.filename));
+  return extractMedia(historyEntry, 'image').filter((file) => /^H3_(?:Image(?:_HD)?|IdentityV2)_\d+_/i.test(file.filename));
 }
 
 export function openProgressSocket(clientId, handlers = {}) {

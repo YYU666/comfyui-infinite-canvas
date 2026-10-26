@@ -112,6 +112,21 @@ assert.equal(imageHd.sample.inputs.steps, 1);
 assert.equal(imageHd.postprocess.inputs.color_correction_method, 'lab');
 assert.equal(imageHd.save.inputs.filename_prefix, 'image/H3_Image_HD');
 assert.throws(() => api.buildImageHdWorkflow({ seed: 42, references: [] }), /图片高清/);
+const identityEdit = api.buildIdentityEditWorkflow({ prompt: 'Change her outfit', ratio: '16:9', seed: 42, references: [{ kind: 'image', slot: 'guide', name: 'workbench/person.png' }] });
+assert.equal(identityEdit.model.inputs.unet_name, 'krea2_turbo_fp8_scaled.safetensors');
+assert.equal(identityEdit.identity.inputs.lora_name, api.IDENTITY_EDIT_MODEL.lora);
+assert.equal(identityEdit.positive.inputs.grounding_px, 1024);
+assert.equal(identityEdit.negative.inputs.prompt, '');
+assert.equal(identityEdit.patch.inputs.ref_boost, 4);
+assert.equal(identityEdit.patch.inputs.ref_position, 'beside (right of target)');
+assert.deepEqual(identityEdit.patch.inputs.target_latent, ['latent', 0]);
+assert.deepEqual(identityEdit.sample.inputs.latent_image, ['latent', 0]);
+assert.equal(identityEdit.sample.inputs.steps, 8);
+assert.equal(identityEdit.quadview, undefined);
+const quadEdit = api.buildIdentityEditWorkflow({ prompt: 'four-view character sheet', ratio: '16:9', seed: 42, quadView: true, references: [{ kind: 'image', slot: 'guide', name: 'workbench/person.png' }] });
+assert.equal(quadEdit.quadview.inputs.lora_name, api.IDENTITY_EDIT_MODEL.quadViewLora);
+assert.deepEqual(quadEdit.patch.inputs.model, ['quadview', 0]);
+assert.throws(() => api.buildIdentityEditWorkflow({ prompt: 'test', seed: 42, references: [] }), /母图编辑/);
 const mixedFiles = api.extractImages({ outputs: { save: { images: [
   { filename: 'H3_Image_00001_.png', subfolder: 'image', type: 'output' },
   { filename: 'H3_Workbench_00001_.mp4', subfolder: 'video', type: 'output' },
