@@ -28,7 +28,7 @@ const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().to
 const DEFAULT_GENERATOR = {
   title: '全能参考', mode: 'reference', prompt: '', ratio: '16:9', resolution: '480P', duration: 5,
   turbo: false, refImageSize: 'max', referenceSettingsVersion: 3, seed: 42, randomSeed: true,
-  preserveBackground: true, targetQuery: 'person', targetIndex: 0, targetDescription: '',
+  preserveBackground: true, targetQuery: 'person', targetIndex: 0, targetDescription: '', precision: 1,
   status: 'idle', progress: 0, stage: '', pinned: false, runs: [],
 };
 const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' };
@@ -361,6 +361,7 @@ function GeneratorNode({ id, data, selected }) {
           {mode === 'swap' ? <span className="param-pill active" title="Akatz 官方参数：FL2V Turbo、ER-SDE、Normal、CFG 1"><Zap size={12} />v1.5 · 8 步</span> : <button className={`param-pill turbo-pill ${data.turbo ? 'active' : ''}`} disabled={running} title={data.turbo ? 'Turbo 适合快速看构图；角色或动作参考不准确时请切换标准模式' : '标准模式使用 beta 调度，参考身份与动作更稳定'} onClick={() => updateNode(id, { turbo: !data.turbo })}><Zap size={12} />{data.turbo ? `${mode === 'reference' ? 4 : 8} 步 Turbo` : '标准 20 步'}</button>}
           {mode === 'reference' && <button className={`param-pill ${data.refImageSize === 'max' ? 'active' : ''}`} onClick={() => updateNode(id, { refImageSize: data.refImageSize === 'max' ? 'match' : 'max' })} title="高保真参考更慢，但保留更多主体细节"><Layers3 size={12} />{data.refImageSize === 'max' ? '高保真' : '均衡'}</button>}
           {mode === 'swap' && <span className="param-pill active" title="SAM3.1 遮罩直接作用于源视频 latent，而非生成后回填"><Crosshair size={12} />潜空间保护</span>}
+          {mode === 'swap' && <label className={`param-pill ${Number(data.precision) > 1 ? 'active' : ''}`} title="同分辨率精修：二采 = 基础采样 + 1 轮 3 步精修；四采 = 基础采样 + 3 轮精修。会同时输出一采和精修版，不保证人物一定更稳定。"><Sparkles size={12} /><select aria-label="采样精度" value={data.precision || 1} disabled={running} onChange={(e) => updateNode(id, { precision: Number(e.target.value) })}><option value={1}>单采</option><option value={2}>二采精修</option><option value={4}>四采精修</option></select><ChevronDown size={11} /></label>}
         </div>
         {running ? <button className="send-button cancel" onClick={() => cancelNode(id)} title="取消生成"><Square size={15} fill="currentColor" /></button> : <button className="send-button node-generate" onClick={() => generateNode(id)} disabled={!serverOnline} title="本地生成"><ArrowUp size={17} /></button>}
       </div>
@@ -503,34 +504,42 @@ function CanvasInner({ onSimpleMode }) {
       const videos = extractVideos(history?.[promptId]);
       if (!videos.length) throw new Error('任务已结束，但没有找到视频输出。');
       const source = nodesRef.current.find((node) => node.id === id);
-      const result = source?.data.mode === 'swap' ? videos.find((file) => file.filename?.startsWith('H3_CharacterSwap')) || videos[0] : videos[0];
-      const videoId = uid('video');
+      const refined = videos.find((file) => file.filename?.startsWith('H3_CharacterSwap_Refined'));
+      const firstPass = videos.find((file) => file.filename?.startsWith('H3_CharacterSwap_Pass1'));
+      const standard = videos.find((file) => file.filename?.startsWith('H3_CharacterSwap') && !file.filename?.startsWith('H3_CharacterSwap_'));
+      const result = source?.data.mode === 'swap' ? refined || standard || videos[0] : videos[0];
       const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-      const videoNode = {
-        id: videoId, type: 'media', position: { x: (source?.position.x || 0) + 540, y: source?.position.y || 0 },
-        data: { ...result, kind: 'video', output: true, title: `${source?.data.mode === 'swap' ? '换人结果' : '成片'} ${time}`, name: result.filename, prompt: source?.data.prompt },
-      };
+      const outputs = [result, ...(refined && firstPass ? [firstPass] : [])];
+      const videoNodes = outputs.map((file, index) => ({
+        id: uid('video'), type: 'media',
+        position: { x: (source?.position.x || 0) + 540, y: (source?.position.y || 0) + index * 390 },
+        data: { ...file, kind: 'video', output: true, title: index === 0 ? `${refined ? `${source?.data.precision}采精修` : source?.data.mode === 'swap' ? '换人结果' : '成片'} ${time}` : `一采对照 ${time}`, name: file.filename, prompt: source?.data.prompt },
+      }));
       setNodes((items) => items.map((node) => node.id === id ? {
         ...node,
         data: {
           ...node.data, status: 'done', progress: 100, stage: '生成完成', promptId,
           resultUrl: result.url,
-          runs: [{ promptId, status: 'done', stage: '生成完成', time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12),
+          runs: [{ promptId, status: 'done', stage: refined ? `${source?.data.precision}采与一采对照已输出` : '生成完成', time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12),
         },
-      } : node).concat(videoNode));
-      setEdges((items) => addEdge({ id: `edge-${id}-${videoId}`, source: id, target: videoId, sourceHandle: 'video', targetHandle: 'preview' }, items));
+      } : node).concat(videoNodes));
+      setEdges((items) => videoNodes.reduce((list, videoNode) => addEdge({ id: `edge-${id}-${videoNode.id}`, source: id, target: videoNode.id, sourceHandle: 'video', targetHandle: 'preview' }, list), items));
     } catch (error) { updateNode(id, { status: 'error', error: error.message, stage: '读取成片失败' }); }
   }, [setNodes, setEdges, updateNode]);
 
   useEffect(() => {
     const socket = openProgressSocket(clientId, {
       onProgress(data) {
-        for (const node of nodesRef.current) if (node.data.promptId === data.prompt_id) updateNode(node.id, { status: 'running', progress: data.max ? Math.round(data.value / data.max * 100) : 0, stage: `采样 ${data.value}/${data.max} 步` });
+        for (const node of nodesRef.current) if (node.data.promptId === data.prompt_id) {
+          const refinePass = String(data.node || '').match(/^refine_sample_(\d+)$/)?.[1];
+          updateNode(node.id, { status: 'running', progress: data.max ? Math.round(data.value / data.max * 100) : 0, stage: `${refinePass ? `第 ${refinePass} 采精修` : '基础采样'} ${data.value}/${data.max} 步` });
+        }
       },
       onExecuting(data) {
         for (const node of nodesRef.current) {
           if (node.data.promptId !== data.prompt_id) continue;
-          if (data.node) updateNode(node.id, { status: 'running', stage: data.node === '12' ? '正在生成画面与声音' : data.node === '16' ? '正在保存 MP4' : '正在准备参考素材与模型' });
+          const refinePass = String(data.node || '').match(/^refine_sample_(\d+)$/)?.[1];
+          if (data.node) updateNode(node.id, { status: 'running', stage: refinePass ? `正在第 ${refinePass} 采精修` : data.node === 'sample' ? '正在基础采样' : data.node?.startsWith('save') ? '正在保存 MP4 对照' : data.node === '12' ? '正在生成画面与声音' : data.node === '16' ? '正在保存 MP4' : '正在准备参考素材与模型' });
           else { updateNode(node.id, { status: 'finishing', stage: '正在读取成片', progress: 100 }); setTimeout(() => completeGeneration(node.id, data.prompt_id), 700); }
         }
       },

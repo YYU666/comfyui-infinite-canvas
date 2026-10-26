@@ -78,6 +78,7 @@ await toolbar.locator('.h3-prompt').fill(prompt);
 await toolbar.getByLabel('换人目标').fill('the smaller white mannequin on the right');
 await toolbar.getByLabel('SAM 识别').fill('white mannequin');
 await toolbar.getByLabel('目标位置').selectOption('rightmost');
+await toolbar.getByLabel('采样精度').selectOption('2');
 assert.equal(await toolbar.locator('.h3-prompt').textContent(), prompt, 'Prompt remains editable');
 await page.screenshot({ path: '../comparison/character-swap-ui.png', fullPage: true });
 
@@ -101,6 +102,12 @@ assert.equal(graph.select.inputs.selection, 'rightmost');
 assert.ok(graph.reference_conditioning.inputs.prompt.includes('complete reference character'));
 assert.equal(graph.reference.inputs.image, 'workbench/reference-character-sheet.png');
 assert.equal(graph.source.inputs.file, 'workbench/web_20261025_1fda623ee994.mp4');
+assert.equal(graph.refine_sample_2.class_type, 'SamplerCustomAdvanced');
+assert.equal(graph.refine_sampler.inputs.sampler_name, 'euler');
+assert.equal(graph.refine_sigmas.inputs.sigmas, '0.85, 0.7250, 0.4219, 0.0');
+assert.deepEqual(graph.separate.inputs.av_latent, ['refine_sample_2', 0]);
+assert.equal(graph.save_pre.inputs.filename_prefix, 'video/H3_CharacterSwap_Pass1');
+assert.equal(graph.save.inputs.filename_prefix, 'video/H3_CharacterSwap_Refined');
 
 const report = {
   swapId,

@@ -154,7 +154,7 @@ export function buildCharacterSwapWorkflow(options) {
   const length = durationToFrames(options.duration || 5);
   const prompt = buildCharacterSwapPrompt(options.prompt, options.targetDescription);
   const selection = options.targetSelection || (options.targetIndex ? 'index' : 'largest');
-  return {
+  const graph = {
     model: { class_type: 'UNETLoader', inputs: { unet_name: MODEL_INFO.referenceUnet, weight_dtype: 'default' } },
     shift: { class_type: 'MiniMaxH3SigmaShift', inputs: { model: ['model', 0], shift_video: 12, shift_audio: 3 } },
     attention: { class_type: 'ModelAttentionBackend', inputs: { model: ['shift', 0], attention: 'comfy kitchen attention' } },
@@ -207,6 +207,30 @@ export function buildCharacterSwapWorkflow(options) {
     video: { class_type: 'CreateVideo', inputs: { images: ['finish', 0], fps: ['finish', 2], audio: ['finish', 1] } },
     save: { class_type: 'SaveVideo', inputs: { video: ['video', 0], filename_prefix: 'video/H3_CharacterSwap', format: 'mp4', 'format.codec': 'h264', 'format.codec.encoding': 're-encode', 'format.codec.encoding.crf': 16 } },
   };
+  const totalPasses = [2, 4].includes(Number(options.precision)) ? Number(options.precision) : 1;
+  if (totalPasses > 1) {
+    graph.pre_separate = { class_type: 'LTXVSeparateAVLatent', inputs: { av_latent: ['sample', 0] } };
+    graph.pre_decode = { class_type: 'VAEDecode', inputs: { samples: ['pre_separate', 0], vae: ['video_vae', 0] } };
+    graph.pre_video = { class_type: 'CreateVideo', inputs: { images: ['finish', 1], fps: ['finish', 3], audio: ['finish', 2] } };
+    graph.save_pre = { class_type: 'SaveVideo', inputs: { video: ['pre_video', 0], filename_prefix: 'video/H3_CharacterSwap_Pass1', format: 'mp4', 'format.codec': 'h264', 'format.codec.encoding': 're-encode', 'format.codec.encoding.crf': 16 } };
+    graph.refine_sigmas = { class_type: 'ManualSigmas', inputs: { sigmas: '0.85, 0.7250, 0.4219, 0.0' } };
+    graph.refine_sampler = { class_type: 'KSamplerSelect', inputs: { sampler_name: 'euler' } };
+    let refinedLatent = ['sample', 0];
+    for (let pass = 2; pass <= totalPasses; pass += 1) {
+      graph[`refine_noise_${pass}`] = { class_type: 'RandomNoise', inputs: { noise_seed: ['window', 10] } };
+      graph[`refine_guider_${pass}`] = { class_type: 'CFGGuider', inputs: { model: ['sampling_memory', 0], positive: ['guide', 0], negative: ['guide', 0], cfg: 1 } };
+      graph[`refine_sample_${pass}`] = { class_type: 'SamplerCustomAdvanced', inputs: {
+        noise: [`refine_noise_${pass}`, 0], guider: [`refine_guider_${pass}`, 0], sampler: ['refine_sampler', 0], sigmas: ['refine_sigmas', 0], latent_image: refinedLatent,
+      } };
+      refinedLatent = [`refine_sample_${pass}`, 0];
+    }
+    graph.separate.inputs.av_latent = refinedLatent;
+    graph.append = { class_type: 'H3WorkbenchAppendRefinedWindow', inputs: { refined_frames: ['decode', 0], first_pass_frames: ['pre_decode', 0], window: ['window', 12], previous: ['start', 4] } };
+    graph.finish = { class_type: 'H3WorkbenchFinishRefinedWindows', inputs: { state: ['end', 0], audio_mode: 'source', source_audio: ['source_audio', 0] } };
+    graph.video.inputs = { images: ['finish', 0], fps: ['finish', 3], audio: ['finish', 2] };
+    graph.save.inputs.filename_prefix = 'video/H3_CharacterSwap_Refined';
+  }
+  return graph;
 }
 
 async function parseResponse(response) {
