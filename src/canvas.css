@@ -49,6 +49,8 @@
 .neo-canvas-wrap .react-flow__node.selectable:focus { outline: none; }
 .neo-canvas-wrap .react-flow__edge-path { transition: stroke .15s; }
 .neo-canvas-wrap .react-flow__edge:hover .react-flow__edge-path { stroke: #d7d7db; }
+.neo-canvas-wrap .react-flow__edge.selected .react-flow__edge-path { stroke: #ececf0; stroke-width: 2; }
+.neo-canvas-wrap .react-flow__connection-path { fill: none; stroke-linecap: round; }
 .neo-canvas-wrap .react-flow__handle { opacity: 0; }
 .neo-canvas-wrap .react-flow__node:hover .react-flow__handle, .neo-canvas-wrap .react-flow__node.selected .react-flow__handle { opacity: 1; }
 .neo-handle { width: 18px !important; height: 18px !important; border: 4px solid #171719 !important; border-radius: 50% !important; background: #c9c9ce !important; box-shadow: 0 0 0 1px rgba(255,255,255,.32); transition: transform .15s, background .15s; }

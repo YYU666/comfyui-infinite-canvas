@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Background, BackgroundVariant, MiniMap, NodeToolbar,
-  Handle, Position, addEdge, useNodesState, useEdgesState, useReactFlow,
+  Handle, Position, ConnectionLineType, addEdge, useNodesState, useEdgesState, useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
@@ -71,6 +71,7 @@ function migrateCanvas(value) {
     const isReference = target?.type === 'generator' && (target.data.mode || 'reference') === 'reference';
     return {
       ...edge,
+      type: 'default',
       sourceHandle: ['image', 'video'].includes(edge.sourceHandle) ? 'ref' : edge.sourceHandle,
       targetHandle: isReference && ['first', 'last'].includes(edge.targetHandle) ? 'references' : ['first', 'last', 'preview', 'prompt', 'guide', 'identity'].includes(edge.targetHandle) ? edge.targetHandle : 'references',
     };
@@ -723,6 +724,48 @@ function CanvasInner({ onSimpleMode }) {
     const fresh = initialCanvas();
     setNodes(fresh.nodes); setEdges(fresh.edges); setTimeout(() => fitView({ duration: 300 }), 60);
   };
+  const tidyCanvas = () => {
+    const currentNodes = nodesRef.current;
+    const currentEdges = edgesRef.current;
+    const depths = new Map(currentNodes.map((node) => [node.id, 0]));
+    const indegree = new Map(currentNodes.map((node) => [node.id, 0]));
+    const outgoing = new Map(currentNodes.map((node) => [node.id, []]));
+    currentEdges.forEach((edge) => {
+      if (!depths.has(edge.source) || !depths.has(edge.target)) return;
+      outgoing.get(edge.source).push(edge.target);
+      indegree.set(edge.target, indegree.get(edge.target) + 1);
+    });
+    const queue = currentNodes.filter((node) => !indegree.get(node.id)).map((node) => node.id);
+    for (let index = 0; index < queue.length; index += 1) {
+      const source = queue[index];
+      outgoing.get(source).forEach((target) => {
+        depths.set(target, Math.max(depths.get(target), depths.get(source) + 1));
+        indegree.set(target, indegree.get(target) - 1);
+        if (!indegree.get(target)) queue.push(target);
+      });
+    }
+    const columns = new Map();
+    currentNodes.forEach((node) => {
+      const depth = depths.get(node.id) || 0;
+      if (!columns.has(depth)) columns.set(depth, []);
+      columns.get(depth).push(node);
+    });
+    const heightOf = (node) => node.type === 'generator' ? 360 : node.type === 'prompt' ? 390 : node.type === 'note' ? 250 : 260;
+    const layouts = new Map();
+    const maxHeight = Math.max(...[...columns.values()].map((items) => items.reduce((sum, node) => sum + heightOf(node) + 80, -80)));
+    [...columns.entries()].sort(([a], [b]) => a - b).forEach(([depth, items]) => {
+      const columnHeight = items.reduce((sum, node) => sum + heightOf(node) + 80, -80);
+      let y = (maxHeight - columnHeight) / 2;
+      items.forEach((node) => {
+        layouts.set(node.id, { x: depth * 520, y });
+        y += heightOf(node) + 80;
+      });
+    });
+    setNodes((items) => items.map((node) => ({ ...node, position: layouts.get(node.id) || node.position, selected: false })));
+    setEdges((items) => items.map((edge) => ({ ...edge, type: 'default', selected: false })));
+    setAddMenu(null); setNodeMenu(null);
+    setTimeout(() => fitView({ duration: 450, padding: 0.12, maxZoom: 0.85 }), 100);
+  };
   const placeAddMenu = (screenPoint) => {
     const point = {
       x: Math.max(8, Math.min(screenPoint.x, window.innerWidth - 253)),
@@ -834,7 +877,8 @@ function CanvasInner({ onSimpleMode }) {
           snapToGrid={snapEnabled} snapGrid={[22, 22]}
           onMove={(_, viewport) => setZoom(Math.round(viewport.zoom * 100))}
           onMoveEnd={(_, viewport) => { saved.viewport = viewport; localStorage.setItem(CANVAS_KEY, JSON.stringify(canvasSnapshot(nodesRef.current, edgesRef.current, viewport))); }}
-          defaultEdgeOptions={{ style: { stroke: '#77777e', strokeWidth: 1.5 }, type: 'smoothstep' }}
+          defaultEdgeOptions={{ style: { stroke: '#77777e', strokeWidth: 1.6 }, type: 'default' }}
+          connectionLineType={ConnectionLineType.Bezier}
           connectionLineStyle={{ stroke: '#eeeeee', strokeWidth: 1.8 }}
           proOptions={{ hideAttribution: true }}
         >
@@ -862,6 +906,7 @@ function CanvasInner({ onSimpleMode }) {
           <button className="dock-add" onClick={(e) => setAddMenu({ x: window.innerWidth / 2 - 110, y: Math.max(8, window.innerHeight - 550), flow: screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) })} title="添加元素"><Plus size={19} /></button>
           <button className={libraryOpen ? 'active' : ''} onClick={() => { setLibraryOpen(!libraryOpen); setPinOpen(false); }} title="本地作品"><FolderOpen size={17} /></button>
           <button onClick={() => { setLibraryOpen(true); refreshLibrary(); }} title="生成历史"><History size={17} /></button>
+          <button onClick={tidyCanvas} title="整理画布 · 平滑连线"><Layers3 size={17} /></button>
           <button onClick={() => fitView({ duration: 350, padding: 0.15 })} title="适应画布"><Crosshair size={17} /></button>
           <button className={snapEnabled ? 'active' : ''} aria-pressed={snapEnabled} onClick={() => { const next = !snapEnabled; setSnapEnabled(next); localStorage.setItem(SNAP_KEY, String(next)); }} title="自动吸附"><Magnet size={16} /></button>
           <button onClick={onSimpleMode} title="工作台设置与简易模式"><Settings2 size={17} /></button>
