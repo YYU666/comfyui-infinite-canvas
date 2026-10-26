@@ -19,6 +19,30 @@ export const RATIOS = {
 };
 export const RESOLUTION_SCALES = { '480P': 1, '720P': 1.5, '1080P': 2.25 };
 
+export const IMAGE_MODEL = {
+  unet: 'Krea2-MuseByStable_v30Turbo_fp8.safetensors',
+  clip: 'qwen3vl_4b_fp8_scaled.safetensors',
+  vae: 'qwen_image_vae.safetensors',
+  hdUnet: 'seedvr2_3b_int8_convrot.safetensors',
+  hdVae: 'seedvr2_ema_vae_fp16.safetensors',
+};
+export const IMAGE_RATIOS = {
+  '16:9': [1344, 768], '9:16': [768, 1344], '1:1': [1024, 1024],
+  '4:3': [1152, 864], '3:4': [864, 1152], '21:9': [1536, 640],
+};
+export const IMAGE_LORAS = {
+  none: null,
+  realism: 'Krea2-N\\Krea2-realism_engine_v2.safetensors',
+  asian: 'Krea2-功能\\Krea2-亚洲asianMix_v1-bf16.safetensors',
+  fantasy: 'Krea2-风格\\Krea2-奇幻现实FantasyRealism.safetensors',
+  watercolor: 'Krea2-风格\\krea2_装饰艺术柔和水彩softwatercolor.safetensors',
+  retroAnime: 'Krea2-风格\\krea2_紫调复古旧动漫retroanime.safetensors',
+};
+
+export function resolveImageDimensions(ratio = '16:9') {
+  return IMAGE_RATIOS[ratio] || IMAGE_RATIOS['16:9'];
+}
+
 export function resolveDimensions(ratio = '16:9', resolution = '480P') {
   const [baseWidth, baseHeight] = RATIOS[ratio] || RATIOS['16:9'];
   const scale = RESOLUTION_SCALES[resolution] || RESOLUTION_SCALES['480P'];
@@ -130,6 +154,52 @@ export function buildReferenceWorkflow(options) {
   if (Object.keys(autoGrow.videoAudios).length) graph['7'].inputs.ref_video_audios = autoGrow.videoAudios;
   if (Object.keys(autoGrow.audios).length) graph['7'].inputs.ref_audios = autoGrow.audios;
   return graph;
+}
+
+export function buildImageWorkflow(options) {
+  const [width, height] = resolveImageDimensions(options.ratio);
+  const loraName = IMAGE_LORAS[options.imageLora || 'none'];
+  const graph = {
+    model: { class_type: 'UNETLoader', inputs: { unet_name: IMAGE_MODEL.unet, weight_dtype: 'default' } },
+    text: { class_type: 'CLIPLoader', inputs: { clip_name: IMAGE_MODEL.clip, type: 'krea2', device: 'default' } },
+    vae: { class_type: 'VAELoader', inputs: { vae_name: IMAGE_MODEL.vae } },
+    positive: { class_type: 'CLIPTextEncode', inputs: { clip: ['text', 0], text: options.prompt.trim() } },
+    negative: { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['positive', 0] } },
+    latent: { class_type: 'EmptyLatentImage', inputs: { width, height, batch_size: 1 } },
+    sample: { class_type: 'KSampler', inputs: {
+      model: [loraName ? 'lora' : 'model', 0], seed: Number(options.seed), steps: 8, cfg: 1,
+      sampler_name: 'euler', scheduler: 'simple', positive: ['positive', 0], negative: ['negative', 0], latent_image: ['latent', 0], denoise: 1,
+    } },
+    decode: { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } },
+    save: { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'image/H3_Image' } },
+  };
+  if (loraName) graph.lora = { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: loraName, strength_model: Number(options.loraStrength ?? 0.8) } };
+  return graph;
+}
+
+export function buildImageHdWorkflow(options) {
+  const guide = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
+  if (!guide) throw new Error('图片高清需要连接一张本地生成或导入的图片。');
+  const multiplier = Number(options.imageScale || 1.5);
+  return {
+    model: { class_type: 'UNETLoader', inputs: { unet_name: IMAGE_MODEL.hdUnet, weight_dtype: 'default' } },
+    vae: { class_type: 'VAELoader', inputs: { vae_name: IMAGE_MODEL.hdVae } },
+    source: { class_type: 'LoadImage', inputs: { image: guide.name } },
+    alpha: { class_type: 'JoinImageWithAlpha', inputs: { image: ['source', 0], alpha: ['source', 1] } },
+    resize: { class_type: 'ResizeImageMaskNode', inputs: {
+      input: ['alpha', 0], resize_type: 'scale by multiplier', 'resize_type.multiplier': multiplier, scale_method: 'lanczos',
+    } },
+    preprocess: { class_type: 'SeedVR2Preprocess', inputs: { resized_images: ['resize', 0] } },
+    encode: { class_type: 'VAEEncodeTiled', inputs: { pixels: ['preprocess', 0], vae: ['vae', 0], tile_size: 512, overlap: 128, temporal_size: 4096, temporal_overlap: 8 } },
+    conditioning: { class_type: 'SeedVR2Conditioning', inputs: { model: ['model', 0], vae_conditioning: ['encode', 0] } },
+    sample: { class_type: 'KSampler', inputs: {
+      model: ['model', 0], seed: Number(options.seed), steps: 1, cfg: 1, sampler_name: 'euler', scheduler: 'simple',
+      positive: ['conditioning', 0], negative: ['conditioning', 1], latent_image: ['encode', 0], denoise: 1,
+    } },
+    decode: { class_type: 'VAEDecodeTiled', inputs: { samples: ['sample', 0], vae: ['vae', 0], tile_size: 512, overlap: 128, temporal_size: 4096, temporal_overlap: 8 } },
+    postprocess: { class_type: 'SeedVR2PostProcessing', inputs: { images: ['decode', 0], original_resized_images: ['resize', 0], color_correction_method: 'lab' } },
+    save: { class_type: 'SaveImage', inputs: { images: ['postprocess', 0], filename_prefix: 'image/H3_Image_HD' } },
+  };
 }
 
 export const CHARACTER_SWAP_MODELS = {
@@ -361,19 +431,28 @@ export function viewUrl(file) {
   return `${COMFY_ORIGIN}/view?${query}`;
 }
 
-export function extractVideos(historyEntry) {
-  const videos = [];
+function extractMedia(historyEntry, kind) {
+  const files = [];
+  const extensions = kind === 'image' ? /\.(png|jpe?g|webp)$/i : /\.(mp4|webm|mov|mkv)$/i;
   for (const output of Object.values(historyEntry?.outputs || {})) {
     for (const value of Object.values(output || {})) {
       if (!Array.isArray(value)) continue;
       for (const file of value) {
-        if (file && typeof file === 'object' && 'filename' in file && 'subfolder' in file && 'type' in file) {
-          videos.push({ ...file, url: viewUrl(file) });
+        if (file && typeof file === 'object' && 'filename' in file && 'subfolder' in file && 'type' in file && extensions.test(file.filename)) {
+          files.push({ ...file, url: viewUrl(file) });
         }
       }
     }
   }
-  return videos;
+  return files;
+}
+
+export function extractVideos(historyEntry) {
+  return extractMedia(historyEntry, 'video');
+}
+
+export function extractImages(historyEntry) {
+  return extractMedia(historyEntry, 'image').filter((file) => /^H3_Image(?:_HD)?_\d+_/i.test(file.filename));
 }
 
 export function openProgressSocket(clientId, handlers = {}) {

@@ -89,4 +89,34 @@ const noIdentity = api.buildHdRefineWorkflow({ ...base, resolution: '720P', fast
 assert.equal(noIdentity.identity, undefined);
 assert.equal(noIdentity.attention, undefined);
 assert.deepEqual(noIdentity.turbo.inputs.model, ['shift', 0]);
-console.log('API_TESTS_OK: durations, ratios, turbo, standard, frames, Akatz v1.5 single-pass swap, independent accelerated 720P latent HD refine');
+const textImage = api.buildImageWorkflow({ prompt: '全身写实人物', ratio: '9:16', seed: 42, imageLora: 'none' });
+assert.deepEqual(api.resolveImageDimensions('9:16'), [768, 1344]);
+assert.equal(textImage.model.inputs.unet_name, api.IMAGE_MODEL.unet);
+assert.equal(textImage.text.inputs.type, 'krea2');
+assert.equal(textImage.latent.inputs.width, 768);
+assert.equal(textImage.latent.inputs.height, 1344);
+assert.equal(textImage.sample.inputs.steps, 8);
+assert.equal(textImage.sample.inputs.cfg, 1);
+assert.equal(textImage.sample.inputs.sampler_name, 'euler');
+assert.equal(textImage.sample.inputs.scheduler, 'simple');
+assert.equal(textImage.negative.class_type, 'ConditioningZeroOut');
+assert.equal(textImage.save.inputs.filename_prefix, 'image/H3_Image');
+const loraImage = api.buildImageWorkflow({ prompt: 'test', ratio: '16:9', seed: 42, imageLora: 'realism' });
+assert.deepEqual(loraImage.sample.inputs.model, ['lora', 0]);
+assert.equal(loraImage.lora.inputs.strength_model, 0.8);
+const imageHd = api.buildImageHdWorkflow({ seed: 42, imageScale: 1.5, references: [{ kind: 'image', slot: 'guide', name: 'workbench/person.png' }] });
+assert.equal(imageHd.model.inputs.unet_name, api.IMAGE_MODEL.hdUnet);
+assert.equal(imageHd.resize.inputs['resize_type.multiplier'], 1.5);
+assert.deepEqual(imageHd.alpha.inputs.alpha, ['source', 1]);
+assert.equal(imageHd.sample.inputs.steps, 1);
+assert.equal(imageHd.postprocess.inputs.color_correction_method, 'lab');
+assert.equal(imageHd.save.inputs.filename_prefix, 'image/H3_Image_HD');
+assert.throws(() => api.buildImageHdWorkflow({ seed: 42, references: [] }), /图片高清/);
+const mixedFiles = api.extractImages({ outputs: { save: { images: [
+  { filename: 'H3_Image_00001_.png', subfolder: 'image', type: 'output' },
+  { filename: 'H3_Workbench_00001_.mp4', subfolder: 'video', type: 'output' },
+] } } });
+assert.equal(mixedFiles.length, 1);
+assert.equal(mixedFiles[0].filename, 'H3_Image_00001_.png');
+assert.equal(api.extractVideos({ outputs: { save: { images: [{ filename: 'H3_Image_00001_.png', subfolder: 'image', type: 'output' }] } } }).length, 0);
+console.log('API_TESTS_OK: video, Akatz v1.5 swap, video HD, Krea2 image generation, SeedVR2 image HD and typed outputs');
