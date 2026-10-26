@@ -78,19 +78,18 @@ await toolbar.locator('.h3-prompt').fill(prompt);
 await toolbar.getByLabel('换人目标').fill('the smaller white mannequin on the right');
 await toolbar.getByLabel('SAM 识别').fill('white mannequin');
 await toolbar.getByLabel('目标位置').selectOption('rightmost');
-await toolbar.getByLabel('采样精度').selectOption('2');
+assert.equal(await toolbar.getByLabel('采样精度').count(), 0, 'Old same-size refine control removed');
 assert.equal(await toolbar.locator('.h3-prompt').textContent(), prompt, 'Prompt remains editable');
-await page.screenshot({ path: '../comparison/character-swap-ui.png', fullPage: true });
 
-let submitted;
+const submissions = [];
 await page.route('http://127.0.0.1:8188/prompt', async (route) => {
-  submitted = route.request().postDataJSON();
+  submissions.push(route.request().postDataJSON());
   await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ prompt_id: 'ui-test-not-executed', number: 0, node_errors: {} }) });
 });
 await toolbar.locator('.node-generate').click();
-await page.waitForTimeout(1500);
-assert.ok(submitted, 'Workflow submitted from swap UI');
-const graph = submitted.prompt;
+await page.waitForTimeout(1200);
+assert.equal(submissions.length, 1, 'Workflow submitted from swap UI');
+const graph = submissions[0].prompt;
 assert.equal(graph.adapter.inputs.lora_name, 'h3_character_swap_v1.5.safetensors');
 assert.equal(graph.guide.class_type, 'MiniMaxH3AddGuide');
 assert.equal(graph.edit_mask.class_type, 'H3RelayApplyEditMask');
@@ -102,27 +101,36 @@ assert.equal(graph.select.inputs.selection, 'rightmost');
 assert.ok(graph.reference_conditioning.inputs.prompt.includes('complete reference character'));
 assert.equal(graph.reference.inputs.image, 'workbench/reference-character-sheet.png');
 assert.equal(graph.source.inputs.file, 'workbench/web_20261025_1fda623ee994.mp4');
-assert.equal(graph.refine_sample_2.class_type, 'SamplerCustomAdvanced');
-assert.equal(graph.refine_sampler.inputs.sampler_name, 'euler');
-assert.equal(graph.refine_sigmas.inputs.sigmas, '0.85, 0.7250, 0.4219, 0.0');
-assert.deepEqual(graph.separate.inputs.av_latent, ['refine_sample_2', 0]);
-assert.equal(graph.save_pre.inputs.filename_prefix, 'video/H3_CharacterSwap_Pass1');
-assert.equal(graph.save.inputs.filename_prefix, 'video/H3_CharacterSwap_Refined');
+assert.equal(graph.refine_sample_2, undefined);
+assert.equal(graph.save_pre, undefined);
+
+const upscaleId = await addFromMenu(/^高清二采/);
+await connect(videoId, upscaleId, 'guide');
+await connect(imageId, upscaleId, 'identity');
+const upscaleNode = page.locator(`.react-flow__node[data-id="${upscaleId}"]`);
+await upscaleNode.locator('.generator-preview').click();
+const upscaleToolbar = page.locator('.creator-toolbar:visible');
+assert.equal(await upscaleToolbar.getByLabel('分辨率').inputValue(), '720P');
+await upscaleToolbar.locator('.node-generate').click();
+await page.waitForTimeout(1200);
+assert.equal(submissions.length, 2, 'Independent HD refine workflow submitted');
+const hd = submissions[1].prompt;
+assert.equal(hd.upscale.class_type, 'MinimaxH3LatentUpscaler3D');
+assert.equal(hd.upscale.inputs['mode.width'], 1248);
+assert.equal(hd.upscale.inputs['mode.height'], 736);
+assert.equal(hd.schedule.inputs.steps, 3);
+assert.equal(hd.schedule.inputs.denoise, 0.2);
+assert.equal(hd.attention.class_type, 'MiniMaxH3MemoryEfficientSageAttentionPatch');
+assert.deepEqual(hd.video.inputs.audio, ['components', 1]);
+await page.screenshot({ path: '../comparison/character-swap-ui.png', fullPage: true });
 
 const report = {
-  swapId,
-  videoId,
-  imageId,
-  rightClickAdd: true,
-  mediaBodyDrag: true,
-  promptEditable: true,
-  guideAndIdentityConnected: true,
-  characterSwapV15: true,
-  latentEditMask: true,
-  samTarget: graph.subject.inputs.text,
-  targetSelection: graph.select.inputs.selection,
-  trimmedFrames: graph.frames.inputs.length,
-  originalAudioTrimmed: true,
+  swapId, upscaleId, videoId, imageId,
+  rightClickAdd: true, mediaBodyDrag: true, promptEditable: true,
+  guideAndIdentityConnected: true, characterSwapV15: true, latentEditMask: true,
+  singlePassSwapOnly: true, independentHdRefine: true,
+  hdResolution: [hd.upscale.inputs['mode.width'], hd.upscale.inputs['mode.height']],
+  hdSteps: hd.schedule.inputs.steps, hdDenoise: hd.schedule.inputs.denoise,
   browserErrors: errors,
 };
 fs.writeFileSync('../comparison/character-swap-ui-report.json', JSON.stringify(report, null, 2));

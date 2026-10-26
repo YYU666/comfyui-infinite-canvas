@@ -207,28 +207,64 @@ export function buildCharacterSwapWorkflow(options) {
     video: { class_type: 'CreateVideo', inputs: { images: ['finish', 0], fps: ['finish', 2], audio: ['finish', 1] } },
     save: { class_type: 'SaveVideo', inputs: { video: ['video', 0], filename_prefix: 'video/H3_CharacterSwap', format: 'mp4', 'format.codec': 'h264', 'format.codec.encoding': 're-encode', 'format.codec.encoding.crf': 16 } },
   };
-  const totalPasses = [2, 4].includes(Number(options.precision)) ? Number(options.precision) : 1;
-  if (totalPasses > 1) {
-    graph.pre_separate = { class_type: 'LTXVSeparateAVLatent', inputs: { av_latent: ['sample', 0] } };
-    graph.pre_decode = { class_type: 'VAEDecode', inputs: { samples: ['pre_separate', 0], vae: ['video_vae', 0] } };
-    graph.pre_video = { class_type: 'CreateVideo', inputs: { images: ['finish', 1], fps: ['finish', 3], audio: ['finish', 2] } };
-    graph.save_pre = { class_type: 'SaveVideo', inputs: { video: ['pre_video', 0], filename_prefix: 'video/H3_CharacterSwap_Pass1', format: 'mp4', 'format.codec': 'h264', 'format.codec.encoding': 're-encode', 'format.codec.encoding.crf': 16 } };
-    graph.refine_sigmas = { class_type: 'ManualSigmas', inputs: { sigmas: '0.85, 0.7250, 0.4219, 0.0' } };
-    graph.refine_sampler = { class_type: 'KSamplerSelect', inputs: { sampler_name: 'euler' } };
-    let refinedLatent = ['sample', 0];
-    for (let pass = 2; pass <= totalPasses; pass += 1) {
-      graph[`refine_noise_${pass}`] = { class_type: 'RandomNoise', inputs: { noise_seed: ['window', 10] } };
-      graph[`refine_guider_${pass}`] = { class_type: 'CFGGuider', inputs: { model: ['sampling_memory', 0], positive: ['guide', 0], negative: ['guide', 0], cfg: 1 } };
-      graph[`refine_sample_${pass}`] = { class_type: 'SamplerCustomAdvanced', inputs: {
-        noise: [`refine_noise_${pass}`, 0], guider: [`refine_guider_${pass}`, 0], sampler: ['refine_sampler', 0], sigmas: ['refine_sigmas', 0], latent_image: refinedLatent,
-      } };
-      refinedLatent = [`refine_sample_${pass}`, 0];
-    }
-    graph.separate.inputs.av_latent = refinedLatent;
-    graph.append = { class_type: 'H3WorkbenchAppendRefinedWindow', inputs: { refined_frames: ['decode', 0], first_pass_frames: ['pre_decode', 0], window: ['window', 12], previous: ['start', 4] } };
-    graph.finish = { class_type: 'H3WorkbenchFinishRefinedWindows', inputs: { state: ['end', 0], audio_mode: 'source', source_audio: ['source_audio', 0] } };
-    graph.video.inputs = { images: ['finish', 0], fps: ['finish', 3], audio: ['finish', 2] };
-    graph.save.inputs.filename_prefix = 'video/H3_CharacterSwap_Refined';
+  return graph;
+}
+
+export const HD_REFINE_MODEL = 'minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors';
+export const HD_REFINE_TURBO = 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors';
+
+export function buildHdRefinePrompt(details = '') {
+  const extra = details.trim();
+  return `Upscale and refine the source video at the target resolution. Preserve the exact person identity, facial features, hairstyle, body shape, complete outfit, motion, expression, scene, other people, camera, timing and original audio. Reconstruct natural fine details without redesigning the character, clothing, background or performance.${extra ? ` Additional requirements: ${extra}` : ''}`;
+}
+
+export function buildHdRefineWorkflow(options) {
+  const guide = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'video');
+  const identity = options.references?.find((ref) => ref.slot === 'identity' && ref.kind === 'image');
+  if (!guide) throw new Error('高清二采需要连接一段已经生成的一采视频。');
+  const [width, height] = resolveDimensions(options.ratio, options.resolution || '720P');
+  const graph = {
+    model: { class_type: 'UNETLoader', inputs: { unet_name: MODEL_INFO.referenceUnet, weight_dtype: 'default' } },
+    shift: { class_type: 'MiniMaxH3SigmaShift', inputs: { model: ['model', 0], shift_video: 12, shift_audio: 3 } },
+    turbo: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['shift', 0], lora_name: HD_REFINE_TURBO, strength_model: 1 } },
+    adapter: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['turbo', 0], lora_name: CHARACTER_SWAP_MODELS.characterLora, strength_model: 1 } },
+    text: { class_type: 'CLIPLoader', inputs: { clip_name: CHARACTER_SWAP_MODELS.clip, type: 'minimax', device: 'default' } },
+    text_device: { class_type: 'SelectCLIPDevice', inputs: { clip: ['text', 0], device: 'gpu:0' } },
+    text_memory: { class_type: 'H3RelayTextMemory', inputs: { clip: ['text_device', 0] } },
+    video_vae: { class_type: 'VAELoader', inputs: { vae_name: CHARACTER_SWAP_MODELS.videoVae } },
+    audio_vae: { class_type: 'VAELoader', inputs: { vae_name: MODEL_INFO.audioVae } },
+    source: { class_type: 'LoadVideo', inputs: { file: guide.name } },
+    components: { class_type: 'GetVideoComponents', inputs: { video: ['source', 0] } },
+    probe: { class_type: 'GetImageSizeAndCount', inputs: { image: ['components', 0] } },
+    scaled_reference: { class_type: 'ImageScale', inputs: { image: ['probe', 0], upscale_method: 'lanczos', width, height, crop: 'center' } },
+    encode_video: { class_type: 'VAEEncode', inputs: { pixels: ['probe', 0], vae: ['video_vae', 0] } },
+    encode_audio: { class_type: 'VAEEncodeAudio', inputs: { audio: ['components', 1], vae: ['audio_vae', 0] } },
+    upscale: { class_type: 'MinimaxH3LatentUpscaler3D', inputs: {
+      latent: ['encode_video', 0], model_name: HD_REFINE_MODEL, mode: 'target dimensions', 'mode.width': width, 'mode.height': height,
+      align: 32, enable_temporal_chunking: true, force_unload: true, device: 'cuda', precision: 'fp16',
+    } },
+    highres_latent: { class_type: 'LTXVConcatAVLatent', inputs: { video_latent: ['upscale', 0], audio_latent: ['encode_audio', 0] } },
+    conditioning: { class_type: 'MiniMaxH3ReferenceToVideo', inputs: {
+      clip: ['text_memory', 0], prompt: buildHdRefinePrompt(options.prompt), width, height, length: ['probe', 3],
+      ref_image_size: 'match', 'ref_videos.ref_video_0': ['scaled_reference', 0],
+      vae: ['video_vae', 0], audio_vae: ['audio_vae', 0], 'ref_audios.ref_audio_0': ['components', 1],
+    } },
+    sampling_memory: { class_type: 'H3RelaySamplingMemory', inputs: { model: ['adapter', 0], latent: ['highres_latent', 0], conditioning: ['conditioning', 0], activation_memory_gib: 17 } },
+    noise: { class_type: 'RandomNoise', inputs: { noise_seed: Number(options.seed) } },
+    guider: { class_type: 'CFGGuider', inputs: { model: ['sampling_memory', 0], positive: ['conditioning', 0], negative: ['conditioning', 0], cfg: 1 } },
+    sampler: { class_type: 'KSamplerSelect', inputs: { sampler_name: 'euler' } },
+    schedule: { class_type: 'BasicScheduler', inputs: { model: ['adapter', 0], scheduler: 'beta', steps: 3, denoise: 0.2 } },
+    sample: { class_type: 'SamplerCustomAdvanced', inputs: { noise: ['noise', 0], guider: ['guider', 0], sampler: ['sampler', 0], sigmas: ['schedule', 0], latent_image: ['highres_latent', 0] } },
+    separate: { class_type: 'LTXVSeparateAVLatent', inputs: { av_latent: ['sample', 0] } },
+    decode: { class_type: 'VAEDecode', inputs: { samples: ['separate', 0], vae: ['video_vae', 0] } },
+    video: { class_type: 'CreateVideo', inputs: { images: ['decode', 0], fps: ['components', 2], audio: ['components', 1] } },
+    save: { class_type: 'SaveVideo', inputs: { video: ['video', 0], filename_prefix: 'video/H3_HD_Refine', format: 'mp4', 'format.codec': 'h264', 'format.codec.encoding': 're-encode', 'format.codec.encoding.crf': 16 } },
+  };
+  if (options.fastAttention !== false) graph.attention = { class_type: 'MiniMaxH3MemoryEfficientSageAttentionPatch', inputs: { model: ['shift', 0] } };
+  if (graph.attention) graph.turbo.inputs.model = ['attention', 0];
+  if (identity) {
+    graph.identity = { class_type: 'LoadImage', inputs: { image: identity.name } };
+    graph.conditioning.inputs['ref_images.ref_image_0'] = ['identity', 0];
   }
   return graph;
 }
