@@ -25,6 +25,51 @@
 
 安装器不会更新或覆盖已有的第三方节点目录，只会克隆缺失节点；工作台自己的 `h3_workbench_refine` 节点会同步到 ComfyUI。
 
+> **交给 Agent 安装：**让 Agent 先阅读仓库根目录的 [`AGENTS.md`](AGENTS.md)，再严格按其中步骤执行。该文件包含环境检查、下载、重命名、模型配置、节点安装和最终验收命令。
+
+## 模型与 LoRA 下载链接
+
+模型不上传到 GitHub。按下表进入原始分享或作者页面，再根据 [`models/SOURCES.md`](models/SOURCES.md) 的 33 项映射逐项下载；**不要全量转存 TB 级分享，也不要用同名旧版或其他量化版代替。**
+
+| 模型内容 | 原始链接 | 清单内包含的主要内容 |
+|---|---|---|
+| MiniMax H3 主模型包 | https://pan.quark.cn/s/9ec095b95838 | FL2VA／REF2VA、32B 文本编码器、音频／视频 VAE、角色替换 LoRA |
+| H3 局部重绘／补充包 | https://pan.quark.cn/s/b9409d65ed09 | H3 Turbo LoRA、INT8 视频 VAE、SAM3.1；部分文件需在分享内搜索确认 |
+| Qwen Image 2.1 | https://pan.quark.cn/s/3df73f2e9f00 | Qwen 2.1 主模型、8B 文本编码器、VAE、Anything2RealCharacters 写实 LoRA |
+| Krea2 全攻略 | https://pan.quark.cn/s/83b5ad9265e8 | Krea2 Turbo、4B 文本编码器、VAE、写实／亚洲／奇幻现实／复古动漫／水彩 LoRA |
+| MOSS | https://pan.quark.cn/s/70e57d93e32d | MOSS 主模型、9B 文本编码器、FLUX2 VAE、SeedVR2 VAE |
+| 四视图原视频分享 | https://pan.quark.cn/s/4b5a36d50e9c | 在分享内搜索 `QuadView_krea2_v1`；未逐项核实，搜不到用下方官方链接 |
+| Muse V3.0 作者页 | https://civitai.com/models/2741166 | 当前公开文件与本机 V3.0 FP8 不完全匹配，不能下载后强行改名顶替 |
+| Identity Edit V2 官方权重 | https://huggingface.co/conradlocke/krea2-identity-edit/resolve/main/krea2_identity_edit_v2.safetensors | `krea2_identity_edit_v2.safetensors` 完整版 |
+| 四视图官方权重 | https://huggingface.co/Alissonerdx/CharacterSheet/resolve/main/QuadView_krea2_v1.safetensors | 下载后重命名为 `Krea2-四视图QuadView_krea2_v1.safetensors` |
+| SeedVR2 3B 官方权重 | https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/diffusion_models/seedvr2_3b_int8_convrot.safetensors | 必须是 3B INT8 ConvRot，不是 MOSS 包中的 7B |
+| SAM3.1 官方备用 | https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors | `sam3.1_multiplex_fp16.safetensors` |
+| H3 latent 高清模型 | https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors | 下载后放在 `latent_upscale_models/` 根目录 |
+
+所有模型的**精确目标路径、目标文件名、字节数**以 [`models/manifest.json`](models/manifest.json) 为准；夸克搜索名和必要重命名以 [`models/SOURCES.md`](models/SOURCES.md) 为准。
+
+## 模型配置方法
+
+以下两种方式任选其一，不要重复配置。
+
+### 方式 A：复制或硬链接到 ComfyUI（推荐）
+
+先将下载文件按清单整理到 `D:\H3-Workbench-Models`，然后在 ComfyUI 便携版根目录运行：
+
+```bat
+python_embeded\python.exe video-workbench\scripts\install_models.py "D:\H3-Workbench-Models" --comfy-root "."
+```
+
+脚本会校验文件名和字节数，再复制到 `ComfyUI\models\`。若临时模型目录与 `ComfyUI\models` 位于同一磁盘，可加 `--link` 使用硬链接，避免重复占用空间；跨盘不要加。
+
+### 方式 B：保留外置模型目录
+
+1. 将 [`extra_model_paths.example.yaml`](extra_model_paths.example.yaml) 复制为 `ComfyUI\extra_model_paths.yaml`。
+2. 把 `base_path` 改成整理后的模型根目录，例如 `D:/H3-Workbench-Models`。
+3. 保留各类目相对路径不变，重启 ComfyUI。
+
+采用方式 B 时，最终校验要额外传入 `--model-root "D:\H3-Workbench-Models"`。模型目录结构示例见 [`models/README.md`](models/README.md)。
+
 ## AI 提示词优化（可选）
 
 普通本地生成不需要 API 密钥。只有“AI 优化提示词”需要 DeepSeek：在本目录创建 `deepseek.key`，只写入密钥；也可使用环境变量 `DEEPSEEK_API_KEY`。密钥文件已被 Git 忽略，不要提交或分享。
