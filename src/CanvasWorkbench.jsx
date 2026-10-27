@@ -23,10 +23,9 @@ import './canvas.css';
 import PromptEditor from './PromptEditor';
 import MaskEditor from './MaskEditor';
 import { useCanvasMcp } from './canvas-mcp';
+import CanvasProjectMenu from './CanvasProjectMenu';
+import { initializeProjects, listProjects, createProject, openProject, saveProject, projectSummary, saveProjectFile, readProjectFile } from './canvas-projects';
 
-const CANVAS_KEY = 'h3-infinite-canvas-v2';
-const OLD_CANVAS_KEY = 'h3-infinite-canvas-v1';
-const NAME_KEY = 'h3-canvas-name-v1';
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
 const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -53,7 +52,7 @@ function initialCanvas() {
 }
 
 function migrateCanvas(value) {
-  if (!value?.nodes?.length) return initialCanvas();
+  if (!Array.isArray(value?.nodes)) return initialCanvas();
   const nodes = value.nodes.map((node) => {
     if (node.type === 'generator' || node.type === 'h3') {
       const data = { ...DEFAULT_GENERATOR, ...node.data, title: node.data.title === 'H3 视频生成' ? '全能参考' : node.data.title, mode: node.data.mode || 'reference' };
@@ -66,7 +65,7 @@ function migrateCanvas(value) {
     }
     if (node.type === 'video') return { ...node, type: 'media', data: { ...node.data, kind: 'video', output: true } };
     if (node.type === 'prompt') return { ...node, data: { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...node.data } };
-    if (node.type === 'note') return { ...node, data: node.data.title === '从这里开始' ? { ...node.data, text: '① 上传图片、视频或音频素材\n② 选中全能参考，用 + 添加或连线素材\n③ 输入 @ 名称引用角色、动作或声音\n④ 点击右下角箭头，本地生成视频\n\n首尾帧已收进次要模式。' } : node };
+    if (node.type === 'note') return { ...node, data: node.data.title === '从这里开始' ? { ...node.data, text: '① 上传图片、视频或音频素材\n② 选中全能参考，用 + 添加或连线素材\n③ 输入 @ 名称引用角色、动作或声音\n④ 点击右下角箭头，本地生成视频\n\n首尾帧已收进次要模式。' } : node.data };
     return null;
   }).filter(Boolean);
   const edges = (value.edges || []).map((edge) => {
@@ -82,16 +81,6 @@ function migrateCanvas(value) {
   return { ...value, nodes, edges };
 }
 
-function readCanvas() {
-  try {
-    const current = JSON.parse(localStorage.getItem(CANVAS_KEY));
-    if (current?.nodes?.length) return migrateCanvas(current);
-    const old = JSON.parse(localStorage.getItem(OLD_CANVAS_KEY));
-    if (old?.nodes?.length) return migrateCanvas(old);
-  } catch { /* Use a clean canvas. */ }
-  return initialCanvas();
-}
-
 function canvasSnapshot(nodes, edges, viewport) {
   return {
     nodes: nodes.map((node) => ({
@@ -103,38 +92,6 @@ function canvasSnapshot(nodes, edges, viewport) {
       },
     })), edges, viewport,
   };
-}
-
-const mediaDb = () => new Promise((resolve, reject) => {
-  const request = indexedDB.open('h3-workbench-media', 1);
-  request.onupgradeneeded = () => request.result.createObjectStore('files');
-  request.onsuccess = () => resolve(request.result);
-  request.onerror = () => reject(request.error);
-});
-async function storeFile(id, file) {
-  const db = await mediaDb();
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction('files', 'readwrite');
-    tx.objectStore('files').put(file, id);
-    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
-  });
-  db.close();
-}
-async function restoreFile(id) {
-  const db = await mediaDb();
-  const file = await new Promise((resolve, reject) => {
-    const request = db.transaction('files').objectStore('files').get(id);
-    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
-  });
-  db.close();
-  return file;
-}
-async function deleteStoredFile(id) {
-  try {
-    const db = await mediaDb();
-    db.transaction('files').objectStore('files').delete(id);
-    db.close();
-  } catch { /* Storage cleanup is best-effort. */ }
 }
 
 function remoteMediaUrl(path) {
@@ -449,11 +406,21 @@ function GeneratorNode({ id, data, selected }) {
 
 const nodeTypes = { note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode) };
 
-function CanvasInner({ onSimpleMode }) {
-  const saved = useMemo(readCanvas, []);
+function CanvasInner({ onSimpleMode, project, onProjectChange }) {
+  const saved = useMemo(() => migrateCanvas(project.canvas), [project.id]);
   const [nodes, setNodes, onNodesChange] = useNodesState(saved.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(saved.edges || []);
-  const [projectName, setProjectName] = useState(() => localStorage.getItem(NAME_KEY) || '我的本地创作');
+  const [projectName, setProjectName] = useState(project.name);
+  const [projects, setProjects] = useState(() => [projectSummary(project)]);
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [projectError, setProjectError] = useState('');
+  const revisionRef = useRef(project.revision);
+  const savingRef = useRef(Promise.resolve());
+  const switchingRef = useRef(false);
+  const mediaWritesRef = useRef(new Map());
+  const nameRef = useRef(projectName);
+  nameRef.current = projectName;
+  const lastSavedRef = useRef(JSON.stringify([project.name, canvasSnapshot(saved.nodes, saved.edges || [], saved.viewport)]));
   const [saveState, setSaveState] = useState('已保存');
   const [server, setServer] = useState({ online: false, label: '正在连接' });
   const [metrics, setMetrics] = useState({ vramUsed: null, vramTotal: null, cpuPercent: null, ramUsed: null, ramTotal: null });
@@ -493,23 +460,70 @@ function CanvasInner({ onSimpleMode }) {
       previousFocus?.focus?.();
     };
   }, [imagePreview]);
-  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
-  useEffect(() => { edgesRef.current = edges; }, [edges]);
+  nodesRef.current = nodes;
+  edgesRef.current = edges;
+  const persistProject = useCallback(() => {
+    const canvas = canvasSnapshot(nodesRef.current, edgesRef.current, saved.viewport);
+    const name = nameRef.current;
+    const signature = JSON.stringify([name, canvas]);
+    setSaveState('保存中');
+    const pending = savingRef.current.catch(() => {}).then(async () => {
+      await Promise.all([...mediaWritesRef.current.values()]);
+      if (signature === lastSavedRef.current) return;
+      const next = await saveProject(project.id, revisionRef.current, name, canvas);
+      revisionRef.current = next.revision;
+      lastSavedRef.current = signature;
+      setProjects((rows) => [projectSummary(next), ...rows.filter((row) => row.id !== next.id)]);
+    });
+    savingRef.current = pending;
+    return pending.then(() => {
+      const latest = JSON.stringify([nameRef.current, canvasSnapshot(nodesRef.current, edgesRef.current, saved.viewport)]);
+      setSaveState(latest === lastSavedRef.current ? '已保存' : '保存中'); setProjectError('');
+    }, (error) => {
+      setSaveState('保存失败'); setProjectError(error.message || '项目保存失败，请保留本页后重试。'); throw error;
+    });
+  }, [project.id, saved]);
   useEffect(() => {
     setSaveState('保存中');
-    const timer = setTimeout(() => {
-      localStorage.setItem(CANVAS_KEY, JSON.stringify(canvasSnapshot(nodes, edges, saved.viewport)));
-      setSaveState('已保存');
-    }, 400);
+    const timer = setTimeout(() => { persistProject().catch(() => {}); }, 400);
     return () => clearTimeout(timer);
-  }, [nodes, edges, saved.viewport]);
-  useEffect(() => { localStorage.setItem(NAME_KEY, projectName); }, [projectName]);
+  }, [nodes, edges, projectName, persistProject]);
+  useEffect(() => {
+    const flush = () => { if (document.visibilityState === 'hidden') persistProject().catch(() => {}); };
+    const beforeUnload = (event) => {
+      const signature = JSON.stringify([nameRef.current, canvasSnapshot(nodesRef.current, edgesRef.current, saved.viewport)]);
+      if (signature !== lastSavedRef.current || mediaWritesRef.current.size) { event.preventDefault(); event.returnValue = ''; }
+    };
+    document.addEventListener('visibilitychange', flush);
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => { document.removeEventListener('visibilitychange', flush); window.removeEventListener('beforeunload', beforeUnload); };
+  }, [persistProject, saved]);
+  const refreshProjects = useCallback(async () => {
+    try { setProjects(await listProjects()); }
+    catch (error) { setProjectError(error.message || '项目列表读取失败。'); }
+  }, []);
+  useEffect(() => { refreshProjects(); }, [refreshProjects]);
+  const hasActiveTask = () => nodesRef.current.some((node) => ['uploading', 'queued', 'running', 'finishing', 'optimizing'].includes(node.data.status));
+  const changeProject = async (id, name) => {
+    if (switchingRef.current) return false;
+    if (hasActiveTask()) { setProjectError('任务进行中，请等待完成后再新建或切换项目。'); return false; }
+    switchingRef.current = true; setProjectBusy(true);
+    try {
+      await persistProject();
+      if (hasActiveTask()) throw new Error('任务进行中，请等待完成后再切换项目。');
+      const target = id ? await openProject(id) : await createProject(name, { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } });
+      const active = id ? target : await openProject(target.id);
+      onProjectChange(active);
+      return true;
+    } catch (error) { setProjectError(error.message || '切换失败，当前画布已保留。'); return false; }
+    finally { switchingRef.current = false; setProjectBusy(false); }
+  };
   useEffect(() => {
     let alive = true;
     nodes.forEach(async (node) => {
       if (node.type !== 'media' || !node.data.localFile || filesRef.current[node.id]) return;
       try {
-        const file = await restoreFile(node.id);
+        const file = await readProjectFile(project, node.data.mediaStorageId || node.id);
         if (!alive || !file) return;
         filesRef.current[node.id] = file;
         if (!node.data.remoteName && !node.data.output) updateNode(node.id, { url: URL.createObjectURL(file), name: file.name });
@@ -519,6 +533,7 @@ function CanvasInner({ onSimpleMode }) {
   }, []);
 
   const updateNode = useCallback((id, patch) => {
+    if (switchingRef.current) return;
     setNodes((items) => {
       const previous = items.find((node) => node.id === id);
       const renamed = previous && patch.title && patch.title !== previous.data.title;
@@ -533,11 +548,15 @@ function CanvasInner({ onSimpleMode }) {
   }, [setNodes]);
 
   const removeNode = useCallback((id) => {
+    if (switchingRef.current) return;
     const node = nodesRef.current.find((item) => item.id === id);
     if (node?.data.promptId && ['uploading','queued','running'].includes(node.data.status)) cancelPrompt(node.data.promptId).catch(() => {});
     setNodes((items) => items.filter((item) => item.id !== id));
     setEdges((items) => items.filter((edge) => edge.source !== id && edge.target !== id));
-    delete filesRef.current[id]; deleteStoredFile(id);
+    delete filesRef.current[id];
+    mediaWritesRef.current.delete(id);
+    // Keep immutable media records: this deletion may fail its project revision
+    // check, and another committed canvas can still reference the same record.
   }, [setNodes, setEdges]);
 
   const togglePin = useCallback((id) => {
@@ -546,9 +565,15 @@ function CanvasInner({ onSimpleMode }) {
   }, [updateNode]);
 
   const chooseMedia = useCallback((id, file) => {
+    if (switchingRef.current) return;
     filesRef.current[id] = file;
-    storeFile(id, file).catch(() => {});
-    updateNode(id, { url: URL.createObjectURL(file), name: file.name, remoteName: null, localFile: true, output: false, resultUrl: null });
+    // Each replacement gets a fresh record, so a stale tab cannot overwrite the
+    // media referenced by a newer committed project before its revision check.
+    const mediaStorageId = uid('media');
+    const pending = saveProjectFile(project.id, mediaStorageId, file);
+    mediaWritesRef.current.set(id, pending);
+    pending.then(() => { if (mediaWritesRef.current.get(id) === pending) mediaWritesRef.current.delete(id); }, (error) => { setSaveState('保存失败'); setProjectError(error.message || '素材保存失败，请重新选择素材后再切换项目。'); });
+    updateNode(id, { url: URL.createObjectURL(file), name: file.name, mediaStorageId, remoteName: null, localFile: true, output: false, resultUrl: null });
   }, [updateNode]);
 
   const getReferences = useCallback((id) => {
@@ -577,6 +602,7 @@ function CanvasInner({ onSimpleMode }) {
   }, []);
 
   const optimizePromptNode = useCallback(async (id) => {
+    if (switchingRef.current) return;
     const promptNode = nodesRef.current.find((node) => node.id === id);
     const target = getPromptTarget(id);
     if (!promptNode || !target) {
@@ -739,6 +765,7 @@ function CanvasInner({ onSimpleMode }) {
   useEffect(() => { if (libraryOpen) refreshLibrary(); }, [libraryOpen, refreshLibrary]);
 
   const generateNode = useCallback(async (id) => {
+    if (switchingRef.current) return;
     const node = nodesRef.current.find((item) => item.id === id);
     if (!['swap', 'upscale', 'imageUpscale'].includes(node?.data.mode) && !node?.data.prompt?.trim()) { updateNode(id, { status: 'error', error: '请先输入画面描述。' }); return; }
     const refs = getReferences(id);
@@ -800,6 +827,7 @@ function CanvasInner({ onSimpleMode }) {
   }, [updateNode]);
 
   const addNode = useCallback((type, extra = {}, atPosition = null, shouldFocus = true) => {
+    if (switchingRef.current) throw new Error('正在保存并切换项目，请稍后再添加节点。');
     const desired = atPosition || screenToFlowPosition({ x: window.innerWidth * 0.45, y: window.innerHeight * 0.35 });
     const id = uid(type);
     let data;
@@ -854,6 +882,7 @@ function CanvasInner({ onSimpleMode }) {
   }, [addNode, setEdges]);
 
   const onConnect = useCallback((connection) => {
+    if (switchingRef.current) return;
     const source = nodesRef.current.find((node) => node.id === connection.source);
     const target = nodesRef.current.find((node) => node.id === connection.target);
     if (source?.type === 'prompt' && target?.type === 'generator' && connection.targetHandle === 'prompt') {
@@ -885,11 +914,7 @@ function CanvasInner({ onSimpleMode }) {
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [addMenu, nodeMenu]);
 
-  const resetCanvas = () => {
-    if (!window.confirm('新建空白画布？当前画布会被替换，但已经生成的视频文件不会删除。')) return;
-    const fresh = initialCanvas();
-    setNodes(fresh.nodes); setEdges(fresh.edges); setTimeout(() => fitView({ duration: 300 }), 60);
-  };
+  const resetCanvas = () => changeProject(null, '未命名项目');
   const tidyCanvas = () => {
     const currentNodes = nodesRef.current;
     const currentEdges = edgesRef.current;
@@ -1010,12 +1035,9 @@ function CanvasInner({ onSimpleMode }) {
   return <NodeContext.Provider value={context}>
     <div className="neo-app">
       <header className="neo-header">
-        <div className="neo-project-pill">
-          <span className="neo-logo">H<b>3</b></span><ChevronDown size={12} />
-          <i />
-          <input value={projectName} onChange={(e) => setProjectName(e.target.value)} aria-label="画布项目名称" />
-          <span className="save-indicator" title={saveState}><Check size={13} /></span>
-        </div>
+        <CanvasProjectMenu current={project} projects={projects} name={projectName} onNameChange={setProjectName}
+          saveState={saveState} error={projectError} busy={projectBusy} locked={hasActiveTask()}
+          onRefresh={refreshProjects} onOpen={(id) => changeProject(id)} onCreate={(name) => changeProject(null, name)} />
         <div className="neo-header-right">
           <div className="hardware-monitor" aria-label="硬件状态" title={`${server.label} · 系统内存 ${formatGb(metrics.ramUsed)} / ${formatGb(metrics.ramTotal)} GB · 每 3 秒刷新`}>
             <div className="hardware-metric">
@@ -1032,12 +1054,13 @@ function CanvasInner({ onSimpleMode }) {
           <div className="neo-header-actions">
             <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={clearMemory} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
             <button className={`server-status ${server.online ? 'online' : ''}`} onClick={checkServer} title={server.label}><i />{server.online ? '本地已连接' : '本地未连接'}</button>
-            <button onClick={onSimpleMode} title="切换简易模式"><MousePointer2 size={15} /></button>
+            <button onClick={async () => { if (!switchingRef.current && !hasActiveTask()) { try { await persistProject(); onSimpleMode(); } catch { /* Keep the unsaved canvas open. */ } } }} title="切换简易模式"><MousePointer2 size={15} /></button>
             <button onClick={() => window.open('http://127.0.0.1:8188','_blank')} title="打开 ComfyUI 高级节点"><MoreHorizontal size={17} /></button>
           </div>
         </div>
       </header>
-      <main className={`neo-canvas-wrap canvas-view-${viewTier}`}
+      {projectBusy && <div className="project-switching" role="status"><LoaderCircle className="spin" size={18} />正在保存并打开画布…</div>}
+      <main className={`neo-canvas-wrap canvas-view-${viewTier}`} inert={projectBusy ? true : undefined}
         onDragOver={(e) => e.preventDefault()}
         onPointerDownCapture={(event) => { if (event.button === 0 && !event.target.closest('.add-node-menu,.node-context-menu')) { setAddMenu(null); setNodeMenu(null); } }}
         onContextMenuCapture={openContextMenu}
@@ -1053,14 +1076,14 @@ function CanvasInner({ onSimpleMode }) {
         <ReactFlow
           nodes={nodes} edges={edges} nodeTypes={nodeTypes} onlyRenderVisibleElements
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
-          defaultViewport={saved.viewport} fitView={!localStorage.getItem(CANVAS_KEY) && !localStorage.getItem(OLD_CANVAS_KEY)}
+          defaultViewport={saved.viewport} fitView={!saved.viewport}
           fitViewOptions={{ padding: 0.16, maxZoom: 0.85 }}
           minZoom={0.12} maxZoom={1.8} zoomOnScroll zoomOnPinch zoomOnDoubleClick={false}
           panOnDrag={[1]} panOnScroll={false} selectionOnDrag selectionMode={SelectionMode.Partial}
           multiSelectionKeyCode={['Shift']} deleteKeyCode={['Backspace','Delete']}
           snapToGrid={snapEnabled} snapGrid={[22, 22]}
           onMove={(_, viewport) => setZoom(Math.round(viewport.zoom * 100))}
-          onMoveEnd={(_, viewport) => { saved.viewport = viewport; localStorage.setItem(CANVAS_KEY, JSON.stringify(canvasSnapshot(nodesRef.current, edgesRef.current, viewport))); }}
+          onMoveEnd={(_, viewport) => { saved.viewport = viewport; persistProject().catch(() => {}); }}
           defaultEdgeOptions={{ style: { stroke: '#77777e', strokeWidth: 1.6 }, type: 'default' }}
           connectionLineType={ConnectionLineType.Bezier}
           connectionLineStyle={{ stroke: '#eeeeee', strokeWidth: 1.8 }}
@@ -1094,7 +1117,7 @@ function CanvasInner({ onSimpleMode }) {
           <button onClick={tidyCanvas} title="整理画布 · 平滑连线"><Layers3 size={17} /></button>
           <button onClick={() => fitView({ duration: 350, padding: 0.15 })} title="适应画布"><Crosshair size={17} /></button>
           <button className={snapEnabled ? 'active' : ''} aria-pressed={snapEnabled} onClick={() => { const next = !snapEnabled; setSnapEnabled(next); localStorage.setItem(SNAP_KEY, String(next)); }} title="自动吸附"><Magnet size={16} /></button>
-          <button onClick={onSimpleMode} title="工作台设置与简易模式"><Settings2 size={17} /></button>
+          <button onClick={async () => { if (!switchingRef.current && !hasActiveTask()) { try { await persistProject(); onSimpleMode(); } catch { /* Keep the unsaved canvas open. */ } } }} title="工作台设置与简易模式"><Settings2 size={17} /></button>
           <button className={pinOpen ? 'active' : ''} onClick={() => { setPinOpen(!pinOpen); setLibraryOpen(false); }} title={`Pin 节点 ${pinnedNodes.length}`}><Pin size={16} /></button>
         </div>
         {addMenu && <div className="add-node-menu" role="menu" aria-label="添加节点" style={{ left: addMenu.x, top: addMenu.y }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}>
@@ -1160,5 +1183,13 @@ function CanvasInner({ onSimpleMode }) {
 }
 
 export default function CanvasWorkbench(props) {
-  return <ReactFlowProvider><CanvasInner {...props} /></ReactFlowProvider>;
+  const [project, setProject] = useState(null);
+  const [error, setError] = useState('');
+  const load = useCallback(() => {
+    setError('');
+    initializeProjects(initialCanvas).then(setProject).catch((reason) => setError(reason.message || '项目存储无法打开。'));
+  }, []);
+  useEffect(load, [load]);
+  if (!project) return <div className="neo-app project-loading"><FolderOpen size={26} /><strong>{error ? '项目暂时无法打开' : '正在打开本地项目'}</strong><p role={error ? 'alert' : 'status'}>{error || '正在读取已保存的画布…'}</p>{error && <button onClick={load}>重试</button>}</div>;
+  return <ReactFlowProvider key={project.id}><CanvasInner {...props} project={project} onProjectChange={setProject} /></ReactFlowProvider>;
 }

@@ -116,11 +116,20 @@ MiniMax H3、Qwen 2.1、SAM3、SeedVR2 和循环节点由新版 ComfyUI 本体�
 - 画布项目保存在浏览器本机存储中。清理浏览器数据前请先备份。
 - 仓库不包含人物母图、测试生成素材、浏览器 Cookie、API 密钥或模型权重。
 
+## 画布项目列表
+
+点击左上角项目名称旁的箭头打开项目列表，可搜索、切换或新建画布；直接编辑左上角名称即可重命名。切换前会先保存当前项目，生成或提示词优化期间暂不能切换。原来的单画布会自动保留为第一个项目，不需要重新添加节点。
+
+每个项目独立保存节点、连线、视口和本地素材，空画布也会保存。项目数据使用当前浏览器的 IndexedDB；换浏览器或换应用内浏览器不会自动同步，清理浏览器数据前请先备份。列表中的“协作”当前仅显示说明，不提供在线共享。保存失败时界面会提示并保留当前画布，避免切换后丢失修改；多个窗口编辑同一项目时会阻止旧版本覆盖新版本。
+
+删除节点不会立即清除浏览器内的素材文件，以免保存失败或其他已保存画布仍引用该素材时丢失文件。
+
 ## 常用开发检查
 
 ```bat
 npm ci
 npm run build
 node test-canvas-layout.mjs
+node test-canvas-projects.mjs
 python -m py_compile video_workbench_launcher.py install.py scripts\install_models.py scripts\prepare_cloud_package.py scripts\verify_workbench.py
 ```

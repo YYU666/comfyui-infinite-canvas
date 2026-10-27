@@ -26,6 +26,43 @@
 .neo-project-pill > i { width: 1px; height: 17px; margin: 0 3px; background: rgba(255,255,255,.1); }
 .neo-project-pill input { width: 132px; border: 0; outline: 0; background: transparent; color: #ededee; font-size: 12px; font-weight: 550; }
 .save-indicator { width: 23px; height: 23px; display: grid; place-items: center; color: #8c8c92; }
+.canvas-project-control { position: relative; pointer-events: auto; }
+.project-list-toggle { display: flex; align-items: center; gap: 7px; padding: 0; background: transparent; border: 0; cursor: pointer; }
+.project-list-toggle > svg { color: #8c8c92; }
+.project-list-toggle { width: 23px; height: 27px; justify-content: center; border-radius: 6px; }
+.project-list-toggle:hover { background: rgba(255,255,255,.07); }
+.project-list-toggle svg { transition: transform .15s; }
+.canvas-project-panel { position: absolute; left: 0; top: 50px; width: 300px; padding: 8px; border: 1px solid rgba(255,255,255,.09); border-radius: 16px; background: #171719; box-shadow: 0 18px 60px rgba(0,0,0,.48); }
+.project-search { height: 38px; display: flex; align-items: center; gap: 9px; padding: 0 12px; border-radius: 10px; background: #363638; color: #b7b7bc; }
+.project-search input, .project-create input { min-width: 0; width: 100%; color: #eee; border: 0; outline: 0; background: transparent; font-size: 12px; }
+.project-search input::placeholder, .project-create input::placeholder { color: #a1a1a8; }
+.project-filters { display: flex; gap: 3px; padding: 3px; margin: 8px 0 5px; border-radius: 9px; background: #222224; }
+.project-filters button { flex: 1; padding: 6px; border: 0; border-radius: 7px; background: transparent; font-size: 11px; color: #b2b2b8; cursor: pointer; }
+.project-filters button[aria-selected="true"] { background: #414144; color: #f0f0f2; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+.project-list { max-height: min(360px, 48vh); overflow: auto; }
+.project-row { width: 100%; min-height: 49px; display: flex; align-items: center; gap: 10px; padding: 7px 5px; text-align: left; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
+.project-row:hover { background: #28282b; }
+.project-row:disabled { cursor: default; opacity: .55; }
+.project-row.current:disabled { opacity: 1; }
+.project-row-icon { flex: 0 0 34px; height: 34px; display: grid; place-items: center; overflow: hidden; border-radius: 8px; background: #303034; color: #9898a0; }
+.project-row-icon img { width: 100%; height: 100%; object-fit: cover; }
+.project-row-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.project-row-copy strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 500; color: #ececef; }
+.project-row-copy small { font-size: 9px; color: #83838c; }
+.project-current { flex: 0 0 16px; margin-right: 4px; color: #ededf0; }
+.project-create { margin-top: 6px; padding-top: 7px; border-top: 1px solid rgba(255,255,255,.07); }
+.project-create button { width: 100%; display: flex; align-items: center; justify-content: flex-start; gap: 9px; padding: 10px 9px; background: #252528; border: 0; border-radius: 8px; color: #dddde2; font-size: 12px; cursor: pointer; }
+.project-create button:hover { background: #333337; }
+.project-create button:disabled { opacity: .45; cursor: wait; }
+.project-storage-note { margin: 7px 6px 2px; font-size: 9px; line-height: 1.5; color: #8c8c95; }
+.project-empty { text-align: center; padding: 20px 10px; color: #b2b2ba; font-size: 12px; line-height: 1.8; }
+.project-empty small { color: #86868f; font-size: 10px; }
+.save-indicator.failed { color: #e69c91; }
+.project-save-error { position: absolute; top: 50px; left: 310px; width: 300px; padding: 12px; border: 1px solid #674742; border-radius: 10px; background: #322422; color: #f0c4bb; font-size: 12px; line-height: 1.6; }
+.project-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 15px; }
+.project-loading p { max-width: 560px; padding: 0 24px; color: #aaaab2; font-size: 13px; text-align: center; }
+.project-loading button { padding: 10px 24px; border: 1px solid #444; border-radius: 8px; background: #29292d; cursor: pointer; }
+.project-switching { position: absolute; inset: 0; z-index: 39; display: flex; align-items: center; justify-content: center; gap: 10px; background: rgba(17,17,19,.5); color: #d4d4da; font-size: 13px; cursor: wait; }
 .neo-header-right { display: flex; align-items: center; gap: 8px; }
 .hardware-monitor { height: 42px; display: flex; align-items: center; gap: 13px; padding: 6px 11px; border: 1px solid rgba(255,255,255,.07); border-radius: 12px; background: rgba(25,25,28,.88); box-shadow: 0 5px 24px rgba(0,0,0,.2); backdrop-filter: blur(16px); pointer-events: auto; }
 .hardware-metric { width: 132px; display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 8px; row-gap: 4px; }
