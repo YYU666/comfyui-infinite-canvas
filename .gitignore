@@ -13,5 +13,10 @@ __pycache__/
 *_test_report.json
 debug-*.mjs
 inspect-*.mjs
+object_info.json
+qwen21_files.json
+test-*-live.mjs
+test-outfit-*.mjs
+run-outfit-quad.mjs
 .DS_Store
 Thumbs.db

@@ -44,7 +44,10 @@
 .server-status.online i { background: #9cb799; box-shadow: 0 0 7px rgba(156,183,153,.3); }
 .neo-canvas-wrap { position: absolute; inset: 0; }
 .neo-canvas-wrap .react-flow { background: #111113; }
-.neo-canvas-wrap .react-flow__pane { cursor: default; }
+.neo-canvas-wrap .react-flow__pane { cursor: crosshair; }
+.neo-canvas-wrap .react-flow__pane.dragging { cursor: grabbing; }
+.neo-canvas-wrap .react-flow__selection { background: rgba(255,255,255,.055); border: 1px solid rgba(230,230,235,.58); border-radius: 4px; }
+.neo-canvas-wrap .react-flow__nodesselection-rect { background: rgba(255,255,255,.035); border: 1px dashed rgba(230,230,235,.32); border-radius: 4px; }
 .neo-canvas-wrap .react-flow__node { font-family: inherit; }
 .neo-canvas-wrap .react-flow__node.selectable:focus { outline: none; }
 .neo-canvas-wrap .react-flow__edge-path { transition: stroke .15s; }
@@ -109,6 +112,19 @@
 .generation-overlay span { display: block; margin-top: 6px; color: #b1b1b7; font-size: 9px; }
 .generator-subline { display: flex; align-items: center; justify-content: space-between; padding: 7px 3px 0; color: #6c6c73; font-size: 9px; }
 .generator-subline b { font-weight: 450; color: #77777f; }
+.media-video-compact { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; background: #151518; color: #72727b; }
+.media-video-compact span { font-size: 9px; }
+.canvas-view-compact .creator-toolbar, .canvas-view-compact .node-top-toolbar, .canvas-view-placeholder .creator-toolbar, .canvas-view-placeholder .node-top-toolbar { display: none !important; }
+.canvas-view-compact .media-preview { height: 110px; }
+.canvas-view-compact .generator-preview { height: 140px; }
+.canvas-view-compact .media-caption { display: none; }
+.canvas-view-compact .note-shell textarea { height: 78px; resize: none; }
+.canvas-view-compact .video-url-import, .canvas-view-compact .prompt-editor-wrap, .canvas-view-compact .optimizer-run, .canvas-view-compact .optimizer-result, .canvas-view-compact .optimizer-connection { display: none; }
+.canvas-view-placeholder .media-preview, .canvas-view-placeholder .generator-preview { height: 64px; }
+.canvas-view-placeholder .media-preview > img, .canvas-view-placeholder .media-preview > video, .canvas-view-placeholder .generator-preview > img, .canvas-view-placeholder .generator-preview > video { visibility: hidden; }
+.canvas-view-placeholder .media-preview::after, .canvas-view-placeholder .generator-preview::after { content: "轻量占位"; position: absolute; inset: 0; display: grid; place-items: center; color: #65656d; font-size: 9px; pointer-events: none; }
+.canvas-view-placeholder .media-caption, .canvas-view-placeholder .generator-subline, .canvas-view-placeholder .prompt-optimizer-body, .canvas-view-placeholder .note-shell textarea, .canvas-view-placeholder .video-url-import { display: none; }
+.canvas-performance-mode { padding: 6px 9px; border: 1px solid rgba(255,255,255,.07); border-radius: 12px; background: rgba(24,24,27,.88); color: #85858d; font-size: 9px; white-space: nowrap; pointer-events: none; }
 .generator-error { margin-top: 8px; padding: 8px 10px; border: 1px solid rgba(220,130,120,.18); border-radius: 8px; background: rgba(80,40,36,.2); color: #d79b93; font-size: 10px; line-height: 1.5; }
 .neo-handle.prompt-target, .neo-handle.prompt-source { background: #d2b77e !important; }
 .neo-handle.prompt-target { top: 22px !important; }
@@ -272,6 +288,20 @@
 .swap-settings input::placeholder { color: #55555c; }
 .swap-settings .target-index { flex: 0 0 58px; }
 .swap-node .generator-preview { border-color: rgba(158,174,150,.2); }
+.image-lightbox { position: fixed; z-index: 300; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(5,5,7,.86); backdrop-filter: blur(14px); animation: image-lightbox-in .16s ease-out; }
+.image-lightbox-panel { width: min(1400px,100%); height: min(1000px,100%); display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 16px; background: #111114; box-shadow: 0 28px 90px #000a; }
+.image-lightbox-header { min-height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 12px 8px 16px; border-bottom: 1px solid rgba(255,255,255,.08); background: rgba(25,25,28,.98); }
+.image-lightbox-header > div { min-width: 0; display: flex; align-items: center; gap: 9px; }
+.image-lightbox-header svg { flex-shrink: 0; color: #aaaab1; }
+.image-lightbox-header span { overflow: hidden; color: #e5e5e8; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.image-lightbox-header small { overflow: hidden; color: #707078; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.image-lightbox-header .image-lightbox-hint { color: #686870; font-size: 9px; font-weight: 400; }
+.image-lightbox-header button { width: 32px; height: 32px; display: grid; place-items: center; flex-shrink: 0; border-radius: 9px; }
+.image-lightbox-header button:hover { background: rgba(255,255,255,.08); }
+.image-lightbox-header button:hover svg { color: #fff; }
+.image-lightbox-content { min-height: 0; display: flex; flex: 1; align-items: center; justify-content: center; overflow: auto; cursor: zoom-out; background: #09090b; }
+.image-lightbox-content img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; cursor: default; user-select: none; }
+@keyframes image-lightbox-in { from { opacity: 0; } to { opacity: 1; } }
 .spin { animation: neo-spin 1.2s linear infinite; }
 @keyframes neo-spin { to { transform: rotate(360deg); } }
 @media (max-width: 1100px) {
@@ -284,4 +314,54 @@
 @media (max-height: 760px) {
   .generator-preview { height: 215px; }
   .creator-toolbar { transform: scale(.92); transform-origin: top center; }
+}
+
+/* Mask painting is intentionally outside React Flow so zoom never distorts the editor. */
+.media-mask-edit { position: absolute; z-index: 5; left: 8px; bottom: 8px; height: 26px; display: flex; align-items: center; padding: 0 9px; border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: rgba(20,20,22,.9); color: #ededf0; font-size: 9px; }
+.media-mask-edit:hover { background: #ededf0; color: #171719; }
+.media-preview:has(.media-mask-edit) .media-replace { right: auto; left: 8px; bottom: 40px; }
+.mask-editor-backdrop { position: fixed; z-index: 500; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(5,5,7,.9); color: #ededf0; font-family: Inter, "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif; }
+.mask-editor-backdrop *, .mask-editor-backdrop *::before, .mask-editor-backdrop *::after { box-sizing: border-box; }
+.mask-editor-backdrop button, .mask-editor-backdrop input { font: inherit; }
+.mask-editor-backdrop button { border: 0; cursor: pointer; }
+.mask-editor-backdrop button:disabled { cursor: default; opacity: .4; }
+.mask-editor-panel { width: min(1440px,100%); height: min(1040px,100%); min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(255,255,255,.13); border-radius: 14px; background: #141416; box-shadow: 0 25px 80px #000a; }
+.mask-editor-header { min-height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 12px 8px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.mask-editor-header > div { min-width: 0; display: flex; align-items: center; gap: 9px; }
+.mask-editor-header strong { flex-shrink: 0; font-size: 12px; font-weight: 600; }
+.mask-editor-header span { overflow: hidden; color: #85858d; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.mask-editor-header button { width: 31px; height: 31px; display: grid; place-items: center; flex-shrink: 0; border-radius: 7px; background: transparent; color: #9999a1; }
+.mask-editor-header button:hover { background: rgba(255,255,255,.08); color: #fff; }
+.mask-editor-toolbar { min-height: 47px; display: flex; align-items: center; gap: 16px; padding: 7px 13px; border-bottom: 1px solid rgba(255,255,255,.07); background: #1a1a1d; }
+.mask-tool-group { display: flex; align-items: center; gap: 3px; }
+.mask-tool-group button { height: 30px; display: flex; align-items: center; gap: 5px; padding: 0 9px; border-radius: 7px; background: transparent; color: #9999a1; font-size: 10px; }
+.mask-tool-group button:hover, .mask-tool-group button.active { background: rgba(255,255,255,.09); color: #fff; }
+.mask-brush-size { display: flex; align-items: center; gap: 8px; color: #85858d; font-size: 9px; }
+.mask-brush-size input { width: 110px; accent-color: #d8d8dc; }
+.mask-brush-size b { min-width: 42px; color: #bdbdc3; font-size: 9px; font-weight: 500; }
+.mask-zoom-group { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.mask-zoom-group button { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 7px; background: rgba(255,255,255,.05); color: #aaaab2; }
+.mask-zoom-group button:hover { background: rgba(255,255,255,.1); color: #fff; }
+.mask-zoom-group span { min-width: 45px; text-align: center; color: #aaaab2; font-size: 9px; }
+.mask-editor-workspace { position: relative; min-height: 0; flex: 1; overflow: hidden; background: #09090b; }
+.mask-editor-scroll { width: 100%; height: 100%; overflow: auto; overscroll-behavior: contain; }
+.mask-editor-stage { position: relative; min-width: 100%; margin: 0 auto; line-height: 0; }
+.mask-editor-stage > img { width: 100%; height: auto; display: block; user-select: none; pointer-events: none; }
+.mask-paint-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: none; touch-action: none; }
+.mask-brush-cursor { position: absolute; z-index: 4; transform: translate(-50%,-50%); border: 1px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px #0008, inset 0 0 0 1px #0005; background: rgba(255,48,56,.12); pointer-events: none; }
+.mask-brush-cursor.erasing { border-style: dashed; background: rgba(255,255,255,.08); }
+.mask-editor-loading, .mask-editor-error { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; background: #09090be8; color: #aaaab2; font-size: 12px; text-align: center; }
+.mask-editor-error { color: #dda39b; }
+.mask-editor-footer { min-height: 55px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 13px 9px 16px; border-top: 1px solid rgba(255,255,255,.08); background: #1a1a1d; }
+.mask-editor-footer > span { display: flex; align-items: center; gap: 7px; color: #85858d; font-size: 9px; line-height: 1.5; }
+.mask-editor-footer > span i { width: 8px; height: 8px; flex-shrink: 0; border-radius: 2px; background: rgba(255,48,56,.65); }
+.mask-editor-footer > div { display: flex; gap: 7px; flex-shrink: 0; }
+.mask-editor-footer button { height: 33px; display: flex; align-items: center; gap: 6px; padding: 0 13px; border-radius: 8px; background: rgba(255,255,255,.07); color: #bdbdc3; font-size: 10px; }
+.mask-editor-footer button:hover { background: rgba(255,255,255,.12); color: #fff; }
+.mask-editor-footer .mask-save { background: #ededf0; color: #171719; }
+.mask-editor-footer .mask-save:hover { background: #fff; color: #000; }
+@media (max-width: 850px) {
+  .mask-editor-backdrop { padding: 8px; }
+  .mask-editor-toolbar { flex-wrap: wrap; gap: 6px 12px; }
+  .mask-editor-footer > span { max-width: 55%; }
 }

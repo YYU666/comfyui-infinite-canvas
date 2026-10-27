@@ -156,8 +156,35 @@ export function buildReferenceWorkflow(options) {
   return graph;
 }
 
+export const MOSS_IMAGE_MODEL = {
+  unet: 'Moss_image\\moss_image_sft_int8_convrot.safetensors',
+  clip: 'qwen3.5_9b_int8_convrot.safetensors',
+  vae: 'flux2-vae_small.safetensors',
+};
+
 export function buildImageWorkflow(options) {
   const [width, height] = resolveImageDimensions(options.ratio);
+  if (options.imageModel === 'moss') {
+    return {
+      model: { class_type: 'UNETLoader', inputs: { unet_name: MOSS_IMAGE_MODEL.unet, weight_dtype: 'default' } },
+      accelerate: { class_type: 'SpectrumMOSSImageAdaptive', inputs: {
+        model: ['model', 0], warmup_steps: 7, detail_guard_steps: 1, tail_actual_steps: 1,
+        post_guard_horizon_cap: 2, window_size: 2, flex_window: 0.5,
+        cache_device: 'main_device', error_tolerance: 1, debug: false, warn_unverified_sampler: false,
+      } },
+      text: { class_type: 'CLIPLoader', inputs: { clip_name: MOSS_IMAGE_MODEL.clip, type: 'moss_image', device: 'default' } },
+      vae: { class_type: 'VAELoader', inputs: { vae_name: MOSS_IMAGE_MODEL.vae } },
+      positive: { class_type: 'CLIPTextEncode', inputs: { clip: ['text', 0], text: options.prompt.trim() } },
+      negative: { class_type: 'CLIPTextEncode', inputs: { clip: ['text', 0], text: 'worst quality, bad anatomy, watermark, jpeg artifact' } },
+      latent: { class_type: 'EmptyLatentImage', inputs: { width, height, batch_size: 1 } },
+      sample: { class_type: 'KSampler', inputs: {
+        model: ['accelerate', 0], seed: Number(options.seed), steps: 25, cfg: 2.5,
+        sampler_name: 'er_sde', scheduler: 'simple', positive: ['positive', 0], negative: ['negative', 0], latent_image: ['latent', 0], denoise: 1,
+      } },
+      decode: { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } },
+      save: { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'image/H3_MOSS_Image' } },
+    };
+  }
   const loraName = IMAGE_LORAS[options.imageLora || 'none'];
   const graph = {
     model: { class_type: 'UNETLoader', inputs: { unet_name: IMAGE_MODEL.unet, weight_dtype: 'default' } },
@@ -212,6 +239,190 @@ export function buildIdentityEditWorkflow(options) {
   };
 }
 
+export const QWEN21_EDIT_MODEL = {
+  unet: 'qwen_image_2.1_int8_convrot.safetensors',
+  clip: 'qwen3vl_8b_int8_convrot.safetensors',
+  vae: 'qwen_image_2.1_vae_bf16.safetensors',
+  realismLora: 'Qwen2.1_Anything2RealCharacters.safetensors',
+};
+
+// Qwen Image 2.1 native editing: its encoder supplies the reference-matched latent.
+export function buildQwen21EditWorkflow(options) {
+  const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
+  const makeup = options.references?.find((ref) => ref.slot === 'identity' && ref.kind === 'image');
+  if (!source) throw new Error('Qwen 2.1 图生图需要连接一张人物或场景母图。');
+  const prompt = options.prompt?.trim();
+  if (!prompt) throw new Error('请先输入要保留和要修改的画面内容。');
+  const instruction = prompt.includes('<image1>') ? prompt : `Edit <image1>: ${prompt}`;
+  return {
+    model: { class_type: 'UNETLoader', inputs: { unet_name: QWEN21_EDIT_MODEL.unet, weight_dtype: 'default' } },
+    text: { class_type: 'CLIPLoader', inputs: { clip_name: QWEN21_EDIT_MODEL.clip, type: 'qwen_image', device: 'default' } },
+    vae: { class_type: 'VAELoader', inputs: { vae_name: QWEN21_EDIT_MODEL.vae } },
+    source: { class_type: 'LoadImage', inputs: { image: source.name } },
+    ...(makeup ? { makeup: { class_type: 'LoadImage', inputs: { image: makeup.name } } } : {}),
+    encode: { class_type: 'TextEncodeQwenImage21', inputs: {
+      clip: ['text', 0], prompt: instruction, negative_prompt: '', resolution: Number(options.qwenRefResolution || 1024),
+      'images.image_1': ['source', 0], ...(makeup ? { 'images.image_2': ['makeup', 0] } : {}), vae: ['vae', 0],
+    } },
+    sample: { class_type: 'KSampler', inputs: {
+      model: ['model', 0], seed: Number(options.seed), steps: Number(options.qwenSteps || 40), cfg: 1,
+      sampler_name: 'euler', scheduler: 'simple', positive: ['encode', 0], negative: ['encode', 1], latent_image: ['encode', 2], denoise: 1,
+    } },
+    decode: { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } },
+    save: { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'image/H3_Qwen21Edit' } },
+  };
+}
+
+export const LOCAL_REALISM_PROMPT = 'Edit <image1>: enhance only the selected skin with subtle natural photographic microtexture, realistic fine pores and softly varied skin tones. Keep the original person, identity, facial features, makeup colors, expression, lighting, hair and all unselected pixels unchanged. Avoid beauty filtering, waxy skin, airbrushing, contour changes and age changes.';
+
+export function buildLocalRealismWorkflow(options) {
+  const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
+  const customMask = options.references?.find((ref) => ref.slot === 'identity' && ref.kind === 'image');
+  if (!source) throw new Error('局部写实修复需要连接一张正面人像。');
+  const prompt = options.prompt?.trim() || LOCAL_REALISM_PROMPT;
+  const targetSize = Number(options.localRealismSize || 768);
+  const useRealism = options.imageLora === 'qwen21Realism';
+  return {
+    model: { class_type: 'UNETLoader', inputs: { unet_name: QWEN21_EDIT_MODEL.unet, weight_dtype: 'default' } },
+    ...(useRealism ? { realism: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: QWEN21_EDIT_MODEL.realismLora, strength_model: Number(options.loraStrength ?? 0.45) } } } : {}),
+    text: { class_type: 'CLIPLoader', inputs: { clip_name: QWEN21_EDIT_MODEL.clip, type: 'qwen_image', device: 'default' } },
+    vae: { class_type: 'VAELoader', inputs: { vae_name: QWEN21_EDIT_MODEL.vae } },
+    source: { class_type: 'LoadImage', inputs: { image: source.name } },
+    ...(customMask ? {
+      mask_image: { class_type: 'LoadImage', inputs: { image: customMask.name } },
+      mask_channel: { class_type: 'ImageToMask', inputs: { image: ['mask_image', 0], channel: 'red' } },
+    } : {
+      skin: { class_type: 'H3PortraitSkinMask', inputs: { image: ['source', 0], mode: options.localMaskMode || 'front' } },
+    }),
+    crop: { class_type: 'InpaintCropImproved', inputs: {
+      image: ['source', 0], mask: [customMask ? 'mask_channel' : 'skin', 0], downscale_algorithm: 'bilinear', upscale_algorithm: 'bicubic',
+      preresize: false, preresize_mode: 'ensure minimum resolution', preresize_min_width: 1024, preresize_min_height: 1024,
+      preresize_max_width: 16384, preresize_max_height: 16384, mask_fill_holes: false,
+      mask_expand_pixels: Number(options.localMaskExpand ?? 0), mask_invert: false,
+      mask_blend_pixels: Number(options.localMaskBlend ?? 16), mask_hipass_filter: 0.1,
+      extend_for_outpainting: false, extend_up_factor: 1, extend_down_factor: 1, extend_left_factor: 1, extend_right_factor: 1,
+      context_from_mask_extend_factor: 1.2, output_resize_to_target_size: true,
+      output_target_width: targetSize, output_target_height: targetSize, output_padding: '32', device_mode: 'cpu (compatible)',
+    } },
+    encode: { class_type: 'TextEncodeQwenImage21', inputs: {
+      clip: ['text', 0], prompt: prompt.includes('<image1>') ? prompt : `Edit <image1>: ${prompt}`,
+      negative_prompt: '', resolution: targetSize, 'images.image_1': ['crop', 1], vae: ['vae', 0],
+    } },
+    // Qwen 2.1's third text-encoder output is an empty latent, not the source
+    // image. Partial denoising must start from the encoded crop or the masked
+    // area drifts in colour and loses identity.
+    latent: { class_type: 'VAEEncode', inputs: { pixels: ['crop', 1], vae: ['vae', 0] } },
+    mask: { class_type: 'SetLatentNoiseMask', inputs: { samples: ['latent', 0], mask: ['crop', 2] } },
+    sample: { class_type: 'KSampler', inputs: {
+      model: [useRealism ? 'realism' : 'model', 0], seed: Number(options.seed), steps: Number(options.localRealismSteps || 25), cfg: 1,
+      sampler_name: 'euler', scheduler: 'simple', positive: ['encode', 0], negative: ['encode', 1], latent_image: ['mask', 0], denoise: Number(options.localRealismDenoise ?? 0.2),
+    } },
+    decode: { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } },
+    stitch: { class_type: 'InpaintStitchImproved', inputs: { stitcher: ['crop', 0], inpainted_image: ['decode', 0] } },
+    save: { class_type: 'SaveImage', inputs: { images: ['stitch', 0], filename_prefix: 'image/H3_LocalRealism' } },
+  };
+}
+
+export const OUTFIT_PRESETS = {
+  blackSatin: {
+    label: '黑缎蕾丝',
+    prompt: 'an elegant sexy black satin camisole crop top with delicate thin black straps and subtle black lace trim, paired with matching high-waisted black satin tailored shorts',
+  },
+  burgundyVelvet: {
+    label: '酒红丝绒',
+    prompt: 'an elegant sexy burgundy velvet camisole crop top with delicate thin straps and a tasteful sweetheart neckline, paired with matching high-waisted burgundy velvet tailored shorts',
+  },
+  emeraldSilk: {
+    label: '墨绿缎面',
+    prompt: 'an elegant sexy emerald-green silk halter crop top with a draped neckline, paired with a matching high-waisted emerald satin mini skirt',
+  },
+  ivoryTailoring: {
+    label: '象牙白裤装',
+    prompt: 'an elegant sexy ivory satin off-shoulder draped crop top, paired with high-waisted ivory wide-leg tailored trousers',
+  },
+};
+
+const QWEN_QUAD_PRESERVE = 'Edit <image1>: preserve the exact original four-panel composition: top-left front-face close-up portrait, top-right side-profile close-up portrait, bottom-left full-body back view, bottom-right full-body front view; do not change any panel crop, camera distance or viewing direction. Preserve the exact same adult woman, facial identity, facial proportions, purple butterfly hair accessory, forehead ornament, necklace, very long black half-up hairstyle, body proportions, poses and gray studio background. ';
+
+// Tested on the current heroine sheet with Qwen 2.1 at 40 steps and 1024 reference resolution.
+export const QWEN_OUTFIT_PRESETS = {
+  butterPolo: {
+    label: '奶黄 Polo 牛仔裙',
+    prompt: `${QWEN_QUAD_PRESERVE}Change only the clothing and footwear to this complete coordinated summer outfit from a real Taobao product reference: a pale butter-yellow fine-ribbed knit short-sleeve Polo top with a neat small pointed collar, a short three-button placket, a tiny subtle dark embroidered motif on the left chest, a fitted cropped waist; paired with a high-waisted pale light-blue washed denim A-line mini skirt with a button fly and clean simple seams. Fresh youthful 2026 summer styling, attractive slim proportions, breathable fine knit, clear pale-yellow and light-blue color blocking. Complete the look with one matching pair of elegant ivory-white women's open-toe sandals in both full-body panels: delicate thin straps across the toes and instep, a slim adjustable ankle strap, a low comfortable block heel, simple refined summer design, correctly fitted on both feet. Both shoes must be fully visible in the front and back full-body views; no bare feet. Completely remove the original pale-blue camisole, denim shorts and the pale-blue fabric bow at the left shoulder and left chest; replace those areas naturally with black hair, skin or the new outfit. No jacket, no trousers, no leather clothing, no metallic fabric, no office wear, no old bows, no extra jewelry, no extra people, no text, no logos, no sneakers, no boots, no platform soles, no high stiletto heels. Photorealistic studio photography.`,
+  },
+  mistBlueLace: {
+    label: '雾蓝蕾丝白裙',
+    prompt: `${QWEN_QUAD_PRESERVE}Change only the clothing and footwear to this complete coordinated summer outfit from a real Taobao product reference: a misty sky-blue faux-two-piece short-sleeve top, with an ivory lace-trimmed camisole visible inside the low scoop neckline, a fitted dusty-blue button-front outer layer, delicate small fabric-covered buttons, subtle vertical seams and gently shaped short sleeves; paired with a high-waisted airy white mini skirt with soft gathers and a light flowing hem. Feminine French-inspired summer styling, layered neckline detail, breathable lightweight fabric, clear mist-blue, ivory and white palette, sexy but not formal. Complete the look with one matching pair of elegant ivory-white women's open-toe sandals in both full-body panels: delicate thin straps across the toes and instep, a slim adjustable ankle strap, a low comfortable block heel, simple refined summer design, correctly fitted on both feet. Both shoes must be fully visible in the front and back full-body views; no bare feet. Completely remove the original pale-blue camisole, denim shorts and the pale-blue fabric bow at the left shoulder and left chest; replace those areas naturally with black hair, skin or the new outfit. No jacket, no trousers, no leather clothing, no metallic fabric, no office wear, no old bows, no extra jewelry, no extra people, no text, no logos, no sneakers, no boots, no platform soles, no high stiletto heels. Photorealistic studio photography.`,
+  },
+  blushDraped: {
+    label: '雾粉荡领白裙',
+    prompt: `${QWEN_QUAD_PRESERVE}Change only the clothing and footwear to this complete coordinated summer outfit from a real Taobao product reference: a muted blush-pink fitted short-sleeve top with an elegant asymmetric draped cowl neckline, one side gently gathered at the shoulder, diagonal soft ruching across the bodice and a neatly shaped waist; paired with a high-waisted white lightweight flowing mini skirt with soft layered movement and an opaque simple lining. Soft romantic 2026 summer styling, detailed draping rather than a plain T-shirt, breathable fine fabric, clear blush-pink and white palette, feminine and sexy without looking like evening wear. Complete the look with one matching pair of elegant ivory-white women's open-toe sandals in both full-body panels: delicate thin straps across the toes and instep, a slim adjustable ankle strap, a low comfortable block heel, simple refined summer design, correctly fitted on both feet. Both shoes must be fully visible in the front and back full-body views; no bare feet. Completely remove the original pale-blue camisole, denim shorts and the pale-blue fabric bow at the left shoulder and left chest; replace those areas naturally with black hair, skin or the new outfit. No jacket, no trousers, no leather clothing, no metallic fabric, no office wear, no old bows, no extra jewelry, no extra people, no text, no logos, no sneakers, no boots, no platform soles, no high stiletto heels. Photorealistic studio photography.`,
+  },
+};
+
+export const OUTFIT_PANELS = [
+  { id: 'tl', label: '正面近景', x: 0, y: 0, width: 382, height: 590, outputWidth: 768, outputHeight: 1184, preserve: true },
+  { id: 'tr', label: '侧面近景', x: 386, y: 0, width: 382, height: 590, outputWidth: 768, outputHeight: 1184, preserve: true },
+  { id: 'bl', label: '背面全身', view: 'full-body back view', x: 0, y: 600, width: 382, height: 744, outputWidth: 768, outputHeight: 1488 },
+  { id: 'br', label: '正面全身', view: 'full-body front view', x: 386, y: 600, width: 382, height: 744, outputWidth: 768, outputHeight: 1488 },
+];
+
+// Qwen edits each body view at its native aspect ratio. Portraits stay unedited.
+// SeedVR2 runs in a separate prompt for every view, never on the combined sheet.
+export function buildOutfitQuadWorkflow(options) {
+  const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
+  if (!source) throw new Error('无抠图换装需要连接一张原始四视图。');
+  const outfit = options.prompt?.trim();
+  if (!outfit) throw new Error('请先选择或输入一套穿搭。');
+  const panel = OUTFIT_PANELS.find((item) => item.id === (options.outfitPanel || options.panelId));
+  if (!panel) throw new Error('未知的换装视图。');
+  const graph = {
+    source: { class_type: 'LoadImage', inputs: { image: source.name } },
+    sheet: { class_type: 'ImageScale', inputs: { image: ['source', 0], upscale_method: 'lanczos', width: 768, height: 1344, crop: 'disabled' } },
+    crop: { class_type: 'ImageCrop', inputs: { image: ['sheet', 0], width: panel.width, height: panel.height, x: panel.x, y: panel.y } },
+    single: { class_type: 'ImageScale', inputs: { image: ['crop', 0], upscale_method: 'lanczos', width: panel.outputWidth, height: panel.outputHeight, crop: 'disabled' } },
+  };
+  const useRealism = options.imageLora === 'qwen21Realism';
+  const realizePortrait = panel.id === 'tl' && useRealism;
+  if (panel.preserve && !realizePortrait) {
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['single', 0], filename_prefix: `image/H3_OutfitSingle_${panel.id}` } };
+    return graph;
+  }
+  const prompt = realizePortrait
+    ? 'Edit <image1>: subtly convert this exact front-facing portrait toward realistic photography without redesigning the person. The original facial geometry is immutable: keep exactly the same eye width, eye height, eye spacing, eyebrow shape, nose width and length, lip width and fullness, cheek width, jawline, chin length, face contour and all facial proportions. Do not make the eyes smaller, face narrower, nose thinner or lips smaller. Preserve the original natural makeup colors, blush, eyeliner, lip color and expression. Preserve the long black half-up hairstyle, purple butterfly accessory, forehead ornament, necklace, clothing, pose, tight crop and gray background. Add only subtle photographic eye detail, individual hair strands and authentic skin microtexture with visible pores and fine facial hair. No beauty filter, no skin smoothing, no airbrushed or waxy skin, no face lifting, no contour reshaping, no makeup removal, no aging. Photorealistic studio portrait photography, no text.'
+    : panel.id === 'bl'
+      ? `Edit <image1>: this is the exact full-body back view. Preserve the source geometry, pose, narrow waist, waist height, torso length, hip width, long slim legs, gray background and very long black hairstyle. Change only the clothing and footwear to ${outfit}. The source bare midriff defines a very narrow waist: even when the new clothing covers it, keep exactly the same narrow waist circumference, silhouette and height. Garments must follow the body closely at the waist; no loose or padded waist, no straight-column cut, no added folds that widen the waist. Do not add a head or face, do not extend or reframe the canvas, do not redesign the body. Remove the original camisole and denim shorts completely. Photorealistic studio photography, no text.`
+      : `Edit <image1>: this is the exact neck-down full-body front view. Preserve the source geometry, neck-down crop, pose, narrow waist, waist height, torso length, shoulder and hip width, long slim legs and gray background. Change only the clothing and footwear to ${outfit}. The source bare midriff defines a very narrow waist: even when the new clothing covers it, keep exactly the same narrow waist circumference, silhouette and height. Garments must follow the body closely at the waist; no loose or padded waist, no straight-column cut, no added folds that widen the waist. Do not add a head or face, do not extend or reframe the canvas, do not redesign the body. Remove the original camisole and denim shorts completely. Photorealistic studio photography, no text.`;
+  graph.model = { class_type: 'UNETLoader', inputs: { unet_name: QWEN21_EDIT_MODEL.unet, weight_dtype: 'default' } };
+  if (useRealism) graph.realism = { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: QWEN21_EDIT_MODEL.realismLora, strength_model: Number(options.loraStrength ?? 0.6) } };
+  graph.text = { class_type: 'CLIPLoader', inputs: { clip_name: QWEN21_EDIT_MODEL.clip, type: 'qwen_image', device: 'default' } };
+  graph.vae = { class_type: 'VAELoader', inputs: { vae_name: QWEN21_EDIT_MODEL.vae } };
+  graph.encode = { class_type: 'TextEncodeQwenImage21', inputs: {
+    clip: ['text', 0], prompt, negative_prompt: '', resolution: Number(options.qwenRefResolution || 1024),
+    'images.image_1': ['single', 0], vae: ['vae', 0],
+  } };
+  graph.sample = { class_type: 'KSampler', inputs: {
+    model: [useRealism ? 'realism' : 'model', 0], seed: Number(options.seed), steps: Number(options.qwenSteps || 40), cfg: 1,
+    sampler_name: 'euler', scheduler: 'simple', positive: ['encode', 0], negative: ['encode', 1], latent_image: ['encode', 2], denoise: 1,
+  } };
+  graph.decode = { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } };
+  graph.save = { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: `image/H3_OutfitSingle_${panel.id}` } };
+  return graph;
+}
+
+export function buildOutfitStitchWorkflow(singleImages) {
+  const graph = {};
+  for (const id of ['tl', 'tr', 'bl', 'br']) {
+    if (!singleImages[id]) throw new Error(`缺少 ${id} 视角的独立单图。`);
+    graph[`${id}_load`] = { class_type: 'LoadImage', inputs: { image: singleImages[id] } };
+  }
+  graph.top_row = { class_type: 'ImageStitch', inputs: { image1: ['tl_load', 0], image2: ['tr_load', 0], direction: 'right', match_image_size: false, spacing_width: 0, spacing_color: 'white' } };
+  graph.bottom_row = { class_type: 'ImageStitch', inputs: { image1: ['bl_load', 0], image2: ['br_load', 0], direction: 'right', match_image_size: false, spacing_width: 0, spacing_color: 'white' } };
+  graph.quad = { class_type: 'ImageStitch', inputs: { image1: ['top_row', 0], image2: ['bottom_row', 0], direction: 'down', match_image_size: false, spacing_width: 0, spacing_color: 'white' } };
+  graph.save = { class_type: 'SaveImage', inputs: { images: ['quad', 0], filename_prefix: 'image/H3_OutfitQuad' } };
+  return graph;
+}
+
 export function buildImageHdWorkflow(options) {
   const guide = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
   if (!guide) throw new Error('图片高清需要连接一张本地生成或导入的图片。');
@@ -233,7 +444,7 @@ export function buildImageHdWorkflow(options) {
     } },
     decode: { class_type: 'VAEDecodeTiled', inputs: { samples: ['sample', 0], vae: ['vae', 0], tile_size: 512, overlap: 128, temporal_size: 4096, temporal_overlap: 8 } },
     postprocess: { class_type: 'SeedVR2PostProcessing', inputs: { images: ['decode', 0], original_resized_images: ['resize', 0], color_correction_method: 'lab' } },
-    save: { class_type: 'SaveImage', inputs: { images: ['postprocess', 0], filename_prefix: 'image/H3_Image_HD' } },
+    save: { class_type: 'SaveImage', inputs: { images: ['postprocess', 0], filename_prefix: options.outputPrefix || 'image/H3_Image_HD' } },
   };
 }
 
@@ -394,6 +605,38 @@ export function getSystemStats() {
   return comfyFetch('/system_stats');
 }
 
+export async function freeComfyMemory() {
+  const queue = await comfyFetch('/queue');
+  if (queue.queue_running?.length || queue.queue_pending?.length) {
+    throw new Error('当前有正在运行或排队的任务，请等完成后再清理显存。');
+  }
+  await comfyFetch('/free', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ unload_models: true, free_memory: true }),
+  });
+  return getSystemStats();
+}
+
+export async function getMossDependencyStatus() {
+  const requirements = [
+    ['UNETLoader', 'unet_name', MOSS_IMAGE_MODEL.unet, 'MOSS 主模型'],
+    ['CLIPLoader', 'clip_name', MOSS_IMAGE_MODEL.clip, 'Qwen3.5 文本编码器'],
+    ['VAELoader', 'vae_name', MOSS_IMAGE_MODEL.vae, 'Flux2 VAE'],
+  ];
+  const checks = requirements.map(async ([node, input, filename, label]) => {
+    const response = await fetch(`${COMFY_ORIGIN}/object_info/${node}`);
+    if (!response.ok) return label;
+    const info = await response.json();
+    return info?.[node]?.input?.required?.[input]?.[0]?.includes(filename) ? null : label;
+  });
+  checks.push((async () => {
+    const response = await fetch(`${COMFY_ORIGIN}/object_info/SpectrumMOSSImageAdaptive`);
+    return response.ok ? null : 'Spectrum MOSS 加速节点';
+  })());
+  const missing = (await Promise.all(checks)).filter(Boolean);
+  return { ready: missing.length === 0, missing };
+}
+
 export async function getHardwareMetrics() {
   const response = await fetch('/api/hardware-metrics');
   return parseResponse(response);
@@ -487,7 +730,58 @@ export function extractVideos(historyEntry) {
 }
 
 export function extractImages(historyEntry) {
-  return extractMedia(historyEntry, 'image').filter((file) => /^H3_(?:Image(?:_HD)?|IdentityV2)_\d+_/i.test(file.filename));
+  return extractMedia(historyEntry, 'image').filter((file) => /^H3_(?:Image(?:_HD)?|MOSS_Image|IdentityV2|Qwen21Edit|LocalRealism|OutfitQuad|OutfitSingle|OutfitHD)/i.test(file.filename));
+}
+
+async function waitForOutfitPrompt(promptId) {
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const history = await comfyFetch(`/history/${promptId}`);
+    const entry = history[promptId];
+    if (!entry) continue;
+    if (entry.status?.status_str === 'error') throw new Error('单图生成或高清被中断、发生错误。');
+    if (entry.status?.completed) return entry;
+  }
+}
+
+export async function runOutfitQuadWorkflow(options, clientId, onProgress = () => {}) {
+  const hdImages = {};
+  const selectedPanel = options.outfitPanel || options.panelId;
+  const panels = selectedPanel ? OUTFIT_PANELS.filter((panel) => panel.id === selectedPanel) : OUTFIT_PANELS;
+  if (!panels.length) throw new Error('未知的换装视图。');
+  const uploadResult = async (image, label) => {
+    if (!image) throw new Error(`${label}已结束，但没有找到输出图片。`);
+    const response = await fetch(image.url);
+    if (!response.ok) throw new Error(`无法读取${label}。`);
+    const file = new File([await response.blob()], image.filename, { type: 'image/png' });
+    return uploadMedia(file, 'image');
+  };
+  for (const [index, panel] of panels.entries()) {
+    const baseProgress = index * 90 / panels.length;
+    onProgress({ status: 'running', stage: `${panel.preserve ? '保留原图' : '千问独立换装'} ${index + 1}/${panels.length} · ${panel.label}`, progress: baseProgress });
+    const singleQueued = await queuePrompt(buildOutfitQuadWorkflow({ ...options, outfitPanel: panel.id }), clientId);
+    const singleHistory = await waitForOutfitPrompt(singleQueued.prompt_id);
+    const singleName = await uploadResult(extractImages(singleHistory).find((file) => file.filename.startsWith(`H3_OutfitSingle_${panel.id}_`)), `${panel.label}单图`);
+    await freeComfyMemory();
+
+    onProgress({ status: 'running', stage: `独立高清二采 ${index + 1}/${panels.length} · ${panel.label}`, progress: baseProgress + 45 / panels.length });
+    const hdQueued = await queuePrompt(buildImageHdWorkflow({
+      references: [{ kind: 'image', slot: 'guide', name: singleName }],
+      imageScale: Number(options.outfitHdScale || 1.5),
+      seed: Number(options.seed) + index,
+      outputPrefix: `image/H3_OutfitHD_${panel.id}`,
+    }), clientId);
+    const hdHistory = await waitForOutfitPrompt(hdQueued.prompt_id);
+    const hdFile = extractImages(hdHistory).find((file) => file.filename.startsWith(`H3_OutfitHD_${panel.id}_`));
+    hdImages[panel.id] = await uploadResult(hdFile, `${panel.label}高清图`);
+    onProgress({ status: 'running', stage: `高清完成 ${index + 1}/${panels.length} · ${panel.label}`, progress: (index + 1) * 90 / panels.length });
+    await freeComfyMemory();
+    if (selectedPanel) return { prompt_id: hdQueued.prompt_id, history: hdHistory };
+  }
+  onProgress({ status: 'finishing', stage: '四张独立高清完成 · 正在合成四视图', progress: 94 });
+  const stitched = await queuePrompt(buildOutfitStitchWorkflow(hdImages), clientId);
+  const history = await waitForOutfitPrompt(stitched.prompt_id);
+  return { prompt_id: stitched.prompt_id, history };
 }
 
 export function openProgressSocket(clientId, handlers = {}) {

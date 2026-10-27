@@ -1,0 +1,11 @@
+# 可选：不复制模型时，把本文件复制为 ComfyUI/extra_model_paths.yaml，
+# 并将 base_path 改为模型包的实际位置。直接复制模型到 ComfyUI/models 时无需本文件。
+h3_workbench_models:
+  base_path: D:/H3-Workbench-Models
+  is_default: false
+  checkpoints: checkpoints
+  diffusion_models: diffusion_models
+  text_encoders: text_encoders
+  vae: vae
+  loras: loras
+  latent_upscale_models: latent_upscale_models

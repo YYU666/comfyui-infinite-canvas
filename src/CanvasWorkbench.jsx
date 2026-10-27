@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Background, BackgroundVariant, MiniMap, NodeToolbar,
-  Handle, Position, ConnectionLineType, addEdge, useNodesState, useEdgesState, useReactFlow,
+  Handle, Position, ConnectionLineType, SelectionMode, addEdge, useNodesState, useEdgesState, useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
@@ -13,13 +13,16 @@ import {
 } from 'lucide-react';
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, buildCharacterSwapWorkflow, buildHdRefineWorkflow,
-  buildImageWorkflow, buildImageHdWorkflow, buildIdentityEditWorkflow, cancelPrompt, createClientId, extractImages, extractVideos,
-  getHardwareMetrics, getHistory, getSystemStats, importVideoFromUrl, openProgressSocket,
+  buildImageWorkflow, buildImageHdWorkflow, buildIdentityEditWorkflow, buildQwen21EditWorkflow, buildLocalRealismWorkflow, runOutfitQuadWorkflow, OUTFIT_PRESETS, QWEN_OUTFIT_PRESETS, cancelPrompt, createClientId, extractImages, extractVideos,
+  freeComfyMemory, getHardwareMetrics, getHistory, getMossDependencyStatus, getSystemStats, importVideoFromUrl, openProgressSocket,
   openFileLocation as requestFileLocation, optimizePrompt as requestPromptOptimization, queuePrompt,
   resolveDimensions, resolveImageDimensions, uploadMedia,
 } from './workbench-api';
+import { findFreePosition } from './canvas-layout';
 import './canvas.css';
 import PromptEditor from './PromptEditor';
+import MaskEditor from './MaskEditor';
+import { useCanvasMcp } from './canvas-mcp';
 
 const CANVAS_KEY = 'h3-infinite-canvas-v2';
 const OLD_CANVAS_KEY = 'h3-infinite-canvas-v1';
@@ -31,7 +34,7 @@ const DEFAULT_GENERATOR = {
   title: '全能参考', mode: 'reference', prompt: '', ratio: '16:9', resolution: '480P', duration: 5,
   turbo: false, refImageSize: 'max', referenceSettingsVersion: 3, seed: 42, randomSeed: true,
   preserveBackground: true, targetQuery: 'person', targetIndex: 0, targetDescription: '', precision: 1,
-  imageLora: 'none', loraStrength: 0.8, imageScale: 1.5,
+  imageModel: 'krea2', imageLora: 'none', loraStrength: 0.8, imageScale: 1.5,
   status: 'idle', progress: 0, stage: '', pinned: false, runs: [],
 };
 const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' };
@@ -244,31 +247,81 @@ function MediaDragSurface({ videoRef, video = false, onActivate }) {
     onClick={activate} />;
 }
 
+const thumbnailCache = new Map();
+const EMPTY_IMAGE = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+let thumbnailQueue = Promise.resolve();
+async function imageThumbnail(source) {
+  if (thumbnailCache.has(source)) return thumbnailCache.get(source);
+  const create = async () => {
+    const response = await fetch(source);
+    if (!response.ok) throw new Error('缩略图读取失败');
+    const blob = await response.blob();
+    const bitmap = await createImageBitmap(blob);
+    const scale = Math.min(1, 640 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext('2d', { alpha: false }).drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const thumbnail = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', 0.84));
+    if (!thumbnail) throw new Error('缩略图编码失败');
+    return URL.createObjectURL(thumbnail);
+  };
+  // Decode one original at a time; simultaneous 4K bitmaps can exhaust the renderer.
+  const pending = thumbnailQueue.then(create, create);
+  thumbnailQueue = pending.catch(() => {});
+  thumbnailCache.set(source, pending);
+  try { return await pending; }
+  catch (error) { thumbnailCache.delete(source); throw error; }
+}
+
+function CanvasImage({ source, alt = '', ...props }) {
+  const [displaySource, setDisplaySource] = useState(EMPTY_IMAGE);
+  useEffect(() => {
+    let active = true;
+    setDisplaySource(EMPTY_IMAGE);
+    if (source) imageThumbnail(source).then((thumbnail) => { if (active) setDisplaySource(thumbnail); }).catch(() => { if (active) setDisplaySource(source); });
+    return () => { active = false; };
+  }, [source]);
+  return <img src={displaySource} alt={alt} draggable={false} loading="lazy" decoding="async" {...props} />;
+}
+
 function MediaNode({ id, data, selected }) {
-  const { chooseMedia, togglePin } = useContext(NodeContext);
+  const { chooseMedia, openImagePreview, viewTier, getMaskGuide } = useContext(NodeContext);
   const input = useRef(null);
   const videoRef = useRef(null);
+  const [maskEditorOpen, setMaskEditorOpen] = useState(false);
   const kind = data.kind || 'image';
   const Icon = KIND_ICON[kind];
   const accept = kind === 'image' ? 'image/png,image/jpeg,image/webp' : kind === 'video' ? 'video/*' : 'audio/*';
+  const lightweightVideo = kind === 'video' && viewTier !== 'full';
+  const maskGuide = kind === 'image' ? getMaskGuide(id) : null;
+  const openMaskEditor = () => setMaskEditorOpen(true);
   return <div className={`media-shell media-${kind} ${kind === 'image' ? 'image-node' : ''} ${selected ? 'selected' : ''} ${data.pinned ? 'pinned' : ''}`}>
     <NodeTitle id={id} data={data} kind="media" /><NodeActions id={id} data={data} selected={selected} />
-    <div className={`media-preview ${!data.url ? 'empty' : ''}`} onDoubleClick={() => input.current?.click()}
+    <div className={`media-preview ${!data.url ? 'empty' : ''}`} title={maskGuide ? '单击在母图上绘制遮罩' : kind === 'image' && data.url ? '双击预览大图' : undefined} onDoubleClick={(event) => {
+      event.stopPropagation();
+      if (maskGuide) openMaskEditor();
+      else if (kind === 'image' && data.url) openImagePreview({ url: data.url, title: data.title, name: data.name });
+      else input.current?.click();
+    }}
       onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onDrop={(e) => { e.preventDefault(); e.stopPropagation(); const file = [...(e.dataTransfer.files || [])].find((item) => item.type.startsWith(`${kind}/`)); if (file) chooseMedia(id, file); }}>
       {data.url ? <>
-        {kind === 'image' && <img src={data.url} alt={data.title} draggable={false} />}
-        {kind === 'video' && <video ref={videoRef} className="nodrag" src={data.url} controls preload="metadata" playsInline />}
-        {kind === 'audio' && <div className="audio-content"><span><AudioLines size={25} /></span><strong>{data.title}</strong><audio className="nodrag" src={data.url} controls preload="metadata" /></div>}
-        {['image', 'video'].includes(kind) && <MediaDragSurface videoRef={videoRef} video={kind === 'video'} />}
-      </> : <div className="media-empty"><Icon size={26} /><strong>添加{KIND_LABEL[kind]}素材</strong><span>单击添加 · 按住拖动节点</span><MediaDragSurface onActivate={() => input.current?.click()} /></div>}
-      <button className="media-replace nodrag" onClick={() => input.current?.click()} title="替换素材"><RefreshCw size={12} /><span>替换</span></button>
+        {kind === 'image' && <CanvasImage source={data.url} alt={data.title} />}
+        {kind === 'video' && (lightweightVideo ? <div className="media-video-compact"><Film size={24} /><span>视频预览 · 放大恢复播放</span></div> : <video ref={videoRef} className="nodrag" src={data.url} controls preload="metadata" playsInline />)}
+        {kind === 'audio' && <div className="audio-content"><span><AudioLines size={25} /></span><strong>{data.title}</strong>{viewTier === 'full' && <audio className="nodrag" src={data.url} controls preload="metadata" />}</div>}
+        {['image', 'video'].includes(kind) && <MediaDragSurface videoRef={videoRef} video={kind === 'video' && !lightweightVideo} onActivate={maskGuide ? openMaskEditor : undefined} />}
+      </> : <div className="media-empty"><Icon size={26} /><strong>{maskGuide ? '绘制局部遮罩' : `添加${KIND_LABEL[kind]}素材`}</strong><span>{maskGuide ? '单击绘制 · 母图垫底' : '单击添加 · 按住拖动节点'}</span><MediaDragSurface onActivate={maskGuide ? openMaskEditor : () => input.current?.click()} /></div>}
+      {maskGuide && <button className="media-mask-edit nodrag" onClick={openMaskEditor}>绘制遮罩</button>}
+      <button className="media-replace nodrag" onClick={() => input.current?.click()} title={maskGuide ? '从文件导入黑白遮罩' : '替换素材'}><RefreshCw size={12} /><span>{maskGuide ? '导入' : '替换'}</span></button>
       {data.output && <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>}
     </div>
-    <div className="media-caption"><span>{data.output ? '生成结果' : KIND_LABEL[kind]}</span><b title={data.name}>{data.name || (data.url ? data.title : '未上传')}</b></div>
+    <div className="media-caption"><span>{maskGuide ? '局部遮罩' : data.output ? '生成结果' : KIND_LABEL[kind]}</span><b title={data.name}>{data.name || (data.url ? data.title : maskGuide ? '尚未绘制' : '未上传')}</b></div>
     <input ref={input} hidden type="file" accept={accept} onChange={(e) => e.target.files?.[0] && chooseMedia(id, e.target.files[0])} />
     {data.output && <Handle type="target" position={Position.Left} id="preview" className="neo-handle target" />}
     <Handle type="source" position={Position.Right} id="ref" className="neo-handle source" title="连接到全能参考" />
+    {maskEditorOpen && maskGuide && <MaskEditor guideUrl={maskGuide.data.url} guideTitle={maskGuide.data.title} maskUrl={data.url} onSave={(file) => { chooseMedia(id, file); setMaskEditorOpen(false); }} onClose={() => setMaskEditorOpen(false)} />}
   </div>;
 }
 
@@ -284,31 +337,37 @@ function referenceDescriptors(nodes) {
 function GeneratorNode({ id, data, selected }) {
   const {
     updateNode, generateNode, cancelNode, serverOnline, getReferences,
-    getMentionItems, attachFilesToGenerator,
+    getMentionItems, attachFilesToGenerator, openImagePreview, viewTier,
   } = useContext(NodeContext);
   const promptEditorRef = useRef(null);
   const uploadRef = useRef(null);
   const resultVideoRef = useRef(null);
   const running = ['uploading', 'queued', 'running', 'finishing'].includes(data.status);
   const mode = data.mode || 'reference';
-  const imageFamily = ['image', 'imageUpscale', 'identityEdit'].includes(mode);
+  const isMoss = mode === 'image' && data.imageModel === 'moss';
+  const imageModelLabel = isMoss ? 'MOSS' : 'Krea2';
+  const imageFamily = ['image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'outfitEdit', 'localRealism'].includes(mode);
   const refs = getReferences(id);
   const descriptors = referenceDescriptors(refs);
   const guide = refs.find((node) => node.data.slot === 'guide');
   const identity = refs.find((node) => node.data.slot === 'identity');
   const mentionItems = getMentionItems(id);
   const resolution = data.resolution || '480P';
-  const [outputWidth, outputHeight] = ['image', 'identityEdit'].includes(mode) ? resolveImageDimensions(data.ratio) : resolveDimensions(data.ratio, resolution);
+  const [outputWidth, outputHeight] = ['outfitEdit', 'qwenEdit', 'localRealism'].includes(mode) ? [0, 0] : ['image', 'identityEdit'].includes(mode) ? resolveImageDimensions(data.ratio) : resolveDimensions(data.ratio, resolution);
   const switchMode = (nextMode) => updateNode(id, { mode: nextMode, title: nextMode === 'swap' && data.title === '全能参考' ? '精准角色替换' : data.title, error: null });
-  const placeholder = mode === 'identityEdit' ? '连接母图，保持身份并修改姿态、穿搭或场景' : mode === 'image' ? '本地生成人物、场景和分镜参考图' : mode === 'imageUpscale' ? '图片独立高清 · 连接图片后按需运行' : mode === 'swap' ? '源视频换人 · 保留动作、镜头与原音轨' : mode === 'upscale' ? '独立高清二采 · 需要时才运行' : mode === 'reference' ? '用图、文、音、视频共同定义新镜头' : mode === 'frames' ? '首尾帧生成视频' : '输入提示词生成视频';
-  const modelLabel = mode === 'identityEdit' ? 'Identity Edit V2 · 参考强度 4 · 8 步' : mode === 'image' ? 'Krea2 · 约 1MP · 8 步' : mode === 'imageUpscale' ? 'SeedVR2 3B INT8 · 保真色彩' : mode === 'swap' ? 'Character Swap v1.5 · 潜空间遮罩 · SAM3.1' : mode === 'upscale' ? 'H3 3D Latent 放大 · 4 步 Turbo · 原音轨' : 'MiniMax H3 · 本地生成 · 24 FPS';
+  const placeholder = mode === 'localRealism' ? '连接正面人像，只修复皮肤，不重绘五官' : mode === 'outfitEdit' ? '连接原始四视图，分别换装、分别高清后拼接' : mode === 'qwenEdit' ? '连接母图，用自然语言精准修改画面' : mode === 'identityEdit' ? '连接母图，保持身份并修改姿态、穿搭或场景' : mode === 'image' ? '本地生成人物、场景和分镜参考图' : mode === 'imageUpscale' ? '图片独立高清 · 连接图片后按需运行' : mode === 'swap' ? '源视频换人 · 保留动作、镜头与原音轨' : mode === 'upscale' ? '独立高清二采 · 需要时才运行' : mode === 'reference' ? '用图、文、音、视频共同定义新镜头' : mode === 'frames' ? '首尾帧生成视频' : '输入提示词生成视频';
+  const modelLabel = mode === 'localRealism' ? `Qwen 2.1 · 皮肤区域重绘 · 原图回贴 · ${data.localRealismSteps || 25} 步` : mode === 'outfitEdit' ? 'Qwen 2.1 · 40 步 · 单图 SeedVR2 高清' : mode === 'qwenEdit' ? `Qwen Image 2.1 INT8 · 原图比例 · ${data.qwenSteps || 40} 步` : mode === 'identityEdit' ? 'Identity Edit V2 · 参考强度 4 · 8 步' : mode === 'image' ? `${imageModelLabel} · 约 1MP · ${isMoss ? 25 : 8} 步` : mode === 'imageUpscale' ? 'SeedVR2 3B INT8 · 保真色彩' : mode === 'swap' ? 'Character Swap v1.5 · 潜空间遮罩 · SAM3.1' : mode === 'upscale' ? 'H3 3D Latent 放大 · 4 步 Turbo · 原音轨' : 'MiniMax H3 · 本地生成 · 24 FPS';
 
   return <div className={`generator-shell h3-node ${mode === 'swap' ? 'swap-node' : ''} ${imageFamily ? 'image-generator-node' : ''} ${selected ? 'selected' : ''} ${running ? 'running' : ''} ${data.pinned ? 'pinned' : ''}`}>
     <NodeTitle id={id} data={data} kind="generator" /><NodeActions id={id} data={data} selected={selected} generator />
-    <div className="generator-preview">
+    <div className="generator-preview" title={imageFamily && data.resultUrl ? '双击预览大图' : undefined} onDoubleClick={(event) => {
+      if (!imageFamily || !data.resultUrl) return;
+      event.stopPropagation();
+      openImagePreview({ url: data.resultUrl, title: data.title });
+    }}>
       {data.resultUrl ? <>
-        {imageFamily ? <img src={data.resultUrl} alt={data.title} draggable={false} /> : <video ref={resultVideoRef} className="nodrag" src={data.resultUrl} controls preload="metadata" playsInline />}
-        <MediaDragSurface videoRef={resultVideoRef} video={!imageFamily} />
+        {imageFamily ? <CanvasImage source={data.resultUrl} alt={data.title} draggable={false} /> : viewTier !== 'full' ? <div className="media-video-compact"><Film size={24} /><span>视频结果 · 放大恢复播放</span></div> : <video ref={resultVideoRef} className="nodrag" src={data.resultUrl} controls preload="metadata" playsInline />}
+        <MediaDragSurface videoRef={resultVideoRef} video={!imageFamily && viewTier === 'full'} />
       </> : <div className="generator-placeholder">
         {running ? <LoaderCircle className="spin" size={29} /> : imageFamily ? <ImageIcon size={29} /> : <WandSparkles size={29} />}
         <strong>{running ? data.stage || '正在准备本地模型' : placeholder}</strong>
@@ -316,7 +375,7 @@ function GeneratorNode({ id, data, selected }) {
       </div>}
       {running && <div className="generation-overlay"><div><i style={{ width: `${data.progress || 3}%` }} /></div><span>{data.stage} · {data.progress || 0}%</span></div>}
     </div>
-    <div className="generator-subline"><span>{['image', 'identityEdit'].includes(mode) ? `${data.ratio} · ${outputWidth} × ${outputHeight} · 8 步` : mode === 'imageUpscale' ? `${data.imageScale || 1.5} 倍 · 独立图片高清` : `${data.ratio} · ${resolution}${mode === 'upscale' ? ' · 独立二采' : ` · ${data.duration} 秒`}`}</span><b>{data.status === 'done' ? '已完成' : mode === 'identityEdit' ? 'Identity V2' : mode === 'image' ? 'Krea2 生图' : mode === 'imageUpscale' ? 'SeedVR2 高清' : mode === 'swap' ? 'H3 换人 v1.5' : mode === 'upscale' ? 'H3 高清二采' : 'H3 INT8'}</b></div>
+    <div className="generator-subline"><span>{mode === 'localRealism' ? `原图尺寸 · 局部 ${data.localRealismSize || 768} · 保护未选区域` : mode === 'outfitEdit' ? (data.outfitPanel ? '单视图独立高清 · 保持原始比例' : '四张分别高清 1.5× · 最后拼接') : mode === 'qwenEdit' ? `继承原图比例 · 参考精度 ${data.qwenRefResolution || 1024} · ${data.qwenSteps || 40} 步` : ['image', 'identityEdit'].includes(mode) ? `${data.ratio} · ${outputWidth} × ${outputHeight} · ${isMoss ? 25 : 8} 步` : mode === 'imageUpscale' ? `${data.imageScale || 1.5} 倍 · 独立图片高清` : `${data.ratio} · ${resolution}${mode === 'upscale' ? ' · 独立二采' : ` · ${data.duration} 秒`}`}</span><b>{data.status === 'done' ? '已完成' : mode === 'outfitEdit' ? '无抠图换装' : mode === 'qwenEdit' ? 'Qwen 2.1' : mode === 'identityEdit' ? 'Identity V2' : mode === 'image' ? `${imageModelLabel} 生图` : mode === 'imageUpscale' ? 'SeedVR2 高清' : mode === 'swap' ? 'H3 换人 v1.5' : mode === 'upscale' ? 'H3 高清二采' : 'H3 INT8'}</b></div>
     {data.error && <div className="generator-error">{data.error}</div>}
     {mode === 'reference' ? <Handle type="target" position={Position.Left} id="references" className="neo-handle target" /> : mode === 'frames' ? <>
       <Handle type="target" position={Position.Left} id="first" className="neo-handle target frame-first" />
@@ -324,37 +383,42 @@ function GeneratorNode({ id, data, selected }) {
     </> : ['swap', 'upscale'].includes(mode) ? <>
       <Handle type="target" position={Position.Left} id="guide" className="neo-handle target frame-first" title={mode === 'upscale' ? '连接一采视频' : '连接源视频'} />
       <Handle type="target" position={Position.Left} id="identity" className="neo-handle target frame-last" title={mode === 'upscale' ? '可选身份图' : '连接单人身份图'} />
-    </> : ['imageUpscale', 'identityEdit'].includes(mode) ? <Handle type="target" position={Position.Left} id="guide" className="neo-handle target" title={mode === 'identityEdit' ? '连接人物或场景母图' : '连接要高清的图片'} /> : null}
+    </> : ['qwenEdit', 'localRealism'].includes(mode) ? <>
+      <Handle type="target" position={Position.Left} id="guide" className="neo-handle target frame-first" title="连接人物或场景母图" />
+      <Handle type="target" position={Position.Left} id="identity" className="neo-handle target frame-last" title={mode === 'localRealism' ? '可选：连接自定义局部遮罩图' : '可选：连接妆容或风格参考图'} />
+    </> : ['imageUpscale', 'identityEdit', 'outfitEdit'].includes(mode) ? <Handle type="target" position={Position.Left} id="guide" className="neo-handle target" title={mode === 'outfitEdit' ? '连接原始四视图' : mode === 'identityEdit' ? '连接人物或场景母图' : '连接要高清的图片'} /> : null}
     {!imageFamily && <Handle type="target" position={Position.Left} id="prompt" className="neo-handle target prompt-target" title="连接 H3 提示词优化" />}
     <Handle type="source" position={Position.Right} id={imageFamily ? 'image' : 'video'} className="neo-handle source" />
 
     <NodeToolbar isVisible={selected} position={Position.Bottom} offset={12} className="creator-toolbar nodrag">
       <div className="creator-modes">
-        {imageFamily ? <button className="active">{mode === 'identityEdit' ? '母图编辑 V2' : mode === 'image' ? '本地生图' : '图片高清'}</button> : [['reference', '全能参考'], ['swap', '角色替换'], ['text', '文生视频'], ['frames', '首尾帧']].map(([value, label]) => <button key={value} className={mode === value ? 'active' : ''} onClick={() => switchMode(value)}>{label}</button>)}
-        <span className="local-model"><i />{mode === 'identityEdit' ? 'Identity Edit V2' : mode === 'image' ? 'Krea2 Turbo' : mode === 'imageUpscale' ? 'SeedVR2 3B' : mode === 'upscale' ? '高清二采' : 'MiniMax H3'}</span>
+        {imageFamily ? <button className="active">{mode === 'outfitEdit' ? '无抠图换装' : mode === 'qwenEdit' ? 'Qwen 2.1 图生图' : mode === 'identityEdit' ? '母图编辑 V2' : mode === 'image' ? '本地生图' : '图片高清'}</button> : [['reference', '全能参考'], ['swap', '角色替换'], ['text', '文生视频'], ['frames', '首尾帧']].map(([value, label]) => <button key={value} className={mode === value ? 'active' : ''} onClick={() => switchMode(value)}>{label}</button>)}
+        <span className="local-model"><i />{mode === 'outfitEdit' ? '千问换装 · 单图 SeedVR2' : mode === 'qwenEdit' ? 'Qwen Image 2.1 INT8' : mode === 'identityEdit' ? 'Identity Edit V2' : mode === 'image' ? (isMoss ? 'MOSS · Spectrum 加速' : 'Krea2 Turbo') : mode === 'imageUpscale' ? 'SeedVR2 3B' : mode === 'upscale' ? '高清二采' : 'MiniMax H3'}</span>
       </div>
       {['swap', 'upscale'].includes(mode) && <div className="reference-strip swap-strip">
         <span className={guide ? 'connected' : ''}><Video size={13} />{mode === 'upscale' ? '一采视频' : '源视频'}：{guide?.data.title || '连接左侧上方端口'}</span>
         <span className={identity ? 'connected' : ''}><ImageIcon size={13} />身份图：{identity?.data.title || (mode === 'upscale' ? '可选，连接左侧下方端口' : '连接左侧下方端口')}</span>
       </div>}
-      {['imageUpscale', 'identityEdit'].includes(mode) && <div className="reference-strip swap-strip"><span className={guide ? 'connected' : ''}><ImageIcon size={13} />{mode === 'identityEdit' ? '人物母图' : '输入图片'}：{guide?.data.title || '从图片节点右侧连线到本节点左侧'}</span></div>}
+      {['imageUpscale', 'identityEdit', 'qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && <div className="reference-strip swap-strip"><span className={guide ? 'connected' : ''}><ImageIcon size={13} />{mode === 'outfitEdit' ? '原始四视图' : mode === 'identityEdit' ? '人物母图' : '输入图片'}：{guide?.data.title || '从图片节点右侧连线到本节点左侧'}</span>{['qwenEdit', 'localRealism'].includes(mode) && <span className={identity ? 'connected' : ''}><ImageIcon size={13} />{mode === 'localRealism' ? '自定义遮罩' : '妆容 / 风格'}：{identity?.data.title || '可选，连接左侧下方端口'}</span>}</div>}
       {mode === 'reference' && <div className="reference-strip">
         {descriptors.map(({ node, kind, tag }) => <button key={node.id} className={`reference-chip ${kind}`} onClick={() => promptEditorRef.current?.insertReference(node)} title={`${tag} · 点击插入提示词`}>
-          {node.data.url && kind === 'image' ? <img src={node.data.url} alt="" /> : node.data.url && kind === 'video' ? <video src={node.data.url} muted playsInline preload="metadata" /> : React.createElement(KIND_ICON[kind], { size: 13 })}
+          {node.data.url && kind === 'image' ? <CanvasImage source={node.data.url} alt="" /> : node.data.url && kind === 'video' ? <video src={node.data.url} muted playsInline preload="metadata" /> : React.createElement(KIND_ICON[kind], { size: 13 })}
           <span>@{node.data.title}</span><X size={11} onClick={(e) => { e.stopPropagation(); updateNode(id, { prompt: data.prompt.replaceAll(`@${node.data.title}`, '').replace(/ {2,}/g, ' ') }); }} />
         </button>)}
         {descriptors.length < 15 && <button className="add-reference" onClick={() => uploadRef.current?.click()} title="添加图片、视频或音频"><Plus size={17} /></button>}
         <input ref={uploadRef} hidden type="file" multiple accept="image/*,video/*,audio/*" onChange={(e) => { attachFilesToGenerator(id, [...(e.target.files || [])]); e.target.value = ''; }} />
       </div>}
       {mode === 'frames' && <div className="reference-strip frame-strip"><span><i />首帧：{refs.find((n) => n.data.slot === 'first')?.data.title || '连接一张图片'}</span><span><i />尾帧：{refs.find((n) => n.data.slot === 'last')?.data.title || '连接一张图片（可选）'}</span></div>}
+      {mode === 'outfitEdit' && <div className="reference-strip outfit-presets">{Object.entries(OUTFIT_PRESETS).map(([key, preset]) => <button key={key} className={data.outfitPreset === key ? 'reference-chip active' : 'reference-chip'} disabled={running} onClick={() => updateNode(id, { outfitPreset: key, prompt: preset.prompt })}>{preset.label}</button>)}</div>}
+      {mode === 'qwenEdit' && <div className="reference-strip outfit-presets" aria-label="Qwen 穿搭预设">{Object.entries(QWEN_OUTFIT_PRESETS).map(([key, preset]) => <button key={key} className={data.outfitPreset === key ? 'reference-chip active' : 'reference-chip'} disabled={running} onClick={() => updateNode(id, { outfitPreset: key, prompt: preset.prompt })}>{preset.label}</button>)}</div>}
       {mode !== 'imageUpscale' && <PromptEditor
         ref={promptEditorRef}
         value={data.prompt || ''}
-        onChange={(prompt) => updateNode(id, { prompt })}
-        items={['image', 'identityEdit'].includes(mode) ? [] : mentionItems}
-        ariaLabel={['image', 'identityEdit'].includes(mode) ? '图片提示词' : '视频提示词'}
+        onChange={(prompt) => updateNode(id, { prompt, outfitPreset: null })}
+        items={['image', 'identityEdit', 'qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) ? [] : mentionItems}
+        ariaLabel={['image', 'identityEdit', 'qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) ? '图片提示词' : '视频提示词'}
         disabled={running}
-        placeholder={mode === 'identityEdit' ? '说明要保持的身份特征和要改变的穿搭、姿态或场景；四视图需写明正面、侧面、背面、三分之四视角……' : mode === 'image' ? '描述人物全身、穿搭、场景、光线和镜头；生成后可连接到视频参考或首尾帧……' : mode === 'swap' ? '留空自动锁定参考人物的面部、发型、体型和整套穿搭，不只换脸；也可补充可见特征……' : mode === 'upscale' ? '留空自动保持人物、穿搭、动作和场景，只补充高清细节；也可输入额外要求……' : mode === 'reference' ? '输入文字或 @ 参考内容，自由组合图、文、音、视频……\n例如：@角色参考 在雨夜街道回头，电影感，环境雨声。' : '描述主体、动作、镜头和声音……'}
+        placeholder={mode === 'outfitEdit' ? '选择穿搭或输入服装描述；自动保持母图细腰和身体比例，四张分别高清后拼接……' : mode === 'qwenEdit' ? '明确写出要保持的人物特征，以及只修改的穿搭、局部或场景；输出继承第一张母图的比例……' : mode === 'identityEdit' ? '说明要保持的身份特征和要改变的穿搭、姿态或场景；四视图需写明正面、侧面、背面、三分之四视角……' : mode === 'image' ? '描述人物全身、穿搭、场景、光线和镜头；生成后可连接到视频参考或首尾帧……' : mode === 'swap' ? '留空自动锁定参考人物的面部、发型、体型和整套穿搭，不只换脸；也可补充可见特征……' : mode === 'upscale' ? '留空自动保持人物、穿搭、动作和场景，只补充高清细节；也可输入额外要求……' : mode === 'reference' ? '输入文字或 @ 参考内容，自由组合图、文、音、视频……\n例如：@角色参考 在雨夜街道回头，电影感，环境雨声。' : '描述主体、动作、镜头和声音……'}
       />}
       {mode === 'swap' && <div className="swap-settings">
         <label>换人目标<input value={data.targetDescription || ''} disabled={running} onChange={(e) => updateNode(id, { targetDescription: e.target.value })} placeholder="例如：右侧白色假人；单人可留空" /></label>
@@ -364,23 +428,26 @@ function GeneratorNode({ id, data, selected }) {
       </div>}
       <div className="creator-params">
         <div className="param-group">
-          {mode !== 'imageUpscale' && <label className="param-pill" title={mode === 'upscale' ? '高清二采应保持与一采相同的画幅比例' : ''}><Zap size={12} /><select aria-label="画幅比例" value={data.ratio} disabled={running} onChange={(e) => updateNode(id, { ratio: e.target.value })}>{['16:9','9:16','1:1','4:3','3:4','21:9'].map((x) => <option key={x}>{x}</option>)}</select><ChevronDown size={11} /></label>}
+          {!['imageUpscale', 'qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && <label className="param-pill" title={mode === 'upscale' ? '高清二采应保持与一采相同的画幅比例' : ''}><Zap size={12} /><select aria-label="画幅比例" value={data.ratio} disabled={running} onChange={(e) => updateNode(id, { ratio: e.target.value })}>{['16:9','9:16','1:1','4:3','3:4','21:9'].map((x) => <option key={x}>{x}</option>)}</select><ChevronDown size={11} /></label>}
           {!imageFamily && <label className="param-pill" title={`输出尺寸 ${outputWidth} × ${outputHeight}；分辨率越高，显存占用和生成时间越长`}><Maximize2 size={12} /><select aria-label="分辨率" value={resolution} disabled={running} onChange={(e) => updateNode(id, { resolution: e.target.value })}>{['480P','720P','1080P'].map((x) => <option key={x} value={x}>{x}</option>)}</select><ChevronDown size={11} /></label>}
-          {!['upscale', 'image', 'imageUpscale', 'identityEdit'].includes(mode) && <label className="param-pill"><Clock3 size={12} /><select aria-label="视频时长" value={data.duration} disabled={running} onChange={(e) => updateNode(id, { duration: Number(e.target.value) })}>{[5,6,7,8,9,10,11,12,13,14,15].map((x) => <option key={x} value={x}>{x} 秒</option>)}</select><ChevronDown size={11} /></label>}
-          {mode === 'image' && <label className="param-pill"><Sparkles size={12} /><select aria-label="图片风格" value={data.imageLora || 'none'} disabled={running} onChange={(e) => updateNode(id, { imageLora: e.target.value })}><option value="none">无 LoRA</option><option value="realism">写实增强</option><option value="asian">亚洲人物</option><option value="fantasy">奇幻现实</option><option value="watercolor">柔和水彩</option><option value="retroAnime">复古动漫</option></select><ChevronDown size={11} /></label>}
+          {!['upscale', 'image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && <label className="param-pill"><Clock3 size={12} /><select aria-label="视频时长" value={data.duration} disabled={running} onChange={(e) => updateNode(id, { duration: Number(e.target.value) })}>{[5,6,7,8,9,10,11,12,13,14,15].map((x) => <option key={x} value={x}>{x} 秒</option>)}</select><ChevronDown size={11} /></label>}
+          {mode === 'outfitEdit' && <><span className="param-pill active" title="四张视图分别处理、分别高清，不在整张四视图上高清"><Check size={12} />单图高清 · 后拼接</span><label className="param-pill" title="Qwen 2.1 专用写实角色 LoRA；脸部建议 0.45，过高可能改变人物"><Sparkles size={12} /><select aria-label="换装写实强度" value={data.imageLora === 'qwen21Realism' ? String(data.loraStrength ?? 0.6) : 'off'} disabled={running} onChange={(e) => updateNode(id, e.target.value === 'off' ? { imageLora: 'none' } : { imageLora: 'qwen21Realism', loraStrength: Number(e.target.value) })}><option value="off">原版写实</option><option value={0.45}>写实 LoRA · 0.45</option><option value={0.6}>写实 LoRA · 0.6</option><option value={0.7}>写实 LoRA · 0.7</option><option value={0.8}>写实 LoRA · 0.8</option></select><ChevronDown size={11} /></label></>}
+          {mode === 'image' && <><label className="param-pill" title="Krea2 适合快速生图；MOSS 用于从零生成新角色和场景"><Layers3 size={12} /><select aria-label="生图模型" value={data.imageModel || 'krea2'} disabled={running} onChange={(e) => updateNode(id, { imageModel: e.target.value, error: null })}><option value="krea2">Krea2 · 快速生图</option><option value="moss">MOSS · 角色与场景</option></select><ChevronDown size={11} /></label>{!isMoss && <label className="param-pill"><Sparkles size={12} /><select aria-label="图片风格" value={data.imageLora || 'none'} disabled={running} onChange={(e) => updateNode(id, { imageLora: e.target.value })}><option value="none">无 LoRA</option><option value="realism">写实增强</option><option value="asian">亚洲人物</option><option value="fantasy">奇幻现实</option><option value="watercolor">柔和水彩</option><option value="retroAnime">复古动漫</option></select><ChevronDown size={11} /></label>}</>}
           {mode === 'imageUpscale' && <label className="param-pill"><Maximize2 size={12} /><select aria-label="图片放大倍数" value={data.imageScale || 1.5} disabled={running} onChange={(e) => updateNode(id, { imageScale: Number(e.target.value) })}><option value={1.5}>1.5× · 约 2K</option><option value={2}>2× · 细节更多</option></select><ChevronDown size={11} /></label>}
-          {['image', 'identityEdit'].includes(mode) ? <span className="param-pill active" title={`输出 ${outputWidth} × ${outputHeight}；Euler、Simple、CFG 1${mode === 'identityEdit' ? '；参考强度 4；自由重构' : ''}`}><Zap size={12} />{mode === 'identityEdit' ? 'V2 · 强度 4' : '8 步 Turbo'}</span> : mode === 'imageUpscale' ? <span className="param-pill active" title="SeedVR2 3B INT8 一步扩散，Lab 保真校色"><Zap size={12} />1 步 · 保真</span> : mode === 'upscale' ? <span className="param-pill active" title="导演台高清分支参数：4 步 768P Turbo LoRA、Euler、Beta、3 步、0.2 降噪"><Zap size={12} />4 步 Turbo · 3 步二采</span> : mode === 'swap' ? <span className="param-pill active" title="Akatz 官方参数：FL2V Turbo、ER-SDE、Normal、CFG 1"><Zap size={12} />v1.5 · 8 步</span> : <button className={`param-pill turbo-pill ${data.turbo ? 'active' : ''}`} disabled={running} title={data.turbo ? 'Turbo 适合快速看构图；角色或动作参考不准确时请切换标准模式' : '标准模式使用 beta 调度，参考身份与动作更稳定'} onClick={() => updateNode(id, { turbo: !data.turbo })}><Zap size={12} />{data.turbo ? `${mode === 'reference' ? 4 : 8} 步 Turbo` : '标准 20 步'}</button>}
+          {mode === 'qwenEdit' && <label className="param-pill" title="Euler、Simple、CFG 1；25 步用于快速预览，40 步用于质量对照"><Zap size={12} /><select aria-label="Qwen 采样步数" value={data.qwenSteps || 40} disabled={running} onChange={(e) => updateNode(id, { qwenSteps: Number(e.target.value) })}><option value={25}>25 步 · 预览</option><option value={40}>40 步 · 质量</option></select><ChevronDown size={11} /></label>}
+          {mode === 'localRealism' && <><label className="param-pill" title="按原图视角选择对应皮肤区域；身体视图使用肤色与区域双重限制"><Crosshair size={12} /><select aria-label="原图视角" value={data.localMaskMode || 'front'} disabled={running} onChange={(e) => updateNode(id, { localMaskMode: e.target.value })}><option value="front">正面近景</option><option value="side">侧面近景</option><option value="back_body">背面全身</option><option value="front_body">正面全身</option></select><ChevronDown size={11} /></label><label className="param-pill" title="仅对皮肤区域采样，之后回贴原图"><Zap size={12} /><select aria-label="局部修复步数" value={data.localRealismSteps || 25} disabled={running} onChange={(e) => updateNode(id, { localRealismSteps: Number(e.target.value) })}><option value={20}>20 步 · 轻修</option><option value={25}>25 步 · 标准</option><option value={30}>30 步 · 精修</option><option value={40}>40 步 · 完整重绘</option></select><ChevronDown size={11} /></label><label className="param-pill" title="局部裁切区域的生成分辨率；最终始终回贴原始尺寸，1536 适合 4K 母图细节对照"><Maximize2 size={12} /><select aria-label="局部修复精度" value={data.localRealismSize || 768} disabled={running} onChange={(e) => updateNode(id, { localRealismSize: Number(e.target.value) })}><option value={768}>局部 768</option><option value={1024}>局部 1024</option><option value={1536}>局部 1536 · 4K 母图</option></select><ChevronDown size={11} /></label><label className="param-pill" title="低强度保留原图结构并轻度增加肤质；1.0 为完整重采样，可能产生接缝"><Zap size={12} /><select aria-label="局部重绘强度" value={data.localRealismDenoise ?? 1} disabled={running} onChange={(e) => updateNode(id, { localRealismDenoise: Number(e.target.value) })}><option value={0.2}>轻修 · 0.20</option><option value={0.35}>自然 · 0.35</option><option value={0.5}>加强 · 0.50</option><option value={1}>完整重采样 · 1.00</option></select><ChevronDown size={11} /></label><label className="param-pill" title="0 最保守；增大后可能碰到五官边缘"><Crosshair size={12} /><select aria-label="皮肤遮罩外扩" value={data.localMaskExpand ?? 0} disabled={running} onChange={(e) => updateNode(id, { localMaskExpand: Number(e.target.value) })}><option value={0}>遮罩不外扩</option><option value={8}>外扩 8 px</option><option value={16}>外扩 16 px</option></select><ChevronDown size={11} /></label><label className="param-pill" title="仅在皮肤遮罩内使用 Qwen 2.1 写实 LoRA；0.45 优先保持人物身份"><Sparkles size={12} /><select aria-label="局部写实强度" value={data.imageLora === 'qwen21Realism' ? String(data.loraStrength ?? 0.45) : 'off'} disabled={running} onChange={(e) => updateNode(id, e.target.value === 'off' ? { imageLora: 'none' } : { imageLora: 'qwen21Realism', loraStrength: Number(e.target.value) })}><option value="off">原模型</option><option value={0.35}>写实 LoRA · 0.35</option><option value={0.45}>写实 LoRA · 0.45</option><option value={0.6}>写实 LoRA · 0.6</option><option value={0.8}>写实 LoRA · 0.8</option></select><ChevronDown size={11} /></label></>}
+          {['qwenEdit', 'localRealism'].includes(mode) ? null : ['image', 'identityEdit', 'outfitEdit'].includes(mode) ? <span className="param-pill active" title={`${mode === 'outfitEdit' ? '各视图保持原始宽高比' : `输出 ${outputWidth} × ${outputHeight}`}；Euler、Simple、CFG 1${mode === 'outfitEdit' ? '；千问 40 步；每张独立 SeedVR2 高清' : mode === 'identityEdit' ? '；参考强度 4；自由重构' : ''}`}><Zap size={12} />{mode === 'outfitEdit' ? '40 步 · 单图高清' : mode === 'identityEdit' ? 'V2 · 强度 4' : isMoss ? '25 步 · Spectrum' : '8 步 Turbo'}</span> : mode === 'imageUpscale' ? <span className="param-pill active" title="SeedVR2 3B INT8 一步扩散，Lab 保真校色"><Zap size={12} />1 步 · 保真</span> : mode === 'upscale' ? <span className="param-pill active" title="导演台高清分支参数：4 步 768P Turbo LoRA、Euler、Beta、3 步、0.2 降噪"><Zap size={12} />4 步 Turbo · 3 步二采</span> : mode === 'swap' ? <span className="param-pill active" title="Akatz 官方参数：FL2V Turbo、ER-SDE、Normal、CFG 1"><Zap size={12} />v1.5 · 8 步</span> : <button className={`param-pill turbo-pill ${data.turbo ? 'active' : ''}`} disabled={running} title={data.turbo ? 'Turbo 适合快速看构图；角色或动作参考不准确时请切换标准模式' : '标准模式使用 beta 调度，参考身份与动作更稳定'} onClick={() => updateNode(id, { turbo: !data.turbo })}><Zap size={12} />{data.turbo ? `${mode === 'reference' ? 4 : 8} 步 Turbo` : '标准 20 步'}</button>}
           {mode === 'reference' && <button className={`param-pill ${data.refImageSize === 'max' ? 'active' : ''}`} onClick={() => updateNode(id, { refImageSize: data.refImageSize === 'max' ? 'match' : 'max' })} title="高保真参考更慢，但保留更多主体细节"><Layers3 size={12} />{data.refImageSize === 'max' ? '高保真' : '均衡'}</button>}
           {mode === 'swap' && <span className="param-pill active" title="SAM3.1 遮罩直接作用于源视频 latent，而非生成后回填"><Crosshair size={12} />潜空间保护</span>}
         </div>
         {running ? <button className="send-button cancel" onClick={() => cancelNode(id)} title="取消生成"><Square size={15} fill="currentColor" /></button> : <button className="send-button node-generate" onClick={() => generateNode(id)} disabled={!serverOnline} title={mode === 'imageUpscale' ? '本地高清放大' : '本地生成'}><ArrowUp size={17} /></button>}
       </div>
-      <div className="creator-footnote"><span>{mode === 'identityEdit' ? '母图保持身份；可换装、换姿态、做四视图；结果可继续连图片高清或视频参考' : mode === 'image' ? '人物建议写明“全身、完整穿搭”；结果可直接连视频参考或首尾帧' : mode === 'imageUpscale' ? '只放大图片，不重新设计人物和场景；默认 1.5 倍，按需运行' : mode === 'swap' ? '仅运行一采角色替换；需要高清时，再连接独立高清二采节点' : mode === 'upscale' ? '默认 720P；画幅需与一采一致；Sage 加速；保留原音轨' : mode === 'reference' ? `已连接 ${refs.length} 个素材 · 本地上限 9 图 / 3 视频 / 3 音频` : mode === 'frames' ? '首尾帧是次要模式，从图片节点连线到对应端口' : '无需参考素材，直接通过文字生成'}</span><b>本地免费</b></div>
+      <div className="creator-footnote"><span>{mode === 'outfitEdit' ? '千问只换两张身体图；保留面部原图；四张分别高清后拼接；严格保持细腰、腰线与腿长' : mode === 'qwenEdit' ? '原生整图编辑；继承第一张母图比例；与 Identity V2 同题对照后选用 · Qwen Research License' : mode === 'identityEdit' ? '母图保持身份；可换装、换姿态、做四视图；结果可继续连图片高清或视频参考' : mode === 'image' ? (isMoss ? 'MOSS 从零生成新角色和场景；25 步 Spectrum 加速；模型依赖会在提交前检查' : '人物建议写明“全身、完整穿搭”；结果可直接连视频参考或首尾帧') : mode === 'imageUpscale' ? '只放大图片，不重新设计人物和场景；默认 1.5 倍，按需运行' : mode === 'swap' ? '仅运行一采角色替换；需要高清时，再连接独立高清二采节点' : mode === 'upscale' ? '默认 720P；画幅需与一采一致；Sage 加速；保留原音轨' : mode === 'reference' ? `已连接 ${refs.length} 个素材 · 本地上限 9 图 / 3 视频 / 3 音频` : mode === 'frames' ? '首尾帧是次要模式，从图片节点连线到对应端口' : '无需参考素材，直接通过文字生成'}</span><b>本地免费</b></div>
     </NodeToolbar>
   </div>;
 }
 
-const nodeTypes = { note: NoteNode, media: MediaNode, generator: GeneratorNode, prompt: PromptOptimizerNode };
+const nodeTypes = { note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode) };
 
 function CanvasInner({ onSimpleMode }) {
   const saved = useMemo(readCanvas, []);
@@ -390,6 +457,7 @@ function CanvasInner({ onSimpleMode }) {
   const [saveState, setSaveState] = useState('已保存');
   const [server, setServer] = useState({ online: false, label: '正在连接' });
   const [metrics, setMetrics] = useState({ vramUsed: null, vramTotal: null, cpuPercent: null, ramUsed: null, ramTotal: null });
+  const [memoryCleanup, setMemoryCleanup] = useState('idle');
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [historyItems, setHistoryItems] = useState([]);
@@ -400,12 +468,31 @@ function CanvasInner({ onSimpleMode }) {
   const [snapEnabled, setSnapEnabled] = useState(() => localStorage.getItem(SNAP_KEY) !== 'false');
   const [addMenu, setAddMenu] = useState(null);
   const [nodeMenu, setNodeMenu] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const previewCloseRef = useRef(null);
+  const completedJobsRef = useRef(new Set());
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
   const filesRef = useRef({});
   const clientId = useMemo(createClientId, []);
   const { screenToFlowPosition, fitView, setCenter, zoomIn, zoomOut, zoomTo } = useReactFlow();
 
+  useEffect(() => {
+    if (!imagePreview) return undefined;
+    const previousFocus = document.activeElement;
+    const closeOnEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setImagePreview(null);
+    };
+    document.addEventListener('keydown', closeOnEscape, true);
+    previewCloseRef.current?.focus();
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape, true);
+      previousFocus?.focus?.();
+    };
+  }, [imagePreview]);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { edgesRef.current = edges; }, [edges]);
   useEffect(() => {
@@ -470,7 +557,16 @@ function CanvasInner({ onSimpleMode }) {
     return edgesRef.current.filter((edge) => edge.target === id).map((edge) => {
       const source = nodesRef.current.find((item) => item.id === edge.source);
       return source?.type === 'media' ? { ...source, data: { ...source.data, slot: edge.targetHandle } } : null;
-    }).filter(Boolean).filter((source) => mode === 'reference' ? source.data.slot === 'references' : mode === 'frames' ? ['first', 'last'].includes(source.data.slot) && source.data.kind === 'image' : ['imageUpscale', 'identityEdit'].includes(mode) ? source.data.slot === 'guide' && source.data.kind === 'image' : ['swap', 'upscale'].includes(mode) ? (source.data.slot === 'guide' && source.data.kind === 'video') || (source.data.slot === 'identity' && source.data.kind === 'image') : false);
+    }).filter(Boolean).filter((source) => mode === 'reference' ? source.data.slot === 'references' : mode === 'frames' ? ['first', 'last'].includes(source.data.slot) && source.data.kind === 'image' : ['imageUpscale', 'identityEdit', 'qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) ? source.data.kind === 'image' && (source.data.slot === 'guide' || (['qwenEdit', 'localRealism'].includes(mode) && source.data.slot === 'identity')) : ['swap', 'upscale'].includes(mode) ? (source.data.slot === 'guide' && source.data.kind === 'video') || (source.data.slot === 'identity' && source.data.kind === 'image') : false);
+  }, []);
+
+  const getMaskGuide = useCallback((id) => {
+    const maskEdge = edgesRef.current.find((edge) => edge.source === id && edge.targetHandle === 'identity');
+    const target = nodesRef.current.find((node) => node.id === maskEdge?.target);
+    if (target?.type !== 'generator' || target.data.mode !== 'localRealism') return null;
+    const guideEdge = edgesRef.current.find((edge) => edge.target === target.id && edge.targetHandle === 'guide');
+    const guide = nodesRef.current.find((node) => node.id === guideEdge?.source);
+    return guide?.type === 'media' && guide.data.kind === 'image' && guide.data.url ? guide : null;
   }, []);
 
   const getMentionItems = useCallback((id) => nodesRef.current.filter((node) => node.type === 'media' && node.id !== id && node.data.title), []);
@@ -508,21 +604,26 @@ function CanvasInner({ onSimpleMode }) {
     }
   }, [getPromptTarget, getReferences, updateNode]);
 
-  const completeGeneration = useCallback(async (id, promptId) => {
+  const completeGeneration = useCallback(async (id, promptId, completedEntry = null) => {
+    if (completedJobsRef.current.has(promptId) || nodesRef.current.some((node) => node.type === 'media' && node.data.sourcePromptId === promptId)) return;
+    completedJobsRef.current.add(promptId);
     try {
-      const history = await getHistory(100);
+      const history = completedEntry ? { [promptId]: completedEntry } : await getHistory(100);
       const source = nodesRef.current.find((node) => node.id === id);
-      const isImage = ['image', 'imageUpscale', 'identityEdit'].includes(source?.data.mode);
+      const isImage = ['image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'outfitEdit', 'localRealism'].includes(source?.data.mode);
       const files = isImage ? extractImages(history?.[promptId]) : extractVideos(history?.[promptId]);
       if (!files.length) throw new Error(`任务已结束，但没有找到${isImage ? '图片' : '视频'}输出。`);
       const standard = files.find((file) => file.filename?.startsWith('H3_CharacterSwap') && !file.filename?.startsWith('H3_CharacterSwap_'));
-      const preferredImage = files.find((file) => source?.data.mode === 'identityEdit' ? file.filename?.startsWith('H3_IdentityV2_') : source?.data.mode === 'imageUpscale' ? file.filename?.startsWith('H3_Image_HD') : file.filename?.startsWith('H3_Image_'));
+      const singleOutfit = source?.data.mode === 'outfitEdit' && (source?.data.outfitPanel || source?.data.panelId);
+      const preferredImage = files.find((file) => source?.data.mode === 'outfitEdit' ? file.filename?.startsWith(singleOutfit ? `H3_OutfitHD_${singleOutfit}_` : 'H3_OutfitQuad_') : source?.data.mode === 'qwenEdit' ? file.filename?.startsWith('H3_Qwen21Edit_') : source?.data.mode === 'identityEdit' ? file.filename?.startsWith('H3_IdentityV2_') : source?.data.mode === 'imageUpscale' ? file.filename?.startsWith('H3_Image_HD') : source?.data.mode === 'image' && source?.data.imageModel === 'moss' ? file.filename?.startsWith('H3_MOSS_Image_') : file.filename?.startsWith('H3_Image_'));
       const result = isImage ? preferredImage || files[0] : source?.data.mode === 'swap' ? standard || files[0] : files[0];
-      const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-      const title = source?.data.mode === 'identityEdit' ? '母图编辑 V2' : source?.data.mode === 'image' ? '本地生图' : source?.data.mode === 'imageUpscale' ? '图片高清' : source?.data.mode === 'swap' ? '换人一采' : source?.data.mode === 'upscale' ? '高清二采' : '成片';
+      const outfitTitle = singleOutfit ? `${{ tl: '正面近景', tr: '侧面近景', bl: '背面全身', br: '正面全身' }[singleOutfit]} · 独立高清` : '四视图 · 分别高清合成';
+      const title = source?.data.mode === 'outfitEdit' ? outfitTitle : source?.data.mode === 'qwenEdit' ? 'Qwen 2.1 图生图' : source?.data.mode === 'localRealism' ? '局部写实修复' : source?.data.mode === 'identityEdit' ? '母图编辑 V2' : source?.data.mode === 'image' ? (source?.data.imageModel === 'moss' ? 'MOSS 生图' : 'Krea2 生图') : source?.data.mode === 'imageUpscale' ? '图片高清' : source?.data.mode === 'swap' ? '换人一采' : source?.data.mode === 'upscale' ? '高清二采' : '成片';
+      const resultIndex = edgesRef.current.filter((edge) => edge.source === id && edge.targetHandle === 'preview').length;
+      const resultPosition = findFreePosition(nodesRef.current, { x: (source?.position.x || 0) + 540, y: (source?.position.y || 0) + resultIndex * 340 }, 'media');
       const mediaNode = {
-        id: uid(isImage ? 'image' : 'video'), type: 'media', position: { x: (source?.position.x || 0) + 540, y: source?.position.y || 0 },
-        data: { ...result, kind: isImage ? 'image' : 'video', output: true, title: `${title} ${time}`, name: result.filename, prompt: source?.data.prompt },
+        id: uid(isImage ? 'image' : 'video'), type: 'media', position: resultPosition,
+        data: { ...result, kind: isImage ? 'image' : 'video', output: true, title: `${source?.data.title || title} · 成品 ${resultIndex + 1}`, name: result.filename, prompt: source?.data.prompt, sourcePromptId: promptId },
       };
       setNodes((items) => items.map((node) => node.id === id ? {
         ...node,
@@ -532,7 +633,10 @@ function CanvasInner({ onSimpleMode }) {
         },
       } : node).concat(mediaNode));
       setEdges((items) => addEdge({ id: `edge-${id}-${mediaNode.id}`, source: id, target: mediaNode.id, sourceHandle: isImage ? 'image' : 'video', targetHandle: 'preview' }, items));
-    } catch (error) { updateNode(id, { status: 'error', error: error.message, stage: '读取结果失败' }); }
+    } catch (error) {
+      completedJobsRef.current.delete(promptId);
+      updateNode(id, { status: 'error', error: error.message, stage: '读取结果失败' });
+    }
   }, [setNodes, setEdges, updateNode]);
 
   useEffect(() => {
@@ -561,6 +665,31 @@ function CanvasInner({ onSimpleMode }) {
     return () => socket.close();
   }, [clientId, completeGeneration, updateNode]);
 
+  useEffect(() => {
+    let checking = false;
+    const reconcileFinishedJobs = async () => {
+      if (checking) return;
+      const needsResult = (data) => ['queued', 'running', 'finishing'].includes(data.status) || (data.status === 'error' && data.stage === '读取结果失败');
+      const pending = nodesRef.current.filter((node) => node.data.promptId && needsResult(node.data));
+      if (!pending.length) return;
+      checking = true;
+      try {
+        const history = await getHistory(100);
+        for (const node of pending) {
+          const current = nodesRef.current.find((item) => item.id === node.id);
+          if (!current || current.data.promptId !== node.data.promptId || !needsResult(current.data)) continue;
+          const entry = history?.[node.data.promptId];
+          if (entry?.status?.completed) await completeGeneration(node.id, node.data.promptId, entry);
+          else if (entry?.status?.status_str === 'error') updateNode(node.id, { status: 'error', stage: '生成失败', error: 'ComfyUI 任务执行失败，请查看生成记录。' });
+        }
+      } catch { /* Keep the existing socket flow when the history endpoint is unavailable. */ }
+      finally { checking = false; }
+    };
+    reconcileFinishedJobs();
+    const interval = setInterval(reconcileFinishedJobs, 2000);
+    return () => clearInterval(interval);
+  }, [completeGeneration, updateNode]);
+
   const checkServer = useCallback(async () => {
     try {
       const [stats, hardware] = await Promise.all([getSystemStats(), getHardwareMetrics().catch(() => null)]);
@@ -579,6 +708,20 @@ function CanvasInner({ onSimpleMode }) {
       setMetrics({ vramUsed: null, vramTotal: null, cpuPercent: null, ramUsed: null, ramTotal: null });
     }
   }, []);
+  const clearMemory = useCallback(async () => {
+    if (memoryCleanup === 'busy') return;
+    setMemoryCleanup('busy');
+    try {
+      await freeComfyMemory();
+      await checkServer();
+      setMemoryCleanup('done');
+    } catch (error) {
+      setMemoryCleanup('error');
+      window.alert(error.message || '显存清理失败，请稍后重试。');
+    } finally {
+      window.setTimeout(() => setMemoryCleanup('idle'), 3000);
+    }
+  }, [checkServer, memoryCleanup]);
   useEffect(() => {
     checkServer();
     const interval = setInterval(checkServer, 3000);
@@ -603,9 +746,15 @@ function CanvasInner({ onSimpleMode }) {
     if (node.data.mode === 'swap' && (!refs.some((ref) => ref.data.slot === 'guide') || !refs.some((ref) => ref.data.slot === 'identity'))) { updateNode(id, { status: 'error', error: '请连接源视频到上方端口、单人身份图到下方端口。' }); return; }
     if (node.data.mode === 'upscale' && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: '请把已经生成的一采视频连接到高清二采节点上方端口。' }); return; }
     if (node.data.mode === 'imageUpscale' && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: '请把一张图片连接到图片高清节点左侧端口。' }); return; }
-    if (node.data.mode === 'identityEdit' && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: '请把一张人物或场景母图连接到母图编辑节点左侧端口。' }); return; }
+    if (['identityEdit', 'qwenEdit', 'localRealism'].includes(node.data.mode) && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: '请把一张人物或场景母图连接到图生图节点左侧端口。' }); return; }
+    if (node.data.mode === 'outfitEdit' && !refs.some((ref) => ref.data.slot === 'guide' && ref.data.kind === 'image')) { updateNode(id, { status: 'error', error: '请把原始四视图图片连接到无抠图换装节点左侧端口。' }); return; }
     updateNode(id, { status: 'uploading', stage: '正在准备素材', progress: 0, error: null });
     try {
+      if (node.data.mode === 'image' && node.data.imageModel === 'moss') {
+        updateNode(id, { stage: '正在检查 MOSS 模型依赖' });
+        const dependencies = await getMossDependencyStatus();
+        if (!dependencies.ready) throw new Error(`MOSS 还缺少：${dependencies.missing.join('、')}。模型文件应放入 D:\\H3-Models 对应目录，补齐后再生成。`);
+      }
       const upload = async (mediaNode) => {
         if (mediaNode.data.remoteName) return mediaNode.data.remoteName;
         let file = filesRef.current[mediaNode.id];
@@ -624,12 +773,25 @@ function CanvasInner({ onSimpleMode }) {
       for (const mediaNode of refs) references.push({ kind: mediaNode.data.kind, title: mediaNode.data.title, slot: mediaNode.data.slot, name: await upload(mediaNode) });
       const seed = node.data.randomSeed ? Math.floor(Math.random() * 2147483647) : Number(node.data.seed || 42);
       const options = { ...node.data, seed, references };
-      const workflow = node.data.mode === 'identityEdit' ? buildIdentityEditWorkflow(options) : node.data.mode === 'image' ? buildImageWorkflow(options) : node.data.mode === 'imageUpscale' ? buildImageHdWorkflow(options) : node.data.mode === 'swap' ? buildCharacterSwapWorkflow(options) : node.data.mode === 'upscale' ? buildHdRefineWorkflow(options) : node.data.mode === 'reference' ? buildReferenceWorkflow(options) : buildWorkflow({ ...options, firstFrame: references.find((ref) => ref.slot === 'first')?.name, lastFrame: references.find((ref) => ref.slot === 'last')?.name });
       updateNode(id, { status: 'queued', stage: '任务已排队', seed });
-      const result = await queuePrompt(workflow, clientId);
-      updateNode(id, { status: 'queued', stage: '等待本地 GPU', promptId: result.prompt_id, runs: [{ promptId: result.prompt_id, status: 'queued', stage: '已提交', time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12) });
+      const result = node.data.mode === 'outfitEdit'
+        ? await runOutfitQuadWorkflow(options, clientId, (progress) => updateNode(id, progress))
+        : await queuePrompt(
+          node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
+            : node.data.mode === 'localRealism' ? buildLocalRealismWorkflow(options)
+            : node.data.mode === 'identityEdit' ? buildIdentityEditWorkflow(options)
+            : node.data.mode === 'image' ? buildImageWorkflow(options)
+              : node.data.mode === 'imageUpscale' ? buildImageHdWorkflow(options)
+                : node.data.mode === 'swap' ? buildCharacterSwapWorkflow(options)
+                  : node.data.mode === 'upscale' ? buildHdRefineWorkflow(options)
+                    : node.data.mode === 'reference' ? buildReferenceWorkflow(options)
+                      : buildWorkflow({ ...options, firstFrame: references.find((ref) => ref.slot === 'first')?.name, lastFrame: references.find((ref) => ref.slot === 'last')?.name }),
+          clientId,
+        );
+      updateNode(id, { status: result.history ? 'finishing' : 'queued', stage: result.history ? '正在读取结果' : '等待本地 GPU', promptId: result.prompt_id, runs: [{ promptId: result.prompt_id, status: result.history ? 'done' : 'queued', stage: result.history ? '本地处理完成' : '已提交', time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12) });
+      if (result.history) await completeGeneration(id, result.prompt_id, result.history);
     } catch (error) { updateNode(id, { status: 'error', error: error.message, stage: '提交失败' }); }
-  }, [clientId, getReferences, updateNode]);
+  }, [clientId, completeGeneration, getReferences, updateNode]);
 
   const cancelNode = useCallback(async (id) => {
     const node = nodesRef.current.find((item) => item.id === id);
@@ -637,8 +799,8 @@ function CanvasInner({ onSimpleMode }) {
     catch (error) { updateNode(id, { status: 'error', error: error.message }); }
   }, [updateNode]);
 
-  const addNode = useCallback((type, extra = {}, atPosition = null) => {
-    const position = atPosition || screenToFlowPosition({ x: window.innerWidth * 0.45 + Math.random() * 60, y: window.innerHeight * 0.35 + Math.random() * 50 });
+  const addNode = useCallback((type, extra = {}, atPosition = null, shouldFocus = true) => {
+    const desired = atPosition || screenToFlowPosition({ x: window.innerWidth * 0.45, y: window.innerHeight * 0.35 });
     const id = uid(type);
     let data;
     if (type === 'generator') data = { ...DEFAULT_GENERATOR, ...extra };
@@ -650,9 +812,10 @@ function CanvasInner({ onSimpleMode }) {
       data = { kind, title: `${KIND_LABEL[kind]} ${count}`, url: '', name: '', ...extra };
       type = 'media';
     }
+    const position = findFreePosition(nodesRef.current, desired, type);
     setNodes((items) => items.concat({ id, type, position, data }));
     setAddMenu(null);
-    setTimeout(() => fitView({ nodes: [{ id }], duration: 300, maxZoom: 1, padding: 0.6 }), 60);
+    if (shouldFocus) setTimeout(() => fitView({ nodes: [{ id }], duration: 300, maxZoom: 1, padding: 0.6 }), 60);
     return id;
   }, [screenToFlowPosition, setNodes, fitView]);
 
@@ -707,8 +870,10 @@ function CanvasInner({ onSimpleMode }) {
       // Single-image keyframe ports are replaced below.
     } else if (['swap', 'upscale'].includes(mode) && ((connection.targetHandle === 'guide' && source.data.kind === 'video') || (connection.targetHandle === 'identity' && source.data.kind === 'image'))) {
       // One input video and one optional identity image; reconnecting replaces the previous input.
-    } else if (['imageUpscale', 'identityEdit'].includes(mode) && connection.targetHandle === 'guide' && source.data.kind === 'image') {
+    } else if (['imageUpscale', 'identityEdit', 'qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && connection.targetHandle === 'guide' && source.data.kind === 'image') {
       // A single source image is replaced when reconnecting.
+    } else if (['qwenEdit', 'localRealism'].includes(mode) && connection.targetHandle === 'identity' && source.data.kind === 'image') {
+      // Qwen accepts a makeup/style image; local realism accepts a custom mask.
     } else return;
     setEdges((items) => addEdge({ ...connection, sourceHandle: 'ref', id: `edge-${connection.source}-${connection.target}-${connection.targetHandle}-${Date.now()}` }, items.filter((edge) => mode === 'reference' ? !(edge.source === connection.source && edge.target === connection.target && edge.targetHandle === connection.targetHandle) : !(edge.target === connection.target && edge.targetHandle === connection.targetHandle))));
   }, [setEdges]);
@@ -762,10 +927,17 @@ function CanvasInner({ onSimpleMode }) {
         y += heightOf(node) + 80;
       });
     });
-    setNodes((items) => items.map((node) => ({ ...node, position: layouts.get(node.id) || node.position, selected: false })));
+    setNodes((items) => items.map((node) => {
+      const incoming = node.data.output ? currentEdges.find((edge) => edge.target === node.id && edge.targetHandle === 'preview') : null;
+      const parent = incoming ? currentNodes.find((item) => item.id === incoming.source) : null;
+      const resultIndex = incoming ? currentEdges.filter((edge) => edge.source === incoming.source && edge.targetHandle === 'preview').findIndex((edge) => edge.target === node.id) : -1;
+      const data = parent ? { ...node.data, title: `${parent.data.title} · 成品 ${resultIndex + 1}` } : node.data;
+      return { ...node, data, position: layouts.get(node.id) || node.position, selected: false };
+    }));
     setEdges((items) => items.map((edge) => ({ ...edge, type: 'default', selected: false })));
     setAddMenu(null); setNodeMenu(null);
-    setTimeout(() => fitView({ duration: 450, padding: 0.12, maxZoom: 0.85 }), 100);
+    const recentNodes = currentNodes.slice(-8).map((node) => ({ id: node.id }));
+    setTimeout(() => fitView({ nodes: recentNodes, duration: 450, padding: 0.2, maxZoom: 0.75 }), 100);
   };
   const placeAddMenu = (screenPoint) => {
     const point = {
@@ -821,8 +993,17 @@ function CanvasInner({ onSimpleMode }) {
     setCenter(node.position.x + 180, node.position.y + 100, { zoom: 1, duration: 400 });
     setPinOpen(false);
   };
-
-  const context = { updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference };
+  const locateContent = () => {
+    const selected = nodesRef.current.filter((node) => node.selected);
+    fitView({ nodes: selected.length ? selected : undefined, duration: 350, padding: selected.length ? 0.32 : 0.15, maxZoom: 1 });
+  };
+  // RefMuse-style progressive detail: only cross render tiers, not on every zoom frame.
+  const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
+  const context = useMemo(() => ({ updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, viewTier }), [updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, viewTier, edges]);
+  useCanvasMcp({
+    nodesRef, edgesRef, projectName, server,
+    actions: { addNode, updateNode, removeNode, onConnect, generateNode, tidyCanvas },
+  });
   const pinnedNodes = nodes.filter((node) => node.data.pinned);
   const vramPercent = metrics.vramTotal ? Math.min(100, Math.max(0, metrics.vramUsed / metrics.vramTotal * 100)) : 0;
   const cpuPercent = Number.isFinite(metrics.cpuPercent) ? Math.min(100, Math.max(0, metrics.cpuPercent)) : 0;
@@ -849,13 +1030,14 @@ function CanvasInner({ onSimpleMode }) {
             </div>
           </div>
           <div className="neo-header-actions">
+            <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={clearMemory} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
             <button className={`server-status ${server.online ? 'online' : ''}`} onClick={checkServer} title={server.label}><i />{server.online ? '本地已连接' : '本地未连接'}</button>
             <button onClick={onSimpleMode} title="切换简易模式"><MousePointer2 size={15} /></button>
             <button onClick={() => window.open('http://127.0.0.1:8188','_blank')} title="打开 ComfyUI 高级节点"><MoreHorizontal size={17} /></button>
           </div>
         </div>
       </header>
-      <main className="neo-canvas-wrap"
+      <main className={`neo-canvas-wrap canvas-view-${viewTier}`}
         onDragOver={(e) => e.preventDefault()}
         onPointerDownCapture={(event) => { if (event.button === 0 && !event.target.closest('.add-node-menu,.node-context-menu')) { setAddMenu(null); setNodeMenu(null); } }}
         onContextMenuCapture={openContextMenu}
@@ -869,12 +1051,13 @@ function CanvasInner({ onSimpleMode }) {
         }}
         onDoubleClickCapture={openAddMenu}>
         <ReactFlow
-          nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+          nodes={nodes} edges={edges} nodeTypes={nodeTypes} onlyRenderVisibleElements
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
           defaultViewport={saved.viewport} fitView={!localStorage.getItem(CANVAS_KEY) && !localStorage.getItem(OLD_CANVAS_KEY)}
           fitViewOptions={{ padding: 0.16, maxZoom: 0.85 }}
           minZoom={0.12} maxZoom={1.8} zoomOnScroll zoomOnPinch zoomOnDoubleClick={false}
-          panOnDrag panOnScroll={false} selectionOnDrag={false} deleteKeyCode={['Backspace','Delete']}
+          panOnDrag={[1]} panOnScroll={false} selectionOnDrag selectionMode={SelectionMode.Partial}
+          multiSelectionKeyCode={['Shift']} deleteKeyCode={['Backspace','Delete']}
           snapToGrid={snapEnabled} snapGrid={[22, 22]}
           onMove={(_, viewport) => setZoom(Math.round(viewport.zoom * 100))}
           onMoveEnd={(_, viewport) => { saved.viewport = viewport; localStorage.setItem(CANVAS_KEY, JSON.stringify(canvasSnapshot(nodesRef.current, edgesRef.current, viewport))); }}
@@ -900,7 +1083,8 @@ function CanvasInner({ onSimpleMode }) {
             <button className={miniMapVisible ? 'active' : ''} onClick={() => setMiniMapVisible(!miniMapVisible)} title="小地图"><MapIcon size={15} /></button>
             <button className={zoomMenuOpen ? 'zoom-button active' : 'zoom-button'} onClick={() => setZoomMenuOpen(!zoomMenuOpen)} title="缩放" aria-expanded={zoomMenuOpen}><Search size={13} /><span>{zoom}%</span></button>
           </div>
-          <button className="round-control" onClick={() => fitView({ duration: 350, padding: 0.15 })} title="节点定位"><Crosshair size={16} /></button>
+          {viewTier !== 'full' && <span className="canvas-performance-mode" role="status">{viewTier === 'placeholder' ? '占位浏览' : '轻量浏览'} · 放大恢复编辑</span>}
+          <button className="round-control" onClick={locateContent} title="快速定位当前选择或全部内容"><Crosshair size={16} /></button>
           <button className="round-control" onClick={resetCanvas} title="新建画布"><CircleHelp size={16} /></button>
         </div>
         <div className="canvas-dock">
@@ -917,8 +1101,11 @@ function CanvasInner({ onSimpleMode }) {
           <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>
           <button onClick={() => addNode('generator', {}, addMenu.flow)}><i><WandSparkles size={17} /></i><span>全能参考<small>图、文、音、视频多元素生成</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'swap', title: '精准角色替换' }, addMenu.flow)}><i><Crosshair size={17} /></i><span>角色替换<small>仅运行一采，逐帧引导、SAM3.1 锁人、原音轨</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('generator', { mode: 'image', title: '本地生图' }, addMenu.flow)}><i><ImageIcon size={17} /></i><span>本地生图<small>Krea2 · 人物与场景 · 约 1MP · 8 步</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'image', title: '本地生图' }, addMenu.flow)}><i><ImageIcon size={17} /></i><span>本地生图<small>Krea2 / MOSS · 新人物与场景 · 约 1MP</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'identityEdit', title: '母图编辑 V2', ratio: '16:9', refBoost: 4, groundingPx: 1024, refPosition: 'beside (right of target)' }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>母图编辑 V2<small>保持身份 · 换装换姿态 · 四视图 · 8 步</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'qwenEdit', title: 'Qwen 2.1 图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>Qwen 2.1 图生图<small>原生整图编辑 · 原图比例 · 40 步 · 研究许可</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'localRealism', title: '局部写实修复', prompt: '只增强选中皮肤的自然纹理、细小毛孔和真实光影；保持人物身份、五官、妆容、表情及其他区域不变。', localRealismSteps: 25, localRealismSize: 768, localMaskExpand: 0, localMaskBlend: 16, randomSeed: false, seed: 78001 }, addMenu.flow)}><i><Sparkles size={17} /></i><span>局部写实修复<small>只改皮肤 · 保护五官 · 原图回贴</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'outfitEdit', title: '无抠图换装', prompt: OUTFIT_PRESETS.blackSatin.prompt, outfitPreset: 'blackSatin', randomSeed: false, seed: 78001 }, addMenu.flow)}><i><ImageIcon size={17} /></i><span>无抠图换装<small>千问单图换装 · 分别高清 · 保持细腰比例</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'imageUpscale', title: '图片高清', imageScale: 1.5, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>图片高清<small>SeedVR2 3B · 独立运行 · 默认 1.5 倍</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'upscale', title: '视频高清二采', resolution: '720P', randomSeed: false }, addMenu.flow)}><i><Sparkles size={17} /></i><span>视频高清二采<small>独立运行 · 3D Latent 放大 · 4 步 Turbo</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('prompt', {}, addMenu.flow)}><i><Sparkles size={17} /></i><span>提示词优化<small>自然语言转 MiniMax H3 专用提示词</small></span><Plus size={13} /></button>
@@ -957,6 +1144,17 @@ function CanvasInner({ onSimpleMode }) {
         {pinnedNodes.map((node) => <button key={node.id} onClick={() => focusNode(node.id)}><Crosshair size={13} /><span>{node.data.title}</span><small>{node.type === 'generator' ? '生成' : KIND_LABEL[node.data.kind] || '备注'}</small></button>)}
         {!pinnedNodes.length && <div className="library-empty"><Pin size={22} /><span>选中节点后点击 Pin 标记</span></div>}
       </aside>}
+      {imagePreview && <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={`${imagePreview.title || '图片'}大图预览`} onClick={(event) => { if (event.target === event.currentTarget) setImagePreview(null); }} onDoubleClick={(event) => event.stopPropagation()}>
+        <section className="image-lightbox-panel">
+          <header className="image-lightbox-header">
+            <div><ImageIcon size={15} /><span>{imagePreview.title || '图片预览'}</span>{imagePreview.name && <small>{imagePreview.name}</small>}</div>
+            <div><span className="image-lightbox-hint">Esc 关闭</span><button ref={previewCloseRef} onClick={() => setImagePreview(null)} aria-label="关闭大图预览" title="关闭 · Esc"><X size={18} /></button></div>
+          </header>
+          <div className="image-lightbox-content" onClick={() => setImagePreview(null)}>
+            <img src={imagePreview.url} alt={imagePreview.title || '生成图片大图'} draggable={false} onClick={(event) => event.stopPropagation()} />
+          </div>
+        </section>
+      </div>}
     </div>
   </NodeContext.Provider>;
 }

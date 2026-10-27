@@ -371,8 +371,10 @@ def main():
             comfy_process = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
             print("正在启动本地 H3 模型服务，首次加载需要一点时间……")
 
+        if not (HERE / "dist" / "index.html").is_file():
+            raise RuntimeError("画布尚未构建。请先运行 install.bat，或在本目录执行 npm ci && npm run build。")
         wait_for_comfy(comfy_process)
-        handler = functools.partial(WorkbenchHandler, directory=str(HERE))
+        handler = functools.partial(WorkbenchHandler, directory=str(HERE / "dist"))
         server = ThreadingHTTPServer(("127.0.0.1", 8790), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         print(f"视频工作台已就绪：{WEB_URL}")
