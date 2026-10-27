@@ -194,3 +194,7 @@ python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-ro
 6. 仍失败的文件或节点、准确错误和下一步；没有失败项才写“安装完成”。
 
 不要上传模型或生成素材到 GitHub，不要在报告中暴露账号、Cookie、令牌或人物素材路径。
+
+## 11. 画布日常操作与测试
+
+在当前画布复用节点、创建测试、连接、生成、整理或查找保存路径时，必须读取并遵循 `.agents/skills/comfyui-infinite-canvas/SKILL.md`。安装验收与画布操作分别按对应规程执行；所有测试生成都要在当前画布留下可核验的真实结果节点。
