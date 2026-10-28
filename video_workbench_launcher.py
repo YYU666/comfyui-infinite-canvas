@@ -33,6 +33,7 @@ from queue_api import QueueAPI
 from workbench_doctor import WorkbenchDoctor
 from workbench_queue import QueueManager
 from workbench_security import session_cookie, valid_content_type, valid_host, valid_origin, valid_token
+from workbench_settings import SettingsError, WorkbenchSettings, read_deepseek_key
 from workbench_lifecycle import (
     APP_VERSION,
     atomic_write_json,
@@ -169,13 +170,10 @@ def import_video(share_text):
 
 
 def load_deepseek_key():
-    configured = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    if configured:
-        return configured
-    for key_file in (Path.home() / ".h3" / "deepseek.key", HERE / "deepseek.key"):
-        if key_file.is_file():
-            return key_file.read_text(encoding="utf-8-sig").strip()
-    raise RuntimeError("尚未配置 DeepSeek 密钥，请先完成本机后端配置。")
+    configured, _ = read_deepseek_key(HERE)
+    if not configured:
+        raise RuntimeError("尚未配置 DeepSeek 密钥，请先在设置中完成本机配置。")
+    return configured
 
 
 def optimize_h3_prompt(payload):
@@ -386,6 +384,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 health["projectsRoot"] = str(self.server.project_store.root)
             self.send_json(200, health)
             return
+        if path == "/api/settings":
+            self.send_json(200, self.server.settings.public())
+            return
         if self.server.queue_api.handle_get(self, path):
             return
         if self.server.project_api.handle_get(self, path):
@@ -481,6 +482,26 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if is_comfy_path(path):
             proxy_http(self)
             return
+        if path == "/api/settings":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 65536:
+                    raise ValueError("设置请求内容无效。")
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                result = self.server.settings.update(
+                    payload,
+                    before_save=lambda candidate: validate_settings_change(self.server, candidate),
+                )
+                apply_server_settings(self.server)
+                self.send_json(200, result)
+            except SettingsError as exc:
+                self.send_json(exc.status, {"code": exc.code, "message": exc.message, "details": {}})
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                self.send_json(400, {"code": "BAD_REQUEST", "message": str(exc), "details": {}})
+            except Exception as exc:
+                LOGGER.exception("设置保存失败：%s", exc)
+                self.send_json(500, {"code": "INTERNAL", "message": "设置暂时无法保存，请查看运行日志。", "details": {}})
+            return
         if not self.server.project_api.handle_put(self, path):
             self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
 
@@ -495,6 +516,39 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
 
 
+def validate_settings_change(server, candidate):
+    if Path(candidate["projectsRoot"]).resolve() == server.project_store.root:
+        return
+    if server.project_store._held:
+        raise SettingsError("仍有项目处于打开或编辑状态，请关闭项目后再切换项目根目录。", status=409, code="LOCKED")
+    active = [job for job in server.queue_manager.snapshot()["jobs"] if job.get("status") in {"queued", "running", "finishing"}]
+    if active:
+        raise SettingsError("队列仍有活动任务，完成或取消后才能切换项目根目录。", status=409, code="QUEUE_BUSY")
+
+
+def apply_server_settings(server):
+    global ROOT
+    config = server.settings.data
+    projects_root = Path(config["projectsRoot"]).resolve()
+    defaults = config["defaults"]
+    if server.project_store.root != projects_root:
+        projects_root.mkdir(parents=True, exist_ok=True)
+        previous = server.project_store
+        replacement = ProjectStore(projects_root, previous.owner_id, defaults)
+        server.project_store = replacement
+        server.project_api.store = replacement
+        previous.close()
+    else:
+        server.project_store.defaults = dict(defaults)
+    ROOT = Path(config["comfyRoot"]).resolve()
+    server.queue_manager.set_concurrency(config["queue"]["concurrency"])
+    server.doctor = WorkbenchDoctor(
+        HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
+        model_roots=config["modelRoots"] or None,
+    )
+    logging.getLogger().setLevel(config["logLevel"])
+
+
 def configure_logging(debug=False):
     log_dir = runtime_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -505,7 +559,7 @@ def configure_logging(debug=False):
 
 
 def main():
-    global WEB_URL
+    global WEB_URL, ROOT
     debug = "--debug" in sys.argv
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
     configure_logging(debug)
@@ -542,10 +596,18 @@ def main():
             server.started_at = utc_now()
             server.comfy_owned = False
             server.comfy_process = None
-            server.project_store = ProjectStore()
+            server.settings = WorkbenchSettings(comfy_root=ROOT)
+            server.settings.load()
+            ROOT = Path(server.settings.data["comfyRoot"]).resolve()
+            logging.getLogger().setLevel(server.settings.data["logLevel"])
+            server.project_store = ProjectStore(server.settings.data["projectsRoot"], defaults=server.settings.data["defaults"])
             server.project_api = ProjectAPI(server.project_store)
-            server.doctor = WorkbenchDoctor(HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port)
-            server.queue_manager = QueueManager()
+            server.doctor = WorkbenchDoctor(
+                HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
+                model_roots=server.settings.data["modelRoots"] or None,
+            )
+            server.queue_manager = QueueManager(concurrency=server.settings.data["queue"]["concurrency"])
+            server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
             server.queue_api = QueueAPI(server.queue_manager)
             server.queue_manager.start()
 

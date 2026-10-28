@@ -50,8 +50,12 @@ def validate_name(name):
     return name
 
 
-def new_document(name, canvas=None, template="blank"):
+def new_document(name, canvas=None, template="blank", defaults=None):
     now = utc_now()
+    settings = {"ratio": "16:9", "resolution": "480P", "duration": 5}
+    if defaults:
+        settings.update({key: defaults[key] for key in ("ratio", "resolution", "duration") if key in defaults})
+    settings["template"] = template
     return {
         "schemaVersion": 3,
         "id": f"prj_{uuid.uuid4().hex}",
@@ -60,7 +64,7 @@ def new_document(name, canvas=None, template="blank"):
         "createdAt": now,
         "updatedAt": now,
         "appVersion": APP_VERSION,
-        "settings": {"ratio": "16:9", "resolution": "480P", "duration": 5, "template": template},
+        "settings": settings,
         "characters": [], "outfits": [], "locations": [], "shots": [],
         "canvas": canvas or {"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}},
         "assets": [],
@@ -148,9 +152,10 @@ def _safe_project_file(path):
 
 
 class ProjectStore:
-    def __init__(self, root=None, owner_id=None):
+    def __init__(self, root=None, owner_id=None, defaults=None):
         self.root = Path(root or default_projects_root()).resolve()
         self.owner_id = owner_id or f"backend-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        self.defaults = dict(defaults or {})
         self._locks = {}
         self._locks_guard = threading.Lock()
         self._held = set()
@@ -217,7 +222,7 @@ class ProjectStore:
             return document
 
     def create(self, name, canvas=None, template="blank", directory=None):
-        document = new_document(name, canvas, template)
+        document = new_document(name, canvas, template, self.defaults)
         path = Path(directory).expanduser() if directory else self.root / document["name"]
         if not path.is_absolute():
             path = self.root / path

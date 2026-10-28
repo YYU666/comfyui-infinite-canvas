@@ -11,6 +11,7 @@ import {
 } from './project-store-http';
 import { listLegacyProjects, migrateLegacyProjects } from './legacy-migration';
 import { downloadDoctorLogs, runDoctor } from './doctor-client';
+import SettingsDialog from './SettingsDialog';
 import './launcher.css';
 
 const TEMPLATES = [
@@ -166,7 +167,7 @@ export default function ProjectLauncher({ onOpen }) {
       <button className="launcher-new" onClick={() => setDialog({ type: 'new', template: 'blank' })}><Plus size={17} />新建项目</button>
       <nav aria-label="项目导航">{SECTIONS.map(([id, label, Icon]) => <button key={id} className={section === id ? 'active' : ''} onClick={() => { setSection(id); setSelectedId(null); }}><Icon size={16} /><span>{label}</span>{id === 'all' && <small>{projects.length}</small>}{id === 'trash' && <small>{trash.length}</small>}</button>)}</nav>
       <div className="launcher-sidebar-bottom">
-        <button disabled title="设置将在下一阶段提供"><Settings2 size={15} />设置<span>M2</span></button>
+        <button onClick={() => setDialog({ type: 'settings' })}><Settings2 size={15} />设置</button>
         <button onClick={openDoctor}><ShieldCheck size={15} />诊断</button>
         <div className="launcher-local"><i /><span>仅在本机运行<small>H3 Workbench · v1.0.0</small></span></div>
       </div>
@@ -237,6 +238,7 @@ export default function ProjectLauncher({ onOpen }) {
       </div>}
     </aside>}
 
+    {dialog?.type === 'settings' && <SettingsDialog onClose={() => setDialog(null)} onSaved={async () => { await refresh(); setNotice({ type: 'success', text: '设置已保存，项目列表已刷新。' }); }} />}
     {dialog?.type === 'doctor' ? <div className="launcher-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
       <section className="launcher-modal doctor-modal" role="dialog" aria-modal="true" aria-labelledby="launcher-dialog-title" aria-busy={!!doctorBusy}>
         <button type="button" className="modal-close" aria-label="关闭对话框" onClick={() => setDialog(null)}><X size={17} /></button>
@@ -259,7 +261,7 @@ export default function ProjectLauncher({ onOpen }) {
           <div><button type="button" disabled={!doctorReport || !!doctorBusy} onClick={copyDoctor}><Copy size={14} />复制 JSON</button><button type="button" disabled={!!doctorBusy} onClick={saveDoctorLogs}>{doctorBusy === 'logs' ? <LoaderCircle className="spin" size={14} /> : <ArrowDownToLine size={14} />}日志包</button><button type="button" className="primary" disabled={!!doctorBusy} onClick={() => diagnose(false)}>{doctorBusy === 'run' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}重新诊断</button></div>
         </div>
       </section>
-    </div> : dialog && <div className="launcher-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setDialog(null); }}>
+    </div> : dialog && dialog.type !== 'settings' && <div className="launcher-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setDialog(null); }}>
       <form className="launcher-modal" role="dialog" aria-modal="true" aria-labelledby="launcher-dialog-title" onSubmit={submitDialog}>
         <button type="button" className="modal-close" aria-label="关闭对话框" onClick={() => setDialog(null)}><X size={17} /></button>
         <span className="modal-icon">{dialog.type === 'delete' ? <Trash2 size={22} /> : dialog.type === 'open-path' ? <FolderOpen size={22} /> : <FilePlus2 size={22} />}</span>

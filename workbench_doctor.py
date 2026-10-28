@@ -15,6 +15,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from workbench_lifecycle import APP_VERSION, runtime_dir, utc_now
+from workbench_settings import read_deepseek_key
 
 NODE_DIRS = [
     "h3_workbench_refine",
@@ -242,18 +243,7 @@ class WorkbenchDoctor:
             missing=missing, mismatched=mismatched)
 
     def _deepseek_key(self):
-        configured = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-        if configured:
-            return configured
-        for path in (Path.home() / ".h3" / "deepseek.key", self.workbench_root / "deepseek.key"):
-            try:
-                if path.is_file():
-                    value = path.read_text(encoding="utf-8-sig").strip()
-                    if value:
-                        return value
-            except OSError:
-                continue
-        return None
+        return read_deepseek_key(self.workbench_root)[0]
 
     def _deepseek_check(self, check_connectivity):
         key = self._deepseek_key()
