@@ -7,6 +7,7 @@ import urllib.parse
 import uuid
 from pathlib import Path
 
+from delivery_export import export_delivery
 from project_store import ProjectStore, StoreError, default_projects_root
 
 
@@ -157,6 +158,14 @@ class ProjectAPI:
             if path == "/api/projects/restore":
                 payload = self._json(handler)
                 handler.send_json(200, self.store.restore(payload.get("name")))
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/delivery-export", path)
+            if match:
+                payload = self._json(handler)
+                take_ids = payload.get("takeIds")
+                if take_ids is not None and (not isinstance(take_ids, list) or not all(isinstance(value, str) for value in take_ids)):
+                    raise StoreError("BAD_REQUEST", "takeIds 必须是 Take ID 字符串数组。")
+                handler.send_json(201, export_delivery(self.store, match.group(1), take_ids))
                 return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/(duplicate|export)", path)
             if match:
