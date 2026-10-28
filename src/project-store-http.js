@@ -149,4 +149,38 @@ export async function backupLegacyProject(packageBlob) {
   return request('/migration-backup', { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: packageBlob });
 }
 
+export async function createDomainEntity(project, collection, data) {
+  return request(`/${project.id}/${collection}`, json('POST', { ...data, revision: project.revision }));
+}
+
+export async function updateDomainEntity(project, collection, entityId, data) {
+  return request(`/${project.id}/${collection}/${entityId}`, json('PUT', { ...data, revision: project.revision }));
+}
+
+export async function deleteDomainEntity(project, collection, entityId) {
+  return request(`/${project.id}/${collection}/${entityId}`, { method: 'DELETE', headers: { 'If-Match': String(project.revision) } });
+}
+
+export async function createTake(project, shotId, data) {
+  return request(`/${project.id}/shots/${shotId}/takes`, json('POST', { ...data, revision: project.revision }));
+}
+
+export async function updateTake(project, shotId, takeId, data) {
+  return request(`/${project.id}/shots/${shotId}/takes/${takeId}`, json('PUT', { ...data, revision: project.revision }));
+}
+
+export async function updateProjectMetadata(project, data) {
+  return request(`/${project.id}/metadata`, json('PUT', { ...data, revision: project.revision }));
+}
+
+export async function searchProject(projectId, query, kind) {
+  const params = new URLSearchParams({ q: query });
+  if (kind) params.set('kind', kind);
+  return request(`/${projectId}/search?${params}`);
+}
+
+export async function exportDelivery(projectId, takeIds) {
+  return request(`/${projectId}/delivery-export`, json('POST', { takeIds }));
+}
+
 export { assetUrl };

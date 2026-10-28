@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
 import tempfile
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +35,39 @@ def _source(store, project_id, relative):
         return store.asset_file(project_id, relative)
     except StoreError as error:
         raise StoreError("EXPORT_ASSET_INVALID", "导出素材路径无效。", details={"asset": relative}) from error
+
+
+def _download_comfy_output(output, target):
+    if not isinstance(output, dict):
+        raise StoreError("EXPORT_ASSET_MISSING", "外部结果缺少 ComfyUI 输出信息。")
+    filename = output.get("filename")
+    subfolder = str(output.get("subfolder") or "").replace("\\", "/")
+    kind = output.get("type", "output")
+    if (not isinstance(filename, str) or Path(filename).name != filename
+            or Path(filename).suffix.lower() not in {*IMAGE_EXTENSIONS, ".mp4", ".mov", ".webm"}
+            or ".." in Path(subfolder).parts or kind not in {"input", "output", "temp"}):
+        raise StoreError("EXPORT_ASSET_INVALID", "ComfyUI 输出路径无效。")
+    query = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": kind})
+    base = os.environ.get("H3_COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.download")
+    try:
+        with urllib.request.urlopen(f"{base}/view?{query}", timeout=60) as response, temporary.open("wb") as destination:
+            size = 0
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > 2 * 1024 * 1024 * 1024:
+                    raise StoreError("EXPORT_ASSET_INVALID", "外部结果超过 2 GB 导出限制。")
+                destination.write(chunk)
+        os.replace(temporary, target)
+        return target
+    except (OSError, urllib.error.URLError, TimeoutError) as error:
+        raise StoreError("EXPORT_ASSET_MISSING", "无法读取 ComfyUI 外部结果，请确认输出仍在原位置。", details={"filename": filename, "error": str(error)}) from error
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _sha256(path):
@@ -108,13 +144,20 @@ def export_delivery(store, project_id, take_ids=None, now=None):
     prepared = []
     used_paths = set()
     for shot, take in selected:
-        source = _source(store, project_id, take["asset"])
-        if not source.is_file():
-            raise StoreError("EXPORT_ASSET_MISSING", "选中成片文件不存在。", 400, {"asset": take["asset"]})
-        poster = _source(store, project_id, take["poster"]) if take.get("poster") else None
         shot_code = _code(shot["number"] or shot["id"], "S")
         take_code = _code(take["id"], "T")
         code = f"{shot_code}_{take_code}"
+        try:
+            source = _source(store, project_id, take["asset"])
+        except StoreError:
+            output = take.get("recipe", {}).get("output")
+            if not output:
+                raise
+            extension = Path(str(output.get("filename") or "")).suffix.lower()
+            if not extension:
+                raise StoreError("EXPORT_ASSET_INVALID", "外部结果缺少有效扩展名。")
+            source = _download_comfy_output(output, project_dir / "outputs" / shot_code / f"{code}{extension}")
+        poster = _source(store, project_id, take["poster"]) if take.get("poster") else None
         relative = f"{shot_code}/{code}{source.suffix.lower()}"
         if relative in used_paths:
             raise StoreError("EXPORT_NAME_CONFLICT", "镜头或 Take 编号会产生重名文件。", details={"path": relative})

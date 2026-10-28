@@ -53,8 +53,9 @@ class ProjectSchemaTests(unittest.TestCase):
             characters=[{"id": "c1", "name": "角色", "refs": [asset], "sheet": asset, "defaultOutfitId": "o1", "voice": None, "notes": ""}],
             outfits=[{"id": "o1", "name": "服装", "refs": [asset], "prompt": "summer", "lora": None}],
             locations=[{"id": "l1", "name": "场景", "refs": [asset], "prompt": "studio", "notes": ""}],
-            shots=[{"id": "s1", "number": "S01", "name": "镜头", "prompt": "test", "characterId": "c1", "outfitId": "o1", "locationId": "l1", "params": {"ratio": "16:9", "resolution": "480P", "duration": 5, "seed": 42, "turbo": False}, "takes": [{"id": "t1", "asset": asset, "poster": asset, "recipe": {"seed": 42}, "rating": 5, "selected": True, "createdAt": document["createdAt"]}], "status": "done", "tags": ["测试"]}],
+            shots=[{"id": "s1", "number": "S01", "name": "镜头", "prompt": "test", "characterId": "c1", "outfitId": "o1", "locationId": "l1", "params": {"ratio": "16:9", "resolution": "480P", "duration": 5, "seed": 42, "turbo": False}, "takes": [{"id": "t1", "asset": asset, "poster": asset, "recipe": {"seed": 42}, "rating": 5, "selected": True, "rejected": False, "notes": "采用", "tags": ["终选"], "createdAt": document["createdAt"]}], "status": "done", "tags": ["测试"], "canvasNodeId": "g1"}],
             assets=[{"path": asset, "sha256": "a" * 64, "bytes": 12, "mime": "image/png"}],
+            tags=["项目标签"], favorite=True,
         )
         self.assertEqual(validate_project(document), [])
 

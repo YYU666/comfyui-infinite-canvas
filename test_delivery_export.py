@@ -5,6 +5,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from datetime import datetime
 from pathlib import Path
 
@@ -94,6 +95,29 @@ class DeliveryExportTests(unittest.TestCase):
         self.assertTrue((target / "S01" / "S01_T01.mp4").is_file())
         with Image.open(target / "contact-sheet.jpg") as sheet:
             self.assertEqual(sheet.format, "JPEG")
+
+    def test_external_comfy_result_is_copied_only_on_export(self):
+        content = io.BytesIO()
+        Image.new("RGB", (640, 360), (35, 80, 140)).save(content, "PNG")
+        document = self.store.get(self.document["id"])
+        document["shots"].append({
+            "id": "s1", "number": "S01", "name": "外部结果", "prompt": "保持引用", "characterId": None, "outfitId": None, "locationId": None,
+            "params": {"ratio": "16:9", "resolution": "480P", "duration": 5, "seed": 42, "turbo": False},
+            "takes": [{"id": "t1", "asset": "assets/not-copied-yet.png", "poster": None,
+                       "recipe": {"output": {"filename": "H3_test.png", "subfolder": "", "type": "output", "url": "/view?filename=H3_test.png&type=output"}},
+                       "rating": 5, "selected": True, "createdAt": "2026-10-29T00:00:00+00:00"}],
+            "status": "done", "tags": [],
+        })
+        self.store.save(document["id"], document, document["revision"])
+        project_dir = self.store._project_path(self.document["id"]).parent
+        self.assertFalse((project_dir / "assets" / "not-copied-yet.png").exists())
+        content.seek(0)
+        with unittest.mock.patch("delivery_export.urllib.request.urlopen", return_value=content) as requested:
+            result = export_delivery(self.store, self.document["id"], now=datetime(2026, 10, 29))
+        self.assertIn("filename=H3_test.png", requested.call_args.args[0])
+        self.assertTrue((project_dir / "outputs" / "S01" / "S01_T01.png").is_file())
+        self.assertTrue((Path(result["path"]) / "S01" / "S01_T01.png").is_file())
+        self.assertFalse((project_dir / "assets" / "not-copied-yet.png").exists())
 
     def test_empty_selection_is_rejected(self):
         self.add_shot(2)

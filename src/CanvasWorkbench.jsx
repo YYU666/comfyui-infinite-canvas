@@ -26,7 +26,8 @@ import MaskEditor from './MaskEditor';
 import ImageLightbox from './ImageLightbox';
 import { useCanvasMcp } from './canvas-mcp';
 import CanvasProjectMenu from './CanvasProjectMenu';
-import { initializeProjects, listProjects, createProject, openProject, saveProject, projectSummary, saveProjectFile, readProjectFile } from './project-store-http';
+import CreativePanel from './CreativePanel';
+import { initializeProjects, listProjects, createProject, openProject, saveProject, projectSummary, saveProjectFile, readProjectFile, createDomainEntity, createTake } from './project-store-http';
 import { AutoSaveController } from './auto-save';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
 import { queueJobAction, queueOwnsCompletion, queueOwnsStage } from './generation-queue';
@@ -435,7 +436,16 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   const [projects, setProjects] = useState(() => [projectSummary(project)]);
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectError, setProjectError] = useState('');
+  const [creativeOpen, setCreativeOpen] = useState(false);
   const revisionRef = useRef(project.revision);
+  const projectRef = useRef(project);
+  projectRef.current = project;
+  useEffect(() => { revisionRef.current = project.revision; }, [project.revision]);
+  const updateProjectDocument = useCallback((next) => {
+    projectRef.current = next;
+    revisionRef.current = next.revision;
+    onProjectChange(next);
+  }, [onProjectChange]);
   const autoSaveRef = useRef(null);
   const switchingRef = useRef(false);
   const mediaWritesRef = useRef(new Map());
@@ -576,6 +586,25 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     });
   }, [setNodes]);
 
+  const promoteToShot = useCallback(async () => {
+    const selected = nodesRef.current.filter((node) => node.selected && node.type === 'generator');
+    if (selected.length !== 1) { setProjectError('请先选中一个生成节点，再提升为镜头。'); return; }
+    const source = selected[0];
+    try {
+      await persistProject();
+      const current = { ...projectRef.current, revision: revisionRef.current };
+      const result = await createDomainEntity(current, 'shots', {
+        number: `S${String(current.shots.length + 1).padStart(2, '0')}`,
+        name: source.data.title || '未命名镜头', prompt: source.data.prompt || '', canvasNodeId: source.id,
+        params: { ratio: source.data.ratio || '16:9', resolution: source.data.resolution || '480P', duration: source.data.duration || 5, seed: source.data.seed || 0, turbo: !!source.data.turbo },
+      });
+      updateProjectDocument(result.project);
+      updateNode(source.id, { shotId: result.item.id });
+      setCreativeOpen(true);
+      setProjectError('');
+    } catch (error) { setProjectError(error.message || '提升为镜头失败。'); }
+  }, [persistProject, updateNode, updateProjectDocument]);
+
   const removeNode = useCallback((id) => {
     if (switchingRef.current || project.readOnly) return;
     const node = nodesRef.current.find((item) => item.id === id);
@@ -693,19 +722,31 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
         id: uid(isImage ? 'image' : 'video'), type: 'media', position: resultPosition,
         data: { ...result, kind: isImage ? 'image' : 'video', output: true, title: `${source?.data.title || title} · 成品 ${resultIndex + 1}`, name: result.filename, prompt: source?.data.prompt, sourcePromptId: promptId },
       };
+      if (source?.data.shotId) {
+        await persistProject();
+        const current = { ...projectRef.current, revision: revisionRef.current };
+        const extension = result.filename?.split('.').pop()?.replace(/[^A-Za-z0-9]/g, '') || (isImage ? 'png' : 'mp4');
+        const takeResult = await createTake(current, source.data.shotId, {
+          asset: `assets/${String(promptId).replace(/[^A-Za-z0-9._-]/g, '_')}.${extension}`,
+          recipe: { output: result, promptId, mode: source.data.mode, seed: source.data.seed, prompt: source.data.prompt,
+            ratio: source.data.ratio, resolution: source.data.resolution, duration: source.data.duration, turbo: source.data.turbo },
+        });
+        updateProjectDocument(takeResult.project);
+      }
+      const pinMedia = !source?.data.shotId || source?.data.pinResultToCanvas;
       setNodes((items) => items.map((node) => node.id === id ? {
         ...node,
         data: {
-          ...node.data, status: 'done', progress: 100, stage: '生成完成', promptId, resultUrl: result.url, error: null,
+          ...node.data, status: 'done', progress: 100, stage: source?.data.shotId ? '已加入 Take 栈' : '生成完成', promptId, resultUrl: result.url, error: null,
           runs: [{ promptId, status: 'done', stage: `${title}已输出`, time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12),
         },
-      } : node).concat(mediaNode));
-      setEdges((items) => addEdge({ id: `edge-${id}-${mediaNode.id}`, source: id, target: mediaNode.id, sourceHandle: isImage ? 'image' : 'video', targetHandle: 'preview' }, items));
+      } : node).concat(pinMedia ? [mediaNode] : []));
+      if (pinMedia) setEdges((items) => addEdge({ id: `edge-${id}-${mediaNode.id}`, source: id, target: mediaNode.id, sourceHandle: isImage ? 'image' : 'video', targetHandle: 'preview' }, items));
     } catch (error) {
       completedJobsRef.current.delete(promptId);
       updateNode(id, { status: 'error', error: error.message, stage: '读取结果失败' });
     }
-  }, [setNodes, setEdges, updateNode]);
+  }, [setNodes, setEdges, updateNode, persistProject, updateProjectDocument]);
 
   const syncQueueJob = useCallback(async (job) => {
     if (!job || job.projectId !== project.id || !job.nodeId) return;
@@ -1197,6 +1238,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
             </div>
           </div>
           <div className="neo-header-actions">
+            <button className={creativeOpen ? 'active' : ''} onClick={() => setCreativeOpen(!creativeOpen)} title="角色、镜头与审片"><Film size={15} /><span>创作</span></button>
             <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={clearMemory} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
             <button className={`server-status ${server.online ? 'online' : ''}`} onClick={checkServer} title={server.label}><i />{server.online ? '本地已连接' : '本地未连接'}</button>
             <button onClick={async () => { if (!switchingRef.current && !hasActiveTask()) { try { await persistProject(); onSimpleMode(); } catch { /* Keep the unsaved canvas open. */ } } }} title="切换简易模式"><MousePointer2 size={15} /></button>
@@ -1303,6 +1345,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
           {nodeMenu.error && <p className="node-menu-error">{nodeMenu.error}</p>}
         </div>}
       </main>
+      {creativeOpen && <CreativePanel project={project} onProjectChange={updateProjectDocument} onClose={() => setCreativeOpen(false)}
+        beforeWrite={async () => { await persistProject(); projectRef.current = { ...projectRef.current, revision: revisionRef.current }; return projectRef.current; }}
+        onPromote={promoteToShot} onLocateShot={(shot) => { if (shot.canvasNodeId) { focusNode(shot.canvasNodeId); setCreativeOpen(false); } }} />}
       {libraryOpen && <aside className="floating-library">
         <div className="floating-panel-title"><span><Library size={15} />本地作品</span><button onClick={() => setLibraryOpen(false)}><X size={15} /></button></div>
         <p>点击作品添加到画布，也可以继续作为视频参考。</p>

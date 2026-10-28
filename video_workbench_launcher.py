@@ -537,6 +537,7 @@ def apply_server_settings(server):
         replacement = ProjectStore(projects_root, previous.owner_id, defaults)
         server.project_store = replacement
         server.project_api.store = replacement
+        server.project_api.domain.store = replacement
         previous.close()
     else:
         server.project_store.defaults = dict(defaults)

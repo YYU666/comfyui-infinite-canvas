@@ -13,6 +13,8 @@
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" },
     "appVersion": { "type": "string", "minLength": 1, "maxLength": 40 },
+    "tags": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 60 }, "uniqueItems": true },
+    "favorite": { "type": "boolean" },
     "settings": { "$ref": "#/$defs/settings" },
     "characters": { "type": "array", "items": { "$ref": "#/$defs/character" } },
     "outfits": { "type": "array", "items": { "$ref": "#/$defs/outfit" } },
@@ -101,7 +103,8 @@
         },
         "takes": { "type": "array", "items": { "$ref": "#/$defs/take" } },
         "status": { "type": "string", "enum": ["draft", "queued", "running", "done", "error", "cancelled"] },
-        "tags": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 60 }, "uniqueItems": true }
+        "tags": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 60 }, "uniqueItems": true },
+        "canvasNodeId": { "type": ["string", "null"] }
       }
     },
     "take": {
@@ -115,6 +118,9 @@
         "recipe": { "type": "object" },
         "rating": { "type": "integer", "minimum": 0, "maximum": 5 },
         "selected": { "type": "boolean" },
+        "rejected": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 60 }, "uniqueItems": true },
         "createdAt": { "type": "string", "format": "date-time" }
       }
     },

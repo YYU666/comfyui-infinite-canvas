@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from delivery_export import export_delivery
+from project_domain import ProjectDomain
 from project_store import ProjectStore, StoreError, default_projects_root
 
 
@@ -29,6 +30,21 @@ class LimitedStream:
 class ProjectAPI:
     def __init__(self, store):
         self.store = store
+        self.domain = ProjectDomain(store)
+
+    @staticmethod
+    def _revision(handler, payload=None):
+        raw = handler.headers.get("If-Match", "").strip().strip('"')
+        if raw.startswith("W/"):
+            raw = raw[2:].strip('"')
+        raw = raw or (payload or {}).get("revision")
+        try:
+            revision = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise StoreError("BAD_REQUEST", "写操作必须提供有效的 revision 或 If-Match。") from exc
+        if revision < 1:
+            raise StoreError("BAD_REQUEST", "revision 必须大于 0。")
+        return revision
 
     @staticmethod
     def _error(handler, error):
@@ -61,6 +77,16 @@ class ProjectAPI:
             return True
         if path == "/api/projects/trash":
             handler.send_json(200, {"projects": self.store.list_trash()})
+            return True
+        match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/search", path)
+        if match:
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+            try:
+                limit = int(query.get("limit", ["50"])[0])
+            except ValueError as exc:
+                raise StoreError("BAD_REQUEST", "搜索 limit 必须是整数。") from exc
+            results = self.domain.search(self.store.get(match.group(1)), query.get("q", [""])[0], query.get("kind", [None])[0], limit)
+            handler.send_json(200, {"results": results, "count": len(results)})
             return True
         match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)", path)
         if match:
@@ -159,6 +185,16 @@ class ProjectAPI:
                 payload = self._json(handler)
                 handler.send_json(200, self.store.restore(payload.get("name")))
                 return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/shots/(s[1-9][0-9]*)/takes", path)
+            if match:
+                payload = self._json(handler, maximum=1024 * 1024)
+                handler.send_json(201, self.domain.create_take(match.group(1), match.group(2), payload, self._revision(handler, payload)))
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/(characters|outfits|locations|shots)", path)
+            if match:
+                payload = self._json(handler, maximum=1024 * 1024)
+                handler.send_json(201, self.domain.create(match.group(1), match.group(2), payload, self._revision(handler, payload)))
+                return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/assets/collect", path)
             if match:
                 payload = self._json(handler, maximum=4096)
@@ -202,11 +238,22 @@ class ProjectAPI:
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)", path)
             if match:
                 document = self._json(handler)
-                expected = handler.headers.get("If-Match", "").strip().strip('"')
-                if expected.startswith("W/"):
-                    expected = expected[2:].strip('"')
-                expected = int(expected or document.get("revision", 0))
-                handler.send_json(200, self.store.save(match.group(1), document, expected))
+                handler.send_json(200, self.store.save(match.group(1), document, self._revision(handler, document)))
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/metadata", path)
+            if match:
+                payload = self._json(handler, maximum=16384)
+                handler.send_json(200, self.domain.metadata(match.group(1), payload, self._revision(handler, payload)))
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/shots/(s[1-9][0-9]*)/takes/(t[1-9][0-9]*)", path)
+            if match:
+                payload = self._json(handler, maximum=1024 * 1024)
+                handler.send_json(200, self.domain.update_take(*match.groups(), payload, self._revision(handler, payload)))
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/(characters|outfits|locations|shots)/([cols][1-9][0-9]*)", path)
+            if match:
+                payload = self._json(handler, maximum=1024 * 1024)
+                handler.send_json(200, self.domain.update(match.group(1), match.group(2), match.group(3), payload, self._revision(handler, payload)))
                 return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/assets/(.+)", path)
             if match:
@@ -227,11 +274,23 @@ class ProjectAPI:
             return True
 
     def handle_delete(self, handler, path):
-        match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)", path)
-        if not match:
+        if not path.startswith("/api/projects"):
             return False
         try:
-            handler.send_json(200, self.store.delete(match.group(1)))
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)", path)
+            if match:
+                handler.send_json(200, self.store.delete(match.group(1)))
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/shots/(s[1-9][0-9]*)/takes/(t[1-9][0-9]*)", path)
+            if match:
+                handler.send_json(200, self.domain.delete_take(*match.groups(), self._revision(handler)))
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/(characters|outfits|locations|shots)/([cols][1-9][0-9]*)", path)
+            if match:
+                handler.send_json(200, self.domain.delete(match.group(1), match.group(2), match.group(3), self._revision(handler)))
+                return True
+            handler.send_json(404, {"code": "NOT_FOUND", "message": "项目接口不存在。", "details": {}})
+            return True
         except StoreError as error:
             self._error(handler, error)
-        return True
+            return True
