@@ -20,3 +20,18 @@ test-outfit-*.mjs
 run-outfit-quad.mjs
 .DS_Store
 Thumbs.db
+
+# Local test/comparison artifacts (never commit personal renders or screenshots)
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.mp4
+verification/*.png
+verification/*.jpg
+verification/*.jpeg
+verification/*.webp
+verification/*.log
+_archive/
+*.tmp
+*.bak

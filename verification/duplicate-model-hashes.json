@@ -1,0 +1,58 @@
+[
+  {
+    "bytes": 20970379616,
+    "sample_sha256": "4dc5661075acf9e18c79736faf39c2830386f524308d7d5767a1cea1d8034937",
+    "paths": [
+      "C:\\ComfyUI_windows_portable\\ComfyUI\\models\\diffusion_models\\minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "D:\\H3-Models\\diffusion_models\\minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+    ]
+  },
+  {
+    "bytes": 20970379616,
+    "sample_sha256": "d249dfbe350ebac5e22bb7d6ea86719406cbfd5f3584dcf0540ce245a821792c",
+    "paths": [
+      "C:\\ComfyUI_windows_portable\\ComfyUI\\models\\diffusion_models\\minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "D:\\H3-Models\\diffusion_models\\minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+    ]
+  },
+  {
+    "bytes": 20533762817,
+    "sample_sha256": "bb522140865017f2ecdbfe4238129ae6a226c0c3e5937371d2e901fb0acb8541",
+    "paths": [
+      "C:\\ComfyUI_windows_portable\\ComfyUI\\models\\diffusion_models\\qwen_image_edit_2511_fp8mixed.safetensors",
+      "C:\\ComfyUI_windows_portable\\ComfyUI\\models\\diffusion_models\\split_files\\diffusion_models\\qwen_image_edit_2511_fp8mixed.safetensors"
+    ]
+  },
+  {
+    "bytes": 27141342152,
+    "sample_sha256": "b4833b00018e6875de7f11a2447efc574e7a31308831220ef4d9a977310c5fc9",
+    "paths": [
+      "C:\\ComfyUI_windows_portable\\ComfyUI\\models\\text_encoders\\qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "D:\\H3-Models\\text_encoders\\qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+    ]
+  },
+  {
+    "bytes": 15687142551,
+    "sample_sha256": "57f278bb992d1b97b9b1f3587cd3456a62b2919eeebedae238861ec8954a4eb9",
+    "paths": [
+      "C:\\ComfyUI_windows_portable\\ComfyUI\\models\\text_encoders\\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "D:\\H3-Models\\text_encoders\\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+    ]
+  },
+  {
+    "bytes": 605254808,
+    "sample_sha256": "a88687600a23c2c04dee7443ffded9863d2a7872d8b19d51facddddc34183b81",
+    "paths": [
+      "C:\\ComfyUI_windows_portable\\ComfyUI\\models\\vae\\minimax_h3_audio_vae_fp32.safetensors",
+      "D:\\H3-Models\\vae\\minimax_h3_audio_vae_fp32.safetensors"
+    ]
+  },
+  {
+    "bytes": 5207808496,
+    "sample_sha256": "2cbbc15cb54c5f5ebf252558ade441d1478d227b26e6e41ea7ac48fdde632439",
+    "paths": [
+      "C:\\ComfyUI_windows_portable\\ComfyUI\\models\\vae\\minimax_h3_video_vae_fp16.safetensors",
+      "D:\\H3-Models\\vae\\minimax_h3_video_vae_fp16.safetensors"
+    ]
+  }
+]

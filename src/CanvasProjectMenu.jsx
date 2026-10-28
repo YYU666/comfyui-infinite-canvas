@@ -5,7 +5,20 @@ export default function CanvasProjectMenu({ current, projects, name, onNameChang
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
+  const [savedNoticeVisible, setSavedNoticeVisible] = useState(false);
   const container = useRef(null);
+  const previousSaveState = useRef(saveState);
+  useEffect(() => {
+    const justSaved = previousSaveState.current === '保存中' && saveState === '已保存' && !error;
+    previousSaveState.current = saveState;
+    if (!justSaved) {
+      if (saveState === '保存中' || error) setSavedNoticeVisible(false);
+      return undefined;
+    }
+    setSavedNoticeVisible(true);
+    const timer = setTimeout(() => setSavedNoticeVisible(false), 1800);
+    return () => clearTimeout(timer);
+  }, [saveState, error]);
   useEffect(() => {
     if (!open) return undefined;
     const close = (event) => {
@@ -31,6 +44,7 @@ export default function CanvasProjectMenu({ current, projects, name, onNameChang
       <button className="project-list-toggle" onClick={show} aria-label="项目列表" aria-expanded={open} aria-controls="canvas-project-list"><ChevronDown size={13} style={{ transform: open ? 'rotate(180deg)' : undefined }} /></button>
       <span className={`save-indicator ${error ? 'failed' : ''}`} title={saveState} aria-label={saveState}>{error ? <AlertCircle size={13} /> : saveState === '保存中' ? <LoaderCircle size={13} className="spin" /> : <Check size={13} />}</span>
     </div>
+    {savedNoticeVisible && <div className="autosave-complete" role="status"><Check size={13} />画布已自动保存</div>}
     {open && <section id="canvas-project-list" className="canvas-project-panel" aria-label="项目列表面板">
       <label className="project-search"><Search size={15} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索画布" aria-label="搜索画布" /></label>
       <div className="project-filters" role="tablist" aria-label="画布类型">{[['all', '全部'], ['personal', '个人'], ['shared', '协作']].map(([value, label]) => <button key={value} role="tab" aria-selected={filter === value} onClick={() => setFilter(value)}>{label}</button>)}</div>

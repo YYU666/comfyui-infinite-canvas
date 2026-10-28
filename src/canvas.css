@@ -27,6 +27,8 @@
 .neo-project-pill input { width: 132px; border: 0; outline: 0; background: transparent; color: #ededee; font-size: 12px; font-weight: 550; }
 .save-indicator { width: 23px; height: 23px; display: grid; place-items: center; color: #8c8c92; }
 .canvas-project-control { position: relative; pointer-events: auto; }
+.autosave-complete { position: absolute; z-index: 6; top: 50px; left: 0; display: flex; align-items: center; gap: 6px; padding: 8px 11px; border: 1px solid rgba(157,181,139,.24); border-radius: 9px; background: rgba(29,35,27,.96); box-shadow: 0 8px 26px rgba(0,0,0,.28); color: #cedbc4; font-size: 10px; white-space: nowrap; pointer-events: none; animation: autosave-complete-in .16s ease-out; }
+@keyframes autosave-complete-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
 .project-list-toggle { display: flex; align-items: center; gap: 7px; padding: 0; background: transparent; border: 0; cursor: pointer; }
 .project-list-toggle > svg { color: #8c8c92; }
 .project-list-toggle { width: 23px; height: 27px; justify-content: center; border-radius: 6px; }
@@ -324,6 +326,18 @@
 .swap-settings input:focus { border-color: rgba(255,255,255,.3); }
 .swap-settings input::placeholder { color: #55555c; }
 .swap-settings .target-index { flex: 0 0 58px; }
+.outfit-layout-settings { display: grid; gap: 8px; padding: 8px 0; border-top: 1px solid rgba(255,255,255,.055); }
+.outfit-layout-head { display: flex; align-items: center; gap: 10px; color: #77777f; font-size: 8px; }
+.outfit-layout-head > label { display: flex; align-items: center; flex-shrink: 0; gap: 6px; color: #a6a6ad; font-size: 9px; }
+.outfit-layout-head > span { line-height: 1.5; }
+.outfit-layout-settings select, .outfit-panel-row input { height: 27px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px; outline: 0; background: #151517; color: #d8d8dc; font-size: 9px; }
+.outfit-layout-settings select { padding: 0 7px; }
+.outfit-layout-settings select:focus, .outfit-panel-row input:focus { border-color: rgba(255,255,255,.3); }
+.outfit-panel-editor { display: grid; gap: 5px; }
+.outfit-panel-row { display: grid; grid-template-columns: 45px 55px 72px repeat(4,minmax(42px,1fr)); align-items: end; gap: 5px; }
+.outfit-panel-row > b { align-self: center; color: #77777f; font-size: 8px; font-weight: 500; }
+.outfit-panel-row > label { display: grid; grid-template-columns: 10px 1fr; align-items: center; gap: 2px; color: #66666d; font-size: 8px; }
+.outfit-panel-row input { width: 100%; min-width: 0; padding: 0 4px; }
 .swap-node .generator-preview { border-color: rgba(158,174,150,.2); }
 .image-lightbox { position: fixed; z-index: 300; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(5,5,7,.86); backdrop-filter: blur(14px); animation: image-lightbox-in .16s ease-out; }
 .image-lightbox-panel { width: min(1400px,100%); height: min(1000px,100%); display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 16px; background: #111114; box-shadow: 0 28px 90px #000a; }
@@ -333,11 +347,14 @@
 .image-lightbox-header span { overflow: hidden; color: #e5e5e8; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .image-lightbox-header small { overflow: hidden; color: #707078; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .image-lightbox-header .image-lightbox-hint { color: #686870; font-size: 9px; font-weight: 400; }
+.image-lightbox-header .image-lightbox-zoom { min-width: 38px; color: #aaaab1; font-size: 10px; text-align: right; }
 .image-lightbox-header button { width: 32px; height: 32px; display: grid; place-items: center; flex-shrink: 0; border-radius: 9px; }
 .image-lightbox-header button:hover { background: rgba(255,255,255,.08); }
 .image-lightbox-header button:hover svg { color: #fff; }
-.image-lightbox-content { min-height: 0; display: flex; flex: 1; align-items: center; justify-content: center; overflow: auto; cursor: zoom-out; background: #09090b; }
-.image-lightbox-content img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; cursor: default; user-select: none; }
+.image-lightbox-content { min-height: 0; display: flex; flex: 1; align-items: center; justify-content: center; overflow: hidden; cursor: zoom-out; touch-action: none; background: #09090b; }
+.image-lightbox-content img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; cursor: default; user-select: none; transform-origin: center center; will-change: transform; }
+.image-lightbox-content img.is-zoomed { cursor: grab; }
+.image-lightbox-content img.is-zoomed:active { cursor: grabbing; }
 @keyframes image-lightbox-in { from { opacity: 0; } to { opacity: 1; } }
 .spin { animation: neo-spin 1.2s linear infinite; }
 @keyframes neo-spin { to { transform: rotate(360deg); } }

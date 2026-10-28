@@ -14,8 +14,9 @@ const NODE_PRESETS = {
   moss_image: ['generator', { mode: 'image', title: 'MOSS 生图', imageModel: 'moss' }],
   identity_edit: ['generator', { mode: 'identityEdit', title: '母图编辑 V2', ratio: '16:9', refBoost: 4, groundingPx: 1024, refPosition: 'beside (right of target)' }],
   qwen_edit: ['generator', { mode: 'qwenEdit', title: 'Qwen 2.1 图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }],
+  realism_edit: ['generator', { mode: 'qwenEdit', title: '真人化 · 漫转真', prompt: '将图中的风格化人物转换为真实摄影中的真人，保留人物身份特征、发型发色、姿势、景别和构图；真实自然的皮肤纹理、五官结构与摄影光影，不要 CG、3D 渲染、插画或塑料皮肤。', imageLora: 'qwen21Realism', loraStrength: 0.8, randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }],
   local_realism: ['generator', { mode: 'localRealism', title: '局部写实修复', prompt: '只增强选中皮肤的自然纹理、细小毛孔和真实光影；保持人物身份、五官、妆容、表情及其他区域不变。', localRealismSteps: 25, localRealismSize: 768, localMaskExpand: 0, localMaskBlend: 16, randomSeed: false, seed: 78001 }],
-  outfit_edit: ['generator', { mode: 'outfitEdit', title: '无抠图换装' }],
+  outfit_edit: ['generator', { mode: 'outfitEdit', title: '无抠图换装', outfitLayout: 'mixedGrid', randomSeed: false, seed: 281306, qwenRefResolution: 1536 }],
   image_upscale: ['generator', { mode: 'imageUpscale', title: '图片高清', imageScale: 1.5, randomSeed: false }],
   video_upscale: ['generator', { mode: 'upscale', title: '视频高清二采', resolution: '720P', randomSeed: false }],
 };
@@ -23,7 +24,7 @@ const NODE_PRESETS = {
 const EDITABLE_SETTINGS = new Set([
   'ratio', 'resolution', 'duration', 'turbo', 'seed', 'randomSeed', 'refImageSize',
   'qwenSteps', 'qwenRefResolution', 'localRealismSteps', 'localRealismSize', 'localRealismDenoise', 'localMaskMode', 'localMaskExpand', 'localMaskBlend', 'imageModel', 'imageLora', 'loraStrength', 'imageScale',
-  'outfitPreset', 'outfitPanel', 'outfitDenoise', 'targetQuery', 'targetDescription', 'targetSelection', 'targetIndex',
+  'outfitPreset', 'outfitPanel', 'outfitLayout', 'outfitPanels', 'outfitDenoise', 'targetQuery', 'targetDescription', 'targetSelection', 'targetIndex',
 ]);
 
 function nodeSummary(node, includeContent = true) {
@@ -39,6 +40,7 @@ function nodeSummary(node, includeContent = true) {
     progress: node.data.progress,
     promptId: node.data.promptId,
     ...(includeContent ? { prompt: node.data.prompt, text: node.data.text } : {}),
+    ...(node.data.mode === 'outfitEdit' ? { outfitLayout: node.data.outfitLayout || 'legacy', outfitPanel: node.data.outfitPanel || node.data.panelId || null, outfitPanels: node.data.outfitPanels || null } : {}),
     name: node.data.name || node.data.filename,
     position: node.position,
     selected: Boolean(node.selected),
@@ -159,7 +161,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, server, actions 
           title: { type: 'string' },
           prompt: { type: 'string' },
           text: { type: 'string' },
-          settings: { type: 'object', description: '可选参数：ratio、resolution、duration、turbo、seed、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、targetQuery、targetDescription、targetSelection、targetIndex。' },
+          settings: { type: 'object', description: '可选参数：ratio、resolution、duration、turbo、seed、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。' },
         }, ['nodeId']),
         execute: respond(async ({ nodeId, title, prompt, text, settings = {} }) => {
           const current = getNode(nodeId);
@@ -260,6 +262,16 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, server, actions 
           latest.current.actions.removeNode(nodeId);
           await waitFor(() => !latest.current.nodesRef.current.some((node) => node.id === nodeId) || null);
           return { deletedNodeId: nodeId };
+        }),
+      },
+      {
+        name: 'canvas_focus_node',
+        description: '将当前画布视口居中到指定真实节点，不移动节点、不修改内容，也不会重新生成。',
+        inputSchema: schema({ nodeId: nodeIdProperty }, ['nodeId']),
+        execute: respond(async ({ nodeId }) => {
+          const node = getNode(nodeId);
+          latest.current.actions.focusNode(nodeId);
+          return { focusedNodeId: nodeId, title: node.data.title };
         }),
       },
       {
