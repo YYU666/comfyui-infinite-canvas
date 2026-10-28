@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import functools
+import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -22,37 +25,44 @@ from pathlib import Path
 import imageio_ffmpeg
 import psutil
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from workbench_lifecycle import (
+    APP_VERSION,
+    atomic_write_json,
+    instance_path,
+    probe_health,
+    read_instance,
+    remove_instance,
+    runtime_dir,
+    startup_guard,
+    utc_now,
+)
+
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
+DEFAULT_COMFY_ROOT = HERE.parent if (HERE.parent / "python_embeded").is_dir() else Path(r"C:\ComfyUI_windows_portable")
+ROOT = Path(os.environ.get("H3_COMFY_ROOT", str(DEFAULT_COMFY_ROOT)))
 COMFY_URL = "http://127.0.0.1:8188"
 WEB_URL = "http://127.0.0.1:8790"
 DATA_DIR = Path(os.environ.get("H3_WORKBENCH_DATA_DIR", r"D:\H3_Workbench"))
 INPUT_DIR = DATA_DIR / "references"
 OUTPUT_DIR = DATA_DIR / "generated"
 MAX_VIDEO_BYTES = 250 * 1024 * 1024
+LOGGER = logging.getLogger("h3-workbench")
 
 
 def api_status():
-    request = urllib.request.Request(COMFY_URL + "/system_stats", headers={"Origin": WEB_URL})
-    with urllib.request.urlopen(request, timeout=2) as response:
+    with urllib.request.urlopen(COMFY_URL + "/system_stats", timeout=2) as response:
         return response.headers.get("Access-Control-Allow-Origin"), json.load(response)
 
 
-def wait_for_comfy(process, timeout=180):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if process and process.poll() is not None:
-            raise RuntimeError("ComfyUI 启动失败，请查看 comfyui_workbench.log。")
-        try:
-            cors, _ = api_status()
-            if cors == WEB_URL:
-                return
-            if not process:
-                raise RuntimeError("检测到旧版启动方式运行的 ComfyUI。请先关闭原 ComfyUI 窗口，再双击视频工作台启动器。")
-        except urllib.error.URLError:
-            pass
-        time.sleep(2)
-    raise RuntimeError("等待 ComfyUI 启动超时，请查看 comfyui_workbench.log。")
+def queue_summary():
+    try:
+        with urllib.request.urlopen(COMFY_URL + "/queue", timeout=0.5) as response:
+            queue = json.load(response)
+        return {"running": len(queue.get("queue_running", [])), "pending": len(queue.get("queue_pending", []))}
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return {"running": 0, "pending": 0}
 
 
 SHARE_URL_PATTERN = re.compile(r"https?://[^\s<>\"'，。！？；、【】（）]+", re.IGNORECASE)
@@ -156,9 +166,9 @@ def load_deepseek_key():
     configured = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if configured:
         return configured
-    key_file = HERE / "deepseek.key"
-    if key_file.is_file():
-        return key_file.read_text(encoding="utf-8-sig").strip()
+    for key_file in (Path.home() / ".h3" / "deepseek.key", HERE / "deepseek.key"):
+        if key_file.is_file():
+            return key_file.read_text(encoding="utf-8-sig").strip()
     raise RuntimeError("尚未配置 DeepSeek 密钥，请先完成本机后端配置。")
 
 
@@ -294,7 +304,11 @@ def open_file_location(payload):
 class WorkbenchHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
         super().end_headers()
+
+    def log_message(self, format, *args):
+        LOGGER.info("%s %s", self.client_address[0], format % args)
 
     def send_json(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -306,6 +320,19 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/health":
+            comfy_process = getattr(self.server, "comfy_process", None)
+            comfy_running = comfy_process.poll() is None if comfy_process else self.comfy_is_running()
+            self.send_json(200, {
+                "ok": True,
+                "version": APP_VERSION,
+                "port": self.server.server_port,
+                "pid": os.getpid(),
+                "startedAt": self.server.started_at,
+                "comfy": {"running": comfy_running, "owned": bool(self.server.comfy_owned)},
+                "queue": queue_summary(),
+            })
+            return
         if path != "/api/hardware-metrics":
             super().do_GET()
             return
@@ -318,11 +345,26 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 "timestamp": int(time.time() * 1000),
             })
         except Exception as exc:
-            print(f"硬件状态读取失败：{exc}", file=sys.stderr)
+            LOGGER.exception("硬件状态读取失败：%s", exc)
             self.send_json(500, {"error": "暂时无法读取 CPU 使用率。"})
+
+    def comfy_is_running(self):
+        try:
+            api_status()
+            return True
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            return False
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/shutdown":
+            supplied = self.headers.get("X-H3-Token", "")
+            if not hmac.compare_digest(supplied, self.server.token):
+                self.send_json(401, {"code": "UNAUTHORIZED", "message": "停止令牌无效。"})
+                return
+            self.send_json(200, {"ok": True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if path not in {"/api/import-video", "/api/optimize-prompt", "/api/open-file-location"}:
             self.send_json(404, {"error": "接口不存在"})
             return
@@ -341,63 +383,110 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
         except Exception as exc:
-            print(f"本地工作台请求失败：{exc}", file=sys.stderr)
+            LOGGER.exception("本地工作台请求失败：%s", exc)
             self.send_json(500, {"error": "本地服务暂时无法完成请求，请稍后重试。"})
 
 
-def main():
-    os.environ.setdefault("PYTHONUNBUFFERED", "1")
-    (INPUT_DIR / "workbench").mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    comfy_process = None
-    log = None
-    try:
-        try:
-            cors, stats = api_status()
-            if cors != WEB_URL:
-                raise RuntimeError("ComfyUI 已在运行，但缺少工作台跨域权限。请关闭原 ComfyUI 窗口后，再用本启动器重新打开。")
-            argv = stats.get("system", {}).get("argv", [])
-            if str(INPUT_DIR) not in argv or str(OUTPUT_DIR) not in argv:
-                raise RuntimeError(f"当前 ComfyUI 未使用工作台存储目录。请关闭原 ComfyUI 后重新启动，素材应存到 {DATA_DIR}。")
-            print("检测到已配置好的 ComfyUI，直接连接。")
-        except urllib.error.URLError:
-            command = [
-                str(ROOT / "python_embeded" / "python.exe"), "-s", str(ROOT / "ComfyUI" / "main.py"),
-                "--windows-standalone-build", "--output-directory", str(OUTPUT_DIR), "--input-directory", str(INPUT_DIR),
-                "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch",
-                "--enable-cors-header", WEB_URL,
-            ]
-            log = (HERE / "comfyui_workbench.log").open("a", encoding="utf-8")
-            comfy_process = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            print("正在启动本地 H3 模型服务，首次加载需要一点时间……")
+def configure_logging(debug=False):
+    log_dir = runtime_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handlers = [logging.FileHandler(log_dir / "app.log", encoding="utf-8")]
+    if debug:
+        handlers.append(logging.StreamHandler())
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers, force=True)
 
-        if not (HERE / "dist" / "index.html").is_file():
-            raise RuntimeError("画布尚未构建。请先运行 install.bat，或在本目录执行 npm ci && npm run build。")
-        wait_for_comfy(comfy_process)
-        handler = functools.partial(WorkbenchHandler, directory=str(HERE / "dist"))
-        server = ThreadingHTTPServer(("127.0.0.1", 8790), handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        print(f"视频工作台已就绪：{WEB_URL}")
-        print("生成期间请保持此窗口开启；关闭窗口会停止本次启动的服务。")
-        if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
-            webbrowser.open(WEB_URL)
-        while True:
-            time.sleep(3600)
+
+def main():
+    global WEB_URL
+    debug = "--debug" in sys.argv
+    os.environ.setdefault("PYTHONUNBUFFERED", "1")
+    configure_logging(debug)
+    server = None
+    comfy_process = None
+    comfy_log = None
+    try:
+        with startup_guard():
+            instance = read_instance()
+            if instance:
+                health = probe_health(instance)
+                if health:
+                    url = f"http://127.0.0.1:{health['port']}/"
+                    LOGGER.info("工作台已在运行：%s", url)
+                    if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
+                        webbrowser.open(url)
+                    return 0
+
+            if not (HERE / "dist" / "index.html").is_file():
+                raise RuntimeError("画布尚未构建。请先运行 install.bat，或在本目录执行 npm ci && npm run build。")
+            (INPUT_DIR / "workbench").mkdir(parents=True, exist_ok=True)
+            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            handler = functools.partial(WorkbenchHandler, directory=str(HERE / "dist"))
+            for port in range(8790, 8800):
+                try:
+                    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+                    break
+                except OSError:
+                    continue
+            if server is None:
+                raise RuntimeError("8790–8799 端口均被占用，请查看诊断日志。")
+            WEB_URL = f"http://127.0.0.1:{server.server_port}"
+            server.token = secrets.token_urlsafe(32)
+            server.started_at = utc_now()
+            server.comfy_owned = False
+            server.comfy_process = None
+
+            try:
+                api_status()
+                LOGGER.info("检测到运行中的 ComfyUI，直接连接；停止工作台不会关闭它。")
+            except (urllib.error.URLError, TimeoutError, ConnectionError):
+                command = [
+                    str(ROOT / "python_embeded" / "python.exe"), "-s", str(ROOT / "ComfyUI" / "main.py"),
+                    "--windows-standalone-build", "--output-directory", str(OUTPUT_DIR), "--input-directory", str(INPUT_DIR),
+                    "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch",
+                    "--enable-cors-header", WEB_URL,
+                ]
+                log_path = runtime_dir() / "logs" / f"comfyui-{time.strftime('%Y%m%d-%H%M%S')}.log"
+                comfy_log = log_path.open("a", encoding="utf-8")
+                flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                comfy_process = subprocess.Popen(command, cwd=ROOT, stdout=comfy_log, stderr=subprocess.STDOUT, creationflags=flags)
+                server.comfy_owned = True
+                server.comfy_process = comfy_process
+                LOGGER.info("已隐藏启动 ComfyUI，PID=%s", comfy_process.pid)
+
+            atomic_write_json(instance_path(), {
+                "port": server.server_port,
+                "token": server.token,
+                "pid": os.getpid(),
+                "pidCreatedAt": psutil.Process().create_time(),
+                "startedAt": server.started_at,
+                "comfyOwned": server.comfy_owned,
+                "comfyPid": comfy_process.pid if comfy_process else None,
+            })
+            LOGGER.info("视频工作台已就绪：%s", WEB_URL)
+            if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
+                webbrowser.open(WEB_URL + "/")
+        server.serve_forever()
+        return 0
     except KeyboardInterrupt:
-        pass
+        return 0
     except Exception as exc:
-        print(f"\n{exc}\n", file=sys.stderr)
-        input("按回车键关闭……")
+        LOGGER.exception("工作台启动失败：%s", exc)
+        if debug:
+            print(f"\n{exc}\n", file=sys.stderr)
+        return 1
     finally:
+        if server:
+            server.server_close()
+        remove_instance(os.getpid())
         if comfy_process and comfy_process.poll() is None:
             comfy_process.terminate()
             try:
                 comfy_process.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 comfy_process.kill()
-        if log:
-            log.close()
+        if comfy_log:
+            comfy_log.close()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

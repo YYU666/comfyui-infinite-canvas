@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://h3.local/schema/project.schema.json",
+  "title": "H3 Workbench project",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "name", "revision", "createdAt", "updatedAt", "appVersion", "settings", "characters", "outfits", "locations", "shots", "canvas", "assets"],
+  "properties": {
+    "schemaVersion": { "const": 3 },
+    "id": { "type": "string", "pattern": "^prj_[A-Za-z0-9_-]+$" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "appVersion": { "type": "string", "minLength": 1, "maxLength": 40 },
+    "settings": { "$ref": "#/$defs/settings" },
+    "characters": { "type": "array", "items": { "$ref": "#/$defs/character" } },
+    "outfits": { "type": "array", "items": { "$ref": "#/$defs/outfit" } },
+    "locations": { "type": "array", "items": { "$ref": "#/$defs/location" } },
+    "shots": { "type": "array", "items": { "$ref": "#/$defs/shot" } },
+    "canvas": { "$ref": "#/$defs/canvas" },
+    "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
+  },
+  "$defs": {
+    "assetPath": {
+      "type": "string",
+      "pattern": "^assets/[A-Za-z0-9][A-Za-z0-9._/-]*$",
+      "not": { "pattern": "(?:^|/)\\.\\.(?:/|$)" }
+    },
+    "nullableId": { "type": ["string", "null"] },
+    "settings": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ratio", "resolution", "duration"],
+      "properties": {
+        "ratio": { "type": "string", "pattern": "^[0-9]+:[0-9]+$" },
+        "resolution": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "duration": { "type": "number", "exclusiveMinimum": 0, "maximum": 300 }
+      }
+    },
+    "character": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "refs", "sheet", "defaultOutfitId", "voice", "notes"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^c[1-9][0-9]*$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "refs": { "type": "array", "items": { "$ref": "#/$defs/assetPath" } },
+        "sheet": { "type": ["string", "null"], "anyOf": [{ "$ref": "#/$defs/assetPath" }, { "type": "null" }] },
+        "defaultOutfitId": { "$ref": "#/$defs/nullableId" },
+        "voice": { "type": ["string", "null"] },
+        "notes": { "type": "string" }
+      }
+    },
+    "outfit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "refs", "prompt", "lora"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^o[1-9][0-9]*$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "refs": { "type": "array", "items": { "$ref": "#/$defs/assetPath" } },
+        "prompt": { "type": "string" },
+        "lora": { "type": ["string", "null"] }
+      }
+    },
+    "location": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^l[1-9][0-9]*$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "refs": { "type": "array", "items": { "$ref": "#/$defs/assetPath" } },
+        "prompt": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    },
+    "shot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "number", "name", "prompt", "characterId", "outfitId", "locationId", "params", "takes", "status", "tags"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^s[1-9][0-9]*$" },
+        "number": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "prompt": { "type": "string" },
+        "characterId": { "$ref": "#/$defs/nullableId" },
+        "outfitId": { "$ref": "#/$defs/nullableId" },
+        "locationId": { "$ref": "#/$defs/nullableId" },
+        "params": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["ratio", "resolution", "duration", "seed", "turbo"],
+          "properties": {
+            "ratio": { "type": "string", "pattern": "^[0-9]+:[0-9]+$" },
+            "resolution": { "type": "string", "minLength": 1, "maxLength": 20 },
+            "duration": { "type": "number", "exclusiveMinimum": 0, "maximum": 300 },
+            "seed": { "type": "integer", "minimum": 0 },
+            "turbo": { "type": "boolean" }
+          }
+        },
+        "takes": { "type": "array", "items": { "$ref": "#/$defs/take" } },
+        "status": { "type": "string", "enum": ["draft", "queued", "running", "done", "error", "cancelled"] },
+        "tags": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 60 }, "uniqueItems": true }
+      }
+    },
+    "take": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "asset", "poster", "recipe", "rating", "selected", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^t[1-9][0-9]*$" },
+        "asset": { "$ref": "#/$defs/assetPath" },
+        "poster": { "type": ["string", "null"], "anyOf": [{ "$ref": "#/$defs/assetPath" }, { "type": "null" }] },
+        "recipe": { "type": "object" },
+        "rating": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "selected": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges", "viewport"],
+      "properties": {
+        "nodes": { "type": "array", "items": { "type": "object" } },
+        "edges": { "type": "array", "items": { "type": "object" } },
+        "viewport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y", "zoom"],
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "zoom": { "type": "number", "exclusiveMinimum": 0, "maximum": 8 }
+          }
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes", "mime"],
+      "properties": {
+        "path": { "$ref": "#/$defs/assetPath" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 2147483648 },
+        "mime": { "type": "string", "pattern": "^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$" }
+      }
+    }
+  }
+}
