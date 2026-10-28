@@ -22,6 +22,7 @@ class QueueAPITests(unittest.TestCase):
         self.manager = QueueManager(Path(self.temporary.name) / "queue.json", self.adapter, poll_interval=0.01)
         self.manager.start()
         self.server = WorkbenchServer(("127.0.0.1", 0), WorkbenchHandler)
+        self.server.token = "queue-test-token"
         self.server.queue_api = QueueAPI(self.manager)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -35,13 +36,13 @@ class QueueAPITests(unittest.TestCase):
 
     def request(self, path, body=None):
         data = json.dumps(body).encode("utf-8") if body is not None else None
-        request = urllib.request.Request(self.origin + path, data=data, headers={"Content-Type": "application/json"})
+        request = urllib.request.Request(self.origin + path, data=data, headers={"Content-Type": "application/json", "X-H3-Token": self.server.token})
         with urllib.request.urlopen(request, timeout=3) as response:
             return response.status, json.load(response)
 
     def test_crud_events_and_browser_independent_progress(self):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
-        connection.request("GET", "/api/queue/events")
+        connection.request("GET", "/api/queue/events", headers={"X-H3-Token": self.server.token})
         events = connection.getresponse()
         self.assertEqual(events.status, 200)
         self.assertEqual(events.getheader("Content-Type"), "text/event-stream; charset=utf-8")

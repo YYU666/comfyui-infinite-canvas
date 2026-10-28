@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import functools
-import hmac
 import ipaddress
 import json
 import logging
@@ -31,6 +30,7 @@ from project_api import ProjectAPI
 from project_store import ProjectStore
 from queue_api import QueueAPI
 from workbench_queue import QueueManager
+from workbench_security import session_cookie, valid_content_type, valid_host, valid_origin, valid_token
 from workbench_lifecycle import (
     APP_VERSION,
     atomic_write_json,
@@ -314,6 +314,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
+        path = urllib.parse.urlparse(self.path).path
+        if self.command == "GET" and path in {"/", "/index.html"}:
+            self.send_header("Set-Cookie", session_cookie(self.server.token))
         super().end_headers()
 
     def log_message(self, format, *args):
@@ -327,7 +330,25 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def guard_request(self, write=False):
+        path = urllib.parse.urlparse(self.path).path
+        if not valid_host(self.headers.get("Host"), self.server.server_port):
+            self.send_json(403, {"code": "HOST_FORBIDDEN", "message": "Host 不在本地白名单内。"})
+            return False
+        if not valid_origin(self.headers.get("Origin"), self.server.server_port):
+            self.send_json(403, {"code": "ORIGIN_FORBIDDEN", "message": "Origin 不在本地白名单内。"})
+            return False
+        if path.startswith("/api/") and path != "/api/health" and not valid_token(self.headers, self.server.token):
+            self.send_json(401, {"code": "UNAUTHORIZED", "message": "本地访问令牌无效或缺失。"})
+            return False
+        if write and path.startswith("/api/") and not valid_content_type(self.command, path, self.headers):
+            self.send_json(415, {"code": "UNSUPPORTED_MEDIA_TYPE", "message": "写接口要求 application/json；素材和项目包使用各自受支持的类型。"})
+            return False
+        return True
+
     def do_GET(self):
+        if not self.guard_request():
+            return
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/health":
             comfy_process = getattr(self.server, "comfy_process", None)
@@ -377,12 +398,10 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return False
 
     def do_POST(self):
+        if not self.guard_request(write=True):
+            return
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/shutdown":
-            supplied = self.headers.get("X-H3-Token", "")
-            if not hmac.compare_digest(supplied, self.server.token):
-                self.send_json(401, {"code": "UNAUTHORIZED", "message": "停止令牌无效。"})
-                return
             self.send_json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
@@ -412,11 +431,15 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             self.send_json(500, {"error": "本地服务暂时无法完成请求，请稍后重试。"})
 
     def do_PUT(self):
+        if not self.guard_request(write=True):
+            return
         path = urllib.parse.urlparse(self.path).path
         if not self.server.project_api.handle_put(self, path):
             self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
 
     def do_DELETE(self):
+        if not self.guard_request(write=True):
+            return
         path = urllib.parse.urlparse(self.path).path
         if not self.server.project_api.handle_delete(self, path):
             self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
