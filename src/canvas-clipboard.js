@@ -1,3 +1,5 @@
+import { allocateReferenceTag, replaceReferenceTags } from './reference-tags.js';
+
 const NODE_SIZES = {
   media: { width: 310, height: 250 },
   generator: { width: 440, height: 360 },
@@ -92,11 +94,22 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
     });
     return result;
   };
+  const usedRefTags = new Set(existingNodes.map((node) => node.data?.refTag).filter(Boolean));
+  const tagMap = new Map();
+  const pastedRefTags = new Map();
+  for (const node of clipboard.nodes) {
+    if (node.type !== 'media') continue;
+    const previous = node.data?.refTag;
+    const refTag = allocateReferenceTag(usedRefTags, node.data?.kind || 'image');
+    pastedRefTags.set(node.id, refTag);
+    if (previous && previous !== refTag) tagMap.set(previous, refTag);
+  }
   const offset = findGroupPosition(clipboard.nodes, existingNodes);
   const nodes = clipboard.nodes.map((source) => {
     const data = cloneData(source.data);
     if (data.title) data.title = `${data.title} · 副本`;
-    TEXT_FIELDS.forEach((field) => { if (field in data) data[field] = replaceMentions(data[field]); });
+    if (pastedRefTags.has(source.id)) data.refTag = pastedRefTags.get(source.id);
+    TEXT_FIELDS.forEach((field) => { if (field in data) data[field] = replaceReferenceTags(replaceMentions(data[field]), tagMap); });
     if (source.type === 'generator') {
       Object.assign(data, { status: 'idle', progress: 0, stage: '', runs: [] });
       ['promptId', 'resultUrl', 'error', 'hasMedia'].forEach((field) => { delete data[field]; });

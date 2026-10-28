@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import { ObjectUrlLru } from './src/object-url-lru.js';
+
+const revoked = [];
+const cache = new ObjectUrlLru(2, (url) => revoked.push(url));
+cache.set('a', Promise.resolve('blob:a'));
+cache.set('b', Promise.resolve('blob:b'));
+await Promise.resolve();
+assert.equal(cache.size, 2);
+cache.get('a');
+cache.set('c', Promise.resolve('blob:c'));
+await Promise.resolve(); await Promise.resolve();
+assert.deepEqual([...cache.entries.keys()], ['a', 'c']);
+assert.deepEqual(revoked, ['blob:b'], '只逐出最久未使用且已解析的 URL');
+cache.set('pending', Promise.resolve('blob:pending'));
+cache.clear();
+await Promise.resolve(); await Promise.resolve();
+assert.ok(revoked.includes('blob:pending'), '清理时挂起任务完成后也会释放');
+cache.set('bad', Promise.reject(new Error('decode failed')));
+await Promise.resolve(); await Promise.resolve();
+assert.equal(cache.get('bad'), null, '失败条目不会永久占据缓存');
+console.log('OBJECT_URL_LRU_OK bounded eviction, pending cleanup, rejection cleanup');

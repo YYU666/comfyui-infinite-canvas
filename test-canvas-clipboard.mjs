@@ -4,12 +4,12 @@ import { copyCanvasSelection, pasteCanvasSelection } from './src/canvas-clipboar
 const nodes = [
   {
     id: 'media-a', type: 'media', position: { x: 100, y: 120 }, selected: true,
-    data: { kind: 'image', title: '角色', mediaStorageId: 'shared-media', url: 'blob:local', file: { excluded: true } },
+    data: { kind: 'image', title: '角色', refTag: '<Picture 1>', mediaStorageId: 'shared-media', url: 'blob:local', file: { excluded: true } },
   },
   {
     id: 'generator-b', type: 'generator', position: { x: 600, y: 320 }, selected: true,
     data: {
-      title: '换装', prompt: '@角色 换成白色夏装', seed: 123, status: 'done', progress: 100,
+      title: '换装', prompt: '@角色 换成白色夏装', optimizedPrompt: 'Use <Picture 1> as identity.', seed: 123, status: 'done', progress: 100,
       stage: '生成完成', promptId: 'old-task', resultUrl: 'http://old-result', error: 'old-error',
       hasMedia: true, runs: [{ promptId: 'old-task' }],
     },
@@ -40,7 +40,9 @@ assert.equal(first.nodes[1].position.x - first.nodes[0].position.x, 500, '保持
 assert.equal(first.nodes[1].position.y - first.nodes[0].position.y, 200, '保持多选节点垂直相对位置');
 assert.equal(first.nodes[0].data.mediaStorageId, 'shared-media', '素材继续引用原存储记录');
 assert.equal(first.nodes[0].data.title, '角色 · 副本');
+assert.equal(first.nodes[0].data.refTag, '<Picture 2>', '副本使用新的稳定引用标签');
 assert.equal(first.nodes[1].data.prompt, '@角色 · 副本 换成白色夏装', '内部 @ 引用同步指向素材副本');
+assert.equal(first.nodes[1].data.optimizedPrompt, 'Use <Picture 2> as identity.', '结构化引用同步指向素材副本');
 assert.equal(first.nodes[1].data.seed, 123, '生成参数保留');
 assert.equal(first.nodes[1].data.status, 'idle');
 assert.equal(first.nodes[1].data.progress, 0);

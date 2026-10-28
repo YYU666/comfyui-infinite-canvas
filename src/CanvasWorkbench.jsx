@@ -30,6 +30,8 @@ import { initializeProjects, listProjects, createProject, openProject, saveProje
 import { AutoSaveController } from './auto-save';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
 import { queueJobAction, queueOwnsCompletion, queueOwnsStage } from './generation-queue';
+import { ensureReferenceTags, nextReferenceTag, referenceDescriptors } from './reference-tags';
+import { ObjectUrlLru } from './object-url-lru';
 
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
@@ -83,7 +85,7 @@ function migrateCanvas(value) {
       targetHandle: isReference && ['first', 'last'].includes(edge.targetHandle) ? 'references' : ['first', 'last', 'preview', 'prompt', 'guide', 'identity'].includes(edge.targetHandle) ? edge.targetHandle : 'references',
     };
   }).filter((edge) => nodes.some((n) => n.id === edge.source) && nodes.some((n) => n.id === edge.target));
-  return { ...value, nodes, edges };
+  return { ...value, nodes: ensureReferenceTags(nodes), edges };
 }
 
 function canvasSnapshot(nodes, edges, viewport) {
@@ -212,11 +214,12 @@ function MediaDragSurface({ videoRef, video = false, onActivate }) {
     onClick={activate} />;
 }
 
-const thumbnailCache = new Map();
+const thumbnailCache = new ObjectUrlLru(64);
 const EMPTY_IMAGE = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 let thumbnailQueue = Promise.resolve();
 async function imageThumbnail(source) {
-  if (thumbnailCache.has(source)) return thumbnailCache.get(source);
+  const cached = thumbnailCache.get(source);
+  if (cached) return cached.pending;
   const create = async () => {
     const response = await fetch(source);
     if (!response.ok) throw new Error('缩略图读取失败');
@@ -236,8 +239,7 @@ async function imageThumbnail(source) {
   const pending = thumbnailQueue.then(create, create);
   thumbnailQueue = pending.catch(() => {});
   thumbnailCache.set(source, pending);
-  try { return await pending; }
-  catch (error) { thumbnailCache.delete(source); throw error; }
+  return pending;
 }
 
 function CanvasImage({ source, alt = '', ...props }) {
@@ -288,15 +290,6 @@ function MediaNode({ id, data, selected }) {
     <Handle type="source" position={Position.Right} id="ref" className="neo-handle source" title="连接到全能参考" />
     {maskEditorOpen && maskGuide && <MaskEditor guideUrl={maskGuide.data.url} guideTitle={maskGuide.data.title} maskUrl={data.url} onSave={(file) => { chooseMedia(id, file); setMaskEditorOpen(false); }} onClose={() => setMaskEditorOpen(false)} />}
   </div>;
-}
-
-function referenceDescriptors(nodes) {
-  const counters = { image: 0, video: 0, audio: 0 };
-  return nodes.map((node) => {
-    const kind = node.data.kind || 'image';
-    counters[kind] += 1;
-    return { node, kind, tag: `<${kind === 'image' ? 'Picture' : kind === 'video' ? 'Video' : 'Audio'} ${counters[kind]}>` };
-  });
 }
 
 function GeneratorNode({ id, data, selected }) {
@@ -565,7 +558,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
         if (!node.data.remoteName && !node.data.output) updateNode(node.id, { url: URL.createObjectURL(file) });
       } catch { /* The user can replace an unavailable local file. */ }
     });
-    return () => { alive = false; };
+    return () => { alive = false; thumbnailCache.clear(); };
   }, []);
 
   const updateNode = useCallback((id, patch) => {
@@ -602,20 +595,28 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
 
   const chooseMedia = useCallback((id, file) => {
     if (switchingRef.current || project.readOnly) return;
-    filesRef.current[id] = file;
-    // Each replacement gets a fresh record, so a stale tab cannot overwrite the
-    // media referenced by a newer committed project before its revision check.
+    // Keep the previous committed reference until the immutable replacement is
+    // fully written. A full disk or failed request must not blank the old media.
     const mediaStorageId = uid('media');
     const pending = saveProjectFile(project.id, mediaStorageId, file);
     mediaWritesRef.current.set(id, pending);
+    setSaveState('保存中');
     pending.then((result) => {
+      if (mediaWritesRef.current.get(id) !== pending) return;
+      mediaWritesRef.current.delete(id);
+      if (!nodesRef.current.some((node) => node.id === id)) return;
       revisionRef.current = Math.max(revisionRef.current, result.revision);
-      setNodes((items) => items.map((node) => node.id === id && node.data.mediaStorageId === mediaStorageId
-        ? { ...node, data: { ...node.data, assetPath: result.asset.path } } : node));
+      filesRef.current[id] = file;
+      const patch = { url: URL.createObjectURL(file), name: file.name, mediaStorageId, assetPath: result.asset.path, remoteName: null, localFile: true, output: false, resultUrl: null };
+      const nextNodes = nodesRef.current.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
+      nodesRef.current = nextNodes;
+      setNodes(nextNodes);
+    }, (error) => {
       if (mediaWritesRef.current.get(id) === pending) mediaWritesRef.current.delete(id);
-    }, (error) => { setSaveState('保存失败'); setProjectError(error.message || '素材保存失败，请重新选择素材后再切换项目。'); });
-    updateNode(id, { url: URL.createObjectURL(file), name: file.name, mediaStorageId, assetPath: null, remoteName: null, localFile: true, output: false, resultUrl: null });
-  }, [updateNode, setNodes, project.id, project.readOnly]);
+      setSaveState('保存失败');
+      setProjectError(error.message || '素材保存失败，已保留原素材，请释放磁盘空间后重试。');
+    });
+  }, [setNodes, project.id, project.readOnly]);
 
   const getReferences = useCallback((id) => {
     const node = nodesRef.current.find((item) => item.id === id);
@@ -829,8 +830,14 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
 
   const generateNode = useCallback(async (id) => {
     if (switchingRef.current || project.readOnly) return;
-    const node = nodesRef.current.find((item) => item.id === id);
+    let node = nodesRef.current.find((item) => item.id === id);
     if (!['swap', 'upscale', 'imageUpscale'].includes(node?.data.mode) && !node?.data.prompt?.trim()) { updateNode(id, { status: 'error', error: '请先输入画面描述。' }); return; }
+    if (mediaWritesRef.current.size) {
+      updateNode(id, { status: 'uploading', stage: '正在等待素材写入磁盘', progress: 0, error: null });
+      try { await Promise.all([...mediaWritesRef.current.values()]); }
+      catch { updateNode(id, { status: 'error', error: '素材尚未保存成功，已保留原素材，请重试上传。', stage: '提交失败' }); return; }
+      node = nodesRef.current.find((item) => item.id === id);
+    }
     const refs = getReferences(id);
     if (node.data.mode === 'reference' && !refs.length) { updateNode(id, { status: 'error', error: '全能参考至少需要一个素材，也可以切换到文生视频。' }); return; }
     if (node.data.mode === 'swap' && (!refs.some((ref) => ref.data.slot === 'guide') || !refs.some((ref) => ref.data.slot === 'identity'))) { updateNode(id, { status: 'error', error: '请连接源视频到上方端口、单人身份图到下方端口。' }); return; }
@@ -952,7 +959,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     else {
       const kind = extra.kind || type;
       const count = nodesRef.current.filter((node) => node.type === 'media' && node.data.kind === kind).length + 1;
-      data = { kind, title: `${KIND_LABEL[kind]} ${count}`, url: '', name: '', ...extra };
+      data = { kind, title: `${KIND_LABEL[kind]} ${count}`, url: '', name: '', ...extra, refTag: nextReferenceTag(nodesRef.current, kind) };
       type = 'media';
     }
     const position = findFreePosition(nodesRef.current, desired, type);
