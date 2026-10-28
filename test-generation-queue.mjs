@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
-import { queueJobAction } from './src/generation-queue.js';
+import { queueJobAction, queueOwnsCompletion, queueOwnsStage } from './src/generation-queue.js';
 
 const node = (data = {}) => ({ id: 'generator-1', type: 'generator', data: { status: 'idle', progress: 0, ...data } });
 const job = (data = {}) => ({ id: 'job-1', projectId: 'project-1', nodeId: 'generator-1', status: 'queued', progress: 0, comfyPromptId: null, ...data });
+
+{
+  assert.equal(queueOwnsCompletion(node({ promptId: 'prompt-direct' })), false);
+  assert.equal(queueOwnsStage(node({ promptId: 'prompt-direct', mode: 'outfitEdit' })), false);
+  assert.equal(queueOwnsCompletion(node({ queueJobId: 'job-video', promptId: 'prompt-video' })), true);
+  assert.equal(queueOwnsStage(node({ queueJobId: 'job-video', mode: 'video' })), false);
+  assert.equal(queueOwnsStage(node({ queueJobId: 'job-outfit', mode: 'outfitEdit', promptId: 'prompt-stage' })), true);
+}
 
 {
   const action = queueJobAction(node(), job());

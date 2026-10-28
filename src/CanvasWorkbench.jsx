@@ -29,7 +29,7 @@ import CanvasProjectMenu from './CanvasProjectMenu';
 import { initializeProjects, listProjects, createProject, openProject, saveProject, projectSummary, saveProjectFile, readProjectFile } from './project-store-http';
 import { AutoSaveController } from './auto-save';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
-import { queueJobAction } from './generation-queue';
+import { queueJobAction, queueOwnsCompletion, queueOwnsStage } from './generation-queue';
 
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
@@ -695,7 +695,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       setNodes((items) => items.map((node) => node.id === id ? {
         ...node,
         data: {
-          ...node.data, status: 'done', progress: 100, stage: '生成完成', promptId, resultUrl: result.url,
+          ...node.data, status: 'done', progress: 100, stage: '生成完成', promptId, resultUrl: result.url, error: null,
           runs: [{ promptId, status: 'done', stage: `${title}已输出`, time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12),
         },
       } : node).concat(mediaNode));
@@ -726,7 +726,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   useEffect(() => {
     const socket = openProgressSocket(clientId, {
       onProgress(data) {
-        for (const node of nodesRef.current) if (node.data.promptId === data.prompt_id) {
+        for (const node of nodesRef.current) if (node.data.promptId === data.prompt_id && !queueOwnsStage(node)) {
           const refinePass = String(data.node || '').match(/^refine_sample_(\d+)$/)?.[1];
           updateNode(node.id, { status: 'running', progress: data.max ? Math.round(data.value / data.max * 100) : 0, stage: `${refinePass ? `第 ${refinePass} 采精修` : '基础采样'} ${data.value}/${data.max} 步` });
         }
@@ -735,8 +735,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
         for (const node of nodesRef.current) {
           if (node.data.promptId !== data.prompt_id) continue;
           const refinePass = String(data.node || '').match(/^refine_sample_(\d+)$/)?.[1];
-          if (data.node) updateNode(node.id, { status: 'running', stage: refinePass ? `正在第 ${refinePass} 采精修` : data.node === 'sample' ? '正在基础采样' : data.node?.startsWith('save') ? '正在保存 MP4 对照' : data.node === '12' ? '正在生成画面与声音' : data.node === '16' ? '正在保存 MP4' : '正在准备参考素材与模型' });
-          else { updateNode(node.id, { status: 'finishing', stage: '正在读取成片', progress: 100 }); setTimeout(() => completeGeneration(node.id, data.prompt_id), 700); }
+          if (data.node) {
+            if (!queueOwnsStage(node)) updateNode(node.id, { status: 'running', stage: refinePass ? `正在第 ${refinePass} 采精修` : data.node === 'sample' ? '正在基础采样' : data.node?.startsWith('save') ? '正在保存 MP4 对照' : data.node === '12' ? '正在生成画面与声音' : data.node === '16' ? '正在保存 MP4' : '正在准备参考素材与模型' });
+          } else {
+            if (queueOwnsCompletion(node)) continue;
+            updateNode(node.id, { status: 'finishing', stage: '正在读取成片', progress: 100 });
+            setTimeout(() => completeGeneration(node.id, data.prompt_id), 700);
+          }
         }
       },
       onExecutionError(data) {
@@ -754,7 +759,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     const reconcileFinishedJobs = async () => {
       if (checking) return;
       const needsResult = (data) => ['queued', 'running', 'finishing'].includes(data.status) || (data.status === 'error' && data.stage === '读取结果失败');
-      const pending = nodesRef.current.filter((node) => node.data.promptId && needsResult(node.data));
+      const pending = nodesRef.current.filter((node) => node.data.promptId && !queueOwnsCompletion(node) && needsResult(node.data));
       if (!pending.length) return;
       checking = true;
       try {

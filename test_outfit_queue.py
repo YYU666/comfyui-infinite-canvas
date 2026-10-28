@@ -1,12 +1,24 @@
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_workbench_queue import wait_for
-from workbench_queue import QueueManager
+from workbench_queue import ComfyQueueAdapter, QueueManager
+
+
+class EmptyResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        return b""
 
 
 class FakeOutfitAdapter:
@@ -132,6 +144,13 @@ class OutfitQueueTests(unittest.TestCase):
         self.assertEqual(len(self.adapter.submitted), 4)
         self.assertEqual([item["id"] for item in self.adapter.submitted], ["prompt-1", "prompt-2", "prompt-3", "prompt-4"])
         self.assertEqual(recovered.get(job["id"])["planState"]["promptIds"], ["prompt-1", "prompt-2", "prompt-3", "prompt-4"])
+
+    def test_free_accepts_comfy_empty_success_response(self):
+        adapter = ComfyQueueAdapter()
+        with patch.object(adapter, "_request", return_value={"queue_running": [], "queue_pending": []}), patch("urllib.request.urlopen", return_value=EmptyResponse()) as open_url:
+            self.assertTrue(adapter.free())
+        request = open_url.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/free"))
 
     def test_invalid_plan_is_rejected(self):
         with self.assertRaises(ValueError):

@@ -1,5 +1,13 @@
 const ACTIVE_STATES = new Set(['queued', 'running', 'finishing']);
 
+export function queueOwnsCompletion(node) {
+  return Boolean(node?.data?.queueJobId);
+}
+
+export function queueOwnsStage(node) {
+  return queueOwnsCompletion(node) && node.data.mode === 'outfitEdit';
+}
+
 /** Map one persisted backend job onto a generator without regressing newer runtime state. */
 export function queueJobAction(node, job) {
   if (!node || !job) return null;

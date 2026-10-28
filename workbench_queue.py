@@ -84,7 +84,10 @@ class ComfyQueueAdapter:
         current = self._request("/queue")
         if current.get("queue_running") or current.get("queue_pending"):
             return False
-        self._request("/free", {"unload_models": True, "free_memory": True})
+        payload = json.dumps({"unload_models": True, "free_memory": True}).encode("utf-8")
+        request = urllib.request.Request(f"{self.origin}/free", data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            response.read()
         return True
 
 
