@@ -26,6 +26,7 @@ import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from agent_api import AgentAPI
 from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_websocket
 from project_api import ProjectAPI
 from project_store import ProjectStore
@@ -389,6 +390,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         if self.server.queue_api.handle_get(self, path):
             return
+        agent_api = getattr(self.server, "agent_api", None)
+        if agent_api and agent_api.handle_get(self, path):
+            return
         if self.server.project_api.handle_get(self, path):
             return
         if path != "/api/hardware-metrics":
@@ -451,6 +455,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
         if self.server.queue_api.handle_post(self, path):
+            return
+        agent_api = getattr(self.server, "agent_api", None)
+        if agent_api and agent_api.handle_post(self, path):
             return
         if self.server.project_api.handle_post(self, path):
             return
@@ -538,6 +545,9 @@ def apply_server_settings(server):
         server.project_store = replacement
         server.project_api.store = replacement
         server.project_api.domain.store = replacement
+        if getattr(server, "agent_api", None):
+            server.agent_api.protocol.store = replacement
+            server.agent_api.protocol.domain.store = replacement
         previous.close()
     else:
         server.project_store.defaults = dict(defaults)
@@ -611,6 +621,7 @@ def main():
             server.queue_manager = QueueManager(adapter=ComfyQueueAdapter(COMFY_URL), concurrency=server.settings.data["queue"]["concurrency"])
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
             server.queue_api = QueueAPI(server.queue_manager)
+            server.agent_api = AgentAPI(server.project_store, server.queue_manager)
             server.queue_manager.start()
 
             try:

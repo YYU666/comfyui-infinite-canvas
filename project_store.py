@@ -56,7 +56,7 @@ def new_document(name, canvas=None, template="blank", defaults=None):
     if defaults:
         settings.update({key: defaults[key] for key in ("ratio", "resolution", "duration") if key in defaults})
     settings["template"] = template
-    return {
+    document = {
         "schemaVersion": 3,
         "id": f"prj_{uuid.uuid4().hex}",
         "name": validate_name(name),
@@ -69,6 +69,9 @@ def new_document(name, canvas=None, template="blank", defaults=None):
         "canvas": canvas or {"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}},
         "assets": [],
     }
+    from agent_handles import ensure_agent_handles
+    ensure_agent_handles(document)
+    return document
 
 
 def _validated(document):
@@ -80,7 +83,9 @@ def _validated(document):
 
 def _migrate(document):
     if document.get("schemaVersion") == 3:
-        return _validated(document), False
+        from agent_handles import ensure_agent_handles
+        changed = ensure_agent_handles(document)
+        return _validated(document), changed
     if document.get("schemaVersion") not in (None, 1, 2):
         raise StoreError("BAD_REQUEST", "不支持的项目 schema 版本，未修改原文件。")
     canvas = document.get("canvas")
@@ -102,6 +107,8 @@ def _migrate(document):
     }
     if not migrated["id"].startswith("prj_"):
         migrated["id"] = f"prj_{uuid.uuid4().hex}"
+    from agent_handles import ensure_agent_handles
+    ensure_agent_handles(migrated)
     return _validated(migrated), True
 
 

@@ -1,6 +1,6 @@
 # H3 视频工作台
 
-把本地 ComfyUI 包装为无限画布：素材引用、全能参考、首尾帧、角色替换、Krea2／MOSS 生图、Qwen 2.1 图生图、局部写实修复、无抠图换装、四视图、图片／视频高清和显存清理。包含画布 WebMCP，允许 Agent 读取和操作真实节点。
+把本地 ComfyUI 包装为无限画布：素材引用、全能参考、首尾帧、角色替换、Krea2／MOSS 生图、Qwen 2.1 图生图、局部写实修复、无抠图换装、四视图、图片／视频高清和显存清理。Agent 协议 v2 提供 HTTP、CLI、MCP 和浏览器 WebMCP，可不打开浏览器完成建镜头、生成、选片与导出。
 
 ## 环境要求
 
@@ -21,7 +21,7 @@
    ```
 
    也可以手动把模型目录复制到 `ComfyUI\models\`，无需重复运行安装器。
-5. 双击 `start.bat`，浏览器打开 `http://127.0.0.1:8790/`。
+5. 双击 `启动.vbs`，浏览器打开 `http://127.0.0.1:8790/`；`start.bat` 仅用于调试，`停止.bat` 用于优雅停止。
 
 安装器不会更新或覆盖已有的第三方节点目录，只会克隆缺失节点；工作台自己的 `h3_workbench_refine` 节点会同步到 ComfyUI。
 
@@ -127,6 +127,16 @@ MiniMax H3、Qwen 2.1、SAM3、SeedVR2 和循环节点由新版 ComfyUI 本体�
 ## 队列与通知
 
 后台队列在后端持久化，关闭浏览器标签页不会取消排队或生成。单个任务超过 60 分钟没有返回结果会标记为 `COMFY_TIMEOUT` 并允许按原配方重试；取消只删除目标排队项，且仅在目标任务正在执行时发送中断。任务完成、失败和队列清空时，工作台显示页内提示；在设置中启用通知并允许浏览器权限后，也会发送系统通知。标签页关闭期间无法弹出浏览器通知，重新打开时会汇总提示已结束的任务。
+
+## Agent 协议 v2
+
+Agent 默认使用后端 HTTP、CLI 或 MCP，无需打开浏览器。完整接口、凭据、MCP 配置和全链路示例见 [`docs/AGENT.md`](docs/AGENT.md)；日常操作规范见 `.agents/skills/comfyui-infinite-canvas/SKILL.md`。
+
+```bat
+C:\ComfyUI_windows_portable\python_embeded\python.exe agent_cli.py state --project prj_xxx
+C:\ComfyUI_windows_portable\python_embeded\python.exe agent_mcp.py
+C:\ComfyUI_windows_portable\python_embeded\python.exe scripts\agent_benchmark.py
+```
 
 ## 常用开发检查
 

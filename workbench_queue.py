@@ -206,6 +206,10 @@ class QueueManager:
             "clientId": str(payload.get("clientId") or uuid.uuid4()),
         }
         with self._lock:
+            if job["clientId"].startswith("agent:"):
+                existing = next((item for item in self.jobs if item.get("clientId") == job["clientId"] and item.get("projectId") == job["projectId"]), None)
+                if existing:
+                    return _public(existing)
             self.jobs.append(job)
             self._changed_locked("job.queued", job)
             return _public(job)
