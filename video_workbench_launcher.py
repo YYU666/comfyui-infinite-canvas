@@ -27,6 +27,8 @@ import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from project_api import ProjectAPI
+from project_store import ProjectStore
 from workbench_lifecycle import (
     APP_VERSION,
     atomic_write_json,
@@ -333,6 +335,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 "queue": queue_summary(),
             })
             return
+        if self.server.project_api.handle_get(self, path):
+            return
         if path != "/api/hardware-metrics":
             super().do_GET()
             return
@@ -365,6 +369,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             self.send_json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
+        if self.server.project_api.handle_post(self, path):
+            return
         if path not in {"/api/import-video", "/api/optimize-prompt", "/api/open-file-location"}:
             self.send_json(404, {"error": "接口不存在"})
             return
@@ -385,6 +391,16 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             LOGGER.exception("本地工作台请求失败：%s", exc)
             self.send_json(500, {"error": "本地服务暂时无法完成请求，请稍后重试。"})
+
+    def do_PUT(self):
+        path = urllib.parse.urlparse(self.path).path
+        if not self.server.project_api.handle_put(self, path):
+            self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
+
+    def do_DELETE(self):
+        path = urllib.parse.urlparse(self.path).path
+        if not self.server.project_api.handle_delete(self, path):
+            self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
 
 
 def configure_logging(debug=False):
@@ -434,6 +450,8 @@ def main():
             server.started_at = utc_now()
             server.comfy_owned = False
             server.comfy_process = None
+            server.project_store = ProjectStore()
+            server.project_api = ProjectAPI(server.project_store)
 
             try:
                 api_status()
@@ -475,6 +493,8 @@ def main():
             print(f"\n{exc}\n", file=sys.stderr)
         return 1
     finally:
+        if server and hasattr(server, "project_store"):
+            server.project_store.close()
         if server:
             server.server_close()
         remove_instance(os.getpid())
