@@ -27,6 +27,7 @@ import ImageLightbox from './ImageLightbox';
 import { useCanvasMcp } from './canvas-mcp';
 import CanvasProjectMenu from './CanvasProjectMenu';
 import { initializeProjects, listProjects, createProject, openProject, saveProject, projectSummary, saveProjectFile, readProjectFile } from './project-store-http';
+import { AutoSaveController } from './auto-save';
 
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
@@ -85,14 +86,17 @@ function migrateCanvas(value) {
 
 function canvasSnapshot(nodes, edges, viewport) {
   return {
-    nodes: nodes.map((node) => ({
-      ...node,
-      data: {
-        ...node.data,
-        url: node.data.remoteName || node.data.output ? node.data.url : node.data.url?.startsWith('blob:') ? '' : node.data.url,
-        file: undefined,
-      },
-    })), edges, viewport,
+    nodes: nodes.map((node) => {
+      const { measured, selected, dragging, ...stableNode } = node;
+      return {
+        ...stableNode,
+        data: {
+          ...node.data,
+          url: node.data.remoteName || node.data.output ? node.data.url : node.data.url?.startsWith('blob:') ? '' : node.data.url,
+          file: undefined,
+        },
+      };
+    }), edges, viewport,
   };
 }
 
@@ -437,12 +441,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectError, setProjectError] = useState('');
   const revisionRef = useRef(project.revision);
-  const savingRef = useRef(Promise.resolve());
+  const autoSaveRef = useRef(null);
   const switchingRef = useRef(false);
   const mediaWritesRef = useRef(new Map());
   const nameRef = useRef(projectName);
   nameRef.current = projectName;
-  const lastSavedRef = useRef(JSON.stringify([project.name, canvasSnapshot(saved.nodes, saved.edges || [], saved.viewport)]));
+  const viewportRef = useRef(saved.viewport);
   const [saveState, setSaveState] = useState(project.readOnly ? '只读' : '已保存');
   const [server, setServer] = useState({ online: false, label: '正在连接' });
   const [metrics, setMetrics] = useState({ vramUsed: null, vramTotal: null, cpuPercent: null, ramUsed: null, ramTotal: null });
@@ -485,44 +489,43 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   }, [imagePreview]);
   nodesRef.current = nodes;
   edgesRef.current = edges;
-  const persistProject = useCallback(() => {
-    if (project.readOnly) return Promise.resolve();
-    const canvas = canvasSnapshot(nodesRef.current, edgesRef.current, saved.viewport);
-    const name = nameRef.current;
-    const signature = JSON.stringify([name, canvas]);
-    setSaveState('保存中');
-    const pending = savingRef.current.catch(() => {}).then(async () => {
-      await Promise.all([...mediaWritesRef.current.values()]);
-      if (signature === lastSavedRef.current) return;
-      const next = await saveProject(project.id, revisionRef.current, name, canvas);
-      revisionRef.current = next.revision;
-      lastSavedRef.current = signature;
-      setProjects((rows) => [projectSummary(next), ...rows.filter((row) => row.id !== next.id)]);
-    });
-    savingRef.current = pending;
-    return pending.then(() => {
-      const latest = JSON.stringify([nameRef.current, canvasSnapshot(nodesRef.current, edgesRef.current, saved.viewport)]);
-      setSaveState(latest === lastSavedRef.current ? '已保存' : '保存中'); setProjectError('');
-    }, (error) => {
-      setSaveState('保存失败'); setProjectError(error.message || '项目保存失败，请保留本页后重试。'); throw error;
-    });
-  }, [project.id, saved]);
   useEffect(() => {
     if (project.readOnly) return undefined;
-    setSaveState('保存中');
-    const timer = setTimeout(() => { persistProject().catch(() => {}); }, 400);
-    return () => clearTimeout(timer);
-  }, [nodes, edges, projectName, persistProject, project.readOnly]);
+    const labels = { saved: '已保存', dirty: '有未保存修改', saving: '保存中', error: '保存失败' };
+    const controller = new AutoSaveController({
+      name: project.name,
+      canvas: canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current),
+      write: async ({ name, canvas }) => {
+        await Promise.all([...mediaWritesRef.current.values()]);
+        const next = await saveProject(project.id, revisionRef.current, name, canvas);
+        revisionRef.current = next.revision;
+        setProjects((rows) => rows.map((row) => row.id === next.id ? projectSummary(next) : row));
+        setProjectError('');
+      },
+      onStateChange: (state) => setSaveState(labels[state] || '已保存'),
+      onNotice: () => setSaveState('已自动保存'),
+      onError: (error) => setProjectError(error.message || '项目保存失败，请保留本页后重试。'),
+    });
+    autoSaveRef.current = controller;
+    return () => { controller.dispose(); autoSaveRef.current = null; };
+  }, [project.id, project.readOnly]);
+  useEffect(() => {
+    autoSaveRef.current?.observe(projectName, canvasSnapshot(nodes, edges, viewportRef.current));
+  }, [nodes, edges, projectName]);
+  const persistProject = useCallback(() => {
+    if (project.readOnly || !autoSaveRef.current) return Promise.resolve();
+    autoSaveRef.current.observe(nameRef.current, canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current));
+    return autoSaveRef.current.flush();
+  }, [project.readOnly]);
   useEffect(() => {
     const flush = () => { if (document.visibilityState === 'hidden') persistProject().catch(() => {}); };
     const beforeUnload = (event) => {
-      const signature = JSON.stringify([nameRef.current, canvasSnapshot(nodesRef.current, edgesRef.current, saved.viewport)]);
-      if (signature !== lastSavedRef.current || mediaWritesRef.current.size) { event.preventDefault(); event.returnValue = ''; }
+      if (autoSaveRef.current?.hasUnsaved() || mediaWritesRef.current.size) { event.preventDefault(); event.returnValue = ''; }
     };
     document.addEventListener('visibilitychange', flush);
     window.addEventListener('beforeunload', beforeUnload);
     return () => { document.removeEventListener('visibilitychange', flush); window.removeEventListener('beforeunload', beforeUnload); };
-  }, [persistProject, saved]);
+  }, [persistProject]);
   const refreshProjects = useCallback(async () => {
     try { setProjects(await listProjects()); }
     catch (error) { setProjectError(error.message || '项目列表读取失败。'); }
@@ -551,7 +554,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
         const file = await readProjectFile(project, node.data.mediaStorageId || node.id, node.data.assetPath);
         if (!alive || !file) return;
         filesRef.current[node.id] = file;
-        if (!node.data.remoteName && !node.data.output) updateNode(node.id, { url: URL.createObjectURL(file), name: file.name });
+        if (!node.data.remoteName && !node.data.output) updateNode(node.id, { url: URL.createObjectURL(file) });
       } catch { /* The user can replace an unavailable local file. */ }
     });
     return () => { alive = false; };
@@ -1180,7 +1183,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
           multiSelectionKeyCode={['Shift']}
           snapToGrid={snapEnabled} snapGrid={[22, 22]}
           onMove={(_, viewport) => setZoom(Math.round(viewport.zoom * 100))}
-          onMoveEnd={(_, viewport) => { saved.viewport = viewport; persistProject().catch(() => {}); }}
+          onMoveEnd={(_, viewport) => { viewportRef.current = viewport; persistProject().catch(() => {}); }}
           defaultEdgeOptions={{ style: { stroke: '#77777e', strokeWidth: 1.6 }, type: 'default' }}
           connectionLineType={ConnectionLineType.Bezier}
           connectionLineStyle={{ stroke: '#eeeeee', strokeWidth: 1.8 }}

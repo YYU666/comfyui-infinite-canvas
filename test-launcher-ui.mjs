@@ -15,6 +15,8 @@ const env = { ...process.env, H3_WORKBENCH_RUNTIME_DIR: runtime, H3_PROJECTS_ROO
 const backend = spawn(python, ['video_workbench_launcher.py'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
 let browser;
 let base;
+let page;
+const errors = [];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function api(route, options = {}) {
   const response = await fetch(`${base}/api/projects${route}`, options);
@@ -48,8 +50,7 @@ try {
   assert.equal(path.resolve(health.projectsRoot), path.resolve(projects), 'backend must use isolated projects root before any UI write');
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  let page = await context.newPage();
-  const errors = [];
+  page = await context.newPage();
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(base);
   await page.getByRole('heading', { name: '最近项目' }).waitFor();
@@ -79,6 +80,7 @@ try {
   assert(mediaNode?.data.assetPath, 'assetPath persisted after upload');
   assert.equal(document.assets.length, 1);
   assert(document.revision >= 3, 'asset and canvas revisions advance without 409');
+  const committedRevision = (await api(`/${projectId}`)).revision;
   const asset = await fetch(`${base}/api/projects/${projectId}/${mediaNode.data.assetPath}`, { headers: { Range: 'bytes=1-4' } });
   assert.equal(asset.status, 206);
 
@@ -94,6 +96,9 @@ try {
   await sleep(700);
   assert.equal(await page.locator('.media-shell img').count(), 1, 'uploaded image restored from disk');
   assert((await page.locator('.media-shell img').getAttribute('src')).startsWith('blob:'));
+  const reopenedDocument = await api(`/${projectId}`);
+  assert.deepEqual(reopenedDocument.canvas, document.canvas, 'reopening must not alter canvas content');
+  assert.equal(reopenedDocument.revision, committedRevision, 'reopening an unchanged project must not increment revision');
 
   await page.locator('.launcher-return').click();
   await page.locator('.project-entry').filter({ hasText: '验收项目' }).click();
@@ -174,6 +179,9 @@ try {
   await page.getByLabel('列表视图').click();
   assert.equal(errors.length, 0, errors.join('\n'));
   console.log(JSON.stringify({ ok: true, launcher: true, reopen: true, assetRange: true, trash: true, migration3: true, projects100: true, browserCloseKeepsService: true }));
+} catch (error) {
+  if (page) console.error('UI_FAILURE_DEBUG', JSON.stringify({ url: page.url(), errors, text: (await page.locator('body').innerText()).slice(0, 5000) }));
+  throw error;
 } finally {
   if (browser) await browser.close();
   if (base) {
