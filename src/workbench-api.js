@@ -830,6 +830,46 @@ export function queuePrompt(workflow, clientId) {
   });
 }
 
+export async function enqueueGeneration({ workflow, projectId, nodeId, clientId, priority = 0 }) {
+  const response = await fetch('/api/queue', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workflow, projectId, nodeId, clientId, priority }),
+  });
+  return parseResponse(response);
+}
+
+export async function getQueueSnapshot() {
+  const response = await fetch('/api/queue');
+  return parseResponse(response);
+}
+
+export async function cancelGenerationJob(jobId) {
+  const response = await fetch(`/api/queue/${encodeURIComponent(jobId)}/cancel`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  return parseResponse(response);
+}
+
+export async function cancelGeneration(node) {
+  if (node?.queueJobId) return cancelGenerationJob(node.queueJobId);
+  return cancelPrompt(node?.promptId);
+}
+
+const QUEUE_EVENTS = ['job.queued', 'job.started', 'job.submitted', 'job.progress', 'job.running', 'job.finishing', 'job.done', 'job.error', 'job.cancelled', 'job.retry', 'job.priority', 'queue.cleared'];
+export function openQueueEvents(handlers = {}) {
+  const source = new EventSource('/api/queue/events');
+  const onSnapshot = (event) => handlers.onSnapshot?.(JSON.parse(event.data));
+  source.addEventListener('queue.snapshot', onSnapshot);
+  for (const type of QUEUE_EVENTS) {
+    source.addEventListener(type, (event) => {
+      const payload = JSON.parse(event.data);
+      handlers.onJobEvent?.(payload.job, type);
+    });
+  }
+  source.onerror = () => handlers.onError?.(new Error('队列事件连接暂时中断，浏览器会自动重连。'));
+  return source;
+}
+
 export async function cancelPrompt(promptId) {
   await comfyFetch('/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   if (promptId) {

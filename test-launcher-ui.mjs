@@ -48,6 +48,9 @@ try {
   assert.equal(health.pid, backend.pid, `health must belong to isolated child: ${JSON.stringify({ health, childPid: backend.pid, base })}`);
   assert.equal(typeof health.projectsRoot, 'string', `test health must expose isolated root: ${JSON.stringify(health)}`);
   assert.equal(path.resolve(health.projectsRoot), path.resolve(projects), 'backend must use isolated projects root before any UI write');
+  const emptyQueueResponse = await fetch(`${base}/api/queue`);
+  assert.equal(emptyQueueResponse.status, 200, 'queue API is available in the isolated backend');
+  assert.deepEqual((await emptyQueueResponse.json()).jobs, [], 'isolated queue starts empty');
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   page = await context.newPage();

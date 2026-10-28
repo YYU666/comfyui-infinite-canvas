@@ -45,7 +45,7 @@ const edge = (source, target) => ({ id: `${source}-${target}`, source, target })
 
 {
   const history = new CanvasHistory([node('a')], []);
-  const running = node('a'); running.data = { ...running.data, status: 'running', progress: 70, stage: '采样' };
+  const running = node('a'); running.data = { ...running.data, status: 'running', progress: 70, stage: '采样', queueJobId: 'job_runtime_only' };
   history.observe([running], []);
   assert.equal(history.past.length, 0, 'generation progress never creates history entries');
   const edited = [node('a', '改标题')];

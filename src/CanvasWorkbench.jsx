@@ -13,9 +13,9 @@ import {
 } from 'lucide-react';
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, buildCharacterSwapWorkflow, buildHdRefineWorkflow,
-  buildImageWorkflow, buildImageHdWorkflow, buildIdentityEditWorkflow, buildQwen21EditWorkflow, buildLocalRealismWorkflow, runOutfitQuadWorkflow, resolveOutfitPanels, OUTFIT_PRESETS, QWEN_OUTFIT_PRESETS, cancelPrompt, createClientId, extractImages, extractVideos,
-  freeComfyMemory, getHardwareMetrics, getHistory, getMossDependencyStatus, getSystemStats, importVideoFromUrl, openProgressSocket,
-  openFileLocation as requestFileLocation, optimizePrompt as requestPromptOptimization, queuePrompt,
+  buildImageWorkflow, buildImageHdWorkflow, buildIdentityEditWorkflow, buildQwen21EditWorkflow, buildLocalRealismWorkflow, runOutfitQuadWorkflow, resolveOutfitPanels, OUTFIT_PRESETS, QWEN_OUTFIT_PRESETS, cancelGeneration, createClientId, enqueueGeneration, extractImages, extractVideos,
+  freeComfyMemory, getHardwareMetrics, getHistory, getMossDependencyStatus, getSystemStats, importVideoFromUrl, openProgressSocket, openQueueEvents,
+  openFileLocation as requestFileLocation, optimizePrompt as requestPromptOptimization,
   resolveDimensions, resolveImageDimensions, uploadMedia,
 } from './workbench-api';
 import { findFreePosition } from './canvas-layout';
@@ -29,6 +29,7 @@ import CanvasProjectMenu from './CanvasProjectMenu';
 import { initializeProjects, listProjects, createProject, openProject, saveProject, projectSummary, saveProjectFile, readProjectFile } from './project-store-http';
 import { AutoSaveController } from './auto-save';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
+import { queueJobAction } from './generation-queue';
 
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
@@ -585,7 +586,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   const removeNode = useCallback((id) => {
     if (switchingRef.current || project.readOnly) return;
     const node = nodesRef.current.find((item) => item.id === id);
-    if (node?.data.promptId && ['uploading','queued','running'].includes(node.data.status)) cancelPrompt(node.data.promptId).catch(() => {});
+    if ((node?.data.queueJobId || node?.data.promptId) && ['uploading', 'queued', 'running', 'finishing'].includes(node.data.status)) cancelGeneration(node.data).catch(() => {});
     setNodes((items) => items.filter((item) => item.id !== id));
     setEdges((items) => items.filter((edge) => edge.source !== id && edge.target !== id));
     delete filesRef.current[id];
@@ -705,6 +706,23 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     }
   }, [setNodes, setEdges, updateNode]);
 
+  const syncQueueJob = useCallback(async (job) => {
+    if (!job || job.projectId !== project.id || !job.nodeId) return;
+    const node = nodesRef.current.find((item) => item.id === job.nodeId && item.type === 'generator');
+    const action = queueJobAction(node, job);
+    if (action?.type === 'complete') await completeGeneration(node.id, action.promptId, action.history);
+    else if (action?.type === 'patch') updateNode(node.id, action.patch);
+  }, [completeGeneration, project.id, updateNode]);
+
+  useEffect(() => {
+    const events = openQueueEvents({
+      onSnapshot(snapshot) { snapshot.jobs?.forEach((job) => { void syncQueueJob(job); }); },
+      onJobEvent(job) { void syncQueueJob(job); },
+      // EventSource reconnects automatically; the next snapshot restores state.
+    });
+    return () => events.close();
+  }, [syncQueueJob]);
+
   useEffect(() => {
     const socket = openProgressSocket(clientId, {
       onProgress(data) {
@@ -815,7 +833,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     if (node.data.mode === 'imageUpscale' && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: '请把一张图片连接到图片高清节点左侧端口。' }); return; }
     if (['identityEdit', 'qwenEdit', 'localRealism'].includes(node.data.mode) && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: '请把一张人物或场景母图连接到图生图节点左侧端口。' }); return; }
     if (node.data.mode === 'outfitEdit' && !refs.some((ref) => ref.data.slot === 'guide' && ref.data.kind === 'image')) { updateNode(id, { status: 'error', error: '请把原始四视图图片连接到无抠图换装节点左侧端口。' }); return; }
-    updateNode(id, { status: 'uploading', stage: '正在准备素材', progress: 0, error: null });
+    updateNode(id, { status: 'uploading', stage: '正在准备素材', progress: 0, error: null, promptId: null, queueJobId: null });
     try {
       if (node.data.mode === 'image' && node.data.imageModel === 'moss') {
         updateNode(id, { stage: '正在检查 MOSS 模型依赖' });
@@ -841,28 +859,29 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       const seed = node.data.randomSeed ? Math.floor(Math.random() * 2147483647) : Number(node.data.seed || 42);
       const options = { ...node.data, seed, references };
       updateNode(id, { status: 'queued', stage: '任务已排队', seed });
-      const result = node.data.mode === 'outfitEdit'
-        ? await runOutfitQuadWorkflow(options, clientId, (progress) => updateNode(id, progress))
-        : await queuePrompt(
-          node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
-            : node.data.mode === 'localRealism' ? buildLocalRealismWorkflow(options)
-            : node.data.mode === 'identityEdit' ? buildIdentityEditWorkflow(options)
+      if (node.data.mode === 'outfitEdit') {
+        const result = await runOutfitQuadWorkflow(options, clientId, (progress) => updateNode(id, progress));
+        updateNode(id, { status: 'finishing', stage: '正在读取结果', promptId: result.prompt_id, runs: [{ promptId: result.prompt_id, status: 'done', stage: '本地处理完成', time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12) });
+        await completeGeneration(id, result.prompt_id, result.history);
+        return;
+      }
+      const workflow = node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
+        : node.data.mode === 'localRealism' ? buildLocalRealismWorkflow(options)
+          : node.data.mode === 'identityEdit' ? buildIdentityEditWorkflow(options)
             : node.data.mode === 'image' ? buildImageWorkflow(options)
               : node.data.mode === 'imageUpscale' ? buildImageHdWorkflow(options)
                 : node.data.mode === 'swap' ? buildCharacterSwapWorkflow(options)
                   : node.data.mode === 'upscale' ? buildHdRefineWorkflow(options)
                     : node.data.mode === 'reference' ? buildReferenceWorkflow(options)
-                      : buildWorkflow({ ...options, firstFrame: references.find((ref) => ref.slot === 'first')?.name, lastFrame: references.find((ref) => ref.slot === 'last')?.name }),
-          clientId,
-        );
-      updateNode(id, { status: result.history ? 'finishing' : 'queued', stage: result.history ? '正在读取结果' : '等待本地 GPU', promptId: result.prompt_id, runs: [{ promptId: result.prompt_id, status: result.history ? 'done' : 'queued', stage: result.history ? '本地处理完成' : '已提交', time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12) });
-      if (result.history) await completeGeneration(id, result.prompt_id, result.history);
+                      : buildWorkflow({ ...options, firstFrame: references.find((ref) => ref.slot === 'first')?.name, lastFrame: references.find((ref) => ref.slot === 'last')?.name });
+      const job = await enqueueGeneration({ workflow, projectId: project.id, nodeId: id, clientId });
+      updateNode(id, { status: 'queued', stage: '已加入后台队列', queueJobId: job.id, runs: [{ jobId: job.id, status: 'queued', stage: '已加入后台队列', time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12) });
     } catch (error) { updateNode(id, { status: 'error', error: error.message, stage: '提交失败' }); }
-  }, [clientId, completeGeneration, getReferences, updateNode]);
+  }, [clientId, completeGeneration, getReferences, project.id, updateNode]);
 
   const cancelNode = useCallback(async (id) => {
     const node = nodesRef.current.find((item) => item.id === id);
-    try { await cancelPrompt(node?.data.promptId); updateNode(id, { status: 'cancelled', stage: '已取消', progress: 0 }); }
+    try { await cancelGeneration(node?.data); updateNode(id, { status: 'cancelled', stage: '已取消', progress: 0 }); }
     catch (error) { updateNode(id, { status: 'error', error: error.message }); }
   }, [updateNode]);
 

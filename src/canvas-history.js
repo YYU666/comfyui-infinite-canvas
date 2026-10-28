@@ -1,4 +1,4 @@
-const RUNTIME_FIELDS = new Set(['status', 'progress', 'stage', 'runs', 'error', 'promptId', 'output', 'resultUrl']);
+const RUNTIME_FIELDS = new Set(['status', 'progress', 'stage', 'runs', 'error', 'promptId', 'queueJobId', 'output', 'resultUrl']);
 
 function cleanNodes(nodes, editing) {
   return (nodes || []).map((node) => {

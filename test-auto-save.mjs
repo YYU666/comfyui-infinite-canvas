@@ -114,6 +114,8 @@ function canvas(progress = 0, status = 'running') {
   const progressed = autoSaveSignatures('签名', canvas(20));
   assert.equal(runtime.editing, progressed.editing);
   assert.notEqual(runtime.full, progressed.full);
+  const queued = canvas(20); queued.nodes[1].data.queueJobId = 'job_runtime_only';
+  assert.equal(runtime.editing, autoSaveSignatures('签名', queued).editing, 'queue job identity is runtime-only');
   const selected = canvas(10); selected.nodes[0].selected = true;
   assert.equal(runtime.full, autoSaveSignatures('签名', selected).full, 'selection is not persisted content');
   console.log('AUTO_SAVE_SIGNATURE_OK');

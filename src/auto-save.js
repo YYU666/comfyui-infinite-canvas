@@ -1,4 +1,4 @@
-const RUNTIME_FIELDS = new Set(['status', 'progress', 'stage', 'runs', 'error', 'promptId', 'output', 'resultUrl']);
+const RUNTIME_FIELDS = new Set(['status', 'progress', 'stage', 'runs', 'error', 'promptId', 'queueJobId', 'output', 'resultUrl']);
 const TERMINAL_STATES = new Set(['done', 'error', 'cancelled']);
 
 function signatureCanvas(canvas, editing) {
