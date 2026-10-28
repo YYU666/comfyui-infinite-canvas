@@ -100,6 +100,19 @@ try {
   assert.deepEqual(reopenedDocument.canvas, document.canvas, 'reopening must not alter canvas content');
   assert.equal(reopenedDocument.revision, committedRevision, 'reopening an unchanged project must not increment revision');
 
+  await page.locator('button[title="添加元素"]').click();
+  await page.getByRole('button', { name: /文本备注/ }).click();
+  assert.equal(await page.locator('.note-shell textarea').count(), 1, 'note added');
+  await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 700 } });
+  await page.keyboard.press('Control+z');
+  await page.waitForFunction(() => document.querySelectorAll('.note-shell textarea').length === 0);
+  await page.keyboard.press('Control+Shift+z');
+  await page.waitForFunction(() => document.querySelectorAll('.note-shell textarea').length === 1);
+  const noteInput = page.locator('.note-shell textarea');
+  await noteInput.fill('输入框不拦截');
+  await noteInput.press('Control+z');
+  assert.equal(await page.locator('.note-shell textarea').count(), 1, 'input Ctrl+Z must not undo canvas addition');
+
   await page.locator('.launcher-return').click();
   await page.locator('.project-entry').filter({ hasText: '验收项目' }).click();
   await page.getByRole('button', { name: '重命名', exact: true }).click();

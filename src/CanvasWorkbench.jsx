@@ -8,8 +8,8 @@ import {
   ArrowDownToLine, ArrowUp, AudioLines, Check, ChevronDown, CircleHelp, Clock3,
   Cpu, Crosshair, Film, FolderOpen, Grid2X2, History, Image as ImageIcon, Layers3,
   Library, Link2, LoaderCircle, Magnet, Map as MapIcon, Maximize2, MemoryStick, Minus, MoreHorizontal, MousePointer2,
-  Music2, Pin, Plus, RefreshCw, Search, Settings2, Sparkles, Square, Trash2,
-  Type, Upload, Video, WandSparkles, X, Zap,
+  Music2, Pin, Plus, Redo2, RefreshCw, Search, Settings2, Sparkles, Square, Trash2,
+  Type, Undo2, Upload, Video, WandSparkles, X, Zap,
 } from 'lucide-react';
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, buildCharacterSwapWorkflow, buildHdRefineWorkflow,
@@ -28,6 +28,7 @@ import { useCanvasMcp } from './canvas-mcp';
 import CanvasProjectMenu from './CanvasProjectMenu';
 import { initializeProjects, listProjects, createProject, openProject, saveProject, projectSummary, saveProjectFile, readProjectFile } from './project-store-http';
 import { AutoSaveController } from './auto-save';
+import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
 
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
@@ -489,6 +490,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   }, [imagePreview]);
   nodesRef.current = nodes;
   edgesRef.current = edges;
+  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
+  const historyRef = useRef(null);
+  if (!historyRef.current) historyRef.current = new CanvasHistory(nodes, edges, { onChange: setHistoryState });
+  useEffect(() => {
+    historyRef.current.observe(nodes, edges, { coalesce: nodes.some((node) => node.dragging) });
+  }, [nodes, edges]);
   useEffect(() => {
     if (project.readOnly) return undefined;
     const labels = { saved: '已保存', dirty: '有未保存修改', saving: '保存中', error: '保存失败' };
@@ -859,6 +866,19 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     catch (error) { updateNode(id, { status: 'error', error: error.message }); }
   }, [updateNode]);
 
+  const applyHistory = useCallback((direction) => {
+    if (project.readOnly || switchingRef.current || nodesRef.current.some((node) => node.dragging)) return false;
+    if (hasActiveTask()) { setProjectError('任务进行中，请等待完成后再撤销或重做。'); return false; }
+    const target = historyRef.current[direction]();
+    if (!target) return false;
+    const nextNodes = restoreHistoryNodes(target.nodes, nodesRef.current);
+    nodesRef.current = nextNodes;
+    edgesRef.current = target.edges;
+    setNodes(nextNodes); setEdges(target.edges);
+    setAddMenu(null); setNodeMenu(null); setProjectError('');
+    return true;
+  }, [project.readOnly, setNodes, setEdges]);
+
   const copySelectedNodes = useCallback(() => {
     const clipboard = copyCanvasSelection(nodesRef.current, edgesRef.current);
     if (!clipboard.nodes.length) return null;
@@ -888,17 +908,19 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   }, [fitView, setNodes, setEdges]);
 
   useEffect(() => {
-    const onClipboardShortcut = (event) => {
+    const onCanvasShortcut = (event) => {
       if (imagePreview || switchingRef.current || event.isComposing || event.altKey || !(event.ctrlKey || event.metaKey)) return;
       if (event.target instanceof Element && event.target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')) return;
       const key = event.key.toLowerCase();
-      if (!['c', 'd'].includes(key)) return;
-      const handled = key === 'c' ? Boolean(copySelectedNodes()) : pasteClipboard(copySelectedNodes());
+      if (!['c', 'd', 'z', 'y'].includes(key)) return;
+      const handled = key === 'z' ? applyHistory(event.shiftKey ? 'redo' : 'undo')
+        : key === 'y' ? applyHistory('redo')
+          : key === 'c' ? Boolean(copySelectedNodes()) : pasteClipboard(copySelectedNodes());
       if (handled) { event.preventDefault(); event.stopPropagation(); }
     };
-    window.addEventListener('keydown', onClipboardShortcut);
-    return () => window.removeEventListener('keydown', onClipboardShortcut);
-  }, [copySelectedNodes, pasteClipboard, imagePreview]);
+    window.addEventListener('keydown', onCanvasShortcut);
+    return () => window.removeEventListener('keydown', onCanvasShortcut);
+  }, [applyHistory, copySelectedNodes, pasteClipboard, imagePreview]);
 
   const addNode = useCallback((type, extra = {}, atPosition = null, shouldFocus = true) => {
     if (switchingRef.current) throw new Error('正在保存并切换项目，请稍后再添加节点。');
@@ -1202,6 +1224,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
             <button onClick={() => { fitView({ duration: 350, padding: 0.15 }); setZoomMenuOpen(false); }} title="适应全部节点"><Maximize2 size={14} /></button>
           </div>}
           <div className="canvas-control-pill">
+            <button onClick={() => applyHistory('undo')} disabled={project.readOnly || !historyState.canUndo} title="撤销 · Ctrl+Z" aria-label="撤销"><Undo2 size={15} /></button>
+            <button onClick={() => applyHistory('redo')} disabled={project.readOnly || !historyState.canRedo} title="重做 · Ctrl+Shift+Z" aria-label="重做"><Redo2 size={15} /></button>
             <button className={gridVisible ? 'active' : ''} onClick={() => setGridVisible(!gridVisible)} title="显示或隐藏网格"><Grid2X2 size={15} /></button>
             <button className={miniMapVisible ? 'active' : ''} onClick={() => setMiniMapVisible(!miniMapVisible)} title="小地图"><MapIcon size={15} /></button>
             <button className={zoomMenuOpen ? 'zoom-button active' : 'zoom-button'} onClick={() => setZoomMenuOpen(!zoomMenuOpen)} title="缩放" aria-expanded={zoomMenuOpen}><Search size={13} /><span>{zoom}%</span></button>
