@@ -423,6 +423,83 @@ class ProjectStore:
         finally:
             temporary.unlink(missing_ok=True)
 
+    @staticmethod
+    def _asset_references(document):
+        references = set()
+
+        def walk(value):
+            if isinstance(value, dict):
+                for child in value.values():
+                    walk(child)
+            elif isinstance(value, list):
+                for child in value:
+                    walk(child)
+            elif isinstance(value, str):
+                match = re.search(r"(?:^|/)(assets/[0-9a-f]{64}\.[a-z0-9]+)(?=$|[?#])", value.replace("\\", "/"), re.IGNORECASE)
+                if match:
+                    references.add(match.group(1).lower())
+
+        for key, value in document.items():
+            # The asset catalogue records uploads, not canvas references.
+            if key != "assets":
+                walk(value)
+        return references
+
+    def collect_orphans(self, project_id, dry_run=True, min_age_days=30):
+        try:
+            age = float(min_age_days)
+        except (TypeError, ValueError) as exc:
+            raise StoreError("BAD_REQUEST", "孤儿素材保留天数必须是数字。") from exc
+        if not 0 <= age <= 3650:
+            raise StoreError("BAD_REQUEST", "孤儿素材保留天数必须在 0–3650 之间。")
+        path = self._project_path(project_id)
+        self.acquire_lock(path)
+        with self._guard(path):
+            document = self._read(path)
+            protected = self._asset_references(document)
+            history = list((path.parent / "backups").glob("*.json")) + list(path.parent.glob(".conflict-*.json"))
+            for historical in history:
+                try:
+                    protected.update(self._asset_references(json.loads(historical.read_text(encoding="utf-8"))))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise StoreError("BAD_REQUEST", f"历史副本 {historical.name} 无法读取，已中止素材清理。") from exc
+            cutoff = time.time() - age * 86400
+            candidates = []
+            for file_path in (path.parent / "assets").iterdir():
+                if not re.fullmatch(r"[0-9a-f]{64}\.[a-z0-9]+", file_path.name, re.IGNORECASE):
+                    continue
+                if file_path.is_symlink() or not file_path.is_file():
+                    continue
+                relative = f"assets/{file_path.name}".lower()
+                if relative in protected:
+                    continue
+                stat = file_path.stat()
+                if stat.st_mtime > cutoff:
+                    continue
+                candidates.append({"path": f"assets/{file_path.name}", "bytes": stat.st_size})
+            candidates.sort(key=lambda item: item["path"])
+            result = {
+                "dryRun": bool(dry_run), "minAgeDays": age, "protected": len(protected),
+                "candidates": candidates, "bytes": sum(item["bytes"] for item in candidates),
+                "removed": [], "errors": [], "revision": document["revision"],
+            }
+            if dry_run or not candidates:
+                return result
+            removed_paths = set()
+            for candidate in candidates:
+                try:
+                    (path.parent / candidate["path"]).unlink()
+                    removed_paths.add(candidate["path"])
+                    result["removed"].append(candidate)
+                except OSError as exc:
+                    result["errors"].append({**candidate, "error": str(exc)})
+            if removed_paths:
+                document["assets"] = [item for item in document["assets"] if item["path"] not in removed_paths]
+                document = self._write(path, document, document["revision"])
+                result["revision"] = document["revision"]
+            result["bytes"] = sum(item["bytes"] for item in result["removed"])
+            return result
+
     def asset_file(self, project_id, relative):
         path = self._project_path(project_id)
         pure = PurePosixPath(str(relative).replace("\\", "/"))

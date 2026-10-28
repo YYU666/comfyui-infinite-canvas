@@ -159,6 +159,14 @@ class ProjectAPI:
                 payload = self._json(handler)
                 handler.send_json(200, self.store.restore(payload.get("name")))
                 return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/assets/collect", path)
+            if match:
+                payload = self._json(handler, maximum=4096)
+                dry_run = payload.get("dryRun", True) is not False
+                if not dry_run and payload.get("confirm") != "DELETE_ORPHANS":
+                    raise StoreError("BAD_REQUEST", "实际清理必须显式提供 confirm=DELETE_ORPHANS；请先使用 dryRun=true 预览。")
+                handler.send_json(200, self.store.collect_orphans(match.group(1), dry_run=dry_run, min_age_days=payload.get("minAgeDays", 30)))
+                return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/delivery-export", path)
             if match:
                 payload = self._json(handler)
