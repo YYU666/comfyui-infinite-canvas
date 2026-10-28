@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, buildCharacterSwapWorkflow, buildHdRefineWorkflow,
-  buildImageWorkflow, buildImageHdWorkflow, buildIdentityEditWorkflow, buildQwen21EditWorkflow, buildLocalRealismWorkflow, runOutfitQuadWorkflow, resolveOutfitPanels, OUTFIT_PRESETS, QWEN_OUTFIT_PRESETS, cancelGeneration, createClientId, enqueueGeneration, extractImages, extractVideos,
+  buildImageWorkflow, buildImageHdWorkflow, buildIdentityEditWorkflow, buildQwen21EditWorkflow, buildLocalRealismWorkflow, buildOutfitQueuePlan, resolveOutfitPanels, OUTFIT_PRESETS, QWEN_OUTFIT_PRESETS, cancelGeneration, createClientId, enqueueGeneration, extractImages, extractVideos,
   freeComfyMemory, getHardwareMetrics, getHistory, getMossDependencyStatus, getSystemStats, importVideoFromUrl, openProgressSocket, openQueueEvents,
   openFileLocation as requestFileLocation, optimizePrompt as requestPromptOptimization,
   resolveDimensions, resolveImageDimensions, uploadMedia,
@@ -859,13 +859,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       const seed = node.data.randomSeed ? Math.floor(Math.random() * 2147483647) : Number(node.data.seed || 42);
       const options = { ...node.data, seed, references };
       updateNode(id, { status: 'queued', stage: '任务已排队', seed });
-      if (node.data.mode === 'outfitEdit') {
-        const result = await runOutfitQuadWorkflow(options, clientId, (progress) => updateNode(id, progress));
-        updateNode(id, { status: 'finishing', stage: '正在读取结果', promptId: result.prompt_id, runs: [{ promptId: result.prompt_id, status: 'done', stage: '本地处理完成', time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12) });
-        await completeGeneration(id, result.prompt_id, result.history);
-        return;
-      }
-      const workflow = node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
+      const plan = node.data.mode === 'outfitEdit' ? buildOutfitQueuePlan(options) : null;
+      const workflow = plan ? null : node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
         : node.data.mode === 'localRealism' ? buildLocalRealismWorkflow(options)
           : node.data.mode === 'identityEdit' ? buildIdentityEditWorkflow(options)
             : node.data.mode === 'image' ? buildImageWorkflow(options)
@@ -874,7 +869,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
                   : node.data.mode === 'upscale' ? buildHdRefineWorkflow(options)
                     : node.data.mode === 'reference' ? buildReferenceWorkflow(options)
                       : buildWorkflow({ ...options, firstFrame: references.find((ref) => ref.slot === 'first')?.name, lastFrame: references.find((ref) => ref.slot === 'last')?.name });
-      const job = await enqueueGeneration({ workflow, projectId: project.id, nodeId: id, clientId });
+      const job = await enqueueGeneration({ workflow, plan, projectId: project.id, nodeId: id, clientId });
       updateNode(id, { status: 'queued', stage: '已加入后台队列', queueJobId: job.id, runs: [{ jobId: job.id, status: 'queued', stage: '已加入后台队列', time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12) });
     } catch (error) { updateNode(id, { status: 'error', error: error.message, stage: '提交失败' }); }
   }, [clientId, completeGeneration, getReferences, project.id, updateNode]);

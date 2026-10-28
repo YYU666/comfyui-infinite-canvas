@@ -830,10 +830,10 @@ export function queuePrompt(workflow, clientId) {
   });
 }
 
-export async function enqueueGeneration({ workflow, projectId, nodeId, clientId, priority = 0 }) {
+export async function enqueueGeneration({ workflow, plan, projectId, nodeId, clientId, priority = 0 }) {
   const response = await fetch('/api/queue', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workflow, projectId, nodeId, clientId, priority }),
+    body: JSON.stringify({ workflow, plan, projectId, nodeId, clientId, priority }),
   });
   return parseResponse(response);
 }
@@ -930,6 +930,32 @@ export function shouldUpscaleOutfitImage(width, height) {
   const longEdge = Math.max(Number(width), Number(height));
   if (!Number.isFinite(longEdge) || longEdge <= 0) throw new Error('无法读取换装单图尺寸，已停止而不是猜测是否高清。');
   return longEdge < 1000;
+}
+
+export function buildOutfitQueuePlan(options) {
+  const selectedPanel = options.outfitPanel || options.panelId || null;
+  const availablePanels = resolveOutfitPanels(options);
+  const panels = selectedPanel ? availablePanels.filter((panel) => panel.id === selectedPanel) : availablePanels;
+  if (!panels.length) throw new Error('未知的换装视图。');
+  const panelImages = {};
+  const planPanels = panels.map((panel) => {
+    const panelIndex = availablePanels.findIndex((item) => item.id === panel.id);
+    panelImages[panel.id] = `__H3_OUTFIT_PANEL_${panel.id}__`;
+    return {
+      id: panel.id, label: panel.label, preserve: Boolean(panel.preserve),
+      single: buildOutfitQuadWorkflow({ ...options, outfitPanel: panel.id }),
+      hd: buildImageHdWorkflow({
+        references: [{ kind: 'image', slot: 'guide', name: '__H3_OUTFIT_CURRENT__' }],
+        imageScale: Number(options.outfitHdScale || 1.5),
+        seed: Number(options.seed) + panelIndex,
+        outputPrefix: `image/H3_OutfitHD_${panel.id}`,
+      }),
+    };
+  });
+  return {
+    kind: 'outfit', selectedPanel, panels: planPanels,
+    stitch: selectedPanel ? null : buildOutfitStitchWorkflow(panelImages, options),
+  };
 }
 
 export async function runOutfitQuadWorkflow(options, clientId, onProgress = () => {}) {

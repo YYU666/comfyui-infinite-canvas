@@ -5,10 +5,12 @@ import json
 import queue
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
 
+from outfit_queue import initial_state, stage_transfer, stage_workflow, validate_plan
 from workbench_lifecycle import atomic_write_json, runtime_dir, utc_now
 
 TERMINAL = {"done", "error", "cancelled"}
@@ -20,7 +22,7 @@ def _error(code, message, suggestion=None):
 
 
 def _public(job):
-    hidden = {"workflow", "clientId"}
+    hidden = {"workflow", "plan", "clientId"}
     return {key: copy.deepcopy(value) for key, value in job.items() if key not in hidden}
 
 
@@ -54,6 +56,36 @@ class ComfyQueueAdapter:
         if status.get("completed") or status.get("status_str") == "success":
             return {"status": "done", "progress": 100, "history": entry, "outputs": entry.get("outputs") or {}}
         return {"status": "finishing", "history": entry}
+
+    def download(self, file):
+        query = urllib.parse.urlencode({"filename": file.get("filename", ""), "subfolder": file.get("subfolder", ""), "type": file.get("type", "output")})
+        request = urllib.request.Request(f"{self.origin}/view?{query}")
+        with urllib.request.urlopen(request, timeout=max(self.timeout, 60)) as response:
+            return response.read()
+
+    def upload_image(self, filename, content):
+        boundary = f"----H3Workbench{uuid.uuid4().hex}"
+        fields = {"type": "input", "subfolder": "workbench", "overwrite": "true"}
+        body = bytearray()
+        for key, value in fields.items():
+            body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n".encode("utf-8"))
+        safe_name = Path(filename).name
+        body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"{safe_name}\"\r\nContent-Type: image/png\r\n\r\n".encode("utf-8"))
+        body.extend(content)
+        body.extend(f"\r\n--{boundary}--\r\n".encode("ascii"))
+        request = urllib.request.Request(f"{self.origin}/upload/image", data=bytes(body), headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        with urllib.request.urlopen(request, timeout=max(self.timeout, 60)) as response:
+            result = json.load(response)
+        if not result.get("name"):
+            raise ValueError("换装中间图上传失败。")
+        return f"{result['subfolder']}/{result['name']}" if result.get("subfolder") else result["name"]
+
+    def free(self):
+        current = self._request("/queue")
+        if current.get("queue_running") or current.get("queue_pending"):
+            return False
+        self._request("/free", {"unload_models": True, "free_memory": True})
+        return True
 
 
 class QueueManager:
@@ -121,7 +153,11 @@ class QueueManager:
 
     def enqueue(self, payload):
         workflow = payload.get("workflow")
-        if not isinstance(workflow, dict) or not workflow:
+        plan = payload.get("plan")
+        if plan is not None:
+            plan = validate_plan(plan)
+            workflow = None
+        elif not isinstance(workflow, dict) or not workflow:
             raise ValueError("入队任务缺少有效 ComfyUI 工作流。")
         now = utc_now()
         job = {
@@ -129,7 +165,9 @@ class QueueManager:
             "projectId": payload.get("projectId"),
             "nodeId": payload.get("nodeId"),
             "shotId": payload.get("shotId"),
+            "kind": plan["kind"] if plan else "workflow",
             "status": "queued",
+            "stage": "后台队列等待中",
             "progress": 0,
             "eta": None,
             "priority": int(payload.get("priority", 0)),
@@ -143,6 +181,8 @@ class QueueManager:
             "history": None,
             "attempts": 0,
             "workflow": copy.deepcopy(workflow),
+            "plan": plan,
+            "planState": initial_state() if plan else None,
             "clientId": str(payload.get("clientId") or uuid.uuid4()),
         }
         with self._lock:
@@ -189,8 +229,9 @@ class QueueManager:
             job = self._find_locked(job_id)
             if job["status"] not in TERMINAL:
                 raise ValueError("任务尚未结束，不能重试。")
-            job.update({"status": "queued", "progress": 0, "eta": None, "startedAt": None, "finishedAt": None,
-                        "comfyPromptId": None, "error": None, "outputs": None, "history": None})
+            job.update({"status": "queued", "stage": "后台队列等待中", "progress": 0, "eta": None, "startedAt": None, "finishedAt": None,
+                        "comfyPromptId": None, "error": None, "outputs": None, "history": None,
+                        "planState": initial_state() if job.get("plan") else None})
             self._changed_locked("job.retry", job)
             return _public(job)
 
@@ -252,17 +293,28 @@ class QueueManager:
                         job["status"] = "running"
                         job["startedAt"] = job["startedAt"] or utc_now()
                         job["attempts"] += 1
+                        if job.get("plan"):
+                            panel = job["plan"]["panels"][job["planState"]["panelIndex"]]
+                            count = len(job["plan"]["panels"])
+                            job["stage"] = f"{'保留原图' if panel['preserve'] else '千问独立换装'} {job['planState']['panelIndex'] + 1}/{count} · {panel['label']}"
                         submissions.append(job)
                         self._changed_locked("job.started", job)
-                active = [job for job in submissions or self.jobs if job["status"] in ACTIVE]
+                active = [job for job in self.jobs if job["status"] in ACTIVE]
+                submitted_ids = {id(job) for job in submissions}
+                to_submit = submissions + [job for job in active if id(job) not in submitted_ids and job.get("plan") and not job.get("comfyPromptId")]
 
-            for job in submissions:
+            for job in to_submit:
                 try:
-                    prompt_id = self.adapter.submit(job["workflow"], job["clientId"])
+                    workflow = stage_workflow(job) if job.get("plan") else job["workflow"]
+                    prompt_id = self.adapter.submit(workflow, job["clientId"])
                     with self._lock:
                         if job["status"] in TERMINAL:
                             continue
                         job["comfyPromptId"] = prompt_id
+                        if job.get("plan"):
+                            job["planState"]["promptIds"].append(prompt_id)
+                        else:
+                            job["stage"] = "本地 GPU 生成中"
                         self._changed_locked("job.submitted", job)
                 except Exception as exc:
                     with self._lock:
@@ -279,6 +331,7 @@ class QueueManager:
                     update = self.adapter.poll(prompt_id)
                 except (OSError, urllib.error.URLError, TimeoutError):
                     continue
+                outfit_done = bool(job.get("plan") and update.get("status") == "done")
                 with self._lock:
                     if job["status"] in TERMINAL:
                         continue
@@ -286,13 +339,27 @@ class QueueManager:
                         if key in update:
                             job[key] = update[key]
                     status = update.get("status")
-                    if status in ACTIVE | TERMINAL:
-                        job["status"] = status
-                    if status in TERMINAL:
-                        job["finishedAt"] = utc_now()
-                        if status == "done":
-                            job["progress"] = 100
-                    self._changed_locked(f"job.{status or 'progress'}", job)
+                    if not outfit_done:
+                        if status in ACTIVE | TERMINAL:
+                            job["status"] = status
+                        if status in TERMINAL:
+                            job["finishedAt"] = utc_now()
+                            job["stage"] = "生成完成" if status == "done" else "生成失败"
+                            if status == "done":
+                                job["progress"] = 100
+                        self._changed_locked(f"job.{status or 'progress'}", job)
+                if outfit_done:
+                    try:
+                        patch = stage_transfer(job, self.adapter)
+                    except Exception as exc:
+                        patch = {"status": "error", "stage": "换装阶段失败", "error": _error("OUTFIT_STAGE_FAILED", exc, "检查中间图、ComfyUI 上传接口和磁盘空间后重试。")}
+                    with self._lock:
+                        if job["status"] in TERMINAL:
+                            continue
+                        job.update(patch)
+                        if job["status"] in TERMINAL:
+                            job["finishedAt"] = utc_now()
+                        self._changed_locked(f"job.{job['status'] if job['status'] in TERMINAL else 'progress'}", job)
             self._stop.wait(self.poll_interval)
 
     @staticmethod
