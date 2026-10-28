@@ -29,6 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from project_api import ProjectAPI
 from project_store import ProjectStore
+from queue_api import QueueAPI
+from workbench_queue import QueueManager
 from workbench_lifecycle import (
     APP_VERSION,
     atomic_write_json,
@@ -330,6 +332,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if path == "/api/health":
             comfy_process = getattr(self.server, "comfy_process", None)
             comfy_running = comfy_process.poll() is None if comfy_process else self.comfy_is_running()
+            queue_state = self.server.queue_manager.snapshot()
             health = {
                 "ok": True,
                 "version": APP_VERSION,
@@ -337,11 +340,17 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 "pid": os.getpid(),
                 "startedAt": self.server.started_at,
                 "comfy": {"running": comfy_running, "owned": bool(self.server.comfy_owned)},
-                "queue": queue_summary(),
+                "queue": {
+                    "running": sum(job["status"] in {"running", "finishing"} for job in queue_state["jobs"]),
+                    "pending": sum(job["status"] == "queued" for job in queue_state["jobs"]),
+                    "paused": queue_state["paused"], "concurrency": queue_state["concurrency"],
+                },
             }
             if os.environ.get("H3_WORKBENCH_TEST_MODE") == "1":
                 health["projectsRoot"] = str(self.server.project_store.root)
             self.send_json(200, health)
+            return
+        if self.server.queue_api.handle_get(self, path):
             return
         if self.server.project_api.handle_get(self, path):
             return
@@ -376,6 +385,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 return
             self.send_json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+        if self.server.queue_api.handle_post(self, path):
             return
         if self.server.project_api.handle_post(self, path):
             return
@@ -460,6 +471,9 @@ def main():
             server.comfy_process = None
             server.project_store = ProjectStore()
             server.project_api = ProjectAPI(server.project_store)
+            server.queue_manager = QueueManager()
+            server.queue_api = QueueAPI(server.queue_manager)
+            server.queue_manager.start()
 
             try:
                 api_status()
@@ -501,6 +515,8 @@ def main():
             print(f"\n{exc}\n", file=sys.stderr)
         return 1
     finally:
+        if server and hasattr(server, "queue_manager"):
+            server.queue_manager.stop()
         if server and hasattr(server, "project_store"):
             server.project_store.close()
         if server:
