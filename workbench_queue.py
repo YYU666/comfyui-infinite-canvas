@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import json
 import queue
 import threading
@@ -41,8 +42,14 @@ class ComfyQueueAdapter:
         return self._request("/prompt", {"prompt": workflow, "client_id": client_id})["prompt_id"]
 
     def cancel(self, prompt_id):
-        self._request("/interrupt", {})
+        current = self._request("/queue")
+
+        def prompt_ids(key):
+            return {str(item[1]) for item in current.get(key, []) if isinstance(item, (list, tuple)) and len(item) > 1}
+
         self._request("/queue", {"delete": [prompt_id]})
+        if str(prompt_id) in prompt_ids("queue_running"):
+            self._request("/interrupt", {})
 
     def poll(self, prompt_id):
         history = self._request(f"/history/{prompt_id}")
@@ -92,11 +99,12 @@ class ComfyQueueAdapter:
 
 
 class QueueManager:
-    def __init__(self, path=None, adapter=None, concurrency=1, poll_interval=0.5):
+    def __init__(self, path=None, adapter=None, concurrency=1, poll_interval=0.5, job_timeout=60 * 60):
         self.path = Path(path or runtime_dir() / "queue.json")
         self.adapter = adapter or ComfyQueueAdapter()
         self.concurrency = self._concurrency(concurrency)
         self.poll_interval = poll_interval
+        self.job_timeout = float(job_timeout)
         self.jobs = []
         self.paused = False
         self._lock = threading.RLock()
@@ -112,6 +120,15 @@ class QueueManager:
         if value not in (1, 2):
             raise ValueError("队列并发只能设置为 1 或 2。")
         return value
+
+    def _expired(self, job):
+        if self.job_timeout <= 0 or not job.get("startedAt"):
+            return False
+        try:
+            started = dt.datetime.fromisoformat(job["startedAt"])
+            return (dt.datetime.now(dt.timezone.utc) - started).total_seconds() >= self.job_timeout
+        except (TypeError, ValueError):
+            return False
 
     def _load(self):
         try:
@@ -329,6 +346,24 @@ class QueueManager:
             for job in active:
                 prompt_id = job.get("comfyPromptId")
                 if not prompt_id or job["status"] in TERMINAL or self._stop.is_set():
+                    continue
+                if self._expired(job):
+                    cancel_error = None
+                    try:
+                        self.adapter.cancel(prompt_id)
+                    except Exception as exc:
+                        cancel_error = str(exc)
+                    with self._lock:
+                        if job["status"] in TERMINAL:
+                            continue
+                        message = f"任务超过 {int(self.job_timeout)} 秒仍未返回结果，已停止等待。"
+                        if cancel_error:
+                            message += f" 取消请求失败：{cancel_error}"
+                        job["status"] = "error"
+                        job["stage"] = "生成超时"
+                        job["finishedAt"] = utc_now()
+                        job["error"] = _error("COMFY_TIMEOUT", message, "检查 ComfyUI 是否仍在执行；降低分辨率、时长或换装视图数量后，使用相同配方重试。")
+                        self._changed_locked("job.error", job)
                     continue
                 try:
                     update = self.adapter.poll(prompt_id)

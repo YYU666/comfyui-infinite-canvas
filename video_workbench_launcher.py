@@ -31,7 +31,7 @@ from project_api import ProjectAPI
 from project_store import ProjectStore
 from queue_api import QueueAPI
 from workbench_doctor import WorkbenchDoctor
-from workbench_queue import QueueManager
+from workbench_queue import ComfyQueueAdapter, QueueManager
 from workbench_security import session_cookie, valid_content_type, valid_host, valid_origin, valid_token
 from workbench_settings import SettingsError, WorkbenchSettings, read_deepseek_key
 from workbench_lifecycle import (
@@ -49,7 +49,7 @@ from workbench_lifecycle import (
 HERE = Path(__file__).resolve().parent
 DEFAULT_COMFY_ROOT = HERE.parent if (HERE.parent / "python_embeded").is_dir() else Path(r"C:\ComfyUI_windows_portable")
 ROOT = Path(os.environ.get("H3_COMFY_ROOT", str(DEFAULT_COMFY_ROOT)))
-COMFY_URL = "http://127.0.0.1:8188"
+COMFY_URL = os.environ.get("H3_COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
 WEB_URL = "http://127.0.0.1:8790"
 DATA_DIR = Path(os.environ.get("H3_WORKBENCH_DATA_DIR", r"D:\H3_Workbench"))
 INPUT_DIR = DATA_DIR / "references"
@@ -596,6 +596,7 @@ def main():
             server.started_at = utc_now()
             server.comfy_owned = False
             server.comfy_process = None
+            server.comfy_url = COMFY_URL
             server.settings = WorkbenchSettings(comfy_root=ROOT)
             server.settings.load()
             ROOT = Path(server.settings.data["comfyRoot"]).resolve()
@@ -606,7 +607,7 @@ def main():
                 HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
                 model_roots=server.settings.data["modelRoots"] or None,
             )
-            server.queue_manager = QueueManager(concurrency=server.settings.data["queue"]["concurrency"])
+            server.queue_manager = QueueManager(adapter=ComfyQueueAdapter(COMFY_URL), concurrency=server.settings.data["queue"]["concurrency"])
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
             server.queue_api = QueueAPI(server.queue_manager)
             server.queue_manager.start()

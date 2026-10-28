@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from workbench_lifecycle import atomic_write_json, utc_now
-from workbench_queue import QueueManager
+from workbench_queue import ComfyQueueAdapter, QueueManager
 
 
 class FakeAdapter:
@@ -140,6 +140,45 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.manager.retry(second["id"])["status"], "queued")
         with self.assertRaises(ValueError):
             self.manager.enqueue({"workflow": {}})
+
+    def test_stalled_job_times_out_and_can_be_retried(self):
+        self.manager.stop()
+        self.manager = QueueManager(self.path, self.adapter, poll_interval=0.01, job_timeout=0.05)
+        job = self.manager.enqueue(payload())
+        self.manager.start()
+        wait_for(lambda: self.manager.get(job["id"])["status"] == "error")
+        failed = self.manager.get(job["id"])
+        self.assertEqual(failed["error"]["code"], "COMFY_TIMEOUT")
+        self.assertEqual(failed["stage"], "生成超时")
+        self.assertEqual(self.adapter.cancelled, ["prompt-1"])
+        self.adapter.done = True
+        self.assertEqual(self.manager.retry(job["id"])["status"], "queued")
+        wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
+
+    def test_comfy_cancel_only_interrupts_the_target_running_prompt(self):
+        adapter = ComfyQueueAdapter()
+        for running, pending, expected_interrupt in [
+            (["target"], [], True),
+            ([], ["target"], False),
+            (["another"], [], False),
+        ]:
+            with self.subTest(running=running, pending=pending):
+                calls = []
+
+                def request(path, body=None, timeout=None):
+                    calls.append((path, body))
+                    if path == "/queue" and body is None:
+                        return {
+                            "queue_running": [[1, value] for value in running],
+                            "queue_pending": [[2, value] for value in pending],
+                        }
+                    return {}
+
+                adapter._request = request
+                adapter.cancel("target")
+                self.assertEqual(calls[0], ("/queue", None))
+                self.assertEqual(calls[1], ("/queue", {"delete": ["target"]}))
+                self.assertEqual(any(path == "/interrupt" for path, _ in calls), expected_interrupt)
 
 
 if __name__ == "__main__":

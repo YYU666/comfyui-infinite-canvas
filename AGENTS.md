@@ -2,7 +2,7 @@
 
 ## 当前实现约定（2026-10-29）
 
-- Owner：Kimi；分支：`web`；当前阶段：M1 验收完成，进入 M2。
+- Owner：Kimi；分支：`web`；当前阶段：M2 验收完成，进入 M3。
 - 唯一产品依据：本地网页端 PRD v2.0；桌面端 PRD 已废弃，不进入 M5。
 - 形态：Python 后端 + 浏览器 UI；`启动.vbs` 无控制台，`启动.bat` 仅调试，`停止.bat` 优雅停止。
 - 项目根：`%USERPROFILE%\Documents\H3 Workbench`；生成结果默认引用 ComfyUI 输出，导出复制到项目 `outputs/`。
