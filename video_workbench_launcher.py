@@ -30,6 +30,7 @@ from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_w
 from project_api import ProjectAPI
 from project_store import ProjectStore
 from queue_api import QueueAPI
+from workbench_doctor import WorkbenchDoctor
 from workbench_queue import QueueManager
 from workbench_security import session_cookie, valid_content_type, valid_host, valid_origin, valid_token
 from workbench_lifecycle import (
@@ -418,6 +419,32 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if is_comfy_path(path):
             proxy_http(self)
             return
+        if path in {"/api/doctor", "/api/doctor/log-bundle"}:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length < 0 or length > 16384:
+                    raise ValueError("诊断请求内容无效。")
+                payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+                if not isinstance(payload, dict) or not isinstance(payload.get("browser", {}), dict):
+                    raise ValueError("诊断请求格式无效。")
+                doctor = self.server.doctor
+                report = doctor.run(browser=payload.get("browser"), check_deepseek=payload.get("checkDeepSeek") is True)
+                if path == "/api/doctor":
+                    self.send_json(200, report)
+                else:
+                    body = doctor.create_log_bundle(report)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header("Content-Disposition", f'attachment; filename="h3-doctor-{time.strftime("%Y%m%d-%H%M%S")}.zip"')
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                self.send_json(400, {"code": "BAD_REQUEST", "message": str(exc), "details": {}})
+            except Exception as exc:
+                LOGGER.exception("诊断失败：%s", exc)
+                self.send_json(500, {"code": "INTERNAL", "message": "诊断暂时无法完成，请查看运行日志。", "details": {}})
+            return
         if path == "/api/shutdown":
             self.send_json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -517,6 +544,7 @@ def main():
             server.comfy_process = None
             server.project_store = ProjectStore()
             server.project_api = ProjectAPI(server.project_store)
+            server.doctor = WorkbenchDoctor(HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port)
             server.queue_manager = QueueManager()
             server.queue_api = QueueAPI(server.queue_manager)
             server.queue_manager.start()

@@ -10,6 +10,7 @@ import {
   openProject, openProjectPath, renameProject, restoreProject, revealProject,
 } from './project-store-http';
 import { listLegacyProjects, migrateLegacyProjects } from './legacy-migration';
+import { downloadDoctorLogs, runDoctor } from './doctor-client';
 import './launcher.css';
 
 const TEMPLATES = [
@@ -45,8 +46,51 @@ export default function ProjectLauncher({ onOpen }) {
   const [notice, setNotice] = useState(null);
   const [dialog, setDialog] = useState(null);
   const [legacyCount, setLegacyCount] = useState(0);
+  const [doctorReport, setDoctorReport] = useState(null);
+  const [doctorBusy, setDoctorBusy] = useState('');
+  const [doctorNotice, setDoctorNotice] = useState(null);
   const fileInput = useRef(null);
   const operationRef = useRef('');
+
+  const diagnose = async (checkDeepSeek = false) => {
+    if (doctorBusy) return;
+    setDoctorBusy(checkDeepSeek ? 'deepseek' : 'run'); setDoctorNotice(null);
+    try { setDoctorReport(await runDoctor(checkDeepSeek)); }
+    catch (error) { setDoctorNotice({ type: 'error', text: error.message }); }
+    finally { setDoctorBusy(''); }
+  };
+  const openDoctor = () => {
+    setDialog({ type: 'doctor' }); setDoctorReport(null); setDoctorNotice(null);
+    diagnose(false);
+  };
+  const copyDoctor = async () => {
+    if (!doctorReport) return;
+    const text = JSON.stringify(doctorReport, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      setDoctorNotice({ type: 'success', text: '脱敏诊断 JSON 已复制。' });
+    } catch (error) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text; textarea.readOnly = true; textarea.style.position = 'fixed'; textarea.style.opacity = '0';
+      document.body.appendChild(textarea); textarea.select();
+      const copied = document.execCommand('copy');
+      textarea.remove();
+      setDoctorNotice(copied ? { type: 'success', text: '脱敏诊断 JSON 已复制。' } : { type: 'error', text: `复制失败：${error.message}` });
+    }
+  };
+  const saveDoctorLogs = async () => {
+    if (doctorBusy) return;
+    setDoctorBusy('logs'); setDoctorNotice(null);
+    try {
+      const { blob, name } = await downloadDoctorLogs();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url; anchor.download = name; anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setDoctorNotice({ type: 'success', text: '脱敏日志包已生成。' });
+    } catch (error) { setDoctorNotice({ type: 'error', text: error.message }); }
+    finally { setDoctorBusy(''); }
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -123,7 +167,7 @@ export default function ProjectLauncher({ onOpen }) {
       <nav aria-label="项目导航">{SECTIONS.map(([id, label, Icon]) => <button key={id} className={section === id ? 'active' : ''} onClick={() => { setSection(id); setSelectedId(null); }}><Icon size={16} /><span>{label}</span>{id === 'all' && <small>{projects.length}</small>}{id === 'trash' && <small>{trash.length}</small>}</button>)}</nav>
       <div className="launcher-sidebar-bottom">
         <button disabled title="设置将在下一阶段提供"><Settings2 size={15} />设置<span>M2</span></button>
-        <button disabled title="诊断将在下一阶段提供"><ShieldCheck size={15} />诊断<span>M2</span></button>
+        <button onClick={openDoctor}><ShieldCheck size={15} />诊断</button>
         <div className="launcher-local"><i /><span>仅在本机运行<small>H3 Workbench · v1.0.0</small></span></div>
       </div>
     </aside>
@@ -193,7 +237,29 @@ export default function ProjectLauncher({ onOpen }) {
       </div>}
     </aside>}
 
-    {dialog && <div className="launcher-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setDialog(null); }}>
+    {dialog?.type === 'doctor' ? <div className="launcher-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
+      <section className="launcher-modal doctor-modal" role="dialog" aria-modal="true" aria-labelledby="launcher-dialog-title" aria-busy={!!doctorBusy}>
+        <button type="button" className="modal-close" aria-label="关闭对话框" onClick={() => setDialog(null)}><X size={17} /></button>
+        <span className="modal-icon"><ShieldCheck size={22} /></span>
+        <h2 id="launcher-dialog-title">本机诊断</h2>
+        <p className="modal-help">检查运行环境、模型与节点。默认不请求外部服务，也不会读取或修改人物素材和模型内容。</p>
+        {doctorBusy && !doctorReport && <div className="doctor-loading"><LoaderCircle className="spin" size={24} /><span>正在检查本机环境…</span></div>}
+        {doctorReport && <>
+          <div className={`doctor-summary ${doctorReport.status}`} role="status"><strong>{doctorReport.summary}</strong><small>{formatDate(doctorReport.generatedAt)}</small></div>
+          <div className="doctor-checks">{doctorReport.checks.map((item, index) => <article className={`doctor-check ${item.status}`} key={`${item.id}-${item.label}-${index}`}>
+            <span className="doctor-check-icon">{item.status === 'ok' ? <Check size={14} /> : <AlertCircle size={14} />}</span>
+            <div><strong>{item.label}</strong><p>{item.detail}</p>
+              {(item.missing?.length > 0 || item.mismatched?.length > 0 || item.missingDirectories?.length > 0 || item.missingRegistered?.length > 0) && <details><summary>查看缺失明细</summary><pre>{JSON.stringify({ missing: item.missing, mismatched: item.mismatched, missingDirectories: item.missingDirectories, missingRegistered: item.missingRegistered }, null, 2)}</pre></details>}
+            </div>
+          </article>)}</div>
+        </>}
+        {doctorNotice && <div className={`doctor-notice ${doctorNotice.type}`} role={doctorNotice.type === 'error' ? 'alert' : 'status'}>{doctorNotice.text}</div>}
+        <div className="doctor-actions">
+          <button type="button" disabled={!!doctorBusy} onClick={() => diagnose(true)} title="仅在点击后连接 DeepSeek">{doctorBusy === 'deepseek' ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />}测试 DeepSeek</button>
+          <div><button type="button" disabled={!doctorReport || !!doctorBusy} onClick={copyDoctor}><Copy size={14} />复制 JSON</button><button type="button" disabled={!!doctorBusy} onClick={saveDoctorLogs}>{doctorBusy === 'logs' ? <LoaderCircle className="spin" size={14} /> : <ArrowDownToLine size={14} />}日志包</button><button type="button" className="primary" disabled={!!doctorBusy} onClick={() => diagnose(false)}>{doctorBusy === 'run' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}重新诊断</button></div>
+        </div>
+      </section>
+    </div> : dialog && <div className="launcher-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setDialog(null); }}>
       <form className="launcher-modal" role="dialog" aria-modal="true" aria-labelledby="launcher-dialog-title" onSubmit={submitDialog}>
         <button type="button" className="modal-close" aria-label="关闭对话框" onClick={() => setDialog(null)}><X size={17} /></button>
         <span className="modal-icon">{dialog.type === 'delete' ? <Trash2 size={22} /> : dialog.type === 'open-path' ? <FolderOpen size={22} /> : <FilePlus2 size={22} />}</span>
