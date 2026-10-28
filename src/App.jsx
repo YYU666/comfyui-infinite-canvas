@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import LegacyWorkbench from './LegacyWorkbench';
 import CanvasWorkbench from './CanvasWorkbench';
 import ProjectLauncher from './ProjectLauncher';
+import QueueNotificationCenter from './QueueNotificationCenter';
 
 export default function App() {
   const [project, setProject] = useState(null);
@@ -10,8 +11,8 @@ export default function App() {
     localStorage.setItem('h3-workbench-mode', next);
     setMode(next);
   };
-  if (!project) return <ProjectLauncher onOpen={setProject} />;
-  return mode === 'canvas'
+  const content = !project ? <ProjectLauncher onOpen={setProject} /> : mode === 'canvas'
     ? <CanvasWorkbench initialProject={project} onLauncher={() => setProject(null)} onSimpleMode={() => changeMode('simple')} />
     : <LegacyWorkbench onCanvasMode={() => changeMode('canvas')} />;
+  return <><QueueNotificationCenter />{content}</>;
 }

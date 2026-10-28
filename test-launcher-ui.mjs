@@ -15,11 +15,13 @@ const env = { ...process.env, H3_WORKBENCH_RUNTIME_DIR: runtime, H3_PROJECTS_ROO
 const backend = spawn(python, ['video_workbench_launcher.py'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
 let browser;
 let base;
+let token;
 let page;
 const errors = [];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function api(route, options = {}) {
-  const response = await fetch(`${base}/api/projects${route}`, options);
+  const headers = { ...options.headers, 'X-H3-Token': token };
+  const response = await fetch(`${base}/api/projects${route}`, { ...options, headers });
   const body = await response.json();
   if (!response.ok) throw new Error(JSON.stringify(body));
   return body;
@@ -36,6 +38,7 @@ try {
   assert(instance?.port, 'dynamic instance port');
   assert.equal(instance.pid, backend.pid, `test must use its isolated child: ${JSON.stringify({ runtime, instancePid: instance.pid, childPid: backend.pid, port: instance.port })}`);
   base = `http://127.0.0.1:${instance.port}`;
+  token = instance.token;
   let health;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
@@ -48,7 +51,7 @@ try {
   assert.equal(health.pid, backend.pid, `health must belong to isolated child: ${JSON.stringify({ health, childPid: backend.pid, base })}`);
   assert.equal(typeof health.projectsRoot, 'string', `test health must expose isolated root: ${JSON.stringify(health)}`);
   assert.equal(path.resolve(health.projectsRoot), path.resolve(projects), 'backend must use isolated projects root before any UI write');
-  const emptyQueueResponse = await fetch(`${base}/api/queue`);
+  const emptyQueueResponse = await fetch(`${base}/api/queue`, { headers: { 'X-H3-Token': token } });
   assert.equal(emptyQueueResponse.status, 200, 'queue API is available in the isolated backend');
   assert.deepEqual((await emptyQueueResponse.json()).jobs, [], 'isolated queue starts empty');
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
@@ -84,7 +87,7 @@ try {
   assert.equal(document.assets.length, 1);
   assert(document.revision >= 3, 'asset and canvas revisions advance without 409');
   const committedRevision = (await api(`/${projectId}`)).revision;
-  const asset = await fetch(`${base}/api/projects/${projectId}/${mediaNode.data.assetPath}`, { headers: { Range: 'bytes=1-4' } });
+  const asset = await fetch(`${base}/api/projects/${projectId}/${mediaNode.data.assetPath}`, { headers: { Range: 'bytes=1-4', 'X-H3-Token': token } });
   assert.equal(asset.status, 206);
 
   await page.locator('.launcher-return').click();

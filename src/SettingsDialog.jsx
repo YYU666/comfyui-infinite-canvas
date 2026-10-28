@@ -36,6 +36,9 @@ export default function SettingsDialog({ onClose, onSaved }) {
     if (key) payload.deepseekKey = key;
     setBusy(true); setError('');
     try {
+      if (payload.notifications && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        await Notification.requestPermission().catch(() => {});
+      }
       const result = await updateSettings(payload);
       formElement.reset();
       await onSaved(result);
