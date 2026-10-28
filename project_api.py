@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -57,6 +58,9 @@ class ProjectAPI:
         if path == "/api/projects":
             handler.send_json(200, {"projects": self.store.list()})
             return True
+        if path == "/api/projects/trash":
+            handler.send_json(200, {"projects": self.store.list_trash()})
+            return True
         match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)", path)
         if match:
             handler.send_json(200, self.store.get(match.group(1)))
@@ -111,6 +115,22 @@ class ProjectAPI:
                     document = self.store.open(payload.get("id"), read_only=read_only)
                 handler.send_json(200, document)
                 return True
+            if path == "/api/projects/migration-backup":
+                length = int(handler.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 8 * 1024 * 1024 * 1024:
+                    raise StoreError("BAD_REQUEST", "迁移备份为空或超过大小限制。")
+                backups = self.store.root / ".migration-backups"
+                backups.mkdir(parents=True, exist_ok=True)
+                target = backups / f"indexeddb-{uuid.uuid4().hex}.zip"
+                with target.open("wb") as output:
+                    source = LimitedStream(handler.rfile, length)
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                handler.send_json(201, {"path": str(target), "bytes": target.stat().st_size})
+                return True
             if path == "/api/projects/import":
                 if handler.headers.get("Content-Type", "").split(";")[0] in {"application/zip", "application/x-zip-compressed", "application/octet-stream"}:
                     length = int(handler.headers.get("Content-Length", "0"))
@@ -145,6 +165,12 @@ class ProjectAPI:
                 else:
                     archive = self.store.export(match.group(1))
                     handler.send_json(200, {"path": str(archive), "name": archive.name, "bytes": archive.stat().st_size})
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/reveal", path)
+            if match:
+                project_file = self.store._project_path(match.group(1))
+                subprocess.Popen(["explorer.exe", f"/select,{project_file}"], close_fds=True)
+                handler.send_json(200, {"ok": True})
                 return True
             handler.send_json(404, {"code": "NOT_FOUND", "message": "项目接口不存在。", "details": {}})
             return True

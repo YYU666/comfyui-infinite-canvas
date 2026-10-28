@@ -58,10 +58,10 @@ export default function CanvasProjectMenu({ current, projects, name, onNameChang
           <span className="project-row-copy"><strong>{project.id === current.id ? name || '未命名项目' : project.name}</strong><small>{project.nodeCount} 个节点 · {new Date(project.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small></span>
           {project.id === current.id && <Check size={16} className="project-current" aria-label="当前画布" />}
         </button>)}
-        {filter === 'shared' ? <p className="project-empty">暂无协作画布<br /><small>当前项目保存在此浏览器中。</small></p> : !projects.some((project) => (project.id === current.id ? name : project.name).toLocaleLowerCase().includes(query.toLocaleLowerCase())) && <p className="project-empty">没有找到这个画布</p>}
+        {filter === 'shared' ? <p className="project-empty">暂无协作画布<br /><small>当前项目保存在项目文件夹中。</small></p> : !projects.some((project) => (project.id === current.id ? name : project.name).toLocaleLowerCase().includes(query.toLocaleLowerCase())) && <p className="project-empty">没有找到这个画布</p>}
       </div>
       <div className="project-create"><button type="button" disabled={busy || locked} onClick={create}><Plus size={16} />新建画布</button></div>
-      <p className="project-storage-note">{locked ? '任务进行中，完成后即可新建或切换项目。' : '自动保存在此浏览器。新建项目会保留当前画布。'}</p>
+      <p className="project-storage-note">{locked ? '任务进行中，完成后即可新建或切换项目。' : '自动保存在项目文件夹。新建项目会保留当前画布。'}</p>
     </section>}
     {error && <div className="project-save-error" role="alert">{error}</div>}
   </div>;

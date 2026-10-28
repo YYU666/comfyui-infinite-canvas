@@ -48,6 +48,7 @@ def main():
         process.wait(timeout=5)
         current = json.loads(path.read_text(encoding="utf-8"))
         assert current["schemaVersion"] == 3 and current["revision"] >= 2
+        store.get(document["id"])  # Reopening reaps a killed writer's temporary.
         assert not list(path.parent.glob(".project.json.*.tmp"))
         assert all(json.loads(item.read_text(encoding="utf-8"))["schemaVersion"] == 3 for item in path.parent.glob("backups/*.json"))
         store.close()

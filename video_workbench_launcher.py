@@ -303,6 +303,11 @@ def open_file_location(payload):
     return {"opened": True, "path": str(file_path)}
 
 
+class WorkbenchServer(ThreadingHTTPServer):
+    # Windows SO_REUSEADDR can let two backends bind the same port. Never share.
+    allow_reuse_address = False
+
+
 class WorkbenchHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
@@ -325,7 +330,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if path == "/api/health":
             comfy_process = getattr(self.server, "comfy_process", None)
             comfy_running = comfy_process.poll() is None if comfy_process else self.comfy_is_running()
-            self.send_json(200, {
+            health = {
                 "ok": True,
                 "version": APP_VERSION,
                 "port": self.server.server_port,
@@ -333,7 +338,10 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 "startedAt": self.server.started_at,
                 "comfy": {"running": comfy_running, "owned": bool(self.server.comfy_owned)},
                 "queue": queue_summary(),
-            })
+            }
+            if os.environ.get("H3_WORKBENCH_TEST_MODE") == "1":
+                health["projectsRoot"] = str(self.server.project_store.root)
+            self.send_json(200, health)
             return
         if self.server.project_api.handle_get(self, path):
             return
@@ -439,7 +447,7 @@ def main():
             handler = functools.partial(WorkbenchHandler, directory=str(HERE / "dist"))
             for port in range(8790, 8800):
                 try:
-                    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+                    server = WorkbenchServer(("127.0.0.1", port), handler)
                     break
                 except OSError:
                     continue

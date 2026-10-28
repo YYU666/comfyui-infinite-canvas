@@ -109,8 +109,35 @@ def _iso_time(value):
     return None
 
 
+def _writer_running(pid):
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        import ctypes
+        kernel = ctypes.windll.kernel32
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return False
+        try:
+            return kernel.WaitForSingleObject(handle, 0) == 0x00000102  # WAIT_TIMEOUT
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def _safe_project_file(path):
     path = path.resolve()
+    for temporary in path.parent.glob(f".{path.name}.*.tmp"):
+        match = re.fullmatch(rf"\.{re.escape(path.name)}\.(\d+)\.tmp", temporary.name)
+        if match and not _writer_running(int(match.group(1))):
+            # A killed writer cannot finish os.replace; its committed JSON and
+            # backups remain intact, so only the abandoned temporary is removed.
+            temporary.unlink(missing_ok=True)
     if not path.is_file():
         raise StoreError("NOT_FOUND", "项目不存在或尚未打开。", 404)
     try:
@@ -127,6 +154,7 @@ class ProjectStore:
         self._locks = {}
         self._locks_guard = threading.Lock()
         self._held = set()
+        self._opened_paths = {}
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = None
 
@@ -138,19 +166,21 @@ class ProjectStore:
     def _project_path(self, project_id):
         if not re.fullmatch(r"prj_[A-Za-z0-9_-]+", str(project_id)):
             raise StoreError("BAD_REQUEST", "项目 ID 无效。")
-        if not self.root.is_dir():
-            raise StoreError("NOT_FOUND", "项目不存在。", 404)
-        for candidate in self.root.iterdir():
-            path = candidate / "project.json"
-            if not candidate.is_dir() or candidate.name.startswith(".") or not path.is_file():
-                continue
-            try:
-                document = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                continue
-            if document.get("id") == project_id:
-                return path
-        raise StoreError("NOT_FOUND", "项目不存在。", 404)
+        if self.root.is_dir():
+            for candidate in self.root.iterdir():
+                path = candidate / "project.json"
+                if not candidate.is_dir() or candidate.name.startswith(".") or not path.is_file():
+                    continue
+                try:
+                    document = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    continue
+                if document.get("id") == project_id:
+                    return path
+        external = self._opened_paths.get(project_id)
+        if external and external.is_file():
+            return external
+        raise StoreError("NOT_FOUND", "项目不存在或尚未打开。", 404)
 
     def _read(self, path, migrate=True):
         path, document = _safe_project_file(path)
@@ -219,11 +249,15 @@ class ProjectStore:
 
     @staticmethod
     def summary(document, path, size=0):
+        cover = next((node.get("data", {}).get("assetPath") for node in document["canvas"]["nodes"]
+                      if node.get("type") == "media" and node.get("data", {}).get("kind") == "image"
+                      and node.get("data", {}).get("assetPath")), None)
         return {
             "id": document["id"], "name": document["name"], "path": str(path),
             "createdAt": document["createdAt"], "updatedAt": document["updatedAt"], "revision": document["revision"],
             "nodeCount": len(document["canvas"]["nodes"]), "edgeCount": len(document["canvas"]["edges"]),
             "shotCount": len(document["shots"]), "bytes": size,
+            "thumbnail": f"/api/projects/{document['id']}/{cover}" if cover else None,
         }
 
     def get(self, project_id):
@@ -241,6 +275,7 @@ class ProjectStore:
         document = self._read(path)
         if not read_only:
             self.acquire_lock(path, owner_id)
+        self._opened_paths[document["id"]] = path
         return document
 
     def save(self, project_id, document, expected_revision):
@@ -322,6 +357,21 @@ class ProjectStore:
             raise StoreError("BAD_REQUEST", "原位置已有同名项目，未覆盖。")
         shutil.move(str(source), str(target))
         return self._read(target / "project.json")
+
+    def list_trash(self):
+        trash = self.root / ".trash"
+        if not trash.is_dir():
+            return []
+        rows = []
+        for candidate in trash.iterdir():
+            try:
+                document = self._read(candidate / "project.json")
+                size = sum(item.stat().st_size for item in candidate.rglob("*") if item.is_file() and ".lock" not in item.parts)
+                rows.append({**self.summary(document, candidate, size), "trashName": candidate.name,
+                             "deletedAt": dt.datetime.fromtimestamp(candidate.stat().st_mtime, dt.timezone.utc).isoformat()})
+            except StoreError:
+                continue
+        return sorted(rows, key=lambda item: item["deletedAt"], reverse=True)
 
     def purge_trash(self, days=30):
         cutoff = time.time() - days * 86400

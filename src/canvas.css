@@ -19,6 +19,8 @@
 .neo-app button:focus-visible, .neo-app input:focus-visible, .neo-app textarea:focus-visible, .neo-app select:focus-visible { outline: 1px solid rgba(255,255,255,.65); outline-offset: 2px; }
 .neo-header { position: absolute; inset: 12px 14px auto; z-index: 40; display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
 .neo-header button, .neo-header input, .neo-project-pill { pointer-events: auto; }
+.launcher-return { height: 42px; display: flex; align-items: center; gap: 7px; margin-right: 8px; padding: 0 13px; border: 1px solid rgba(255,255,255,.07); border-radius: 21px; background: rgba(29,29,31,.88); color: #aaaab2; font-size: 11px; backdrop-filter: blur(16px); }
+.launcher-return:hover { background: #29292d; color: #fff; }
 .neo-project-pill { height: 42px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 7px; border: 1px solid rgba(255,255,255,.07); border-radius: 22px; background: rgba(29,29,31,.88); box-shadow: 0 5px 24px rgba(0,0,0,.25); backdrop-filter: blur(16px); }
 .neo-logo { width: 29px; height: 29px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #efeff0; color: #171719; font-size: 12px; font-weight: 800; letter-spacing: -1px; }
 .neo-logo b { font-size: 8px; align-self: flex-start; margin-top: 7px; }
@@ -65,6 +67,7 @@
 .project-loading p { max-width: 560px; padding: 0 24px; color: #aaaab2; font-size: 13px; text-align: center; }
 .project-loading button { padding: 10px 24px; border: 1px solid #444; border-radius: 8px; background: #29292d; cursor: pointer; }
 .project-switching { position: absolute; inset: 0; z-index: 39; display: flex; align-items: center; justify-content: center; gap: 10px; background: rgba(17,17,19,.5); color: #d4d4da; font-size: 13px; cursor: wait; }
+.project-switching.readonly { inset: 64px auto auto 50%; transform: translateX(-50%); padding: 9px 14px; border: 1px solid #504834; border-radius: 8px; background: rgba(43,39,27,.94); color: #d2c8a7; font-size: 11px; cursor: default; pointer-events: none; }
 .neo-header-right { display: flex; align-items: center; gap: 8px; }
 .hardware-monitor { height: 42px; display: flex; align-items: center; gap: 13px; padding: 6px 11px; border: 1px solid rgba(255,255,255,.07); border-radius: 12px; background: rgba(25,25,28,.88); box-shadow: 0 5px 24px rgba(0,0,0,.2); backdrop-filter: blur(16px); pointer-events: auto; }
 .hardware-metric { width: 132px; display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 8px; row-gap: 4px; }

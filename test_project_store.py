@@ -35,9 +35,16 @@ class ProjectStoreTests(unittest.TestCase):
         for folder in ("assets", "backups", "outputs", "exports", ".cache"):
             self.assertTrue((self.path.parent / folder).is_dir())
 
-    def test_02_list_and_get(self):
+    def test_02_list_get_and_external_project_round_trip(self):
         self.assertEqual(self.store.list()[0]["nodeCount"], 0)
         self.assertEqual(self.store.get(self.document["id"])["name"], "测试项目")
+        with tempfile.TemporaryDirectory() as external:
+            created = self.store.create("外部项目", directory=Path(external) / "外部项目")
+            opened = self.store.open_path(Path(external) / "外部项目")
+            opened["name"] = "外部项目-已保存"
+            saved = self.store.save(created["id"], opened, opened["revision"])
+            self.assertEqual(saved["name"], "外部项目-已保存")
+            self.assertEqual(self.store.get(created["id"])["name"], "外部项目-已保存")
 
     def test_03_save_increments_revision_and_writes_backup(self):
         document = copy.deepcopy(self.document)
@@ -109,8 +116,12 @@ class ProjectStoreTests(unittest.TestCase):
     def test_10_delete_moves_to_trash_and_restore(self):
         deleted = self.store.delete(self.document["id"])
         self.assertTrue(Path(deleted["trashPath"]).is_dir())
+        trash_rows = self.store.list_trash()
+        self.assertEqual(len(trash_rows), 1)
+        self.assertEqual(trash_rows[0]["trashName"], Path(deleted["trashPath"]).name)
         restored = self.store.restore(Path(deleted["trashPath"]).name)
         self.assertEqual(restored["id"], self.document["id"])
+        self.assertEqual(self.store.list_trash(), [])
 
     def test_11_asset_hash_deduplicates(self):
         first = self.store.put_asset(self.document["id"], "a.png", io.BytesIO(b"same"), "image/png")
