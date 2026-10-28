@@ -4,6 +4,10 @@ const api = await import('./src/workbench-api.js');
 assert.equal(api.durationToFrames(5), 124);
 assert.equal(api.durationToFrames(6), 141);
 assert.equal(api.durationToFrames(15), 362);
+assert.equal(api.COMFY_ORIGIN, '/api/comfy');
+assert.equal(api.normalizeMediaUrl('http://127.0.0.1:8188/view?filename=a.png&type=output'), '/api/comfy/view?filename=a.png&type=output');
+assert.equal(api.normalizeMediaUrl('http://localhost:8188/view?filename=a.png'), '/api/comfy/view?filename=a.png');
+assert.equal(api.normalizeMediaUrl('https://example.com/view?filename=a.png'), 'https://example.com/view?filename=a.png');
 for (const [ratio, [w, h]] of Object.entries(api.RATIOS)) {
   assert.ok(Math.abs(w * h - 400000) < 12000, `${ratio} pixel budget`);
   assert.equal(w % 32, 0); assert.equal(h % 32, 0);

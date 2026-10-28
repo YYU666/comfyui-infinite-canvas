@@ -26,6 +26,7 @@ import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_websocket
 from project_api import ProjectAPI
 from project_store import ProjectStore
 from queue_api import QueueAPI
@@ -314,6 +315,13 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
+        port = self.server.server_port
+        self.send_header("Content-Security-Policy", "; ".join([
+            "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:", "media-src 'self' data: blob:", "font-src 'self' data:",
+            f"connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port} wss://127.0.0.1:{port} wss://localhost:{port}",
+            "worker-src 'self' blob:", "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'",
+        ]))
         path = urllib.parse.urlparse(self.path).path
         if self.command == "GET" and path in {"/", "/index.html"}:
             self.send_header("Set-Cookie", session_cookie(self.server.token))
@@ -350,6 +358,12 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request():
             return
         path = urllib.parse.urlparse(self.path).path
+        if is_comfy_path(path):
+            if is_websocket_request(self):
+                proxy_websocket(self)
+            else:
+                proxy_http(self)
+            return
         if path == "/api/health":
             comfy_process = getattr(self.server, "comfy_process", None)
             comfy_running = comfy_process.poll() is None if comfy_process else self.comfy_is_running()
@@ -401,6 +415,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if is_comfy_path(path):
+            proxy_http(self)
+            return
         if path == "/api/shutdown":
             self.send_json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -434,6 +451,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if is_comfy_path(path):
+            proxy_http(self)
+            return
         if not self.server.project_api.handle_put(self, path):
             self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
 
@@ -441,6 +461,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if is_comfy_path(path):
+            proxy_http(self)
+            return
         if not self.server.project_api.handle_delete(self, path):
             self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
 

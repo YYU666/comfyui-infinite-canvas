@@ -1117,7 +1117,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     if (node.data.output && node.data.filename) return { kind: 'output', name: `${node.data.subfolder ? `${node.data.subfolder}/` : ''}${node.data.filename}` };
     if (node.data.remoteName) return { kind: 'input', name: node.data.remoteName };
     if (node.data.resultUrl) {
-      const params = new URL(node.data.resultUrl).searchParams;
+      const params = new URL(node.data.resultUrl, window.location.origin).searchParams;
       const filename = params.get('filename');
       if (filename) return { kind: params.get('type') || 'output', name: `${params.get('subfolder') ? `${params.get('subfolder')}/` : ''}${filename}` };
     }

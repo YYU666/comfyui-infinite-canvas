@@ -1,4 +1,19 @@
+import { normalizeMediaUrl } from './workbench-api';
+
 const API_ROOT = '/api/projects';
+
+function normalizeLegacyMedia(document) {
+  if (!document || typeof document !== 'object') return document;
+  for (const project of [document, ...(document.projects || [])]) {
+    if (project?.thumbnail) project.thumbnail = normalizeMediaUrl(project.thumbnail);
+    for (const node of project?.canvas?.nodes || []) {
+      for (const field of ['url', 'resultUrl', 'thumbnail']) {
+        if (node?.data?.[field]) node.data[field] = normalizeMediaUrl(node.data[field]);
+      }
+    }
+  }
+  return document;
+}
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_ROOT}${path}`, options);
@@ -11,7 +26,7 @@ async function request(path, options = {}) {
     error.details = body?.details;
     throw error;
   }
-  return body;
+  return normalizeLegacyMedia(body);
 }
 
 function json(method, payload, headers = {}) {

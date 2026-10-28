@@ -1,4 +1,16 @@
-export const COMFY_ORIGIN = `http://${window.location.hostname || '127.0.0.1'}:8188`;
+export const COMFY_ORIGIN = '/api/comfy';
+
+export function normalizeMediaUrl(value) {
+  if (typeof value !== 'string') return value;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname)
+      && url.port === '8188' && url.pathname === '/view') {
+      return `${COMFY_ORIGIN}${url.pathname}${url.search}${url.hash}`;
+    }
+  } catch { /* Relative, blob and data URLs need no migration. */ }
+  return value;
+}
 export const MODEL_INFO = {
   unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
   referenceUnet: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors',
@@ -1018,7 +1030,8 @@ export async function runOutfitQuadWorkflow(options, clientId, onProgress = () =
 }
 
 export function openProgressSocket(clientId, handlers = {}) {
-  const socket = new WebSocket(`ws://${window.location.hostname || '127.0.0.1'}:8188/ws?clientId=${encodeURIComponent(clientId)}`);
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const socket = new WebSocket(`${protocol}://${window.location.host}/api/comfy/ws?clientId=${encodeURIComponent(clientId)}`);
   socket.onopen = () => handlers.onOpen?.();
   socket.onerror = () => handlers.onError?.(new Error('无法连接 ComfyUI 进度服务'));
   socket.onclose = () => handlers.onClose?.();

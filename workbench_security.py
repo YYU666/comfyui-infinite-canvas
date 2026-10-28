@@ -37,6 +37,8 @@ def valid_content_type(method, path, headers):
     if length <= 0:
         return True
     content_type = headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+    if method == "POST" and path.startswith("/api/comfy/upload/"):
+        return content_type == "multipart/form-data"
     if method == "PUT" and "/assets/" in path:
         return content_type == "application/octet-stream" or content_type.startswith(("image/", "video/", "audio/"))
     if path in {"/api/projects/import", "/api/projects/migration-backup"}:
