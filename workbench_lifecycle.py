@@ -43,7 +43,7 @@ def restrict_private_file(path: Path) -> None:
         raise RuntimeError("无法确认当前 Windows 用户，不能保护实例令牌。")
     result = subprocess.run(
         ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
-        capture_output=True, text=True, timeout=10, check=False,
+        capture_output=True, text=True, encoding="mbcs", errors="replace", timeout=10, check=False,
     )
     if result.returncode:
         raise RuntimeError("无法限制实例令牌文件权限。")

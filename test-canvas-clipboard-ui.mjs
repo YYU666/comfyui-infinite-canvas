@@ -1,48 +1,61 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from './test-browser.mjs';
 
-const root = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
-const server = createServer(async (request, response) => {
-  const pathname = new URL(request.url, 'http://localhost').pathname;
-  if (pathname.startsWith('/api/')) {
-    response.setHeader('Content-Type', 'application/json'); response.end('{}'); return;
-  }
-  const target = path.resolve(root, pathname === '/' ? 'index.html' : `.${pathname}`);
-  if (target !== root && !target.startsWith(`${root}${path.sep}`)) { response.writeHead(404).end(); return; }
-  try {
-    const body = await readFile(target);
-    response.setHeader('Content-Type', target.endsWith('.js') ? 'text/javascript' : target.endsWith('.css') ? 'text/css' : 'text/html');
-    response.end(body);
-  } catch { response.writeHead(404).end(); }
-});
-await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-const origin = `http://127.0.0.1:${server.address().port}`;
-const browser = await chromium.launch({ headless: true });
+const root = path.dirname(fileURLToPath(import.meta.url));
+const python = process.env.H3_TEST_PYTHON || process.env.PYTHON || 'python';
+const temporary = await mkdtemp(path.join(tmpdir(), 'h3-clipboard-ui-'));
+const runtime = path.join(temporary, 'runtime');
+const projects = path.join(temporary, 'projects');
+const env = { ...process.env, H3_WORKBENCH_RUNTIME_DIR: runtime, H3_PROJECTS_ROOT: projects, H3_WORKBENCH_DATA_DIR: path.join(temporary, 'data'), H3_WORKBENCH_NO_BROWSER: '1', H3_WORKBENCH_TEST_MODE: '1' };
+const backend = spawn(python, ['video_workbench_launcher.py'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+backend.stdout.resume();
+backend.stderr.resume();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let browser;
+let base;
+let token;
+let projectId;
+async function api(pathname, options = {}) {
+  const response = await fetch(`${base}${pathname}`, { ...options, headers: { 'X-H3-Token': token, ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
+  const body = await response.json();
+  assert(response.ok, `${pathname}: ${response.status} ${JSON.stringify(body)}`);
+  return body;
+}
+const initialCanvas = {
+  nodes: [
+    { id: 'fixture-image', type: 'media', position: { x: 100, y: 180 }, data: { kind: 'image', title: '角色', url: '', name: '', mediaStorageId: 'synthetic-media' } },
+    { id: 'fixture-generator', type: 'generator', position: { x: 600, y: 200 }, data: { title: '换装', mode: 'qwenEdit', prompt: '@角色 换夏装', seed: 123, randomSeed: false, status: 'done', progress: 100, promptId: 'synthetic-old-task', resultUrl: '', runs: [{ promptId: 'synthetic-old-task' }] } },
+  ],
+  edges: [{ id: 'fixture-edge', source: 'fixture-image', target: 'fixture-generator', sourceHandle: 'ref', targetHandle: 'guide' }],
+  viewport: { x: 0, y: 0, zoom: 0.8 },
+};
 try {
+  let instance;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try { instance = JSON.parse(await readFile(path.join(runtime, 'instance.json'), 'utf8')); break; }
+    catch { if (backend.exitCode !== null) throw new Error(`backend exited ${backend.exitCode}`); await sleep(100); }
+  }
+  assert.equal(instance?.pid, backend.pid, 'clipboard test must use its isolated backend');
+  base = `http://127.0.0.1:${instance.port}`;
+  token = instance.token;
+  const health = await (await fetch(`${base}/api/health`)).json();
+  assert.equal(health.pid, backend.pid);
+  assert.equal(path.resolve(health.projectsRoot), path.resolve(projects));
+  const created = await api('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'Clipboard UI fixture', canvas: initialCanvas }) });
+  projectId = created.id;
+
+  browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
-  await context.addInitScript(() => {
-    localStorage.setItem('h3-canvas-name-v1', 'Clipboard UI fixture');
-    localStorage.setItem('h3-canvas-snap-v1', 'false');
-    localStorage.setItem('h3-infinite-canvas-v2', JSON.stringify({
-      nodes: [
-        { id: 'fixture-image', type: 'media', position: { x: 100, y: 180 }, data: { kind: 'image', title: '角色', url: '', name: '', mediaStorageId: 'synthetic-media' } },
-        { id: 'fixture-generator', type: 'generator', position: { x: 600, y: 200 }, data: { title: '换装', mode: 'qwenEdit', prompt: '@角色 换夏装', seed: 123, randomSeed: false, status: 'done', progress: 100, promptId: 'synthetic-old-task', resultUrl: '', runs: [{ promptId: 'synthetic-old-task' }] } },
-      ],
-      edges: [{ id: 'fixture-edge', source: 'fixture-image', target: 'fixture-generator', sourceHandle: 'ref', targetHandle: 'guide' }],
-      viewport: { x: 0, y: 0, zoom: 0.8 },
-    }));
-    window.__canvasTools = {};
-    document.modelContext = { registerTool(tool) { window.__canvasTools[tool.name] = tool; } };
-  });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.route('http://127.0.0.1:8188/**', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: route.request().url().includes('system_stats') ? '{"devices":[]}' : '{}' }));
-  await page.routeWebSocket('ws://127.0.0.1:8188/**', () => {});
-  await page.goto(origin, { waitUntil: 'networkidle' });
+  await page.goto(base, { waitUntil: 'networkidle' });
+  await page.locator('.project-open').click();
   try {
     await page.locator('[data-id="fixture-image"]').waitFor();
   } catch (error) {
@@ -50,19 +63,7 @@ try {
     throw error;
   }
 
-  const readProject = () => page.evaluate(async () => {
-    const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open('h3-canvas-projects', 1);
-      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
-    });
-    const project = await new Promise((resolve, reject) => {
-      const request = db.transaction('projects', 'readonly').objectStore('projects').getAll();
-      request.onsuccess = () => resolve(request.result.find((item) => item.name === 'Clipboard UI fixture'));
-      request.onerror = () => reject(request.error);
-    });
-    db.close();
-    return project;
-  });
+  const readProject = () => api(`/api/projects/${projectId}`);
   const waitForNodeCount = async (count) => {
     await page.waitForTimeout(750);
     const project = await readProject();
@@ -117,24 +118,14 @@ try {
   assert.ok(pastedImage, '剪贴板图片优先导入为素材，而不是粘贴旧节点');
   assert.equal(pastedImage.data.kind, 'image');
   assert.equal(pastedImage.data.localFile, true);
-  assert.ok(pastedImage.data.mediaStorageId, '粘贴图片使用当前项目的素材存储记录');
-  const storedImage = await page.evaluate(async ({ projectId, mediaId }) => {
-    const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open('h3-workbench-media', 1);
-      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
-    });
-    const file = await new Promise((resolve, reject) => {
-      const request = db.transaction('files', 'readonly').objectStore('files').get(`${projectId}/${mediaId}`);
-      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
-    });
-    db.close();
-    return file ? { name: file.name, size: file.size, type: file.type } : null;
-  }, { projectId: project.id, mediaId: pastedImage.data.mediaStorageId });
-  assert.equal(storedImage.name, 'clipboard-fixture.png');
-  assert.equal(storedImage.type, 'image/png');
-  assert.ok(storedImage.size > 0, '图片文件本体已持久化');
+  assert.ok(pastedImage.data.assetPath, '粘贴图片使用当前项目的持久化素材路径');
+  const storedImage = await fetch(`${base}/api/projects/${projectId}/${pastedImage.data.assetPath}`, { headers: { 'X-H3-Token': token } });
+  assert.equal(storedImage.status, 200);
+  assert.match(storedImage.headers.get('content-type') || '', /^image\/png/);
+  assert.ok((await storedImage.arrayBuffer()).byteLength > 0, '图片文件本体已持久化到隔离项目目录');
 
   await page.reload({ waitUntil: 'networkidle' });
+  await page.locator('.project-open').click();
   await page.getByLabel('画布项目名称', { exact: true }).waitFor();
   await page.locator(`[data-id="${pastedImage.id}"] img`).waitFor({ state: 'visible' });
   project = await readProject();
@@ -144,6 +135,16 @@ try {
   console.log('画布剪贴板 UI 测试通过：节点复制粘贴、图片粘贴优先级、文本输入保护、素材持久化及刷新恢复。');
   await context.close();
 } finally {
-  await browser.close();
-  await new Promise((resolve) => server.close(resolve));
+  if (browser) await browser.close();
+  if (base) {
+    spawnSync(python, ['stop.py'], { cwd: root, env, timeout: 15000 });
+    for (let count = 0; count < 50 && backend.exitCode === null; count += 1) await sleep(100);
+  }
+  if (backend.exitCode === null) backend.kill();
+  for (let count = 0; count < 50 && backend.exitCode === null; count += 1) await sleep(100);
+  let removed = false;
+  for (let count = 0; count < 30 && !removed; count += 1) {
+    try { await rm(temporary, { recursive: true, force: true }); removed = true; }
+    catch (error) { if (error.code !== 'EBUSY' || count === 29) throw error; await sleep(200); }
+  }
 }

@@ -170,7 +170,7 @@
 - 位置：新增 `.github/workflows/`；更新 `package.json`、浏览器测试启动方式。
 - 修改：提供统一 Python／Node 测试命令；CI 至少覆盖 Windows 默认编码、UTF-8、Python 后端、前端构建和隔离浏览器回归；浏览器路径统一用 Playwright 托管浏览器或 `CHROME_PATH`，删除对单机 Chrome 路径的依赖。
 - 验收：新 clone 无需作者本机目录即可运行 CI 同等命令；默认编码测试也全部通过；G0 故障注入测试进入 CI；构建产物写入 CI 临时目录。
-- 证据：新增 `npm run test:all`、独立 `test:python`／`test:node`／`test:browser` 和 GitHub Actions Windows 工作流。全部浏览器测试改用 `test-browser.mjs` 的托管 Chromium／`CHROME_PATH`，隔离后端默认使用 PATH Python 或 `H3_TEST_PYTHON`，不再依赖作者本机固定路径；`H3_WORKBENCH_DIST_DIR` 支持 CI 临时构建目录。实际验收：默认编码 146 项、UTF-8 146 项均通过，17 个 Node 文件通过，5 个隔离浏览器／后端文件在临时构建目录下通过；200 节点打开 242 ms、拖拽 406 ms，队列关闭浏览器后完成且重启未重复提交。
+- 证据：新增 `npm run test:all`、独立 `test:python`／`test:node`／`test:browser` 和 GitHub Actions Windows 工作流。全部浏览器测试改用 `test-browser.mjs` 的托管 Chromium／`CHROME_PATH`，隔离后端默认使用 PATH Python 或 `H3_TEST_PYTHON`，不再依赖作者本机固定路径；`H3_WORKBENCH_DIST_DIR` 支持 CI 临时构建目录。实际验收：默认编码 148 项、UTF-8 148 项均通过，17 个 Node 文件通过，6 个隔离浏览器／后端文件通过；200 节点打开 234 ms、拖拽 412 ms，队列关闭浏览器后完成且重启未重复提交。
 
 ### [x] OSS-04｜G1｜补齐贡献、安全和项目说明文件
 
@@ -181,10 +181,11 @@
 
 ## 7. 验收与发布
 
-### [ ] QA-01｜G1｜全量回归必须包含新增故障注入
+### [x] QA-01｜G1｜全量回归必须包含新增故障注入
 
 - 内容：全部 Python、Node、浏览器、Agent 预算、安全探针和构建；新增 SAFE/LIFE/LOCK/AGENT/TAKE 测试必须进入统一命令。
 - 验收：默认 Windows 编码与 UTF-8 均通过；无 `95/96` 被环境变量掩盖；构建前真实 ComfyUI 队列为空；测试不读写真实用户项目和权重。
+- 证据：构建前真实 `/queue` 返回运行 0、排队 0。默认编码与 UTF-8 各 148 项后端测试通过，17 个 Node 文件、6 个浏览器／后端文件及前端构建通过。`workbench_lifecycle.py` 与 `workbench_settings.py` 的 `icacls` 输出固定按 Windows `mbcs` 解码，两个 PYTHONUTF8=1 回归测试防止本地化输出再次触发后台 `UnicodeDecodeError`；重跑未再出现该异常。遗留 `test-canvas-clipboard-ui.mjs` 已从旧 IndexedDB 启动方式迁移到临时后端与 HTTP 项目存储，并加入统一浏览器套件；复制、粘贴、图片字节持久化及刷新恢复均通过。
 
 ### [ ] QA-02｜G1｜补真实 Agent 队列全链路和运行版本检查（B3）
 

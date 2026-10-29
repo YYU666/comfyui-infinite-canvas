@@ -79,7 +79,7 @@ def _restrict_key_file(path):
         raise RuntimeError("无法确认当前 Windows 用户，未保存密钥。")
     result = subprocess.run(
         ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
-        capture_output=True, text=True, timeout=10, check=False,
+        capture_output=True, text=True, encoding="mbcs", errors="replace", timeout=10, check=False,
     )
     if result.returncode:
         raise RuntimeError("无法限制密钥文件权限，已删除未受保护的文件。")

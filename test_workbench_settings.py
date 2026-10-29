@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from workbench_settings import SettingsError, WorkbenchSettings, deepseek_status, read_deepseek_key, save_deepseek_key
+from workbench_settings import SettingsError, WorkbenchSettings, _restrict_key_file, deepseek_status, read_deepseek_key, save_deepseek_key
 
 
 class SettingsTests(unittest.TestCase):
@@ -92,6 +92,15 @@ class SettingsTests(unittest.TestCase):
             status = deepseek_status()
             self.assertEqual(status["source"], "environment")
             self.assertNotIn("sk-environment-secret", json.dumps(status))
+
+    def test_icacls_output_uses_windows_code_page_under_python_utf8(self):
+        with mock.patch("workbench_settings.os.name", "nt"), \
+             mock.patch.dict(os.environ, {"USERDOMAIN": "TEST", "USERNAME": "user"}), \
+             mock.patch("workbench_settings.subprocess.run") as run:
+            run.return_value.returncode = 0
+            _restrict_key_file(Path("deepseek.key"))
+        self.assertEqual(run.call_args.kwargs["encoding"], "mbcs")
+        self.assertEqual(run.call_args.kwargs["errors"], "replace")
 
 
 if __name__ == "__main__":

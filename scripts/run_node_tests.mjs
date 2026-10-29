@@ -24,6 +24,7 @@ const suites = {
     'test-resolution.mjs',
   ],
   browser: [
+    'test-canvas-clipboard-ui.mjs',
     'test-canvas-projects.mjs',
     'test-launcher-ui.mjs',
     'test-m2-ui.mjs',

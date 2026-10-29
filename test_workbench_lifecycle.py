@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from workbench_lifecycle import atomic_write_json, instance_path, port_is_free, read_instance, remove_instance, runtime_dir
+from workbench_lifecycle import atomic_write_json, instance_path, port_is_free, read_instance, remove_instance, restrict_private_file, runtime_dir
 
 
 class LifecycleTests(unittest.TestCase):
@@ -39,6 +39,15 @@ class LifecycleTests(unittest.TestCase):
             atomic_write_json(instance_path(), {"pid": 123, "token": "updated"})
         self.assertEqual(restrict.call_count, 2)
         restrict.assert_called_with(instance_path())
+
+    def test_icacls_output_uses_windows_code_page_under_python_utf8(self):
+        with patch("workbench_lifecycle.os.name", "nt"), \
+             patch.dict(os.environ, {"USERDOMAIN": "TEST", "USERNAME": "user"}), \
+             patch("subprocess.run") as run:
+            run.return_value.returncode = 0
+            restrict_private_file(Path("instance.json"))
+        self.assertEqual(run.call_args.kwargs["encoding"], "mbcs")
+        self.assertEqual(run.call_args.kwargs["errors"], "replace")
 
     def test_invalid_instance_is_ignored(self):
         instance_path().write_text("not json", encoding="utf-8")
