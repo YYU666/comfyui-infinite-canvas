@@ -1,5 +1,13 @@
 const ACTIVE_STATES = new Set(['queued', 'running', 'finishing']);
 
+export function takeOutputIdentity({ projectId, shotId, jobId, attempt = 1, promptId, output }) {
+  return JSON.stringify([projectId, shotId, jobId || promptId, attempt, promptId, output?.filename, output?.subfolder || '', output?.type || 'output']);
+}
+
+export function comfyExternalAsset(output) {
+  return `comfy://view?${new URLSearchParams({ filename: output?.filename || '', subfolder: output?.subfolder || '', type: output?.type || 'output' })}`;
+}
+
 export function queueOwnsCompletion(node) {
   return Boolean(node?.data?.queueJobId);
 }

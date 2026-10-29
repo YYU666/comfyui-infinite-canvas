@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from project_store import ProjectStore, StoreError, _migrate, _safe_project_file
+from agent_io import configure_utf8
 
 
 def main():
@@ -50,4 +51,5 @@ def main():
 
 
 if __name__ == "__main__":
+    configure_utf8()
     raise SystemExit(main())

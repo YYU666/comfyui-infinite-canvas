@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from workbench_lifecycle import read_instance
+from agent_io import configure_utf8
 
 
 TOOLS = [
@@ -129,4 +130,5 @@ def main():
 
 
 if __name__ == "__main__":
+    configure_utf8()
     main()

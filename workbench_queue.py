@@ -41,6 +41,32 @@ class ComfyQueueAdapter:
     def submit(self, workflow, client_id):
         return self._request("/prompt", {"prompt": workflow, "client_id": client_id})["prompt_id"]
 
+    def preflight(self, workflow):
+        """Validate registered nodes and model choices without submitting or uploading."""
+        object_info = self._request("/object_info", timeout=max(self.timeout, 15))
+        missing_nodes = sorted({node.get("class_type") for node in workflow.values()
+                                if node.get("class_type") not in object_info})
+        if missing_nodes:
+            raise ValueError(f"ComfyUI 未注册节点：{', '.join(missing_nodes)}")
+        model_inputs = {"UNETLoader": "unet_name", "CLIPLoader": "clip_name", "VAELoader": "vae_name", "LoraLoaderModelOnly": "lora_name"}
+        checked = []
+        missing_models = []
+        for node in workflow.values():
+            class_type = node.get("class_type")
+            field = model_inputs.get(class_type)
+            if not field:
+                continue
+            value = node.get("inputs", {}).get(field)
+            definition = object_info[class_type].get("input", {}).get("required", {}).get(field)
+            choices = definition[0] if isinstance(definition, list) and definition and isinstance(definition[0], list) else None
+            if choices is not None and value not in choices:
+                missing_models.append(str(value))
+            else:
+                checked.append(str(value))
+        if missing_models:
+            raise ValueError(f"ComfyUI 缺少模型或 LoRA：{', '.join(sorted(set(missing_models)))}")
+        return {"nodes": len(workflow), "models": checked}
+
     def cancel(self, prompt_id):
         current = self._request("/queue")
 

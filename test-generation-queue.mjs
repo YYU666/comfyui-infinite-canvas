@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { queueJobAction, queueOwnsCompletion, queueOwnsStage } from './src/generation-queue.js';
+import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, takeOutputIdentity } from './src/generation-queue.js';
 
 const node = (data = {}) => ({ id: 'generator-1', type: 'generator', data: { status: 'idle', progress: 0, ...data } });
 const job = (data = {}) => ({ id: 'job-1', projectId: 'project-1', nodeId: 'generator-1', status: 'queued', progress: 0, comfyPromptId: null, ...data });
@@ -54,4 +54,11 @@ const job = (data = {}) => ({ id: 'job-1', projectId: 'project-1', nodeId: 'gene
   assert.equal(cancelled.patch.progress, 0);
 }
 
-console.log('GENERATION_QUEUE_STATE_OK stale=false progressRegression=false terminal=true');
+{
+  const output = { filename: '中文 结果.png', subfolder: 'shots/a', type: 'output' };
+  const identity = takeOutputIdentity({ projectId: 'prj_1', shotId: 's1', jobId: 'job-1', attempt: 2, promptId: 'prompt-1', output });
+  assert.equal(identity, '["prj_1","s1","job-1",2,"prompt-1","中文 结果.png","shots/a","output"]');
+  assert.equal(comfyExternalAsset(output), 'comfy://view?filename=%E4%B8%AD%E6%96%87+%E7%BB%93%E6%9E%9C.png&subfolder=shots%2Fa&type=output');
+}
+
+console.log('GENERATION_QUEUE_STATE_OK stale=false progressRegression=false terminal=true outputIdentity=true');

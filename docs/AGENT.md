@@ -28,6 +28,8 @@ C:\ComfyUI_windows_portable\python_embeded\python.exe agent_mcp.py
 6. 生成后用 `wait` 等终态；绑定镜头的结果由后端加入 Take，无需浏览器在线。
 7. `take.select` 后执行 `delivery.export`。导出时才把外部 ComfyUI 输出复制到项目目录。
 
+Take 的 `comfy://view?...` 是对 ComfyUI 原输出的引用，不是项目内副本。若原输出已被清理，预览和导出会明确报告结果缺失；需要先导出交付文件，再清理 ComfyUI 输出。共享工作流范围及浏览器专用模式见 `docs/WORKFLOW_SUPPORT.md`。
+
 ## 核心 HTTP
 
 ```text

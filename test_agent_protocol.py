@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_mcp import TOOLS
 from agent_protocol import AgentProtocol, estimate_tokens
 from project_domain import ProjectDomain
-from project_store import ProjectStore, RevisionConflict
+from project_store import ProjectStore, RevisionConflict, StoreError
 from workbench_queue import QueueManager
 
 
@@ -27,6 +27,8 @@ class FakeAdapter:
     def __init__(self):
         self.submissions = 0
         self.uploads = []
+        self.preflights = []
+        self.preflight_error = None
 
     def submit(self, workflow, client_id):
         self.submissions += 1
@@ -39,6 +41,12 @@ class FakeAdapter:
     def upload_image(self, filename, content):
         self.uploads.append((filename, content))
         return f"workbench/{filename}"
+
+    def preflight(self, workflow):
+        self.preflights.append(workflow)
+        if self.preflight_error:
+            raise ValueError(self.preflight_error)
+        return {"nodes": len(workflow), "models": []}
 
     def cancel(self, prompt_id):
         return None
@@ -193,6 +201,87 @@ class AgentProtocolTests(unittest.TestCase):
         replay = self.protocol.apply(pid, payload)
         self.assertTrue(replay["idempotent"])
         self.assertEqual(len([job for job in self.queue.snapshot()["jobs"] if job.get("projectId") == pid]), 1)
+
+    def test_wait_rejects_other_project_without_any_write(self):
+        first = self.store.create("项目 A")
+        second = self.store.create("项目 B")
+        result = self.protocol.apply(first["id"], {"opId": "job-a", "ops": [{"op": "shot.create"}, {"op": "generate", "target": "s1"}]})
+        job_id = next(item["job"] for item in result["results"] if "job" in item)
+        before_first = self.store.get(first["id"])
+        before_second = self.store.get(second["id"])
+        with self.assertRaises(StoreError) as caught:
+            self.protocol.wait(second["id"], job_id, 0)
+        self.assertEqual(caught.exception.code, "JOB_PROJECT_CONFLICT")
+        self.assertEqual(self.store.get(first["id"]), before_first)
+        self.assertEqual(self.store.get(second["id"]), before_second)
+
+    def test_multi_output_recovery_and_repeated_wait_are_exactly_once(self):
+        document = self.store.create("多输出归档")
+        pid = document["id"]
+        self.protocol.apply(pid, {"opId": "shot-multi", "ops": [{"op": "shot.create"}]})
+        document = self.store.get(pid)
+        job = {"id": "job_multi", "projectId": pid, "shotId": "s1", "nodeId": document["shots"][0]["canvasNodeId"],
+               "status": "done", "attempts": 1, "comfyPromptId": "prompt_multi",
+               "history": {"outputs": {"save": {"images": [
+                   {"filename": "one.png", "subfolder": "", "type": "output"},
+                   {"filename": "two.png", "subfolder": "", "type": "output"},
+               ]}}}}
+        original_create = self.protocol.domain.create_take
+        calls = [0]
+
+        def failing_create(*args, **kwargs):
+            result = original_create(*args, **kwargs)
+            calls[0] += 1
+            if calls[0] == 1:
+                raise SystemExit("lost after first output")
+            return result
+
+        self.protocol.domain.create_take = failing_create
+        with self.assertRaises(SystemExit):
+            self.protocol._materialize(pid, job)
+        self.protocol.domain.create_take = original_create
+        expected = None
+        for _ in range(10):
+            takes = self.protocol._materialize(pid, job)
+            if expected is None:
+                expected = takes
+            self.assertEqual(takes, expected)
+        document = self.store.get(pid)
+        self.assertEqual(len(document["shots"][0]["takes"]), 2)
+        self.assertTrue(all(take["asset"].startswith("comfy://view?") for take in document["shots"][0]["takes"]))
+        self.assertEqual(len({take["recipe"]["outputIdentity"] for take in document["shots"][0]["takes"]}), 2)
+        self.assertFalse(any("assets/agent-" in take["asset"] for take in document["shots"][0]["takes"]))
+        source = next(node for node in document["canvas"]["nodes"] if node["id"] == job["nodeId"])
+        self.assertEqual((source["data"]["status"], source["data"]["progress"]), ("done", 100))
+
+    def test_dry_run_builds_workflow_without_side_effects(self):
+        document = self.store.create("预检无副作用")
+        pid = document["id"]
+        self.protocol.apply(pid, {"opId": "dry-shot", "ops": [{"op": "shot.create", "prompt": "中文😀"}]})
+        before = self.store.get(pid)
+        jobs_before = len(self.queue.snapshot()["jobs"])
+        uploads_before = len(self.adapter.uploads)
+        result = self.protocol.apply(pid, {"opId": "dry-generate", "dryRun": True, "ops": [{"op": "generate", "target": "s1"}]})
+        self.assertTrue(result["dryRun"])
+        self.assertEqual(self.store.get(pid)["revision"], before["revision"])
+        self.assertEqual(self.store.get(pid)["settings"].get("agentOperations"), before["settings"].get("agentOperations"))
+        self.assertEqual(len(self.queue.snapshot()["jobs"]), jobs_before)
+        self.assertEqual(len(self.adapter.uploads), uploads_before)
+        self.assertEqual(self.store.get(pid)["shots"][0]["takes"], [])
+        self.assertEqual(len(self.adapter.preflights), 1)
+
+    def test_dry_run_rejects_missing_model_without_side_effects(self):
+        document = self.store.create("预检拒绝缺模型")
+        pid = document["id"]
+        self.protocol.apply(pid, {"opId": "dry-model-shot", "ops": [{"op": "shot.create"}]})
+        before = self.store.get(pid)
+        self.adapter.preflight_error = "ComfyUI 缺少模型或 LoRA：missing.safetensors"
+        with self.assertRaises(StoreError) as caught:
+            self.protocol.apply(pid, {"opId": "dry-model", "dryRun": True, "ops": [{"op": "generate", "target": "s1"}]})
+        self.assertEqual(caught.exception.code, "PREFLIGHT_FAILED")
+        self.assertEqual(self.store.get(pid), before)
+        self.assertEqual(self.queue.snapshot()["jobs"], [])
+        self.assertEqual(self.adapter.submissions, 0)
 
 
 if __name__ == "__main__":

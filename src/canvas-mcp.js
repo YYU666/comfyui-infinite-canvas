@@ -39,6 +39,7 @@ function nodeSummary(node, includeContent = true) {
     stage: node.data.stage,
     progress: node.data.progress,
     promptId: node.data.promptId,
+    queueJobId: node.data.queueJobId,
     ...(includeContent ? { prompt: node.data.prompt, text: node.data.text } : {}),
     ...(node.data.mode === 'outfitEdit' ? { outfitLayout: node.data.outfitLayout || 'legacy', outfitPanel: node.data.outfitPanel || node.data.panelId || null, outfitPanels: node.data.outfitPanels || null } : {}),
     name: node.data.name || node.data.filename,
@@ -84,6 +85,50 @@ function schema(properties = {}, required = []) {
 }
 
 const nodeIdProperty = { type: 'string', description: '画布节点的完整 ID，可从 canvas_get_state 获取。' };
+
+function mcpNode(latest, id) {
+  const node = latest.current.nodesRef.current.find((item) => item.id === id);
+  if (!node) throw new Error(`找不到节点：${id}`);
+  return node;
+}
+
+export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
+  const initial = mcpNode(latest, nodeId);
+  if (['uploading', 'queued', 'running', 'finishing'].includes(initial.data.status)) throw new Error('节点已经在生成，请使用 canvas_wait_for_node 等待，避免重复提交。');
+  const before = initial.data.queueJobId;
+  await latest.current.actions.generateNode(nodeId);
+  const submitted = await waitImpl(() => {
+    const node = mcpNode(latest, nodeId);
+    if (node.data.status === 'error') throw new Error(node.data.error || '生成提交失败。');
+    return node.data.queueJobId && node.data.queueJobId !== before ? node : null;
+  }, 30000);
+  if (!wait) return { node: nodeSummary(submitted) };
+  const finished = await waitImpl(() => {
+    const node = mcpNode(latest, nodeId);
+    if (node.data.queueJobId !== submitted.data.queueJobId) return null;
+    if (['done', 'error', 'cancelled'].includes(node.data.status)) return node;
+    return null;
+  }, timeoutMs, 500);
+  if (finished.data.status !== 'done') throw new Error(finished.data.error || `生成结束状态：${finished.data.status}`);
+  const resultEdges = latest.current.edgesRef.current.filter((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
+  const resultEdge = resultEdges.find((edge) => mcpNode(latest, edge.target).data.sourcePromptId === submitted.data.promptId) || resultEdges.at(-1);
+  const resultNode = resultEdge ? mcpNode(latest, resultEdge.target) : null;
+  return { node: nodeSummary(finished), resultNode: nodeSummary(resultNode) };
+}
+
+export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, waitImpl = waitFor) {
+  const initial = mcpNode(latest, nodeId);
+  const promptId = initial.data.promptId;
+  const queueJobId = initial.data.queueJobId;
+  if (!promptId && !queueJobId) throw new Error('这个节点还没有提交生成任务。');
+  const finished = await waitImpl(() => {
+    const node = mcpNode(latest, nodeId);
+    const sameJob = queueJobId ? node.data.queueJobId === queueJobId : node.data.promptId === promptId;
+    return sameJob && ['done', 'error', 'cancelled'].includes(node.data.status) ? node : null;
+  }, timeoutMs, 500);
+  const resultEdge = latest.current.edgesRef.current.find((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
+  return { node: nodeSummary(finished), resultNode: resultEdge ? nodeSummary(mcpNode(latest, resultEdge.target)) : null };
+}
 
 export function useCanvasMcp({ nodesRef, edgesRef, projectName, server, actions }) {
   const latest = useRef(null);
@@ -209,29 +254,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, server, actions 
           wait: { type: 'boolean', description: '是否等待生成结束，默认 false。' },
           timeoutMs: { type: 'integer', minimum: 1000, maximum: 1500000, description: 'wait 为 true 时的等待上限，默认 300000 毫秒。' },
         }, ['nodeId']),
-        execute: respond(async ({ nodeId, wait = false, timeoutMs = 300000 }) => {
-          const initial = getNode(nodeId);
-          if (['uploading', 'queued', 'running', 'finishing'].includes(initial.data.status)) throw new Error('节点已经在生成，请使用 canvas_wait_for_node 等待，避免重复提交。');
-          const before = initial.data.promptId;
-          await latest.current.actions.generateNode(nodeId);
-          const submitted = await waitFor(() => {
-            const node = getNode(nodeId);
-            if (node.data.status === 'error') throw new Error(node.data.error || '生成提交失败。');
-            return node.data.promptId && node.data.promptId !== before ? node : null;
-          }, 30000);
-          if (!wait) return { node: nodeSummary(submitted) };
-          const finished = await waitFor(() => {
-            const node = getNode(nodeId);
-            if (node.data.promptId !== submitted.data.promptId) return null;
-            if (['done', 'error', 'cancelled'].includes(node.data.status)) return node;
-            return null;
-          }, timeoutMs, 500);
-          if (finished.data.status !== 'done') throw new Error(finished.data.error || `生成结束状态：${finished.data.status}`);
-          const resultEdges = latest.current.edgesRef.current.filter((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
-          const resultEdge = resultEdges.find((edge) => getNode(edge.target).data.sourcePromptId === submitted.data.promptId) || resultEdges.at(-1);
-          const resultNode = resultEdge ? getNode(resultEdge.target) : null;
-          return { node: nodeSummary(finished), resultNode: nodeSummary(resultNode) };
-        }),
+        execute: respond(async ({ nodeId, wait = false, timeoutMs = 300000 }) => generateNodeForMcp(latest, { nodeId, wait, timeoutMs })),
       },
       {
         name: 'canvas_wait_for_node',
@@ -241,17 +264,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, server, actions 
           timeoutMs: { type: 'integer', minimum: 1000, maximum: 1500000, description: '等待上限，默认 300000 毫秒。' },
         }, ['nodeId']),
         annotations: { readOnlyHint: true, untrustedContentHint: true },
-        execute: respond(async ({ nodeId, timeoutMs = 300000 }) => {
-          const initial = getNode(nodeId);
-          const promptId = initial.data.promptId;
-          if (!promptId) throw new Error('这个节点还没有提交生成任务。');
-          const finished = await waitFor(() => {
-            const node = getNode(nodeId);
-            return node.data.promptId === promptId && ['done', 'error', 'cancelled'].includes(node.data.status) ? node : null;
-          }, timeoutMs, 500);
-          const resultEdge = latest.current.edgesRef.current.find((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
-          return { node: nodeSummary(finished), resultNode: resultEdge ? nodeSummary(getNode(resultEdge.target)) : null };
-        }),
+        execute: respond(async ({ nodeId, timeoutMs = 300000 }) => waitForNodeForMcp(latest, { nodeId, timeoutMs })),
       },
       {
         name: 'canvas_delete_node',

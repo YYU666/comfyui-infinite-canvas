@@ -1,0 +1,62 @@
+[
+  {
+    "name": "text-turbo-defaults",
+    "mode": "text",
+    "options": {
+      "ratio": "16:9",
+      "resolution": "480P",
+      "duration": 5,
+      "seed": 42,
+      "turbo": true,
+      "prompt": "雨夜，人物看向镜头😀"
+    },
+    "references": []
+  },
+  {
+    "name": "text-full-quality-frames",
+    "mode": "text",
+    "options": {
+      "ratio": "9:16",
+      "resolution": "720P",
+      "duration": 8.25,
+      "seed": 0,
+      "turbo": false,
+      "prompt": "固定种子，完整采样"
+    },
+    "references": []
+  },
+  {
+    "name": "reference-mixed-order",
+    "mode": "reference",
+    "options": {
+      "ratio": "21:9",
+      "resolution": "1080P",
+      "duration": 5,
+      "seed": 281306,
+      "turbo": true,
+      "refImageSize": "1024",
+      "prompt": "@角色图 与 @视频参考 一起出现，@旁白 保留"
+    },
+    "references": [
+      { "kind": "image", "name": "workbench/角色 一.png", "title": "角色图" },
+      { "kind": "video", "name": "workbench/action.mp4", "title": "视频参考" },
+      { "kind": "image", "name": "workbench/outfit.png", "title": "服装" },
+      { "kind": "audio", "name": "workbench/voice.mp3", "title": "旁白" }
+    ]
+  },
+  {
+    "name": "reference-full-quality",
+    "mode": "reference",
+    "options": {
+      "ratio": "1:1",
+      "resolution": "480P",
+      "duration": 3,
+      "seed": 7,
+      "turbo": false,
+      "prompt": "@参考"
+    },
+    "references": [
+      { "kind": "image", "name": "workbench/reference.png", "title": "参考" }
+    ]
+  }
+]

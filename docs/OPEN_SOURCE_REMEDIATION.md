@@ -4,7 +4,7 @@
 - 基线：`web` / `909be8b7b773d64aa7f004a4117188167938c260` / 本地 `v1.0.0`
 - 依据：[深度审计](audits/2026-10-29-deep-audit.md)与 `C:\Users\a\Documents\DSH\H3工作台-v1.0.0-审计报告-20261029.md`
 - 目标：不仅“源码可见”，还要达到可合法使用、可独立安装、可复现验收、可持续维护的开源发布水平。
-- 当前状态：安全批次和生命周期批次已完成；生命周期批次全量后端 20 个文件、110 项测试通过，前端定向测试及构建通过。其余批次仍按下列勾选状态执行。
+- 当前状态：安全、生命周期、Agent／Take 三批已完成。本批全量后端 22 个文件、120 项测试通过；WebMCP 队列状态、输出身份测试及前端构建通过。共享合同测试修复了 9:16／720P 在 Agent 端由 736 错算为 704 的取整偏差。其余批次仍按下列勾选状态执行。
 
 ## 1. 发布门禁
 
@@ -73,38 +73,38 @@
 
 ## 3. Agent、队列与 Take 一致性
 
-### [ ] AGENT-01｜G0｜CLI／MCP 全流程固定 UTF-8（A11、B1、P2-1、P2-7）
+### [x] AGENT-01｜G0｜CLI／MCP 全流程固定 UTF-8（A11、B1、P2-1、P2-7）
 
 - 位置：`agent_mcp.py`、`agent_cli.py`、`h3wb.py`、相关测试。
 - 修改：入口显式重配 stdin/stdout/stderr 为 UTF-8，或使用 buffer 按 UTF-8 读写；MCP stdout 只输出协议消息；诊断输出走 stderr。
 - 验收：Windows 默认 GBK 环境下，中文、emoji、非 ASCII 入参的 CLI/MCP initialize/list/call 全部通过；不再依赖 `PYTHONUTF8` 或 `PYTHONIOENCODING`；修复后发布测试数与实际结果一致。
 
-### [ ] AGENT-02｜G1｜WebMCP 以 queueJobId 判断提交成功（A12）
+### [x] AGENT-02｜G1｜WebMCP 以 queueJobId 判断提交成功（A12）
 
 - 位置：`src/canvas-mcp.js`、`src/CanvasWorkbench.jsx`、`workbench_queue.py`。
 - 修改：入队成功即返回 queueJobId；无 promptId 的正常排队不报错；`wait=false` 不等待 GPU 分配 promptId；`wait=true` 在同一用户超时预算内跟踪终态。
 - 验收：队列暂停、GPU 忙、排队超过 30 秒、任务失败和正常完成分别测试；不得出现“接口报失败但后台仍执行”的状态分裂。
 
-### [ ] AGENT-03｜G0｜wait 和归档强制验证项目／镜头归属（A13）
+### [x] AGENT-03｜G0｜wait 和归档强制验证项目／镜头归属（A13）
 
 - 位置：`agent_protocol.py`、`agent_api.py`。
 - 修改：等待、写 Take、更新节点前同时验证 `projectId/shotId/nodeId/jobId` 关联；不匹配时零写入并返回明确冲突。
 - 验收：两个项目存在相同局部镜头 ID 时，对 B 调用 wait(A-job) 被拒绝；A/B 的 Take、节点、revision 均不被错误修改。
 
-### [ ] TAKE-01｜G0｜按 attempt＋输出身份幂等归档（A09、A10、P1-2）
+### [x] TAKE-01｜G0｜按 attempt＋输出身份幂等归档（A09、A10、P1-2）
 
 - 位置：`agent_protocol.py`、`project_domain.py`、`src/generation-queue.js`、`src/CanvasWorkbench.jsx`、`delivery_export.py`。
 - 修改：后端按 `project/shot/job/attempt/output` 建立唯一身份；多输出支持逐输出补齐或事务提交；前端刷新后用持久化状态去重。
 - 修改：删除不存在的 `assets/agent-...` 假路径。遵循“默认引用 ComfyUI 输出、导出时复制”的既定决策，Take 应显式保存 external 引用；若改为项目资产，必须真实写入并登记哈希。
 - 验收：连续刷新／SSE 重连 10 次 Take 数不变；第 1/N 条写入后逐点中断可补齐且每条恰好一次；节点状态最终一致；ComfyUI 原输出被清理时的预览／导出行为与文档一致。
 
-### [ ] TAKE-02｜G1｜dryRun 覆盖 generate 预检（P2-8）
+### [x] TAKE-02｜G1｜dryRun 覆盖 generate 预检（P2-8）
 
 - 位置：`agent_protocol.py`、`agent_workflow.py`。
 - 修改：dryRun 校验模型、参考资产、参数、工作流构建和项目／镜头关联，但不提交队列、不写成功回执、不创建 Take。
 - 验收：真实 apply 会暴露的输入错误在 dryRun 阶段返回；合法 dryRun 无副作用；revision 和队列内容保持不变。
 
-### [ ] WF-01｜G1｜前后端工作流增加共享合同测试
+### [x] WF-01｜G1｜前后端工作流增加共享合同测试
 
 - 位置：`src/workbench-api.js`、`agent_workflow.py`。
 - 修改：对共享的 H3 文生视频和图片参考视频模式固定输入／输出合同；校验节点类型、模型文件名、参数映射、参考顺序和输出身份；各自特有模式明确列入支持矩阵。

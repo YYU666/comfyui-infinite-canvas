@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import math
+
 
 RATIOS = {"16:9": (832, 480), "9:16": (480, 832), "1:1": (640, 640), "4:3": (736, 544), "3:4": (544, 736), "21:9": (960, 416)}
 SCALES = {"480P": 1, "720P": 1.5, "1080P": 2.25}
 
 
+def _js_round(value):
+    """Match JavaScript Math.round for the non-negative recipe values used here."""
+    return math.floor(value + 0.5)
+
+
 def dimensions(ratio="16:9", resolution="480P"):
     width, height = RATIOS.get(ratio, RATIOS["16:9"])
     scale = SCALES.get(resolution, 1)
-    snap = lambda value: max(32, round(value * scale / 32) * 32)
+    snap = lambda value: max(32, _js_round(value * scale / 32) * 32)
     return snap(width), snap(height)
 
 
 def frames(seconds=5):
-    return max(5, min(362, 5 + 17 * round((float(seconds) * 24 - 5) / 17)))
+    return max(5, min(362, 5 + 17 * _js_round((float(seconds) * 24 - 5) / 17)))
 
 
 def build_video_workflow(options, references=None):

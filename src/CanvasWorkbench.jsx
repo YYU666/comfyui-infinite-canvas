@@ -30,7 +30,7 @@ import CreativePanel from './CreativePanel';
 import { initializeProjects, listProjects, createProject, openProject, closeProject, saveProject, projectSummary, saveProjectFile, readProjectFile, createDomainEntity, createTake } from './project-store-http';
 import { AutoSaveController } from './auto-save';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
-import { queueJobAction, queueOwnsCompletion, queueOwnsStage } from './generation-queue';
+import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, takeOutputIdentity } from './generation-queue';
 import { ensureReferenceTags, nextReferenceTag, referenceDescriptors } from './reference-tags';
 import { ObjectUrlLru } from './object-url-lru';
 import { assertMediaCacheIdentity, mediaCacheIdentity, reconcileMediaCache } from './canvas-media-cache';
@@ -742,13 +742,17 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       if (source?.data.shotId) {
         await persistProject();
         const current = { ...projectRef.current, revision: revisionRef.current };
-        const extension = result.filename?.split('.').pop()?.replace(/[^A-Za-z0-9]/g, '') || (isImage ? 'png' : 'mp4');
-        const takeResult = await createTake(current, source.data.shotId, {
-          asset: `assets/${String(promptId).replace(/[^A-Za-z0-9._-]/g, '_')}.${extension}`,
-          recipe: { output: result, promptId, mode: source.data.mode, seed: source.data.seed, prompt: source.data.prompt,
-            ratio: source.data.ratio, resolution: source.data.resolution, duration: source.data.duration, turbo: source.data.turbo },
-        });
-        updateProjectDocument(takeResult.project);
+        const outputIdentity = takeOutputIdentity({ projectId: project.id, shotId: source.data.shotId, jobId: source.data.queueJobId, promptId, output: result });
+        const shot = current.shots?.find((item) => item.id === source.data.shotId);
+        const existing = shot?.takes?.find((take) => take.recipe?.outputIdentity === outputIdentity);
+        if (!existing) {
+          const takeResult = await createTake(current, source.data.shotId, {
+            asset: comfyExternalAsset(result),
+            recipe: { output: result, outputIdentity, promptId, jobId: source.data.queueJobId, mode: source.data.mode, seed: source.data.seed, prompt: source.data.prompt,
+              ratio: source.data.ratio, resolution: source.data.resolution, duration: source.data.duration, turbo: source.data.turbo },
+          });
+          updateProjectDocument(takeResult.project);
+        }
       }
       const pinMedia = !source?.data.shotId || source?.data.pinResultToCanvas;
       setNodes((items) => items.map((node) => node.id === id ? {
@@ -763,7 +767,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       completedJobsRef.current.delete(promptId);
       updateNode(id, { status: 'error', error: error.message, stage: '读取结果失败' });
     }
-  }, [setNodes, setEdges, updateNode, persistProject, updateProjectDocument]);
+  }, [setNodes, setEdges, updateNode, persistProject, updateProjectDocument, project.id]);
 
   const syncQueueJob = useCallback(async (job) => {
     if (!job || job.projectId !== project.id || !job.nodeId) return;

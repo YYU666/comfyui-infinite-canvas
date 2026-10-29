@@ -59,6 +59,22 @@ class ProjectSchemaTests(unittest.TestCase):
         )
         self.assertEqual(validate_project(document), [])
 
+    def test_take_accepts_only_local_or_canonical_comfy_output(self):
+        document = copy.deepcopy(self.document)
+        take = {"id": "t1", "asset": "comfy://view?filename=result.png&subfolder=shots&type=output", "poster": None,
+                "recipe": {"output": {"filename": "result.png", "subfolder": "shots", "type": "output"}},
+                "rating": 0, "selected": False, "rejected": False, "notes": "", "tags": [], "createdAt": document["createdAt"]}
+        document["shots"] = [{"id": "s1", "number": "S01", "name": "镜头", "prompt": "", "characterId": None,
+                              "outfitId": None, "locationId": None,
+                              "params": {"ratio": "16:9", "resolution": "480P", "duration": 5, "seed": 0, "turbo": False},
+                              "takes": [take], "status": "done", "tags": [], "canvasNodeId": None}]
+        self.assertEqual(validate_project(document), [])
+        for asset in ("https://example.com/result.png", "comfy://view?filename=../secret.png&subfolder=&type=output"):
+            with self.subTest(asset=asset):
+                invalid = copy.deepcopy(document)
+                invalid["shots"][0]["takes"][0]["asset"] = asset
+                self.assertTrue(validate_project(invalid))
+
 
 if __name__ == "__main__":
     unittest.main()

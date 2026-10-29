@@ -390,6 +390,9 @@ class AgentProtocol:
             elif action == "generate":
                 generate.append((index, operation))
             elif action == "cancel":
+                job = self.queue.get(operation.get("job")) if self.queue else None
+                if not job or job.get("projectId") != project_id:
+                    raise StoreError("JOB_PROJECT_CONFLICT", "取消任务不属于当前项目，未执行任何修改。", 409)
                 cancels.append(operation.get("job"))
                 results.append({"op": index, "job": operation.get("job")})
             elif action == "delivery.export":
@@ -399,6 +402,20 @@ class AgentProtocol:
         changed = list(dict.fromkeys(changed))
         receipt = {"ok": True, "rev": current["revision"] + 1, "changed": changed, "warnings": [], "results": results}
         if payload.get("dryRun"):
+            for _, operation in generate:
+                target = operation.get("target")
+                shot = self._entity(document, "shots", target) if str(target or "").startswith("s") else None
+                node = resolve_node(document, shot.get("canvasNodeId") if shot else target)
+                if operation.get("workflow") is not None:
+                    if not isinstance(operation["workflow"], dict) or not operation["workflow"]:
+                        raise StoreError("BAD_REQUEST", "generate.workflow 必须是非空 ComfyUI 工作流。")
+                    workflow = operation["workflow"]
+                else:
+                    workflow = self._workflow(document, node, shot, upload=False)
+                try:
+                    self.queue.adapter.preflight(workflow)
+                except (OSError, ValueError, RuntimeError) as error:
+                    raise StoreError("PREFLIGHT_FAILED", f"生成预检失败：{error}", 400) from error
             return {**receipt, "dryRun": True, "meta": {"estTokens": estimate_tokens(receipt)}}
         pending = {
             "status": "pending", "phase": "business",
@@ -442,6 +459,8 @@ class AgentProtocol:
             receipt["changed"] = list(dict.fromkeys(changed))
             saved = checkpoint(f"generated:{index}")
         for job_id in pending.get("cancels", []):
+            if self.queue.get(job_id).get("projectId") != project_id:
+                raise StoreError("JOB_PROJECT_CONFLICT", "取消任务不属于当前项目，已停止后续副作用。", 409)
             self.queue.cancel(job_id)
             saved = checkpoint(f"cancelled:{job_id}")
         for index, operation in pending.get("exports", []):
@@ -456,7 +475,7 @@ class AgentProtocol:
         receipt["meta"] = {"estTokens": estimate_tokens({key: value for key, value in receipt.items() if key != "meta"})}
         return receipt
 
-    def _workflow(self, document, node, shot=None):
+    def _workflow(self, document, node, shot=None, upload=True):
         data = node["data"]
         options = {**data, **((shot or {}).get("params") or {})}
         options["prompt"] = (shot or {}).get("prompt", data.get("prompt", ""))
@@ -470,7 +489,7 @@ class AgentProtocol:
                 path = self.store.asset_file(document["id"], source["data"]["assetPath"])
                 if item["kind"] != "image":
                     raise StoreError("BAD_REQUEST", "Agent 当前仅支持直接上传项目图片参考；视频/音频请先使用画布上传。")
-                item["name"] = self.queue.adapter.upload_image(path.name, path.read_bytes())
+                item["name"] = self.queue.adapter.upload_image(path.name, path.read_bytes()) if upload else f"workbench/{path.name}"
             else:
                 item["name"] = source["data"].get("name") or source["data"].get("filename")
             if not item["name"]:
@@ -492,30 +511,50 @@ class AgentProtocol:
                         files.append(item)
         return files
 
+    @staticmethod
+    def _output_identity(project_id, job, output):
+        value = [project_id, job.get("shotId"), job["id"], job.get("attempts", 1), job.get("comfyPromptId"),
+                 output.get("filename"), output.get("subfolder", ""), output.get("type", "output")]
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _external_asset(output):
+        query = urllib.parse.urlencode({"filename": output.get("filename", ""), "subfolder": output.get("subfolder", ""), "type": output.get("type", "output")})
+        return f"comfy://view?{query}"
+
     def _materialize(self, project_id, job):
         if not job.get("shotId") or job.get("status") != "done":
             return []
+        if job.get("projectId") != project_id:
+            raise StoreError("JOB_PROJECT_CONFLICT", "任务不属于当前项目，已拒绝归档。", 409)
         document = self._get(project_id)
         shot = self._entity(document, "shots", job["shotId"])
         if not shot:
             raise StoreError("NOT_FOUND", "任务关联镜头已不存在。", 404)
+        if shot.get("canvasNodeId") != job.get("nodeId"):
+            raise StoreError("JOB_NODE_CONFLICT", "任务、镜头和画布节点归属不一致，已拒绝归档。", 409)
         prompt_id = job.get("comfyPromptId") or job["id"]
-        existing = [take["id"] for take in shot["takes"] if take.get("recipe", {}).get("promptId") == prompt_id]
-        if existing:
-            return existing
         files = self._outputs(job)
         if not files:
             raise StoreError("OUTPUT_MISSING", "任务已完成但没有可加入 Take 的输出。")
         created = []
         for output in files:
             result = {**output, "url": output_url(output)}
-            extension = str(output["filename"]).rsplit(".", 1)[-1]
-            saved = self.domain.create_take(project_id, shot["id"], {"asset": f"assets/agent-{job['id']}-{len(created)}.{extension}",
-                "recipe": {"output": result, "promptId": prompt_id, "jobId": job["id"], "refs": [shot.get("characterId"), shot.get("outfitId")]}}, document["revision"])
+            identity = self._output_identity(project_id, job, output)
+            existing = next((take for take in shot["takes"] if take.get("recipe", {}).get("outputIdentity") == identity
+                             or (take.get("recipe", {}).get("promptId") == prompt_id
+                                 and take.get("recipe", {}).get("output", {}).get("filename") == output.get("filename"))), None)
+            if existing:
+                created.append(existing["id"])
+                continue
+            saved = self.domain.create_take(project_id, shot["id"], {"asset": self._external_asset(output),
+                "recipe": {"output": result, "outputIdentity": identity, "promptId": prompt_id, "jobId": job["id"],
+                           "attempt": job.get("attempts", 1), "refs": [shot.get("characterId"), shot.get("outfitId")]}}, document["revision"])
             document = saved["project"]
+            shot = self._entity(document, "shots", job["shotId"])
             created.append(saved["item"]["id"])
         node = next((item for item in document["canvas"]["nodes"] if item["id"] == job.get("nodeId")), None)
-        if node:
+        if node and node["data"].get("status") != "done":
             node["data"].update({"status": "done", "progress": 100, "stage": "已加入 Take 栈"})
             document = self.store.save(project_id, document, document["revision"])
         return created
@@ -529,6 +568,10 @@ class AgentProtocol:
         deadline = time.monotonic() + timeout_ms / 1000
         while True:
             jobs = [self.queue.get(job_id) for job_id in job_ids]
+            wrong_project = next((job for job in jobs if job.get("projectId") != project_id), None)
+            if wrong_project:
+                raise StoreError("JOB_PROJECT_CONFLICT", "等待任务不属于当前项目，未修改任何 Take 或节点。", 409,
+                                 {"job": wrong_project["id"], "projectId": wrong_project.get("projectId")})
             if all(job["status"] in TERMINAL for job in jobs) or time.monotonic() >= deadline:
                 break
             time.sleep(0.1)

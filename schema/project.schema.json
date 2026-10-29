@@ -29,6 +29,12 @@
       "pattern": "^assets/[A-Za-z0-9][A-Za-z0-9._/-]*$",
       "not": { "pattern": "(?:^|/)\\.\\.(?:/|$)" }
     },
+    "takeAsset": {
+      "anyOf": [
+        { "$ref": "#/$defs/assetPath" },
+        { "type": "string", "pattern": "^comfy://view\\?filename=(?![^&]*\\.\\.)[^&/\\\\\\s]+&subfolder=(?![^&]*\\.\\.)[^&\\s]*&type=(?:input|output|temp)$" }
+      ]
+    },
     "nullableId": { "type": ["string", "null"] },
     "settings": {
       "type": "object",
@@ -113,7 +119,7 @@
       "required": ["id", "asset", "poster", "recipe", "rating", "selected", "createdAt"],
       "properties": {
         "id": { "type": "string", "pattern": "^t[1-9][0-9]*$" },
-        "asset": { "$ref": "#/$defs/assetPath" },
+        "asset": { "$ref": "#/$defs/takeAsset" },
         "poster": { "type": ["string", "null"], "anyOf": [{ "$ref": "#/$defs/assetPath" }, { "type": "null" }] },
         "recipe": { "type": "object" },
         "rating": { "type": "integer", "minimum": 0, "maximum": 5 },

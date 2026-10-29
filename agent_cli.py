@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_mcp import WorkbenchClient, protocol_resource, schema_resource
+from agent_io import configure_utf8
 
 
 def parser():
@@ -103,6 +104,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    configure_utf8()
     try:
         main()
     except (RuntimeError, ValueError, OSError, json.JSONDecodeError) as error:

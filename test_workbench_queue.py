@@ -210,6 +210,24 @@ class QueueTests(unittest.TestCase):
                 self.assertEqual(calls[1], ("/queue", {"delete": ["target"]}))
                 self.assertEqual(any(path == "/interrupt" for path, _ in calls), expected_interrupt)
 
+    def test_comfy_preflight_checks_nodes_and_models_without_submit(self):
+        adapter = ComfyQueueAdapter()
+        adapter._request = lambda path, payload=None, timeout=None: {
+            "UNETLoader": {"input": {"required": {"unet_name": [["known.safetensors"], {}]}}},
+            "LoadImage": {"input": {"required": {"image": [["only-current-input.png"], {}]}}},
+        }
+        workflow = {
+            "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "known.safetensors"}},
+            "100": {"class_type": "LoadImage", "inputs": {"image": "workbench/not-uploaded-during-dry-run.png"}},
+        }
+        self.assertEqual(adapter.preflight(workflow), {"nodes": 2, "models": ["known.safetensors"]})
+        workflow["1"]["inputs"]["unet_name"] = "missing.safetensors"
+        with self.assertRaisesRegex(ValueError, "missing.safetensors"):
+            adapter.preflight(workflow)
+        workflow["2"] = {"class_type": "MissingNode", "inputs": {}}
+        with self.assertRaisesRegex(ValueError, "MissingNode"):
+            adapter.preflight(workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

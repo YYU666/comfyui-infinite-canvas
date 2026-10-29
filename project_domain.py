@@ -159,6 +159,11 @@ class ProjectDomain:
 
         def mutate(document):
             shot = _entity(document, "shots", shot_id)
+            output_identity = data.get("recipe", {}).get("outputIdentity")
+            if output_identity:
+                existing = next((item for item in shot["takes"] if item.get("recipe", {}).get("outputIdentity") == output_identity), None)
+                if existing:
+                    return existing
             take = {"id": self._next_id(document, "takes"), "asset": data.get("asset"),
                     "poster": data.get("poster"), "recipe": data.get("recipe", {}), "rating": 0,
                     "selected": False, "rejected": False, "notes": "", "tags": [],
