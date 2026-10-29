@@ -1,62 +1,93 @@
-# H3 视频工作台 v1.0.0
+# H3 视频工作台 v1.0.1-rc.1
 
-本地网页端 PRD v2.0 的 M0–M4 功能发布。形态保持为 Python 后端 + 浏览器 UI，不包含 exe、安装包、桌面壳、托盘、自动更新或 M5 模型中心。
+这是开源发布候选版，不是稳定版。v1.0.0 的历史标签保持不变；本版集中修复数据安全、任务生命周期、Agent／Take 一致性、安装复现、许可证和社区工程问题。
 
-## 本版功能
+## 发布状态
 
-- **M0 清场与基线**：唯一源码入口、旧部署归档、schema v3、启动互斥、动态端口、健康检查、随机访问令牌与优雅停止。
-- **M1 项目与启动器**：磁盘项目、六种模板、HTTP CRUD、素材 Range、原子写、revision/CAS、锁、20 版备份、回收站、ZIP 导入导出、外部项目与基础 CLI。
-- **M2 核心可靠性**：50 步撤销/重做、AUTO-SAVE-1 修复、持久化后台队列、跨重启恢复、精准取消/重试、SSE、manifest/联系表、安全反代、素材 GC、设置诊断与通知。
-- **M3 创作层**：项目内角色/服装/场景库、Shot/Take、2–4 条审片对比、评级/选用/淘汰、搜索标签、画布互操作及导出时复制交付文件。
-- **M4 Agent 协议 v2**：稳定短句柄、digest/增量/query/apply/wait、字段与 token 预算、幂等回执、语义操作、HTTP/CLI/stdio MCP、resources、长提示词 hash/diff 和无浏览器全链路。
+- G0 数据安全与核心链路整改已完成。
+- 全量回归、干净环境在线安装、三类路径启动及真实 Agent 队列全链路已完成。
+- 100 项目、50 GiB 合成素材的规模测试已运行 37 轮、2205.532 秒（约 36 分 46 秒）后由用户要求暂停；未满 8 小时，也未执行到中途重启点。因此 QA-03 和稳定版发布门禁仍未通过。
+- 仓库公开、远程推送和 GitHub Release 在 REL-02 执行前均不属于已完成事项。
 
-详细阶段证据见 `docs/M0-REPORT.md` 至 `docs/M4-REPORT.md`。
+## 主要整改
 
-## 启动与停止
+- 修复 ZIP 导入目录逃逸、模型安装覆盖旧文件、活动 ComfyUI 被停止、上传／提交／取消竞态、撤销素材身份错用、离开页面保存屏障及 Agent outbox 恢复。
+- 补齐项目关闭、锁释放、服务端只读、instance 令牌 ACL、日志轮转和凭据脱敏。
+- 统一 CLI／MCP UTF-8；WebMCP 以 queueJobId 表示入队成功；wait、Take 和导出强制校验项目／镜头归属，按 attempt＋输出身份去重。
+- 便携版 Python 缺失时安装直接失败，不回退系统 Python；10 个 Python 直接依赖带哈希锁定，六个第三方节点固定仓库＋commit。
+- 核心 `core-h3` 七项模型提供官方来源、字节数和 SHA256；完整 33 项逐文件记录许可证与待核实边界，不捆绑模型权重。
+- 采用 Apache-2.0，补齐 NOTICE、第三方与模型许可证矩阵、贡献指南、安全政策、Issue／PR 模板和 CI。
 
-1. 按 `README.md` 和 `AGENTS.md` 完成 ComfyUI、节点、模型及前端安装校验。
-2. 双击 `启动.vbs`，浏览器打开启动器；通常为 `http://127.0.0.1:8790/`，端口占用时会使用 8791–8799。
-3. 双击 `停止.bat` 优雅停止工作台。`start.bat` 只用于调试。
-4. 默认项目根为 `%USERPROFILE%\Documents\H3 Workbench`；生成结果默认引用 ComfyUI 输出，导出时复制到项目 `outputs/`。
+## 可复现验收命令
 
-关闭浏览器标签页不会停止后台服务或取消队列。不要在 ComfyUI 有生成任务时停止或重启 ComfyUI。
-
-## Agent 使用入口
-
-- 完整协议、凭据、HTTP/CLI/MCP 配置和示例：`docs/AGENT.md`。
-- 日常操作规范：`.agents/skills/comfyui-infinite-canvas/SKILL.md`。
-- 本地 CLI 默认从 `instance.json` 读取地址和令牌，例如：
+在仓库根目录使用已安装项目依赖的 Python 与 Node.js 20.19+：
 
 ```bat
-C:\ComfyUI_windows_portable\python_embeded\python.exe agent_cli.py state --project prj_xxx
-C:\ComfyUI_windows_portable\python_embeded\python.exe agent_cli.py protocol
-C:\ComfyUI_windows_portable\python_embeded\python.exe agent_mcp.py
-```
-
-推荐流程为 `context/digest → query → 批量 apply → wait → take.select → delivery.export`。写操作使用唯一 `opId`；遇到 revision 冲突时停止并重新读取，不覆盖其他窗口修改。
-
-## 发布验收
-
-在仓库根目录执行：
-
-```bat
-for %f in (test_*.py) do C:\ComfyUI_windows_portable\python_embeded\python.exe "%f"
-for %f in (test-canvas-history.mjs test-auto-save.mjs test-m2-ui.mjs test-launcher-ui.mjs test-m2-acceptance.mjs test-queue-notifications.mjs test-generation-queue.mjs test-m3-ui.mjs) do node "%f"
-C:\ComfyUI_windows_portable\python_embeded\python.exe scripts\agent_benchmark.py
+npm run test:all
 npm run build
 ```
 
-本次发布实际结果：
+Windows UTF-8 回归：
 
-- 18 个 Python 测试文件、共 **96 项测试全部通过**。
-- 上述 **8 组前端/浏览器回归全部通过**；200 节点打开 235 ms、拖动 385 ms。
-- 200 节点/20 镜头/5 角色/50 Take 基准达标：digest 15/100、query 64/150、回执 22/30、四操作 apply 48/200、wait 25/50、工具 schema 336/600 tokens。
-- 构建前真实 ComfyUI 队列为 `running=0, pending=0`；`npm run build` 通过，仅有单 chunk 超过 500 kB 的体积警告。
+```bat
+set PYTHONUTF8=1
+python -m unittest discover -s . -p "test_*.py" -t .
+set PYTHONUTF8=0
+```
+
+隔离规模验收（正式默认参数即 100 项目、50 GiB、8 小时）：
+
+```bat
+python scripts\qa_soak.py --root .qa-soak
+```
+
+该脚本只操作新建的隔离目录和合成上游，不提交真实 GPU 任务。`--root` 必须为空；短参数 smoke test 不能作为发布验收。正式报告写入 `.qa-soak/report.json`，逐轮样本写入 `.qa-soak/samples.jsonl`。
+
+## 本候选版实际结果
+
+### 全量回归与构建
+
+- Windows 默认编码：148 项 Python 测试通过。
+- `PYTHONUTF8=1`：148 项 Python 测试通过，未再出现 ACL 输出解码异常。
+- 17 个纯 Node 测试文件通过；6 个隔离浏览器／后端文件通过，包括迁移后的画布剪贴板测试。
+- `npm run build` 通过；仅有单 chunk 体积警告，不属于功能失败。
+- 200 节点短测：打开 234 ms、拖拽 412 ms。该短测不替代规模长跑。
+
+### 干净安装与路径
+
+- 从 `git archive HEAD` 生成干净源码，在隔离便携布局中完成真实在线安装；10 个锁定包全部安装，`pip check` 无损坏依赖。
+- 六个第三方节点均从 GitHub 拉取并精确匹配锁定 commit；KJNodes 依赖、`npm ci` 和前端构建成功。
+- 中文空格路径启动通过；模拟仅一个固定盘且无 `D:/H3_Workbench` 时启动并选择模拟数据盘通过；通过 `subst` 的 Q: 逻辑非 C 盘启动通过。
+- 无 D 盘项是磁盘模拟，Q 盘项是逻辑盘测试，不冒称物理移除 D 盘或第二块物理盘验证。临时服务均已停止，未重启用户自有 ComfyUI。
+
+### 真实 Agent 队列全链路
+
+在临时项目 `prj_d4a4b99371eb48d7844e63a935cb8fe0` 完成 `shot.create → generate → app queue → wait → Take(t1) → take.select → delivery.export`。
+
+- prompt ID：`7f977be8-4e5d-47b6-9822-a4512c80b60d`；attempt 1。
+- 提交：2026-10-29 05:26:34 UTC；Take 归档：05:32:06.988017 UTC。
+- 输出：832×480、124 帧、5.165 秒、约 24.0077 fps。
+- 导出：`S01/S01_T01.mp4`，945474 字节；SHA256 `310b8039124fadd70d18ede5e184760bde7a1b252209f8f13ea13bbf5b6e767a`，与 manifest 一致。
+- 最终 app 与真实 ComfyUI 队列均为 0。该证据是真实 Agent 队列链路，不与 FakeAdapter 仿真或直接 GPU 冒烟混称。
+
+### 规模测试暂停证据
+
+正式测试先有一次播种连接超时：第 64 个项目建立 TCP 连接时失败，前 63 个完整保留；随后修正为仅在播种且尚未发出 HTTP 字节时有限重连，并从头重跑。正式计时阶段不允许连接重试，也不盲目重放写操作。
+
+第二次完成 100 项目、53,687,091,200 字节（50 GiB）合成素材播种，随后运行 37 轮、2205.532 秒由用户暂停：
+
+- 项目列表 p95：705.896 ms；保存 p95：85.922 ms。
+- RSS：起始 43,565,056 字节，结束 42,364,928 字节，峰值 43,606,016 字节。
+- 句柄：起始／结束／峰值均为 353。
+- `queue.json`：起始／结束均为 55 字节，无任务增长。
+- revision 总和：播种后 300，暂停时 486；增加 186，等于孤儿清理一次加 37 轮×5 次保存。
+- 孤儿预览只选中合成孤儿文件；实际删除 16 字节孤儿后，被画布引用的合成素材保持原大小。
+- 暂停前未达到 4 小时重启点，因此没有恢复时间或重启一致性结论；暂停后 50 GiB 隔离素材仍保留，未清理用户数据。
 
 ## 真实边界与已知限制
 
-- Agent 建镜头→生成→选片→导出以及 M3 生成入 Take 使用隔离 FakeAdapter/仿真上游验收；**本次未提交真实 GPU 生成任务**，不冒称真实模型质量或性能已验收。
-- **未执行 8 小时／100 项目／50 GB 长跑**，因此不宣称该项稳定性矩阵已通过。
-- 本机只发现并迁移 2 个真实旧项目（76/148 节点）；另用 3 个合成旧项目验证迁移，未虚构第三个真实项目。
-- 服务端语义生成当前覆盖 H3 文生视频和图片参考视频；项目视频/音频素材直接 Agent 上传及其他专用工作流仍走画布流程。
-- `estTokens` 是确定性的四字符/token 估算，用于预算与 CI，不是特定模型的精确 tokenizer 计数。
+- 完整 8 小时 QA-03 尚未完成，不能宣称稳定版规模与长期运行矩阵通过。
+- Muse V3.0 FP8 的精确公开来源，以及部分模型的 SHA256、许可证与再分发条件仍待核实；未知项不得推定为可商用或可再分发。
+- 服务端语义生成覆盖 H3 文生视频和图片参考视频；其他专用工作流仍走画布。模型生成质量及速度取决于授权、显卡、输入和参数。
+- `estTokens` 是四字符／token 的确定性预算估算，不是特定模型的精确 tokenizer。
+- 不提供多人在线协作、exe 安装包、桌面壳或自动更新。

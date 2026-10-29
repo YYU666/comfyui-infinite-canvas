@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1-rc.1"
 
 
 def runtime_dir() -> Path:
