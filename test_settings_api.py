@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -80,7 +81,9 @@ class SettingsAPITests(unittest.TestCase):
         })
         self.assertEqual(status, 200)
         self.assertEqual(self.server.queue_manager.snapshot()["concurrency"], 2)
-        self.assertEqual(self.server.doctor.model_roots, [self.root / "models"])
+        self.assertEqual(len(self.server.doctor.model_roots), 1)
+        self.assertEqual(self.server.doctor.model_roots[0].name, "models")
+        self.assertTrue(os.path.samefile(self.server.doctor.model_roots[0].parent, self.root))
         document = self.server.project_store.create("Defaults")
         self.assertEqual(document["settings"], {
             "ratio": "9:16", "resolution": "720P", "duration": 8, "template": "blank",

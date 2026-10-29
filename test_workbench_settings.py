@@ -45,7 +45,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["defaults"], {"ratio": "9:16", "resolution": "720P", "duration": 8})
         self.assertFalse(result["notifications"])
         loaded = WorkbenchSettings(self.path).load()
-        self.assertEqual(loaded["modelRoots"], [str(self.root / "models-a"), str(self.root / "models-b")])
+        self.assertEqual([Path(path).name for path in loaded["modelRoots"]], ["models-a", "models-b"])
+        for path in loaded["modelRoots"]:
+            self.assertTrue(os.path.samefile(Path(path).parent, self.root))
         self.assertEqual(loaded["logLevel"], "WARNING")
         self.assertNotIn("deepseekKey", json.loads(self.path.read_text(encoding="utf-8")))
 

@@ -34,6 +34,7 @@ def git_head(repository: Path) -> str:
 
 
 def install_nodes(comfy_dir: Path, python: Path) -> None:
+    configure_utf8()
     custom_nodes = comfy_dir / "custom_nodes"
     custom_nodes.mkdir(parents=True, exist_ok=True)
     own_node = HERE / "comfy-nodes" / "h3_workbench_refine"
@@ -65,6 +66,7 @@ def install_nodes(comfy_dir: Path, python: Path) -> None:
 
 
 def main() -> int:
+    configure_utf8()
     parser = argparse.ArgumentParser(description="安装 Refmuse 本地工作台、节点和前端")
     parser.add_argument("--comfy-root", type=Path, default=HERE.parent, help="ComfyUI 便携版根目录")
     parser.add_argument("--models-source", type=Path, help="可选：已下载并解压的模型包目录")

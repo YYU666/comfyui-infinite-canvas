@@ -13,8 +13,9 @@ const runtime = path.join(temporary, 'runtime');
 const projects = path.join(temporary, 'projects');
 const env = { ...process.env, H3_WORKBENCH_RUNTIME_DIR: runtime, H3_PROJECTS_ROOT: projects, H3_WORKBENCH_DATA_DIR: path.join(temporary, 'data'), H3_WORKBENCH_NO_BROWSER: '1', H3_WORKBENCH_TEST_MODE: '1' };
 const backend = spawn(python, ['video_workbench_launcher.py'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
-backend.stdout.resume();
-backend.stderr.resume();
+let backendOutput = '';
+backend.stdout.on('data', (chunk) => { backendOutput = `${backendOutput}${chunk}`.slice(-12000); });
+backend.stderr.on('data', (chunk) => { backendOutput = `${backendOutput}${chunk}`.slice(-12000); });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let browser;
 let base;
@@ -38,7 +39,7 @@ try {
   let instance;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try { instance = JSON.parse(await readFile(path.join(runtime, 'instance.json'), 'utf8')); break; }
-    catch { if (backend.exitCode !== null) throw new Error(`backend exited ${backend.exitCode}`); await sleep(100); }
+    catch { if (backend.exitCode !== null) throw new Error(`backend exited ${backend.exitCode}: ${backendOutput}`); await sleep(100); }
   }
   assert(instance?.pid > 0, 'clipboard test must create an isolated runtime instance');
   base = `http://127.0.0.1:${instance.port}`;

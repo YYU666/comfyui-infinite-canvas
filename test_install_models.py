@@ -52,8 +52,11 @@ class InstallModelsSafetyTests(unittest.TestCase):
     def test_publish_failure_never_overwrites_concurrent_target(self):
         original_link = os.link
         def racing_link(source, target):
-            if Path(target) == self.target():
-                Path(target).write_bytes(b"other")
+            target_path = Path(target)
+            expected = self.target()
+            # GitHub Windows runners may return an 8.3 short path for one side.
+            if target_path.name == expected.name and os.path.samefile(target_path.parent, expected.parent):
+                target_path.write_bytes(b"other")
                 raise FileExistsError("target appeared")
             return original_link(source, target)
         with patch.object(install_models.os, "link", side_effect=racing_link):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import tempfile
@@ -56,7 +57,8 @@ class InstallPathTests(unittest.TestCase):
             usage = {str(first_disk): shutil._ntuple_diskusage(200, 1, 199), str(second_disk): shutil._ntuple_diskusage(200, 50, 150)}
             with mock.patch("video_workbench_launcher.shutil.disk_usage", side_effect=lambda path: usage[str(path)]):
                 selected = resolve_data_dir([first_disk, second_disk], state_path=state)
-            self.assertEqual(selected, first_disk / "H3_Workbench")
+            self.assertEqual(selected.name, "H3_Workbench")
+            self.assertTrue(os.path.samefile(selected.parent, first_disk))
             self.assertTrue(state.is_file())
             usage[str(first_disk)] = shutil._ntuple_diskusage(200, 150, 50)
             with mock.patch("video_workbench_launcher.shutil.disk_usage", side_effect=lambda path: usage[str(path)]):

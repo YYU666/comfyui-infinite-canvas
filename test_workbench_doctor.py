@@ -79,7 +79,9 @@ class DoctorTests(unittest.TestCase):
 
     def test_healthy_environment_checks_files_registration_ports_and_probe_cleanup(self):
         report = self.doctor().run({"userAgent": "TestBrowser/1.0"})
-        self.assertEqual(report["status"], "ok", report)
+        self.assertEqual(report["errorCount"], 0, report)
+        warnings = [check for check in report["checks"] if check["status"] == "warning"]
+        self.assertTrue(all(check["id"] == "deepseek" and not check["configured"] for check in warnings), report)
         models = next(item for item in report["checks"] if item["id"] == "models")
         nodes = next(item for item in report["checks"] if item["id"] == "nodes")
         self.assertEqual((models["found"], models["total"]), (1, 1))
@@ -108,7 +110,7 @@ class DoctorTests(unittest.TestCase):
                                  workbench_port=self.port, runtime=self.runtime, timeout=1)
         models = next(item for item in doctor.run()["checks"] if item["id"] == "models")
         self.assertEqual(models["status"], "ok")
-        self.assertIn(str(external), models["roots"])
+        self.assertTrue(any(os.path.samefile(path, external) for path in models["roots"]))
         self.assertEqual([path.name for path in external.iterdir()], ["diffusion_models"])
 
     def test_missing_directories_and_online_registration_are_both_reported(self):

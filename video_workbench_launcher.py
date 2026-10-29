@@ -745,16 +745,19 @@ def main():
                 api_status()
                 LOGGER.info("检测到运行中的 ComfyUI，直接连接；停止工作台不会关闭它。")
             except (urllib.error.URLError, TimeoutError, ConnectionError):
-                command = [
-                    str(ROOT / "python_embeded" / "python.exe"), "-s", str(ROOT / "ComfyUI" / "main.py"),
-                    "--windows-standalone-build", "--output-directory", str(OUTPUT_DIR), "--input-directory", str(INPUT_DIR),
-                    "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch",
-                    "--enable-cors-header", WEB_URL,
-                ]
-                comfy_process, comfy_logger_process = start_owned_comfy(command, ROOT, log_dir / "comfyui.log")
-                server.comfy_owned = True
-                server.comfy_process = comfy_process
-                LOGGER.info("已隐藏启动 ComfyUI，PID=%s", comfy_process.pid)
+                if os.environ.get("H3_WORKBENCH_TEST_MODE") == "1":
+                    LOGGER.info("隔离测试模式：不启动或依赖真实 ComfyUI。")
+                else:
+                    command = [
+                        str(ROOT / "python_embeded" / "python.exe"), "-s", str(ROOT / "ComfyUI" / "main.py"),
+                        "--windows-standalone-build", "--output-directory", str(OUTPUT_DIR), "--input-directory", str(INPUT_DIR),
+                        "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch",
+                        "--enable-cors-header", WEB_URL,
+                    ]
+                    comfy_process, comfy_logger_process = start_owned_comfy(command, ROOT, log_dir / "comfyui.log")
+                    server.comfy_owned = True
+                    server.comfy_process = comfy_process
+                    LOGGER.info("已隐藏启动 ComfyUI，PID=%s", comfy_process.pid)
 
             atomic_write_json(instance_path(), {
                 "port": server.server_port,
