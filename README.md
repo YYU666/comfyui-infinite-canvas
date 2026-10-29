@@ -4,9 +4,9 @@
 
 ## 环境要求
 
-- Windows，ComfyUI 便携版；本机验证版本为 ComfyUI 0.42.5，H3 Relay 要求 0.37.0 或更新版本。
+- Windows，ComfyUI 便携版；当前唯一完成在线节点验证的版本为 ComfyUI 0.42.5，更低版本不在支持矩阵中。
 - NVIDIA 显卡；复杂 H3 角色替换建议 24 GB 显存，较低显存需自行缩短时长和降低分辨率。
-- Git、Node.js 20+，以及足够的模型磁盘空间。
+- Git、Node.js 20.19+，以及足够的模型磁盘空间。
 - 模型包共 33 个去重文件、164.803 GiB；权重不在 GitHub 仓库中。
 
 ## 最快安装
@@ -23,7 +23,9 @@
    也可以手动把模型目录复制到 `ComfyUI\models\`，无需重复运行安装器。
 5. 双击 `启动.vbs`，浏览器打开 `http://127.0.0.1:8790/`；`start.bat` 仅用于调试，`停止.bat` 用于优雅停止。
 
-安装器不会更新或覆盖已有的第三方节点目录，只会克隆缺失节点；工作台自己的 `h3_workbench_refine` 节点会同步到 ComfyUI。
+安装器使用 `requirements.lock` 的 SHA256 校验 Python 依赖，并按 `install.py` 中的仓库＋commit 安装第三方节点。已有节点提交不一致时会保留原目录并停止，不会自动更新或覆盖；工作台自己的 `h3_workbench_refine` 节点会同步到 ComfyUI。便携版 Python 缺失时安装直接失败，不回退系统 Python。
+
+仓库默认放在便携版根目录；其他位置需在启动前设置 `H3_COMFY_ROOT` 为便携版根目录。仓库路径包含空格或中文时使用同样的相对定位规则。
 
 > **交给 Agent 安装：**让 Agent 先阅读仓库根目录的 [`AGENTS.md`](AGENTS.md)，再严格按其中步骤执行。该文件包含环境检查、下载、重命名、模型配置、节点安装和最终验收命令。
 
@@ -112,8 +114,8 @@ MiniMax H3、Qwen 2.1、SAM3、SeedVR2 和循环节点由新版 ComfyUI 本体�
 ## 数据与隐私
 
 - 服务只监听 `127.0.0.1`。
-- 默认参考素材和生成结果位于 `D:\H3_Workbench`；可通过 `H3_WORKBENCH_DATA_DIR` 修改。
-- 项目默认保存在 `%USERPROFILE%\Documents\H3 Workbench`，可在设置中更改项目根目录；切换目录不会自动迁移旧项目。
+- 已存在的旧数据目录 `D:\H3_Workbench` 会继续使用；首次启动从固定磁盘中选择剩余空间充足的位置，不要求存在 D 盘。可用 `H3_WORKBENCH_DATA_DIR` 显式指定参考素材和生成结果目录。
+- 项目默认保存在 `%USERPROFILE%\Documents\H3 Workbench`，可在设置中更改项目根目录；数据目录或项目目录变更均不会自动迁移旧内容。
 - 仓库不包含人物母图、测试生成素材、浏览器 Cookie、API 密钥或模型权重。
 
 ## 画布项目列表
@@ -147,3 +149,5 @@ node test-canvas-layout.mjs
 node test-canvas-projects.mjs
 python -m py_compile video_workbench_launcher.py install.py scripts\install_models.py scripts\prepare_cloud_package.py scripts\verify_workbench.py
 ```
+
+更新 Python 版本约束后，在便携版根目录执行 `python_embeded\python.exe video-workbench\scripts\generate_requirements_lock.py` 重建哈希锁。`requirements.txt`、`requirements.lock` 和生成脚本的变更必须放在同一个可独立审查的提交中。

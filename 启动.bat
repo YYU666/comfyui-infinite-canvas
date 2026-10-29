@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul
 set "PYTHON=%~dp0..\python_embeded\python.exe"
-if not exist "%PYTHON%" set "PYTHON=C:\ComfyUI_windows_portable\python_embeded\python.exe"
+if defined H3_COMFY_ROOT set "PYTHON=%H3_COMFY_ROOT%\python_embeded\python.exe"
 if not exist "%PYTHON%" (
   echo 未找到 ComfyUI 便携版 Python。请检查 ComfyUI 安装位置。
   pause

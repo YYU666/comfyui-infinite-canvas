@@ -57,7 +57,7 @@ C:\ComfyUI_windows_portable\
 
 - `PORTABLE_ROOT`：上述便携版根目录。
 - `WORKBENCH`：`PORTABLE_ROOT\video-workbench`。
-- `MODEL_STAGE`：下载并整理后的临时模型目录，建议 `D:\H3-Workbench-Models`。
+- `MODEL_STAGE`：下载并整理后的临时模型目录，由用户选择空间充足且可写的磁盘，不要求存在 D 盘；示例为 `D:\H3-Workbench-Models`。
 - `MODEL_STAGE` 下直接是 `diffusion_models/`、`loras/`、`text_encoders/`、`vae/` 等，不要再多套一层 `models/` 或分享文件夹。
 
 若仓库不在便携版根目录，先移动或重新克隆到正确位置；不要通过猜路径继续安装。
@@ -65,10 +65,10 @@ C:\ComfyUI_windows_portable\
 ## 4. 安装前检查
 
 1. 确认 `ComfyUI\main.py` 与 `python_embeded\python.exe` 存在。
-2. 确认 Git 可用，Node.js 为 20 或更新版本，npm 可用。
+2. 确认 Git 可用，Node.js 为 20.19 或更新版本，npm 可用。
 3. 检查模型目标盘剩余空间。完整清单为 **33 个去重文件、164.803 GiB**；下载和复制同时存在时需要更多空间。
 4. 检查 `ComfyUI\custom_nodes\` 中已有节点，记录但不要在安装前更新它们。
-5. 检查 ComfyUI 版本。本机验证版本为 0.42.5，H3 Relay 要求 0.37.0 或更新版本。
+5. 检查 ComfyUI 版本。当前唯一完成在线节点验证的版本为 0.42.5；更低版本不在支持矩阵中，不能只凭 H3 Relay 的最低版本推断整个工作台兼容。
 6. 检查 NVIDIA 显卡和显存。复杂 H3 角色替换建议 24 GB；低显存环境只能降低分辨率和时长，不能因此替换清单模型。
 
 任何前置条件不满足时，先报告缺失项，不要跳过检查后宣称可用。
@@ -83,9 +83,9 @@ python_embeded\python.exe video-workbench\install.py --comfy-root "."
 
 该命令会：
 
-- 安装 `requirements.txt` 中的 Python 依赖；
+- 使用 `requirements.lock` 中的 SHA256 校验安装 Python 依赖；便携版 Python 缺失时直接报错，不回退系统 Python；
 - 同步工作台专用 `h3_workbench_refine` 节点；
-- 克隆缺失的第三方节点，保留已有节点目录；
+- 按 `install.py` 中的仓库＋commit 安装缺失的第三方节点；已有节点提交不一致时保留原目录并停止，不自动更新或覆盖；
 - 安装第三方节点各自声明的 Python 依赖；
 - 执行 `npm ci` 和 `npm run build`，生成 `dist/`。
 
@@ -178,7 +178,7 @@ python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-ro
 
 ## 9. 启动与在线验收
 
-关闭占用 8188 端口的旧 ComfyUI 实例后，启动 `video-workbench\start.bat`。等待 ComfyUI 和画布服务就绪：
+确认没有正在运行或排队的 ComfyUI 任务后，启动 `video-workbench\启动.vbs`；不要为启动工作台而关闭其他客户端正在使用的 ComfyUI。等待 ComfyUI 和画布服务就绪：
 
 - ComfyUI：`http://127.0.0.1:8188/`
 - 视频工作台：`http://127.0.0.1:8790/`

@@ -127,7 +127,7 @@ def _absolute_path(value, label):
 class WorkbenchSettings:
     def __init__(self, path=None, comfy_root=None, projects_root=None):
         self.path = Path(path).resolve() if path else runtime_dir() / "config.json"
-        default_comfy = comfy_root or os.environ.get("H3_COMFY_ROOT") or r"C:\ComfyUI_windows_portable"
+        default_comfy = comfy_root or os.environ.get("H3_COMFY_ROOT") or str(Path(__file__).resolve().parent.parent)
         default_projects = projects_root or os.environ.get("H3_PROJECTS_ROOT") or str(Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / "H3 Workbench")
         self.defaults = {
             "projectsRoot": str(Path(default_projects).resolve()),

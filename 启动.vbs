@@ -1,12 +1,11 @@
 Option Explicit
-Dim shell, fso, root, pythonw, launcher
+Dim shell, fso, root, comfyRoot, pythonw, launcher
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
-pythonw = fso.BuildPath(fso.GetParentFolderName(root), "python_embeded\pythonw.exe")
-If Not fso.FileExists(pythonw) Then
-  pythonw = "C:\ComfyUI_windows_portable\python_embeded\pythonw.exe"
-End If
+comfyRoot = shell.Environment("PROCESS").Item("H3_COMFY_ROOT")
+If comfyRoot = "" Then comfyRoot = fso.GetParentFolderName(root)
+pythonw = fso.BuildPath(comfyRoot, "python_embeded\pythonw.exe")
 launcher = fso.BuildPath(root, "video_workbench_launcher.py")
 If Not fso.FileExists(pythonw) Then
   MsgBox "ComfyUI portable pythonw.exe was not found. Check the ComfyUI installation path.", 16, "H3 Workbench"

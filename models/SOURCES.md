@@ -81,7 +81,7 @@
    python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-root "."
    ```
 
-8. 双击 `video-workbench\start.bat`。ComfyUI 启动后再加 `--online` 校验一次，确认实际节点注册也无缺失。
+8. 双击 `video-workbench\启动.vbs`。ComfyUI 启动后再加 `--online` 校验一次，确认实际节点注册也无缺失。
 9. 遇到校验失败，先按报告修正文件名、目录和文件大小；不要启动大模型生成任务反复试错。
 
 ### 当前下载注意

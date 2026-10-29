@@ -48,11 +48,39 @@ from workbench_lifecycle import (
 )
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_COMFY_ROOT = HERE.parent if (HERE.parent / "python_embeded").is_dir() else Path(r"C:\ComfyUI_windows_portable")
+DEFAULT_COMFY_ROOT = HERE.parent
 ROOT = Path(os.environ.get("H3_COMFY_ROOT", str(DEFAULT_COMFY_ROOT)))
 COMFY_URL = os.environ.get("H3_COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
 WEB_URL = "http://127.0.0.1:8790"
-DATA_DIR = Path(os.environ.get("H3_WORKBENCH_DATA_DIR", r"D:\H3_Workbench"))
+
+
+def choose_data_dir(candidates, legacy=None):
+    """Keep an existing data root; otherwise pick the fixed disk with most free space."""
+    if legacy and Path(legacy).is_dir():
+        return Path(legacy)
+    available = []
+    for candidate in candidates:
+        path = Path(candidate)
+        try:
+            available.append((shutil.disk_usage(path).free, path))
+        except OSError:
+            continue
+    if not available:
+        return Path.home() / "Documents" / "H3 Workbench Data"
+    return max(available, key=lambda item: item[0])[1] / "H3_Workbench"
+
+
+def default_data_dir():
+    configured = os.environ.get("H3_WORKBENCH_DATA_DIR")
+    if configured:
+        return Path(configured)
+    legacy = Path("D:/H3_Workbench")
+    partitions = [Path(item.mountpoint) for item in psutil.disk_partitions(all=False)
+                  if os.name != "nt" or "fixed" in item.opts.lower()]
+    return choose_data_dir(partitions or [Path(HERE.anchor)], legacy=legacy)
+
+
+DATA_DIR = default_data_dir()
 INPUT_DIR = DATA_DIR / "references"
 OUTPUT_DIR = DATA_DIR / "generated"
 MAX_VIDEO_BYTES = 250 * 1024 * 1024
