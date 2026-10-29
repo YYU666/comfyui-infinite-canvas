@@ -24,6 +24,7 @@ run-outfit-quad.mjs
 Thumbs.db
 
 # Local test/comparison artifacts (never commit personal renders or screenshots)
+/.qa-*/
 /*.png
 /*.jpg
 /*.jpeg
