@@ -76,6 +76,10 @@ export async function openProjectPath(path, { readOnly = false } = {}) {
   }
 }
 
+export async function closeProject(id) {
+  return request(`/${id}/close`, json('POST', {}));
+}
+
 export async function saveProject(id, revision, name, canvas) {
   const current = await request(`/${id}`);
   const document = { ...current, name: name.trim() || '未命名项目', canvas };

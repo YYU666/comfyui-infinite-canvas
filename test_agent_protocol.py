@@ -79,7 +79,7 @@ class AgentProtocolTests(unittest.TestCase):
         self.assertLessEqual(receipt["meta"]["estTokens"], 30, receipt)
         increment = self.protocol.state(pid, since=1)
         self.assertEqual(increment["changed"], ["g1"])
-        self.assertEqual(self.protocol.state(pid, since=2)["unchanged"], True)
+        self.assertEqual(self.protocol.state(pid, since=receipt["rev"])["unchanged"], True)
         before = self.store.get(pid)
         with self.assertRaises(RevisionConflict):
             self.protocol.apply(pid, {"opId": "stale", "revision": 1, "ops": [{"op": "set", "target": "g1", "settings": {"seed": 99}}]})
@@ -137,6 +137,62 @@ class AgentProtocolTests(unittest.TestCase):
         self.store.save(pid, document, document["revision"])
         exported = self.protocol.apply(pid, {"opId": "export", "ops": [{"op": "delivery.export"}]})
         self.assertEqual(exported["results"][0]["export"]["count"], 1)
+
+    def test_pending_business_checkpoint_recovers_after_exception_and_system_exit(self):
+        for failure in (RuntimeError("injected"), SystemExit("injected")):
+            with self.subTest(failure=type(failure).__name__):
+                document = self.store.create(f"业务边界-{type(failure).__name__}")
+                pid = document["id"]
+                original_save = self.store.save
+                injected = [False]
+
+                def failing_save(*args, **kwargs):
+                    saved = original_save(*args, **kwargs)
+                    pending = saved["settings"].get("agentOperations", {}).get("recover-business", {})
+                    if pending.get("phase") == "business" and not injected[0]:
+                        injected[0] = True
+                        raise failure
+                    return saved
+
+                self.store.save = failing_save
+                with self.assertRaises(type(failure)):
+                    self.protocol.apply(pid, {"opId": "recover-business", "ops": [{"op": "create", "preset": "text_video"}]})
+                self.store.save = original_save
+                pending = self.store.get(pid)["settings"]["agentOperations"]["recover-business"]
+                self.assertEqual(pending["status"], "pending")
+                receipt = self.protocol.apply(pid, {"opId": "recover-business", "ops": [{"op": "create", "preset": "text_video"}]})
+                self.assertTrue(receipt["ok"])
+                self.assertEqual(len(self.store.get(pid)["canvas"]["nodes"]), 1)
+
+    def test_generate_crash_after_enqueue_recovers_exactly_one_job(self):
+        document = self.store.create("生成边界恢复")
+        pid = document["id"]
+        original_enqueue = self.queue.enqueue
+        injected = [False]
+
+        def failing_enqueue(payload):
+            job = original_enqueue(payload)
+            if payload.get("clientId", "").endswith(":1") and not injected[0]:
+                injected[0] = True
+                raise SystemExit("process lost after enqueue")
+            return job
+
+        self.queue.enqueue = failing_enqueue
+        payload = {"opId": "recover-generate", "ops": [{"op": "create", "preset": "text_video"}, {"op": "generate", "target": "g1"}]}
+        with self.assertRaises(SystemExit):
+            self.protocol.apply(pid, payload)
+        self.queue.enqueue = original_enqueue
+        self.assertEqual(self.store.get(pid)["settings"]["agentOperations"]["recover-generate"]["status"], "pending")
+        receipt = self.protocol.apply(pid, payload)
+        job_rows = [item for item in receipt["results"] if "job" in item]
+        self.assertEqual(len(job_rows), 1)
+        jobs = [job for job in self.queue.snapshot()["jobs"] if job.get("projectId") == pid]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["id"], job_rows[0]["job"])
+        self.assertEqual(self.store.get(pid)["canvas"]["nodes"][0]["data"]["queueJobId"], jobs[0]["id"])
+        replay = self.protocol.apply(pid, payload)
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual(len([job for job in self.queue.snapshot()["jobs"] if job.get("projectId") == pid]), 1)
 
 
 if __name__ == "__main__":

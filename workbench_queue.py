@@ -196,6 +196,7 @@ class QueueManager:
             "startedAt": None,
             "finishedAt": None,
             "comfyPromptId": None,
+            "cancelRequested": False,
             "error": None,
             "outputs": None,
             "history": None,
@@ -238,7 +239,11 @@ class QueueManager:
             job = self._find_locked(job_id)
             if job["status"] in TERMINAL:
                 return _public(job)
+            # Persist intent before any network await. A prompt returned after
+            # this point must still be registered and compensated by the worker.
+            job["cancelRequested"] = True
             prompt_id = job.get("comfyPromptId")
+            self._changed_locked("job.cancel_requested", job)
         if prompt_id:
             self.adapter.cancel(prompt_id)
         with self._lock:
@@ -254,7 +259,7 @@ class QueueManager:
             if job["status"] not in TERMINAL:
                 raise ValueError("任务尚未结束，不能重试。")
             job.update({"status": "queued", "stage": "后台队列等待中", "progress": 0, "eta": None, "startedAt": None, "finishedAt": None,
-                        "comfyPromptId": None, "error": None, "outputs": None, "history": None,
+                        "comfyPromptId": None, "cancelRequested": False, "error": None, "outputs": None, "history": None,
                         "planState": initial_state() if job.get("plan") else None})
             self._changed_locked("job.retry", job)
             return _public(job)
@@ -328,20 +333,36 @@ class QueueManager:
                 to_submit = submissions + [job for job in active if id(job) not in submitted_ids and job.get("plan") and not job.get("comfyPromptId")]
 
             for job in to_submit:
+                submit_attempt = job["attempts"]
                 try:
                     workflow = stage_workflow(job) if job.get("plan") else job["workflow"]
                     prompt_id = self.adapter.submit(workflow, job["clientId"])
                     with self._lock:
-                        if job["status"] in TERMINAL:
-                            continue
-                        job["comfyPromptId"] = prompt_id
+                        same_attempt = job["attempts"] == submit_attempt
+                        needs_cancel = bool(job.get("cancelRequested") or job["status"] in TERMINAL or not same_attempt)
+                        if same_attempt:
+                            job["comfyPromptId"] = prompt_id
+                        else:
+                            job.setdefault("cancelledPromptIds", []).append(prompt_id)
                         if job.get("plan"):
                             job["planState"]["promptIds"].append(prompt_id)
-                        else:
+                        elif same_attempt and not needs_cancel:
                             job["stage"] = "本地 GPU 生成中"
                         self._changed_locked("job.submitted", job)
+                    if needs_cancel:
+                        try:
+                            self.adapter.cancel(prompt_id)
+                        except Exception as exc:
+                            with self._lock:
+                                if same_attempt:
+                                    job["status"] = "error"
+                                    job["finishedAt"] = utc_now()
+                                    job["error"] = _error("COMFY_CANCEL_FAILED", exc, "任务 ID 已保留，请在 ComfyUI 队列中确认该任务后重试取消。")
+                                    self._changed_locked("job.error", job)
                 except Exception as exc:
                     with self._lock:
+                        if job["status"] in TERMINAL:
+                            continue
                         job["status"] = "error"
                         job["finishedAt"] = utc_now()
                         job["error"] = self._submission_error(exc)

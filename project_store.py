@@ -167,6 +167,7 @@ class ProjectStore:
         self._locks_guard = threading.Lock()
         self._held = set()
         self._opened_paths = {}
+        self._read_only = set()
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = None
 
@@ -276,8 +277,21 @@ class ProjectStore:
         path = self._project_path(project_id)
         return self._read(path)
 
+    def _set_read_only(self, path, read_only):
+        path = Path(path).resolve()
+        owns_lock = any(lock_path == path.parent / ".lock" and owner == self.owner_id for lock_path, owner in self._held)
+        if read_only and not owns_lock:
+            self._read_only.add(path)
+        elif not read_only:
+            self._read_only.discard(path)
+
+    def _require_writable(self, path):
+        if Path(path).resolve() in self._read_only:
+            raise StoreError("READ_ONLY", "当前项目以只读方式打开，服务端已拒绝写操作。", 403)
+
     def open(self, project_id, owner_id=None, read_only=False):
         path = self._project_path(project_id)
+        self._set_read_only(path, read_only)
         if not read_only:
             self.acquire_lock(path, owner_id)
         return self._read(path)
@@ -285,6 +299,7 @@ class ProjectStore:
     def open_path(self, directory, owner_id=None, read_only=False):
         path = (Path(directory).expanduser().resolve() / "project.json")
         document = self._read(path)
+        self._set_read_only(path, read_only)
         if not read_only:
             self.acquire_lock(path, owner_id)
         self._opened_paths[document["id"]] = path
@@ -292,10 +307,28 @@ class ProjectStore:
 
     def save(self, project_id, document, expected_revision):
         path = self._project_path(project_id)
+        self._require_writable(path)
         self.acquire_lock(path)
         if str(document.get("id")) != project_id or document.get("schemaVersion") != 3:
             raise StoreError("BAD_REQUEST", "项目 ID 或 schema 版本不一致。")
         return self._write(path, document, int(expected_revision))
+
+    def release(self, project_id):
+        path = self._project_path(project_id)
+        lock_path = path.parent / ".lock"
+        with self._guard(path):
+            for held_path, owner in list(self._held):
+                if held_path != lock_path:
+                    continue
+                try:
+                    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+                    if lock.get("owner") == owner:
+                        lock_path.unlink(missing_ok=True)
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    pass
+                self._held.discard((held_path, owner))
+            self._read_only.discard(path.resolve())
+        return {"closed": True, "id": project_id}
 
     def acquire_lock(self, path, owner_id=None):
         owner = owner_id or self.owner_id
@@ -307,8 +340,14 @@ class ProjectStore:
                 lock = json.loads(lock_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError):
                 lock = None
-            if lock and lock.get("owner") != owner and now - float(lock.get("heartbeat", 0)) < 30:
-                raise StoreError("LOCKED", "项目正由另一个实例编辑，请以只读方式打开。", 423, {"owner": lock.get("owner")})
+            if lock and lock.get("owner") != owner:
+                fresh = now - float(lock.get("heartbeat", 0)) < 30
+                try:
+                    owner_alive = _writer_running(int(lock.get("pid", 0)))
+                except (TypeError, ValueError):
+                    owner_alive = False
+                if fresh or owner_alive:
+                    raise StoreError("LOCKED", "项目正由另一个实例编辑，请以只读方式打开。", 423, {"owner": lock.get("owner")})
             atomic_write_json(lock_path, {"owner": owner, "pid": os.getpid(), "heartbeat": now})
             self._held.add((lock_path, owner))
             if not self._heartbeat_thread or not self._heartbeat_thread.is_alive():
@@ -398,6 +437,7 @@ class ProjectStore:
 
     def put_asset(self, project_id, filename, source, content_type=None):
         path = self._project_path(project_id)
+        self._require_writable(path)
         self.acquire_lock(path)
         extension = Path(filename).suffix.lower()
         if extension not in ASSET_EXTENSIONS:

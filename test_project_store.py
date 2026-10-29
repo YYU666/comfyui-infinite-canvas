@@ -96,7 +96,7 @@ class ProjectStoreTests(unittest.TestCase):
         finally:
             other.close()
 
-    def test_08_stale_lock_can_be_taken_over(self):
+    def test_08_only_stale_dead_process_lock_can_be_taken_over(self):
         self.store.acquire_lock(self.path)
         lock = self.path.parent / ".lock"
         payload = json.loads(lock.read_text(encoding="utf-8"))
@@ -104,6 +104,11 @@ class ProjectStoreTests(unittest.TestCase):
         lock.write_text(json.dumps(payload), encoding="utf-8")
         other = ProjectStore(self.root, "owner-b")
         try:
+            with self.assertRaises(StoreError) as caught:
+                other.acquire_lock(self.path)
+            self.assertEqual(caught.exception.status, 423)
+            payload["pid"] = 99999999
+            lock.write_text(json.dumps(payload), encoding="utf-8")
             self.assertEqual(other.acquire_lock(self.path)["owner"], "owner-b")
         finally:
             other.close()
@@ -220,6 +225,27 @@ class ProjectStoreTests(unittest.TestCase):
         for name in ("", "a/b", "CON", "name."):
             with self.subTest(name=name), self.assertRaises(StoreError):
                 self.store.create(name)
+
+    def test_22_release_and_server_side_read_only(self):
+        self.store.open(self.document["id"])
+        other = ProjectStore(self.root, "owner-b")
+        try:
+            opened = other.open(self.document["id"], read_only=True)
+            opened["name"] = "只读修改不应落盘"
+            with self.assertRaises(StoreError) as caught:
+                other.save(opened["id"], opened, opened["revision"])
+            self.assertEqual(caught.exception.code, "READ_ONLY")
+            with self.assertRaises(StoreError) as caught:
+                other.put_asset(opened["id"], "a.png", io.BytesIO(b"not-written"), "image/png")
+            self.assertEqual(caught.exception.code, "READ_ONLY")
+            self.store.release(self.document["id"])
+            editable = other.open(self.document["id"])
+            editable["name"] = "释放后可编辑"
+            saved = other.save(editable["id"], editable, editable["revision"])
+            self.assertEqual(saved["name"], "释放后可编辑")
+        finally:
+            other.close()
+        self.assertEqual(self.store.get(self.document["id"])["name"], "释放后可编辑")
 
 
 if __name__ == "__main__":

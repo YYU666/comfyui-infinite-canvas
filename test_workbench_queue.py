@@ -155,6 +155,36 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.manager.retry(job["id"])["status"], "queued")
         wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
 
+    def test_cancel_during_submit_registers_and_compensates_prompt_before_retry(self):
+        entered = threading.Event()
+        release = threading.Event()
+        original_submit = self.adapter.submit
+
+        def blocking_submit(workflow, client_id):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return original_submit(workflow, client_id)
+
+        self.adapter.submit = blocking_submit
+        job = self.manager.enqueue(payload())
+        self.manager.start()
+        wait_for(entered.is_set)
+        cancelled = self.manager.cancel(job["id"])
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertTrue(cancelled["cancelRequested"])
+        release.set()
+        wait_for(lambda: self.adapter.cancelled == ["prompt-1"])
+        stored = self.manager.get(job["id"])
+        self.assertEqual(stored["comfyPromptId"], "prompt-1")
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(len(self.adapter.submitted), 1)
+
+        retried = self.manager.retry(job["id"])
+        self.assertFalse(retried["cancelRequested"])
+        self.adapter.done = True
+        wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
+        self.assertEqual(len(self.adapter.submitted), 2)
+
     def test_comfy_cancel_only_interrupts_the_target_running_prompt(self):
         adapter = ComfyQueueAdapter()
         for running, pending, expected_interrupt in [

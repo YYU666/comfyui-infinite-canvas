@@ -297,6 +297,8 @@ class AgentProtocol:
             raise StoreError("BAD_REQUEST", "apply 必须提供 1–120 字符的 opId。")
         current = self._get(project_id)
         cached = current.get("settings", {}).get("agentOperations", {}).get(op_id)
+        if cached and cached.get("status") == "pending":
+            return self._finish_pending(project_id, op_id, current, cached)
         if cached:
             response = {**cached, "idempotent": True}
             response["meta"] = {"estTokens": estimate_tokens(response)}
@@ -398,39 +400,59 @@ class AgentProtocol:
         receipt = {"ok": True, "rev": current["revision"] + 1, "changed": changed, "warnings": [], "results": results}
         if payload.get("dryRun"):
             return {**receipt, "dryRun": True, "meta": {"estTokens": estimate_tokens(receipt)}}
-        document.setdefault("settings", {}).setdefault("agentOperations", {})[op_id] = receipt
+        pending = {
+            "status": "pending", "phase": "business",
+            "receipt": {key: copy.deepcopy(value) for key, value in receipt.items() if key != "ok"},
+            "generate": copy.deepcopy(generate), "cancels": list(cancels), "exports": copy.deepcopy(exports),
+        }
+        document.setdefault("settings", {}).setdefault("agentOperations", {})[op_id] = pending
         operations_cache = document["settings"]["agentOperations"]
         while len(operations_cache) > 50:
             operations_cache.pop(next(iter(operations_cache)))
         saved = self.store.save(project_id, document, int(revision))
-        receipt["rev"] = saved["revision"]
-        try:
-            for index, operation in generate:
-                target = operation.get("target")
-                shot = self._entity(saved, "shots", target) if str(target or "").startswith("s") else None
-                node = resolve_node(saved, shot.get("canvasNodeId") if shot else target)
+        return self._finish_pending(project_id, op_id, saved, pending)
+
+    def _finish_pending(self, project_id, op_id, saved, pending):
+        """Resume durable side effects; only the last save may say ok=True."""
+        receipt = copy.deepcopy(pending["receipt"])
+        results = receipt["results"]
+        changed = receipt["changed"]
+
+        def checkpoint(phase):
+            pending["phase"] = phase
+            pending["receipt"] = copy.deepcopy(receipt)
+            saved["settings"]["agentOperations"][op_id] = pending
+            return self.store.save(project_id, saved, saved["revision"])
+
+        for index, operation in pending.get("generate", []):
+            target = operation.get("target")
+            shot = self._entity(saved, "shots", target) if str(target or "").startswith("s") else None
+            node = resolve_node(saved, shot.get("canvasNodeId") if shot else target)
+            client_id = f"agent:{project_id}:{op_id}:{index}"
+            existing = next((job for job in self.queue.snapshot()["jobs"] if job.get("clientId") == client_id), None) if self.queue else None
+            if existing:
+                job = existing
+            else:
                 workflow = operation.get("workflow") or self._workflow(saved, node, shot)
-                client_id = f"agent:{project_id}:{op_id}:{index}"
-                existing = next((job for job in self.queue.snapshot()["jobs"] if job.get("clientId") == client_id), None) if self.queue else None
-                job = existing or self.queue.enqueue({"workflow": workflow, "projectId": project_id, "nodeId": node["id"], "shotId": shot and shot["id"], "clientId": client_id})
-                node["data"].update({"status": "queued", "stage": "Agent 已提交", "queueJobId": job["id"]})
+                job = self.queue.enqueue({"workflow": workflow, "projectId": project_id, "nodeId": node["id"], "shotId": shot and shot["id"], "clientId": client_id})
+            node["data"].update({"status": "queued", "stage": "Agent 已提交", "queueJobId": job["id"]})
+            if not any(item.get("op") == index and "job" in item for item in results):
                 results.append({"op": index, "job": job["id"]})
-                changed.append(handle_for(saved, node["id"]))
-            for job_id in cancels:
-                self.queue.cancel(job_id)
-            for index, operation in exports:
+            changed.append(handle_for(saved, node["id"]))
+            receipt["changed"] = list(dict.fromkeys(changed))
+            saved = checkpoint(f"generated:{index}")
+        for job_id in pending.get("cancels", []):
+            self.queue.cancel(job_id)
+            saved = checkpoint(f"cancelled:{job_id}")
+        for index, operation in pending.get("exports", []):
+            if not any(item.get("op") == index and "export" in item for item in results):
                 result = export_delivery(self.store, project_id, operation.get("takeIds"))
                 results.append({"op": index, "export": result})
-            if generate or cancels or exports:
-                receipt["changed"] = list(dict.fromkeys(changed))
-                receipt["rev"] = saved["revision"] + 1
-                saved["settings"]["agentOperations"][op_id] = receipt
-                saved = self.store.save(project_id, saved, saved["revision"])
-                receipt["rev"] = saved["revision"]
-        except Exception:
-            saved["settings"]["agentOperations"].pop(op_id, None)
-            self.store.save(project_id, saved, saved["revision"])
-            raise
+            saved = checkpoint(f"exported:{index}")
+        receipt.update({"ok": True, "rev": saved["revision"] + 1, "changed": list(dict.fromkeys(changed))})
+        saved["settings"]["agentOperations"][op_id] = receipt
+        saved = self.store.save(project_id, saved, saved["revision"])
+        receipt["rev"] = saved["revision"]
         receipt["meta"] = {"estTokens": estimate_tokens({key: value for key, value in receipt.items() if key != "meta"})}
         return receipt
 

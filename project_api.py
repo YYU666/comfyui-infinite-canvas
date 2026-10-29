@@ -219,6 +219,10 @@ class ProjectAPI:
                     archive = self.store.export(match.group(1))
                     handler.send_json(200, {"path": str(archive), "name": archive.name, "bytes": archive.stat().st_size})
                 return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/close", path)
+            if match:
+                handler.send_json(200, self.store.release(match.group(1)))
+                return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/reveal", path)
             if match:
                 project_file = self.store._project_path(match.group(1))

@@ -864,7 +864,10 @@ export async function cancelGenerationJob(jobId) {
 
 export async function cancelGeneration(node) {
   if (node?.queueJobId) return cancelGenerationJob(node.queueJobId);
-  return cancelPrompt(node?.promptId);
+  if (node?.promptId) return cancelPrompt(node.promptId);
+  // Upload/submit flight has no remote target yet. The caller invalidates its
+  // local attempt; a global interrupt here could cancel somebody else's GPU job.
+  return { cancelled: 'local' };
 }
 
 const QUEUE_EVENTS = ['job.queued', 'job.started', 'job.submitted', 'job.progress', 'job.running', 'job.finishing', 'job.done', 'job.error', 'job.cancelled', 'job.retry', 'job.priority', 'queue.cleared'];

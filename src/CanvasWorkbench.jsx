@@ -27,12 +27,15 @@ import ImageLightbox from './ImageLightbox';
 import { useCanvasMcp } from './canvas-mcp';
 import CanvasProjectMenu from './CanvasProjectMenu';
 import CreativePanel from './CreativePanel';
-import { initializeProjects, listProjects, createProject, openProject, saveProject, projectSummary, saveProjectFile, readProjectFile, createDomainEntity, createTake } from './project-store-http';
+import { initializeProjects, listProjects, createProject, openProject, closeProject, saveProject, projectSummary, saveProjectFile, readProjectFile, createDomainEntity, createTake } from './project-store-http';
 import { AutoSaveController } from './auto-save';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
 import { queueJobAction, queueOwnsCompletion, queueOwnsStage } from './generation-queue';
 import { ensureReferenceTags, nextReferenceTag, referenceDescriptors } from './reference-tags';
 import { ObjectUrlLru } from './object-url-lru';
+import { assertMediaCacheIdentity, mediaCacheIdentity, reconcileMediaCache } from './canvas-media-cache';
+import { GenerationAttempts } from './generation-attempts';
+import { flushProjectAfterMedia } from './project-save-barrier';
 
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
@@ -472,6 +475,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
   const filesRef = useRef({});
+  const fileIdentitiesRef = useRef({});
+  const generationAttemptsRef = useRef(new GenerationAttempts());
   const clipboardRef = useRef(null);
   const clientId = useMemo(createClientId, []);
   const { screenToFlowPosition, fitView, setCenter, zoomIn, zoomOut, zoomTo } = useReactFlow();
@@ -506,9 +511,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     const controller = new AutoSaveController({
       name: project.name,
       canvas: canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current),
-      write: async ({ name, canvas }) => {
+      write: async ({ name }) => {
         await Promise.all([...mediaWritesRef.current.values()]);
-        const next = await saveProject(project.id, revisionRef.current, name, canvas);
+        const next = await saveProject(project.id, revisionRef.current, nameRef.current || name, canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current));
         revisionRef.current = next.revision;
         setProjects((rows) => rows.map((row) => row.id === next.id ? projectSummary(next) : row));
         setProjectError('');
@@ -525,8 +530,15 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   }, [nodes, edges, projectName]);
   const persistProject = useCallback(() => {
     if (project.readOnly || !autoSaveRef.current) return Promise.resolve();
-    autoSaveRef.current.observe(nameRef.current, canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current));
-    return autoSaveRef.current.flush();
+    return flushProjectAfterMedia({
+      mediaWrites: mediaWritesRef.current,
+      observeAndFlush: () => {
+        // A slow upload may be the only dirty change. Always sample after it
+        // commits, even when AutoSaveController had no pending snapshot before.
+        autoSaveRef.current.observe(nameRef.current, canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current));
+        return autoSaveRef.current.flush();
+      },
+    });
   }, [project.readOnly]);
   useEffect(() => {
     const flush = () => { if (document.visibilityState === 'hidden') persistProject().catch(() => {}); };
@@ -552,6 +564,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       if (hasActiveTask()) throw new Error('任务进行中，请等待完成后再切换项目。');
       const target = id ? await openProject(id) : await createProject(name, { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } });
       const active = id ? target : await openProject(target.id);
+      await closeProject(project.id);
       onProjectChange(active);
       return true;
     } catch (error) { setProjectError(error.message || '切换失败，当前画布已保留。'); return false; }
@@ -565,6 +578,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
         const file = await readProjectFile(project, node.data.mediaStorageId || node.id, node.data.assetPath);
         if (!alive || !file) return;
         filesRef.current[node.id] = file;
+        fileIdentitiesRef.current[node.id] = mediaCacheIdentity(node.data);
         if (!node.data.remoteName && !node.data.output) updateNode(node.id, { url: URL.createObjectURL(file) });
       } catch { /* The user can replace an unavailable local file. */ }
     });
@@ -612,6 +626,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     setNodes((items) => items.filter((item) => item.id !== id));
     setEdges((items) => items.filter((edge) => edge.source !== id && edge.target !== id));
     delete filesRef.current[id];
+    delete fileIdentitiesRef.current[id];
+    generationAttemptsRef.current.cancel(id);
     mediaWritesRef.current.delete(id);
     // Keep immutable media records: this deletion may fail its project revision
     // check, and another committed canvas can still reference the same record.
@@ -637,6 +653,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       revisionRef.current = Math.max(revisionRef.current, result.revision);
       filesRef.current[id] = file;
       const patch = { url: URL.createObjectURL(file), name: file.name, mediaStorageId, assetPath: result.asset.path, remoteName: null, localFile: true, output: false, resultUrl: null };
+      fileIdentitiesRef.current[id] = mediaCacheIdentity({ ...nodesRef.current.find((node) => node.id === id)?.data, ...patch });
       const nextNodes = nodesRef.current.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
       nodesRef.current = nextNodes;
       setNodes(nextNodes);
@@ -871,12 +888,19 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
 
   const generateNode = useCallback(async (id) => {
     if (switchingRef.current || project.readOnly) return;
+    const attempt = generationAttemptsRef.current.begin(id);
+    const assertCurrent = () => generationAttemptsRef.current.assert(id, attempt);
     let node = nodesRef.current.find((item) => item.id === id);
     if (!['swap', 'upscale', 'imageUpscale'].includes(node?.data.mode) && !node?.data.prompt?.trim()) { updateNode(id, { status: 'error', error: '请先输入画面描述。' }); return; }
     if (mediaWritesRef.current.size) {
       updateNode(id, { status: 'uploading', stage: '正在等待素材写入磁盘', progress: 0, error: null });
-      try { await Promise.all([...mediaWritesRef.current.values()]); }
-      catch { updateNode(id, { status: 'error', error: '素材尚未保存成功，已保留原素材，请重试上传。', stage: '提交失败' }); return; }
+      try {
+        await Promise.all([...mediaWritesRef.current.values()]);
+        assertCurrent();
+      } catch (error) {
+        if (generationAttemptsRef.current.isCurrent(id, attempt)) updateNode(id, { status: 'error', error: error.code === 'GENERATION_CANCELLED' ? '本次生成已取消。' : '素材尚未保存成功，已保留原素材，请重试上传。', stage: '提交失败' });
+        return;
+      }
       node = nodesRef.current.find((item) => item.id === id);
     }
     const refs = getReferences(id);
@@ -891,24 +915,35 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       if (node.data.mode === 'image' && node.data.imageModel === 'moss') {
         updateNode(id, { stage: '正在检查 MOSS 模型依赖' });
         const dependencies = await getMossDependencyStatus();
-        if (!dependencies.ready) throw new Error(`MOSS 还缺少：${dependencies.missing.join('、')}。模型文件应放入 D:\\H3-Models 对应目录，补齐后再生成。`);
+        assertCurrent();
+        if (!dependencies.ready) throw new Error(`MOSS 还缺少：${dependencies.missing.join('、')}。请补齐配置的模型目录后再生成。`);
       }
       const upload = async (mediaNode) => {
+        assertCurrent();
         if (mediaNode.data.remoteName) return mediaNode.data.remoteName;
         let file = filesRef.current[mediaNode.id];
+        assertMediaCacheIdentity(mediaNode, file, fileIdentitiesRef.current[mediaNode.id]);
         if (!file && mediaNode.data.url) {
           const response = await fetch(mediaNode.data.url);
+          assertCurrent();
           if (!response.ok) throw new Error(`无法读取“${mediaNode.data.title}”。`);
           file = new File([await response.blob()], mediaNode.data.name || `${mediaNode.data.title}.${mediaNode.data.kind === 'audio' ? 'wav' : mediaNode.data.kind === 'image' ? 'png' : 'mp4'}`, { type: response.headers.get('content-type') || undefined });
+          assertCurrent();
           filesRef.current[mediaNode.id] = file;
+          fileIdentitiesRef.current[mediaNode.id] = mediaCacheIdentity(mediaNode.data);
         }
         if (!file) throw new Error(`“${mediaNode.data.title}”需要重新上传${KIND_LABEL[mediaNode.data.kind]}。`);
         const remoteName = await uploadMedia(file, mediaNode.data.kind);
+        assertCurrent();
         updateNode(mediaNode.id, { remoteName, url: remoteMediaUrl(remoteName) });
         return remoteName;
       };
       const references = [];
-      for (const mediaNode of refs) references.push({ kind: mediaNode.data.kind, title: mediaNode.data.title, slot: mediaNode.data.slot, name: await upload(mediaNode) });
+      for (const mediaNode of refs) {
+        const name = await upload(mediaNode);
+        assertCurrent();
+        references.push({ kind: mediaNode.data.kind, title: mediaNode.data.title, slot: mediaNode.data.slot, name });
+      }
       const seed = node.data.randomSeed ? Math.floor(Math.random() * 2147483647) : Number(node.data.seed || 42);
       const options = { ...node.data, seed, references };
       updateNode(id, { status: 'queued', stage: '任务已排队', seed });
@@ -923,14 +958,27 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
                     : node.data.mode === 'reference' ? buildReferenceWorkflow(options)
                       : buildWorkflow({ ...options, firstFrame: references.find((ref) => ref.slot === 'first')?.name, lastFrame: references.find((ref) => ref.slot === 'last')?.name });
       const job = await enqueueGeneration({ workflow, plan, projectId: project.id, nodeId: id, clientId });
+      if (!generationAttemptsRef.current.isCurrent(id, attempt)) {
+        // The response may arrive after cancellation/retry. The server job now
+        // has a durable ID, so cancel that exact job instead of losing it.
+        await cancelGeneration({ queueJobId: job.id });
+        return;
+      }
       updateNode(id, { status: 'queued', stage: '已加入后台队列', queueJobId: job.id, runs: [{ jobId: job.id, status: 'queued', stage: '已加入后台队列', time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12) });
-    } catch (error) { updateNode(id, { status: 'error', error: error.message, stage: '提交失败' }); }
-  }, [clientId, completeGeneration, getReferences, project.id, updateNode]);
+    } catch (error) {
+      if (generationAttemptsRef.current.isCurrent(id, attempt) && error.code !== 'GENERATION_CANCELLED') updateNode(id, { status: 'error', error: error.message, stage: '提交失败' });
+    }
+  }, [clientId, getReferences, project.id, updateNode]);
 
   const cancelNode = useCallback(async (id) => {
     const node = nodesRef.current.find((item) => item.id === id);
-    try { await cancelGeneration(node?.data); updateNode(id, { status: 'cancelled', stage: '已取消', progress: 0 }); }
-    catch (error) { updateNode(id, { status: 'error', error: error.message }); }
+    const cancelledAttempt = generationAttemptsRef.current.cancel(id);
+    try {
+      await cancelGeneration(node?.data);
+      if (generationAttemptsRef.current.isCurrent(id, cancelledAttempt)) updateNode(id, { status: 'cancelled', stage: '已取消', progress: 0, queueJobId: null, promptId: null });
+    } catch (error) {
+      if (generationAttemptsRef.current.isCurrent(id, cancelledAttempt)) updateNode(id, { status: 'error', error: error.message });
+    }
   }, [updateNode]);
 
   const applyHistory = useCallback((direction) => {
@@ -939,6 +987,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     const target = historyRef.current[direction]();
     if (!target) return false;
     const nextNodes = restoreHistoryNodes(target.nodes, nodesRef.current);
+    const restoredMedia = reconcileMediaCache(nextNodes, filesRef.current, fileIdentitiesRef.current);
+    filesRef.current = restoredMedia.files;
+    fileIdentitiesRef.current = restoredMedia.identities;
     nodesRef.current = nextNodes;
     edgesRef.current = target.edges;
     setNodes(nextNodes); setEdges(target.edges);
@@ -962,7 +1013,10 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     if (!clipboard?.nodes?.length || switchingRef.current) return false;
     const pasted = pasteCanvasSelection(clipboard, nodesRef.current, uid);
     pasted.idMap.forEach((newId, oldId) => {
-      if (clipboard.files?.[oldId]) filesRef.current[newId] = clipboard.files[oldId];
+      if (clipboard.files?.[oldId]) {
+        filesRef.current[newId] = clipboard.files[oldId];
+        fileIdentitiesRef.current[newId] = mediaCacheIdentity(pasted.nodes.find((node) => node.id === newId)?.data);
+      }
     });
     const nextNodes = [...nodesRef.current.map((node) => node.selected ? { ...node, selected: false } : node), ...pasted.nodes];
     const nextEdges = [...edgesRef.current.map((edge) => edge.selected ? { ...edge, selected: false } : edge), ...pasted.edges];
@@ -1220,7 +1274,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   return <NodeContext.Provider value={context}>
     <div className="neo-app">
       <header className="neo-header">
-        {onLauncher && <button className="launcher-return" disabled={projectBusy || hasActiveTask()} onClick={async () => { try { await persistProject(); onLauncher(); } catch { /* Keep an unsaved project open. */ } }} title="返回项目启动器"><FolderOpen size={15} /><span>项目</span></button>}
+        {onLauncher && <button className="launcher-return" disabled={projectBusy || hasActiveTask()} onClick={async () => {
+          if (switchingRef.current) return;
+          switchingRef.current = true; setProjectBusy(true);
+          try { await persistProject(); await closeProject(project.id); onLauncher(); }
+          catch (error) { setProjectError(error.message || '保存或关闭失败，当前项目已保留。'); }
+          finally { switchingRef.current = false; setProjectBusy(false); }
+        }} title="返回项目启动器"><FolderOpen size={15} /><span>项目</span></button>}
         <CanvasProjectMenu current={project} projects={projects} name={projectName} onNameChange={setProjectName}
           saveState={saveState} error={projectError} busy={projectBusy || project.readOnly} locked={hasActiveTask()}
           onRefresh={refreshProjects} onOpen={(id) => changeProject(id)} onCreate={(name) => changeProject(null, name)} />
