@@ -36,6 +36,7 @@ def main() -> int:
     target_root = args.comfy_root.resolve() / "ComfyUI" / "models"
     missing: list[str] = []
     mismatched: list[str] = []
+    conflicts: list[str] = []
     copied = 0
     skipped = 0
 
@@ -51,26 +52,38 @@ def main() -> int:
             continue
         if args.verify_only:
             continue
-        if target.is_file() and target.stat().st_size == item["bytes"]:
-            skipped += 1
+        if target.exists() or target.is_symlink():
+            if target.is_file() and not target.is_symlink() and target.stat().st_size == item["bytes"]:
+                skipped += 1
+            else:
+                conflicts.append(item["path"])
             continue
         print(f"{'硬链接' if args.link else '复制'}：{item['path']}")
         if not args.dry_run:
             target.parent.mkdir(parents=True, exist_ok=True)
             if args.link:
-                if target.exists():
-                    target.unlink()
+                # 目标必须始终不存在；链接失败也不能删除或覆盖已有文件。
                 os.link(source, target)
             else:
-                shutil.copy2(source, target)
+                temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+                try:
+                    shutil.copy2(source, temporary)
+                    if temporary.stat().st_size != item["bytes"]:
+                        raise OSError(f"复制后大小校验失败：{item['path']}")
+                    # 同目录硬链接发布是原子的，并在目标被并发创建时拒绝覆盖。
+                    os.link(temporary, target)
+                finally:
+                    temporary.unlink(missing_ok=True)
         copied += 1
 
-    print(f"清单：{len(manifest['files'])}；本次处理：{copied}；已存在：{skipped}；缺失：{len(missing)}；大小不符：{len(mismatched)}")
+    print(f"清单：{len(manifest['files'])}；本次处理：{copied}；已存在：{skipped}；缺失：{len(missing)}；大小不符：{len(mismatched)}；目标冲突：{len(conflicts)}")
     for name in missing:
         print(f"缺失：{name}")
     for name in mismatched:
         print(f"大小不符：{name}")
-    return 1 if missing or mismatched else 0
+    for name in conflicts:
+        print(f"目标已存在且不一致，未修改：{name}")
+    return 1 if missing or mismatched or conflicts else 0
 
 
 if __name__ == "__main__":

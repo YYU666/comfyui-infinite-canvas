@@ -29,6 +29,26 @@ def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
+def restrict_private_file(path: Path) -> None:
+    """Limit token/key files to the current user on every supported platform."""
+    if os.name != "nt":
+        path.chmod(0o600)
+        return
+    import subprocess
+
+    domain = os.environ.get("USERDOMAIN", "")
+    user = os.environ.get("USERNAME", "")
+    account = f"{domain}\\{user}" if domain and user else user
+    if not account:
+        raise RuntimeError("无法确认当前 Windows 用户，不能保护实例令牌。")
+    result = subprocess.run(
+        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    if result.returncode:
+        raise RuntimeError("无法限制实例令牌文件权限。")
+
+
 def atomic_write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -38,6 +58,8 @@ def atomic_write_json(path: Path, payload: dict) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+    if path == instance_path():
+        restrict_private_file(path)
 
 
 def read_instance() -> dict | None:

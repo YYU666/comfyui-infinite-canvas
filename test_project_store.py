@@ -173,7 +173,27 @@ class ProjectStoreTests(unittest.TestCase):
             self.store.import_zip(archive)
         self.assertFalse((self.root / "escape").exists())
 
-    def test_17_v2_migration_keeps_canvas_and_backup(self):
+    def test_17_zip_windows_paths_cannot_escape_or_overwrite(self):
+        sentinel = self.root / "sentinel.txt"
+        sentinel.write_bytes(b"keep")
+        attacks = [
+            sentinel.as_posix(),
+            "C:escape.txt",
+            "..\\escape.txt",
+            "assets\\..\\escape.txt",
+            "\\\\server\\share\\escape.txt",
+        ]
+        for index, member in enumerate(attacks):
+            archive = self.root / f"bad-windows-{index}.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("project.json", json.dumps(self.document))
+                output.writestr(member, "bad")
+            with self.subTest(member=member), self.assertRaises(StoreError):
+                self.store.import_zip(archive)
+            self.assertEqual(sentinel.read_bytes(), b"keep")
+        self.assertFalse((self.root / "escape.txt").exists())
+
+    def test_18_v2_migration_keeps_canvas_and_backup(self):
         legacy = {"schemaVersion": 2, "id": self.document["id"], "name": "旧项目", "revision": 0, "createdAt": 1, "updatedAt": 2, "canvas": {"nodes": [{"id": "n1"}], "edges": []}}
         self.path.write_text(json.dumps(legacy), encoding="utf-8")
         migrated = self.store.get(self.document["id"])
@@ -181,7 +201,7 @@ class ProjectStoreTests(unittest.TestCase):
         self.assertEqual(migrated["canvas"]["nodes"], [{"id": "n1"}])
         self.assertTrue(list(self.path.parent.glob("backups/*before-v3.json")))
 
-    def test_18_invalid_schema_is_not_overwritten(self):
+    def test_19_invalid_schema_is_not_overwritten(self):
         invalid = dict(self.document, revision=0)
         original = json.dumps(invalid)
         self.path.write_text(original, encoding="utf-8")
@@ -189,14 +209,14 @@ class ProjectStoreTests(unittest.TestCase):
             self.store.get(self.document["id"])
         self.assertEqual(self.path.read_text(encoding="utf-8"), original)
 
-    def test_19_one_hundred_projects_are_listed(self):
+    def test_20_one_hundred_projects_are_listed(self):
         for index in range(99):
             self.store.create(f"项目-{index:03d}")
         rows = self.store.list()
         self.assertEqual(len(rows), 100)
         self.assertTrue(all(row["id"] for row in rows))
 
-    def test_20_invalid_project_name_is_rejected(self):
+    def test_21_invalid_project_name_is_rejected(self):
         for name in ("", "a/b", "CON", "name."):
             with self.subTest(name=name), self.assertRaises(StoreError):
                 self.store.create(name)

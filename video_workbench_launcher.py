@@ -73,6 +73,32 @@ def queue_summary():
         return {"running": 0, "pending": 0}
 
 
+def comfy_queue_counts():
+    """Return real queue counts; failure is never interpreted as an idle queue."""
+    with urllib.request.urlopen(COMFY_URL + "/queue", timeout=2) as response:
+        queue = json.load(response)
+    return len(queue.get("queue_running", [])), len(queue.get("queue_pending", []))
+
+
+def stop_owned_comfy(process, queue_probe=comfy_queue_counts):
+    if not process or process.poll() is not None:
+        return "already-stopped"
+    try:
+        running, pending = queue_probe()
+    except Exception as exc:
+        LOGGER.warning("无法确认 ComfyUI 队列，保留进程 PID=%s：%s", process.pid, exc)
+        return "preserved-unknown"
+    if running or pending:
+        LOGGER.warning("ComfyUI 仍有任务（运行 %s、排队 %s），保留进程 PID=%s。", running, pending, process.pid)
+        return "preserved-active"
+    process.terminate()
+    try:
+        process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+    return "terminated"
+
+
 SHARE_URL_PATTERN = re.compile(r"https?://[^\s<>\"'，。！？；、【】（）]+", re.IGNORECASE)
 
 
@@ -671,12 +697,8 @@ def main():
         if server:
             server.server_close()
         remove_instance(os.getpid())
-        if comfy_process and comfy_process.poll() is None:
-            comfy_process.terminate()
-            try:
-                comfy_process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                comfy_process.kill()
+        if comfy_process:
+            stop_owned_comfy(comfy_process)
         if comfy_log:
             comfy_log.close()
 

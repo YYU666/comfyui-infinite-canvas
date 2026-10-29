@@ -576,7 +576,12 @@ class ProjectStore:
             for member in members:
                 pure = PurePosixPath(member.filename)
                 mode = member.external_attr >> 16
-                if pure.is_absolute() or ".." in pure.parts or not pure.parts or (mode & 0o170000) == 0o120000:
+                windows_drive = re.match(r"^[A-Za-z]:", member.filename)
+                if (
+                    pure.is_absolute() or ".." in pure.parts or not pure.parts
+                    or "\\" in member.filename or member.filename.startswith("/") or windows_drive
+                    or (mode & 0o170000) == 0o120000
+                ):
                     raise StoreError("BAD_REQUEST", "项目包包含不安全路径。")
                 total += member.file_size
                 if total > MAX_ASSET_BYTES * 4:
@@ -587,11 +592,14 @@ class ProjectStore:
             if self.root not in target.parents or target.exists():
                 raise StoreError("BAD_REQUEST", "导入目标无效或同名项目已存在。")
             temporary = self.root / f".import-{uuid.uuid4().hex}"
+            temporary_root = temporary.resolve()
             try:
                 for member in members:
                     if member.is_dir():
                         continue
-                    destination = temporary / PurePosixPath(member.filename)
+                    destination = (temporary / PurePosixPath(member.filename)).resolve()
+                    if destination == temporary_root or temporary_root not in destination.parents:
+                        raise StoreError("BAD_REQUEST", "项目包成员落点超出导入目录。")
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, destination.open("wb") as output:
                         shutil.copyfileobj(source, output, 1024 * 1024)

@@ -33,6 +33,13 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(read_instance()["port"], 8791)
         self.assertEqual(list(path.parent.glob("*.tmp")), [])
 
+    def test_instance_permissions_are_restricted_after_every_replace(self):
+        with patch("workbench_lifecycle.restrict_private_file") as restrict:
+            atomic_write_json(instance_path(), {"pid": 123, "token": "secret"})
+            atomic_write_json(instance_path(), {"pid": 123, "token": "updated"})
+        self.assertEqual(restrict.call_count, 2)
+        restrict.assert_called_with(instance_path())
+
     def test_invalid_instance_is_ignored(self):
         instance_path().write_text("not json", encoding="utf-8")
         self.assertIsNone(read_instance())
