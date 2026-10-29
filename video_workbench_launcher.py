@@ -46,6 +46,12 @@ from workbench_lifecycle import (
     startup_guard,
     utc_now,
 )
+from workbench_logging import (
+    RotatingTextLog,
+    cleanup_legacy_comfy_logs,
+    configure_application_logging,
+    pump_text_log,
+)
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_COMFY_ROOT = HERE.parent
@@ -382,7 +388,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def log_message(self, format, *args):
-        LOGGER.info("%s %s", self.client_address[0], format % args)
+        # Never log request targets: they can contain tokens, prompt text or personal asset names.
+        status = args[1] if len(args) > 1 else "unknown"
+        LOGGER.info("%s %s status=%s", self.client_address[0], self.command, status)
 
     def send_json(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -615,22 +623,18 @@ def apply_server_settings(server):
 
 
 def configure_logging(debug=False):
-    log_dir = runtime_dir() / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    handlers = [logging.FileHandler(log_dir / "app.log", encoding="utf-8")]
-    if debug:
-        handlers.append(logging.StreamHandler())
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers, force=True)
+    return configure_application_logging(debug)
 
 
 def main():
     global WEB_URL, ROOT
     debug = "--debug" in sys.argv
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
-    configure_logging(debug)
+    log_dir = configure_logging(debug)
     server = None
     comfy_process = None
     comfy_log = None
+    comfy_log_thread = None
     try:
         with startup_guard():
             instance = read_instance()
@@ -643,6 +647,7 @@ def main():
                         webbrowser.open(url)
                     return 0
 
+            cleanup_legacy_comfy_logs(log_dir)
             if not (HERE / "dist" / "index.html").is_file():
                 raise RuntimeError("画布尚未构建。请先运行 install.bat，或在本目录执行 npm ci && npm run build。")
             (INPUT_DIR / "workbench").mkdir(parents=True, exist_ok=True)
@@ -688,10 +693,14 @@ def main():
                     "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch",
                     "--enable-cors-header", WEB_URL,
                 ]
-                log_path = runtime_dir() / "logs" / f"comfyui-{time.strftime('%Y%m%d-%H%M%S')}.log"
-                comfy_log = log_path.open("a", encoding="utf-8")
+                comfy_log = RotatingTextLog(log_dir / "comfyui.log")
                 flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-                comfy_process = subprocess.Popen(command, cwd=ROOT, stdout=comfy_log, stderr=subprocess.STDOUT, creationflags=flags)
+                comfy_process = subprocess.Popen(
+                    command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=flags,
+                )
+                comfy_log_thread = threading.Thread(target=pump_text_log, args=(comfy_process.stdout, comfy_log), daemon=True)
+                comfy_log_thread.start()
                 server.comfy_owned = True
                 server.comfy_process = comfy_process
                 LOGGER.info("已隐藏启动 ComfyUI，PID=%s", comfy_process.pid)
@@ -727,6 +736,8 @@ def main():
         remove_instance(os.getpid())
         if comfy_process:
             stop_owned_comfy(comfy_process)
+        if comfy_log_thread:
+            comfy_log_thread.join(timeout=5)
         if comfy_log:
             comfy_log.close()
 
