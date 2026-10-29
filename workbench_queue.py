@@ -286,6 +286,7 @@ class QueueManager:
                 raise ValueError("任务尚未结束，不能重试。")
             job.update({"status": "queued", "stage": "后台队列等待中", "progress": 0, "eta": None, "startedAt": None, "finishedAt": None,
                         "comfyPromptId": None, "cancelRequested": False, "error": None, "outputs": None, "history": None,
+                        "attempts": job.get("attempts", 0) + 1,
                         "planState": initial_state() if job.get("plan") else None})
             self._changed_locked("job.retry", job)
             return _public(job)
@@ -347,7 +348,7 @@ class QueueManager:
                     for job in waiting[:slots]:
                         job["status"] = "running"
                         job["startedAt"] = job["startedAt"] or utc_now()
-                        job["attempts"] += 1
+                        job["attempts"] = max(1, job.get("attempts", 0))
                         if job.get("plan"):
                             panel = job["plan"]["panels"][job["planState"]["panelIndex"]]
                             count = len(job["plan"]["panels"])
@@ -370,7 +371,7 @@ class QueueManager:
                             job["comfyPromptId"] = prompt_id
                         else:
                             job.setdefault("cancelledPromptIds", []).append(prompt_id)
-                        if job.get("plan"):
+                        if same_attempt and job.get("plan"):
                             job["planState"]["promptIds"].append(prompt_id)
                         elif same_attempt and not needs_cancel:
                             job["stage"] = "本地 GPU 生成中"
@@ -387,7 +388,7 @@ class QueueManager:
                                     self._changed_locked("job.error", job)
                 except Exception as exc:
                     with self._lock:
-                        if job["status"] in TERMINAL:
+                        if job["status"] in TERMINAL or job["attempts"] != submit_attempt:
                             continue
                         job["status"] = "error"
                         job["finishedAt"] = utc_now()
@@ -395,6 +396,7 @@ class QueueManager:
                         self._changed_locked("job.error", job)
 
             for job in active:
+                poll_attempt = job["attempts"]
                 prompt_id = job.get("comfyPromptId")
                 if not prompt_id or job["status"] in TERMINAL or self._stop.is_set():
                     continue
@@ -405,7 +407,7 @@ class QueueManager:
                     except Exception as exc:
                         cancel_error = str(exc)
                     with self._lock:
-                        if job["status"] in TERMINAL:
+                        if job["status"] in TERMINAL or job["attempts"] != poll_attempt:
                             continue
                         message = f"任务超过 {int(self.job_timeout)} 秒仍未返回结果，已停止等待。"
                         if cancel_error:
@@ -422,7 +424,7 @@ class QueueManager:
                     continue
                 outfit_done = bool(job.get("plan") and update.get("status") == "done")
                 with self._lock:
-                    if job["status"] in TERMINAL:
+                    if job["status"] in TERMINAL or job["attempts"] != poll_attempt:
                         continue
                     for key in ("progress", "eta", "outputs", "history", "error"):
                         if key in update:
@@ -438,12 +440,13 @@ class QueueManager:
                                 job["progress"] = 100
                         self._changed_locked(f"job.{status or 'progress'}", job)
                 if outfit_done:
+                    transfer_job = copy.deepcopy(job)
                     try:
-                        patch = stage_transfer(job, self.adapter)
+                        patch = stage_transfer(transfer_job, self.adapter)
                     except Exception as exc:
                         patch = {"status": "error", "stage": "换装阶段失败", "error": _error("OUTFIT_STAGE_FAILED", exc, "检查中间图、ComfyUI 上传接口和磁盘空间后重试。")}
                     with self._lock:
-                        if job["status"] in TERMINAL:
+                        if job["status"] in TERMINAL or job["attempts"] != poll_attempt:
                             continue
                         job.update(patch)
                         if job["status"] in TERMINAL:

@@ -155,6 +155,60 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.manager.retry(job["id"])["status"], "queued")
         wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
 
+    def test_immediate_retry_during_submit_cancels_old_prompt_and_submits_new_attempt(self):
+        entered = threading.Event()
+        release = threading.Event()
+        original_submit = self.adapter.submit
+
+        def blocking_submit(workflow, client_id):
+            if not self.adapter.submitted:
+                entered.set()
+                self.assertTrue(release.wait(3))
+            return original_submit(workflow, client_id)
+
+        self.adapter.submit = blocking_submit
+        job = self.manager.enqueue(payload())
+        self.manager.start()
+        wait_for(entered.is_set)
+        self.manager.cancel(job["id"])
+        retried = self.manager.retry(job["id"])
+        self.assertEqual(retried["attempts"], 2)
+        release.set()
+        self.adapter.done = True
+        wait_for(lambda: self.manager.get(job["id"])["status"] == "done" and len(self.adapter.submitted) == 2)
+        stored = self.manager.get(job["id"])
+        self.assertEqual(stored["attempts"], 2)
+        self.assertEqual(stored["comfyPromptId"], "prompt-2")
+        self.assertIn("prompt-1", self.adapter.cancelled)
+
+    def test_immediate_retry_during_poll_ignores_old_result(self):
+        entered = threading.Event()
+        release = threading.Event()
+        original_poll = self.adapter.poll
+
+        def blocking_poll(prompt_id):
+            if prompt_id == "prompt-1" and not entered.is_set():
+                entered.set()
+                self.assertTrue(release.wait(3))
+            result = original_poll(prompt_id)
+            if result.get("status") == "done":
+                result["history"] = {"filename": f"{prompt_id}.png"}
+            return result
+
+        self.adapter.poll = blocking_poll
+        job = self.manager.enqueue(payload())
+        self.manager.start()
+        wait_for(entered.is_set)
+        self.manager.cancel(job["id"])
+        self.manager.retry(job["id"])
+        self.adapter.done = True
+        release.set()
+        wait_for(lambda: self.manager.get(job["id"])["status"] == "done" and len(self.adapter.submitted) == 2)
+        stored = self.manager.get(job["id"])
+        self.assertEqual(stored["attempts"], 2)
+        self.assertEqual(stored["comfyPromptId"], "prompt-2")
+        self.assertEqual(stored["history"]["filename"], "prompt-2.png")
+
     def test_cancel_during_submit_registers_and_compensates_prompt_before_retry(self):
         entered = threading.Event()
         release = threading.Event()
