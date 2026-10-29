@@ -2,6 +2,8 @@
 
 `manifest.json` 是工作台当前实际引用的模型清单。GitHub 仓库不包含模型权重。
 
+**下载前必须阅读 [`LICENSES.md`](LICENSES.md)。** `manifest.json` 管文件完整性，[`licenses.json`](licenses.json) 管逐文件作者、许可证、商用和再分发状态；文件可下载不代表可商用或可再分发，网盘镜像不授予额外权利。
+
 - `core-h3`：7 个 H3 文生视频／参考图视频核心权重，合计 71.164 GiB；七个文件均可从 Comfy-Org 官方仓库取得并已登记 SHA256。
 - `full`：33 个去重文件，合计 164.803 GiB，增加可选生图、高清和风格 LoRA；Muse V3.0 FP8 的完全匹配来源仍未解决，不属于完整可下载保证。
 

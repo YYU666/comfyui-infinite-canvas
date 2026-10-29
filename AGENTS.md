@@ -20,8 +20,9 @@
 3. `models/SOURCES.md`：33 个文件的夸克原链接、官方备用、分享内搜索名及重命名规则。
 4. `models/manifest.json`：目标相对路径与字节数的机器可读权威清单。
 5. `models/README.md`：最终模型目录结构。
+6. `models/LICENSES.md` 与 `models/licenses.json`：逐文件作者、许可证、商用和再分发边界。
 
-若文件名或目标目录不一致，以 `models/manifest.json` 为准；若下载来源说明不一致，以 `models/SOURCES.md` 为准。不要凭记忆更换模型版本或下载地址。
+若文件名或目标目录不一致，以 `models/manifest.json` 为准；若下载来源说明不一致，以 `models/SOURCES.md` 为准；授权状态以作者官方许可文本为准，矩阵未知项不得推定许可。不要凭记忆更换模型版本或下载地址。
 
 ## 2. 安全边界
 

@@ -2,6 +2,15 @@
 
 把本地 ComfyUI 包装为无限画布：素材引用、全能参考、首尾帧、角色替换、Krea2／MOSS 生图、Qwen 2.1 图生图、局部写实修复、无抠图换装、四视图、图片／视频高清和显存清理。Agent 协议 v2 提供 HTTP、CLI、MCP 和浏览器 WebMCP，可不打开浏览器完成建镜头、生成、选片与导出。
 
+## 许可证与商用边界
+
+本仓库自有代码和文档采用 [Apache-2.0](LICENSE)，归属与第三方边界见 [NOTICE](NOTICE)。这不代表 ComfyUI、第三方节点、模型／LoRA、用户素材或生成输出也采用 Apache-2.0。
+
+- 33 个模型的作者、官方页、许可证、商用与再分发状态逐项见 [`models/LICENSES.md`](models/LICENSES.md) 和机器可读 [`models/licenses.json`](models/licenses.json)。
+- 六个锁定节点的许可证见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)；安装器独立克隆节点，不在本仓库捆绑其源码。
+- H3 有适用地区、年收入、署名和生成内容披露等限制；Krea 2 有 100 万美元收入门槛；Qwen Image 2.1 和 Identity Edit V2 默认仅非商用。未知项不得视为可商用或可再分发。
+- 网盘链接只是镜像，不授予额外权利。公开分发或商用前必须按作者官方页面复核最新条款。
+
 ## 环境要求
 
 - Windows，ComfyUI 便携版；当前唯一完成在线节点验证的版本为 ComfyUI 0.42.5，更低版本不在支持矩阵中。

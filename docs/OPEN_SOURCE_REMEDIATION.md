@@ -151,17 +151,19 @@
 
 ## 6. 开源合规与社区工程
 
-### [ ] OSS-01｜G0｜确定代码许可证和第三方声明
+### [x] OSS-01｜G0｜确定代码许可证和第三方声明
 
 - 位置：新增 `LICENSE`、`NOTICE` 或等价文件；更新 `package.json`、README。
 - 修改：由项目负责人确认许可证（可评估 Apache-2.0），填写真实版权主体／年份；`package.json` 增加 license 并处理 `private:true`；列出直接捆绑的第三方代码／资产。
 - 验收：GitHub 能识别许可证；代码许可证明确不覆盖 ComfyUI、第三方节点、模型、LoRA 和用户素材；没有未经授权复制的参考网站图片、商标或私有素材。
+- 证据：根目录采用 Apache-2.0 标准全文，版权主体为 `H3 Video Workbench contributors`；`package.json` 与锁文件均声明 Apache-2.0 且移除 `private`。NOTICE 明确代码许可证不覆盖第三方节点、模型、素材和输出；第三方节点另列 `THIRD_PARTY_NOTICES.md`。
 
-### [ ] OSS-02｜G0｜补齐模型／LoRA／节点许可证矩阵
+### [x] OSS-02｜G0｜补齐模型／LoRA／节点许可证矩阵
 
 - 位置：新增 `models/LICENSES.md` 或等价文档，链接 `models/SOURCES.md` 与安装文档。
 - 修改：逐项记录作者、官方页面、许可证、商用条件、再分发条件、未知项；第三方 ComfyUI 节点同样记录来源和许可证。
 - 验收：不再用一句“许可证各自独立”代替实际清单；未知许可证明确禁止据此推定可再分发；仓库仍不包含模型权重。
+- 证据：`models/licenses.json` 与 33 项 manifest 精确一一对应，记录作者、官方页、许可文本入口、商用／再分发状态、限制和核查日期；`models/LICENSES.md` 展开 H3、Krea 2、Qwen Research、Identity Edit V2 与 Civitai 单项条件。`third_party/nodes.json` 与安装器六个仓库＋commit 一致。`test_license_inventory.py` 强制无遗漏、无重复、字段完整、未知项不得暗中放宽；本批 16 项许可证／清单／安装回归通过。
 
 ### [ ] OSS-03｜G1｜建立可重复的 CI 与统一测试入口
 

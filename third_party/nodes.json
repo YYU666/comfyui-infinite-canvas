@@ -1,0 +1,48 @@
+{
+  "formatVersion": 1,
+  "verifiedAt": "2026-10-29",
+  "nodes": [
+    {
+      "directory": "h3-relay",
+      "repository": "https://github.com/akatz-ai/h3-relay.git",
+      "commit": "e2a7665b6eb8ea37a88c0de2c9c6b69a8f7c9220",
+      "license": "GPL-3.0",
+      "licenseUrl": "https://github.com/akatz-ai/h3-relay/blob/e2a7665b6eb8ea37a88c0de2c9c6b69a8f7c9220/LICENSE"
+    },
+    {
+      "directory": "ComfyUI-KJNodes",
+      "repository": "https://github.com/kijai/ComfyUI-KJNodes.git",
+      "commit": "b5316a9e247338dc1460df8e4d01e906c566299c",
+      "license": "GPL-3.0",
+      "licenseUrl": "https://github.com/kijai/ComfyUI-KJNodes/blob/b5316a9e247338dc1460df8e4d01e906c566299c/LICENSE"
+    },
+    {
+      "directory": "comfyui-krea2edit",
+      "repository": "https://github.com/lbouaraba/comfyui-krea2edit.git",
+      "commit": "13ef60f20828949becada815d3cbc371eb5ccaab",
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/lbouaraba/comfyui-krea2edit/blob/13ef60f20828949becada815d3cbc371eb5ccaab/LICENSE"
+    },
+    {
+      "directory": "ComfyUI-Inpaint-CropAndStitch",
+      "repository": "https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch.git",
+      "commit": "6005efc02f7745649118edd89cdd084c2b9bd3ae",
+      "license": "GPL-3.0",
+      "licenseUrl": "https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch/blob/6005efc02f7745649118edd89cdd084c2b9bd3ae/LICENSE"
+    },
+    {
+      "directory": "Comfyui_Minimax_h3_latent_Upscaler",
+      "repository": "https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler.git",
+      "commit": "40316cf008b2fd8663263270669eb4da23f89d2c",
+      "license": "MIT",
+      "licenseUrl": "https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler/blob/40316cf008b2fd8663263270669eb4da23f89d2c/LICENSE"
+    },
+    {
+      "directory": "ComfyUI-Spectrum-MOSS",
+      "repository": "https://github.com/Rkkss/ComfyUI-Spectrum-MOSS.git",
+      "commit": "1e5eb359160b50be02ff95d1a93f22af2947888c",
+      "license": "GPL-3.0",
+      "licenseUrl": "https://github.com/Rkkss/ComfyUI-Spectrum-MOSS/blob/1e5eb359160b50be02ff95d1a93f22af2947888c/LICENSE"
+    }
+  ]
+}

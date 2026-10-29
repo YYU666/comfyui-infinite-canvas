@@ -1,0 +1,20 @@
+H3 Video Workbench
+Copyright (c) 2026 H3 Video Workbench contributors
+
+This repository's original source code and documentation are licensed under
+Apache License 2.0. See LICENSE.
+
+This notice does not relicense or grant rights to ComfyUI, third-party custom
+nodes, model weights, LoRAs, user-provided assets, or generated outputs. Those
+items remain subject to their respective authors' terms.
+
+Third-party custom nodes are cloned separately by install.py and are not
+bundled in this source repository. Their pinned revisions and licenses are
+listed in THIRD_PARTY_NOTICES.md and third_party/nodes.json. Any aggregated
+distribution must retain each project's license and required source offer.
+
+Model weights and LoRAs are downloaded separately. Their per-file license
+matrix is maintained in models/licenses.json and explained in
+models/LICENSES.md. A download or mirror link does not grant additional
+rights. Unknown or unmatched licenses must not be treated as permission for
+commercial use or redistribution.
