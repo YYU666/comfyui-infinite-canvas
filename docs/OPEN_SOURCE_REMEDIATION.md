@@ -187,12 +187,13 @@
 - 验收：默认 Windows 编码与 UTF-8 均通过；无 `95/96` 被环境变量掩盖；构建前真实 ComfyUI 队列为空；测试不读写真实用户项目和权重。
 - 证据：构建前真实 `/queue` 返回运行 0、排队 0。默认编码与 UTF-8 各 148 项后端测试通过，17 个 Node 文件、6 个浏览器／后端文件及前端构建通过。`workbench_lifecycle.py` 与 `workbench_settings.py` 的 `icacls` 输出固定按 Windows `mbcs` 解码，两个 PYTHONUTF8=1 回归测试防止本地化输出再次触发后台 `UnicodeDecodeError`；重跑未再出现该异常。遗留 `test-canvas-clipboard-ui.mjs` 已从旧 IndexedDB 启动方式迁移到临时后端与 HTTP 项目存储，并加入统一浏览器套件；复制、粘贴、图片字节持久化及刷新恢复均通过。
 
-### [ ] QA-02｜G1｜补真实 Agent 队列全链路和运行版本检查（B3）
+### [x] QA-02｜G1｜补真实 Agent 队列全链路和运行版本检查（B3）
 
 - 已完成边界：另一审计仅证明直接提交 H3 工作流的 480P/5s GPU 冒烟成功，不等于 app 队列链路通过。
 - 修改／验收：在临时项目中执行 `shot.create → generate → app queue → wait → Take → take.select → delivery.export`；记录真实耗时、输出规格和 Take／导出身份。
 - 修改／验收：发布前确认真实队列为空，再重启工作台；检查健康 PID、startedAt／版本和 Agent API，确保新进程加载当前代码；不得重启有任务的 ComfyUI。
 - 文档：分别写“直接 GPU 工作流”“仿真 Agent 全链路”“真实 Agent 队列全链路”，不得混称。
+- 证据：真实队列空闲后仅重启工作台，健康信息由 PID 83028／`2026-10-29T00:29:44Z` 更新为 PID 49704／`2026-10-29T05:25:30.143420+00:00`，ComfyUI 保持用户自有进程且未重启。临时项目 `prj_d4a4b99371eb48d7844e63a935cb8fe0` 依次完成 `shot.create(s1/g1)`、`generate(job_2013a61e7e55445592bc88c551fb1c62)`、app queue、`wait(done)`、自动 `Take(t1)`、`take.select` 与 `delivery.export`。提交时间 `05:26:34Z`，Take 完成 `05:32:06.988017Z`，约 5 分 33 秒归档（从提交到首次完成观测约 5 分 46 秒）。真实输出 prompt ID `7f977be8-4e5d-47b6-9822-a4512c80b60d`，attempt 1，832×480、124 帧、5.165 秒、约 24.0077 fps；导出 `S01/S01_T01.mp4` 为 945474 字节，SHA256 `310b8039124fadd70d18ede5e184760bde7a1b252209f8f13ea13bbf5b6e767a`，与 manifest 完全一致。最终 app 与 ComfyUI 队列均为 0。该结果属于真实 Agent 队列全链路，不与此前直接 GPU 冒烟或仿真 Agent 测试混称。
 
 ### [ ] QA-03｜G1（稳定版）｜规模、性能和长跑
 
