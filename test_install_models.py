@@ -68,6 +68,26 @@ class InstallModelsSafetyTests(unittest.TestCase):
                 self.run_install("--link")
         self.assertFalse(self.target().exists())
 
+    def test_same_size_hash_mismatch_is_not_copied(self):
+        expected = self.root / "expected"
+        expected.write_bytes(b"expected!")
+        self.manifest.write_text(json.dumps({"files": [{
+            "path": self.relative.as_posix(), "bytes": 9, "sha256": install_models.file_sha256(expected),
+        }]}), encoding="utf-8")
+        self.assertEqual(self.run_install(), 1)
+        self.assertFalse(self.target().exists())
+
+    def test_core_profile_does_not_require_full_only_files(self):
+        self.manifest.write_text(json.dumps({
+            "files": [
+                {"path": self.relative.as_posix(), "bytes": 9},
+                {"path": "vae/optional.safetensors", "bytes": 100},
+            ],
+            "profiles": {"core-h3": {"files": [self.relative.as_posix()]}, "full": {"include": "all"}},
+        }), encoding="utf-8")
+        self.assertEqual(self.run_install("--profile", "core-h3"), 0)
+        self.assertEqual(self.target().read_bytes(), b"new-model")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -104,11 +104,11 @@ python_embeded\python.exe video-workbench\install.py --comfy-root "."
 
 ### 6.1 下载原则
 
-1. 打开 `README.md` 或 `models/SOURCES.md` 中的夸克原链接。
-2. 使用分享内搜索，按 `models/SOURCES.md` 的 33 行映射逐项查找。
+1. 新用户先安装 `core-h3` 七项（71.164 GiB），完整 33 项是可选项。核心七项全部从 `https://huggingface.co/Comfy-Org/MiniMax-H3` 按 `profiles.core-h3.files` 的相对路径下载，无需夸克或重命名。
+2. 只有用户明确需要完整模型库时，才按 `models/SOURCES.md` 的 33 行映射继续下载其余文件；不要默认转存整个网盘分享。
 3. 下载到 `MODEL_STAGE` 的临时下载区；不要改变清单之外已有文件。
 4. 按 `models/manifest.json` 的 `path` 字段创建目标目录并移动／重命名。
-5. 按 `bytes` 字段检查每个文件大小，再进入配置阶段。
+5. 校验时，有 `sha256` 的文件必须验证内容哈希；其余文件只能按 `bytes` 检查并报告“待核实”。
 
 ### 6.2 必须注意的重命名
 
@@ -141,11 +141,13 @@ https://civitai.com/models/2741166
 
 ### 方式 A：复制或硬链接到 `ComfyUI\models`（推荐）
 
-在 `PORTABLE_ROOT` 执行：
+核心安装在 `PORTABLE_ROOT` 执行：
 
 ```bat
-python_embeded\python.exe video-workbench\scripts\install_models.py "D:\H3-Workbench-Models" --comfy-root "."
+python_embeded\python.exe video-workbench\scripts\install_models.py "D:\H3-Workbench-Models" --comfy-root "." --profile core-h3
 ```
+
+只有明确安装完整 33 项时才改用 `--profile full`。
 
 - 默认复制，适用于跨盘。
 - 若 `MODEL_STAGE` 与 `ComfyUI\models` 在同盘，可加 `--link` 使用硬链接。
@@ -162,19 +164,19 @@ python_embeded\python.exe video-workbench\scripts\install_models.py "D:\H3-Workb
 
 ## 8. 离线验收
 
-在 `PORTABLE_ROOT` 执行方式 A 的校验：
+在 `PORTABLE_ROOT` 执行核心配置校验：
 
 ```bat
-python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-root "."
+python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-root "." --profile core-h3
 ```
 
 方式 B 使用：
 
 ```bat
-python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-root "." --model-root "D:\H3-Workbench-Models"
+python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-root "." --model-root "D:\H3-Workbench-Models" --profile core-h3
 ```
 
-只有输出“校验通过：模型、节点目录和前端构建均已就绪”才算离线验收通过。若报告缺失或大小不符，逐项修正后重跑；不要忽略错误继续生成。
+只有输出“校验通过：所选模型、节点目录和前端构建均已就绪”才算离线验收通过。报告必须同时写明 profile、SHA256 已核实数和待核实数；若报告缺失、大小或哈希不符，逐项修正后重跑。核心验收不代表完整 33 项已通过。
 
 ## 9. 启动与在线验收
 
@@ -186,7 +188,7 @@ python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-ro
 ComfyUI 启动后，在离线校验命令末尾加 `--online` 再执行一次，例如：
 
 ```bat
-python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-root "." --online
+python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-root "." --profile core-h3 --online
 ```
 
 该步骤读取实际 `/object_info`，确认工作台调用的节点已注册。在线校验也必须通过，才能报告安装完成。
@@ -197,7 +199,7 @@ python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-ro
 
 1. 前端是否构建成功。
 2. 六个第三方节点及工作台专用节点是否安装并在线注册。
-3. 模型校验通过数量，例如 `33/33`，以及总大小。
+3. 模型 profile、校验通过数量（核心例如 `7/7`）、总大小、SHA256 已核实数和待核实数。
 4. 使用的是复制、硬链接还是外置模型目录。
 5. ComfyUI 与画布的本地访问地址。
 6. 仍失败的文件或节点、准确错误和下一步；没有失败项才写“安装完成”。

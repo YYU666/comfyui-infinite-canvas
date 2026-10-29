@@ -4,11 +4,30 @@
   "fileCount": 33,
   "totalBytes": 176955706249,
   "totalGiB": 164.803,
+  "profiles": {
+    "core-h3": {
+      "description": "H3 文生视频与参考图视频的最小模型配置，不包含可选生图、高清和风格 LoRA。",
+      "files": [
+        "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+        "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+        "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        "loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
+      ]
+    },
+    "full": {
+      "description": "当前工作台实际引用的完整模型与 LoRA 库。",
+      "include": "all"
+    }
+  },
   "files": [
     {
       "path": "checkpoints/sam3.1_multiplex_fp16.safetensors",
       "category": "checkpoints",
-      "bytes": 1745546848
+      "bytes": 1745546848,
+      "sha256": "9ba99c92703c2e8b4f47de2d34a539bb8e18923049e238b780d70dbe6368eb03"
     },
     {
       "path": "diffusion_models/Krea2-MuseByStable_v30Turbo_fp8.safetensors",
@@ -28,12 +47,14 @@
     {
       "path": "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
       "category": "diffusion_models",
-      "bytes": 20970379616
+      "bytes": 20970379616,
+      "sha256": "e889202c41dafb67b10d67b97f0d8541508036a6090af23425a5c2615d03c47a"
     },
     {
       "path": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
       "category": "diffusion_models",
-      "bytes": 20970379616
+      "bytes": 20970379616,
+      "sha256": "9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779"
     },
     {
       "path": "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
@@ -43,12 +64,14 @@
     {
       "path": "diffusion_models/seedvr2_3b_int8_convrot.safetensors",
       "category": "diffusion_models",
-      "bytes": 3458259704
+      "bytes": 3458259704,
+      "sha256": "c3dec8bcc5916843a8a858572970597462e1f2dc598d6dfd818f6cd40f53a157"
     },
     {
       "path": "latent_upscale_models/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors",
       "category": "latent_upscale_models",
-      "bytes": 690592672
+      "bytes": 690592672,
+      "sha256": "043e5a48e161610ef6c3ea974645220354d06fa618abca15f76d084812eb55c2"
     },
     {
       "path": "loras/Krea2-N/Krea2-realism_engine_v2.safetensors",
@@ -63,7 +86,8 @@
     {
       "path": "loras/Krea2-四视图QuadView_krea2_v1.safetensors",
       "category": "loras",
-      "bytes": 914160176
+      "bytes": 914160176,
+      "sha256": "9435005af21cadaed16f79ef1eca9b76b8497789644eeb7f2475b826bb480fbc"
     },
     {
       "path": "loras/Krea2-风格/Krea2-奇幻现实FantasyRealism.safetensors",
@@ -93,22 +117,26 @@
     {
       "path": "loras/krea2_identity_edit_v2.safetensors",
       "category": "loras",
-      "bytes": 1828285728
+      "bytes": 1828285728,
+      "sha256": "c53843f9451963a6cb3c22dc4975205056b93a6575fb9347dd2bc6e055ef9877"
     },
     {
       "path": "loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
       "category": "loras",
-      "bytes": 1956192992
+      "bytes": 1956192992,
+      "sha256": "c396a9a06f58399e9df9754b18299818d84a2ddd371724ba48fe4a41221437dc"
     },
     {
       "path": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
       "category": "loras",
-      "bytes": 1956193000
+      "bytes": 1956193000,
+      "sha256": "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e"
     },
     {
       "path": "loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
       "category": "loras",
-      "bytes": 1956193000
+      "bytes": 1956193000,
+      "sha256": "5b9ab5ade15d0775676d01a907268a69a1468dc6033b3b0d3ded5502f3ebb84c"
     },
     {
       "path": "text_encoders/qwen3.5_9b_int8_convrot.safetensors",
@@ -118,12 +146,14 @@
     {
       "path": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
       "category": "text_encoders",
-      "bytes": 27141342152
+      "bytes": 27141342152,
+      "sha256": "bc2ced0fbea64757fa9acddccfc0b3f4819d1dcf1da6c124d690d368be283923"
     },
     {
       "path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
       "category": "text_encoders",
-      "bytes": 15687142551
+      "bytes": 15687142551,
+      "sha256": "35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6"
     },
     {
       "path": "text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
@@ -143,17 +173,20 @@
     {
       "path": "vae/minimax_h3_audio_vae_fp32.safetensors",
       "category": "vae",
-      "bytes": 605254808
+      "bytes": 605254808,
+      "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48"
     },
     {
       "path": "vae/minimax_h3_video_vae_fp16.safetensors",
       "category": "vae",
-      "bytes": 5207808496
+      "bytes": 5207808496,
+      "sha256": "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522"
     },
     {
       "path": "vae/minimax_h3_video_vae_int8_convrot.safetensors",
       "category": "vae",
-      "bytes": 2811065184
+      "bytes": 2811065184,
+      "sha256": "52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e"
     },
     {
       "path": "vae/qwen_image_2.1_vae_bf16.safetensors",

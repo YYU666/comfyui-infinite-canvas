@@ -78,18 +78,20 @@ python_embeded\python.exe video-workbench\scripts\install_models.py "D:\H3-Workb
 
 ## 模型包
 
-完整路径、目标文件名和字节数见 `models/manifest.json`，目录说明见 `models/README.md`。**逐文件夸克原链接、官方备用、重命名规则及 Agent 安装步骤见 `models/SOURCES.md`。** 不再依赖统一网盘总包；其中 Muse V3.0 FP8 的完全匹配公开文件仍待核实，文档已明确标注。
+完整路径、目标文件名、字节数和已登记的 SHA256 见 `models/manifest.json`，目录说明见 `models/README.md`。**逐文件夸克原链接、官方备用、重命名规则及 Agent 安装步骤见 `models/SOURCES.md`。** 不再依赖统一网盘总包；其中 Muse V3.0 FP8 的完全匹配公开文件仍待核实，文档已明确标注。
 
-校验已复制的模型和节点：
+新用户先安装 7 个核心 H3 权重（71.164 GiB），全部可从 `https://huggingface.co/Comfy-Org/MiniMax-H3` 按清单相对路径直接下载。核心配置校验：
 
 ```bat
-python_embeded\python.exe video-workbench\scripts\verify_workbench.py
+python_embeded\python.exe video-workbench\scripts\verify_workbench.py --profile core-h3
 ```
 
-直接校验解压后的模型包：
+省略 `--profile` 时默认校验完整 33 项。已登记 SHA256 的文件会校验实际内容；其余文件只校验字节数并显示“待核实”。
+
+直接校验已整理的核心模型目录：
 
 ```bat
-python scripts\verify_workbench.py --model-root "D:\H3-Workbench-Models" --comfy-root ".."
+python scripts\verify_workbench.py --model-root "D:\H3-Workbench-Models" --comfy-root ".." --profile core-h3
 ```
 
 生成一个用于上传网盘的规范目录（本机维护者使用）：

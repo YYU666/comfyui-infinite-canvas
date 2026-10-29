@@ -20,10 +20,15 @@
 | O-SEED3B | https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/diffusion_models/seedvr2_3b_int8_convrot.safetensors | SeedVR2 3B 官方权重。 |
 | O-SAM | https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors | SAM3.1 官方备用。 |
 | O-H3-UP | https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors | H3 latent 高清模型官方备用。 |
+| O-H3-COMFY | https://huggingface.co/Comfy-Org/MiniMax-H3 | H3 主模型、Turbo LoRA、32B 文本编码器和三个 VAE 的官方 ComfyUI 权重；核心七项均已核对文件名、字节数及 LFS SHA256。 |
+
+## 核心 H3 安装
+
+新用户先安装 `core-h3` 七项，而不是默认下载完整 33 项。进入 O-H3-COMFY 的 `Files and versions`，按 `manifest.json` 中 `profiles.core-h3.files` 的七个路径下载，保持相对路径和文件名不变；也可在 `https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/` 后拼接目标相对路径。七项都有官方 SHA256，损坏或错版会被校验器拒绝。
 
 ## 33 个文件的来源、搜索名与目标位置
 
-下表的“目标路径”均相对于 `ComfyUI/models/`。下载来源若与子目录结构不同，以本表目标路径为准。
+下表的“目标路径”均相对于 `ComfyUI/models/`。下载来源若与子目录结构不同，以本表目标路径为准。H3 的 10 个文件优先使用 O-H3-COMFY，表内夸克入口仅作备用；官方文件的 SHA256 已登记在 `manifest.json`。
 
 | # | 目标路径 | 来源 | 分享内搜索名／重命名说明 |
 |---|---|---|---|
@@ -86,6 +91,6 @@
 
 ### 当前下载注意
 
-- Muse V3.0 FP8 是唯一尚未找到与清单完全匹配的公开下载项，见第 2 行说明。其余 32 项已有夸克或官方入口；其中 Q-H3-EXTRA 与 Q-QUAD 内部分文件仍需 Agent 在分享中搜索确认。
-- 文件名和字节数校验只能发现明显错版，不能代替 SHA256；不要据相同字节数断言两个来源的权重完全相同。
+- Muse V3.0 FP8 是唯一尚未找到与清单完全匹配的公开下载项，见第 2 行说明。其余 32 项已有夸克或官方入口；其中 Q-H3-EXTRA 与 Q-QUAD 内部分文件仍需 Agent 在分享中搜索确认，核心 H3 七项则已全部由 O-H3-COMFY 覆盖。
+- 当前 15 项已登记官方 LFS SHA256，其中核心 H3 七项全部覆盖；其余 18 项只校验字节数并标为待核实。不要据相同字节数断言两个来源的权重完全相同。
 - 模型可能各自采用不同许可证，公开分发、商业使用及人物素材使用需分别遵守作者条款。
