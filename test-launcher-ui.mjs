@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from './test-browser.mjs';
+import { chromium, samePath } from './test-browser.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const python = process.env.H3_TEST_PYTHON || process.env.PYTHON || 'python';
@@ -50,7 +50,7 @@ try {
   assert(health?.ok, 'isolated backend health');
   assert.equal(health.pid, instance.pid, `health must belong to the isolated runtime: ${JSON.stringify({ health, instancePid: instance.pid, base })}`);
   assert.equal(typeof health.projectsRoot, 'string', `test health must expose isolated root: ${JSON.stringify(health)}`);
-  assert.equal(path.resolve(health.projectsRoot), path.resolve(projects), 'backend must use isolated projects root before any UI write');
+  assert(samePath(health.projectsRoot, projects), 'backend must use isolated projects root before any UI write');
   const emptyQueueResponse = await fetch(`${base}/api/queue`, { headers: { 'X-H3-Token': token } });
   assert.equal(emptyQueueResponse.status, 200, 'queue API is available in the isolated backend');
   assert.deepEqual((await emptyQueueResponse.json()).jobs, [], 'isolated queue starts empty');

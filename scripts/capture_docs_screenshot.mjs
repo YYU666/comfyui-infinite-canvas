@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from '../test-browser.mjs';
+import { chromium, samePath } from '../test-browser.mjs';
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(scripts);
@@ -44,7 +44,7 @@ try {
   base = `http://127.0.0.1:${instance.port}`;
   const health = await (await fetch(`${base}/api/health`)).json();
   assert.equal(health.pid, instance.pid);
-  assert.equal(path.resolve(health.projectsRoot), path.resolve(projects));
+  assert(samePath(health.projectsRoot, projects));
 
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from './test-browser.mjs';
+import { chromium, samePath } from './test-browser.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const python = process.env.H3_TEST_PYTHON || process.env.PYTHON || 'python';
@@ -46,7 +46,7 @@ try {
   token = instance.token;
   const health = await (await fetch(`${base}/api/health`)).json();
   assert.equal(health.pid, instance.pid);
-  assert.equal(path.resolve(health.projectsRoot), path.resolve(projects), 'health must prove the unique temporary project root');
+  assert(samePath(health.projectsRoot, projects), 'health must prove the unique temporary project root');
   const created = await api('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'Clipboard UI fixture', canvas: initialCanvas }) });
   projectId = created.id;
 

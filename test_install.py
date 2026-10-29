@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -47,7 +48,8 @@ class InstallTests(unittest.TestCase):
             with mock.patch.object(install, "run", side_effect=lambda command, cwd=None: commands.append(command)), \
                  mock.patch.object(sys, "argv", ["install.py", "--comfy-root", str(root), "--skip-nodes", "--skip-frontend"]):
                 self.assertEqual(install.main(), 0)
-            self.assertEqual(commands[0][:3], [str(python), "-m", "pip"])
+            self.assertTrue(os.path.samefile(commands[0][0], python))
+            self.assertEqual(commands[0][1:3], ["-m", "pip"])
             self.assertIn("--require-hashes", commands[0])
             self.assertEqual(Path(commands[0][-1]).name, "requirements.lock")
 
