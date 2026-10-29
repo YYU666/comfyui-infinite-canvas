@@ -165,11 +165,12 @@
 - 验收：不再用一句“许可证各自独立”代替实际清单；未知许可证明确禁止据此推定可再分发；仓库仍不包含模型权重。
 - 证据：`models/licenses.json` 与 33 项 manifest 精确一一对应，记录作者、官方页、许可文本入口、商用／再分发状态、限制和核查日期；`models/LICENSES.md` 展开 H3、Krea 2、Qwen Research、Identity Edit V2 与 Civitai 单项条件。`third_party/nodes.json` 与安装器六个仓库＋commit 一致。`test_license_inventory.py` 强制无遗漏、无重复、字段完整、未知项不得暗中放宽；本批 16 项许可证／清单／安装回归通过。
 
-### [ ] OSS-03｜G1｜建立可重复的 CI 与统一测试入口
+### [x] OSS-03｜G1｜建立可重复的 CI 与统一测试入口
 
 - 位置：新增 `.github/workflows/`；更新 `package.json`、浏览器测试启动方式。
 - 修改：提供统一 Python／Node 测试命令；CI 至少覆盖 Windows 默认编码、UTF-8、Python 后端、前端构建和隔离浏览器回归；浏览器路径统一用 Playwright 托管浏览器或 `CHROME_PATH`，删除对单机 Chrome 路径的依赖。
 - 验收：新 clone 无需作者本机目录即可运行 CI 同等命令；默认编码测试也全部通过；G0 故障注入测试进入 CI；构建产物写入 CI 临时目录。
+- 证据：新增 `npm run test:all`、独立 `test:python`／`test:node`／`test:browser` 和 GitHub Actions Windows 工作流。全部浏览器测试改用 `test-browser.mjs` 的托管 Chromium／`CHROME_PATH`，隔离后端默认使用 PATH Python 或 `H3_TEST_PYTHON`，不再依赖作者本机固定路径；`H3_WORKBENCH_DIST_DIR` 支持 CI 临时构建目录。实际验收：默认编码 146 项、UTF-8 146 项均通过，17 个 Node 文件通过，5 个隔离浏览器／后端文件在临时构建目录下通过；200 节点打开 242 ms、拖拽 406 ms，队列关闭浏览器后完成且重启未重复提交。
 
 ### [ ] OSS-04｜G1｜补齐贡献、安全和项目说明文件
 

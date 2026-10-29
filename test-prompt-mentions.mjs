@@ -1,9 +1,8 @@
-import { chromium } from 'playwright-core';
+import { chromium } from './test-browser.mjs';
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
 const browser = await chromium.launch({
-  executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
   headless: true,
   args: ['--no-sandbox'],
 });

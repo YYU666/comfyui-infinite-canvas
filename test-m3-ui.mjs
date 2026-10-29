@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
-import { chromium } from 'playwright-core';
+import { chromium } from './test-browser.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const python = process.env.H3_TEST_PYTHON || 'C:/ComfyUI_windows_portable/python_embeded/python.exe';
+const python = process.env.H3_TEST_PYTHON || process.env.PYTHON || 'python';
 const temporary = await mkdtemp(path.join(tmpdir(), 'h3-m3-ui-'));
 const runtime = path.join(temporary, 'runtime');
 const projects = path.join(temporary, 'projects');
@@ -53,7 +53,7 @@ try {
     catch { if (backend.exitCode !== null) throw new Error(`backend exited ${backend.exitCode}`); await sleep(100); }
   }
   base = `http://127.0.0.1:${instance.port}`; token = instance.token;
-  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
+  browser = await chromium.launch({ headless: true });
   page = await browser.newPage({ viewport: { width: 1500, height: 960 } });
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(base);

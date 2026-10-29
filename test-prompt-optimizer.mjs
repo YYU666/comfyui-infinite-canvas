@@ -1,4 +1,4 @@
-import { chromium } from 'playwright-core';
+import { chromium } from './test-browser.mjs';
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
@@ -21,7 +21,7 @@ Soft rain and footsteps.
 
 non_diegetic_music:
 N/A`;
-const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true, args: ['--no-sandbox'] });
+const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 const errors = [];
 let requestPayload;

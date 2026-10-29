@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
+import { chromium } from './test-browser.mjs';
 
-const root = path.resolve('dist');
+const root = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 const server = createServer(async (request, response) => {
   const pathname = new URL(request.url, 'http://localhost').pathname;
   if (pathname.startsWith('/api/')) {
@@ -21,9 +20,7 @@ const server = createServer(async (request, response) => {
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
-const chrome = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || (existsSync(chrome) ? chrome : edge), headless: true });
+const browser = await chromium.launch({ headless: true });
 try {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   await context.addInitScript(() => {
@@ -46,7 +43,12 @@ try {
   await page.route('http://127.0.0.1:8188/**', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: route.request().url().includes('system_stats') ? '{"devices":[]}' : '{}' }));
   await page.routeWebSocket('ws://127.0.0.1:8188/**', () => {});
   await page.goto(origin, { waitUntil: 'networkidle' });
-  await page.locator('[data-id="fixture-image"]').waitFor();
+  try {
+    await page.locator('[data-id="fixture-image"]').waitFor();
+  } catch (error) {
+    console.error('CLIPBOARD_UI_BOOT_DEBUG', JSON.stringify({ errors, body: (await page.locator('body').innerText()).slice(0, 4000) }));
+    throw error;
+  }
 
   const readProject = () => page.evaluate(async () => {
     const db = await new Promise((resolve, reject) => {

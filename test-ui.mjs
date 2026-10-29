@@ -1,7 +1,7 @@
-import { chromium } from 'playwright-core';
+import { chromium } from './test-browser.mjs';
 import fs from 'node:fs';
 
-const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true, args: ['--no-sandbox'] });
+const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
 const errors = [];
 page.on('pageerror', e => errors.push(e.message));

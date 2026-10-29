@@ -1,11 +1,11 @@
-import { chromium } from 'playwright-core';
+import { chromium } from './test-browser.mjs';
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
 const sourceUrl = process.env.VIDEO_IMPORT_URL || 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4';
 const shareText = process.env.VIDEO_IMPORT_SHARE_TEXT || `5.84 复制打开抖音，看看【测试作品】${sourceUrl} 复制此链接，打开 App 观看`;
 const expectedTitle = process.env.VIDEO_IMPORT_EXPECT_TITLE || 'flower';
-const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true, args: ['--no-sandbox'] });
+const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));

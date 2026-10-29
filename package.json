@@ -6,7 +6,13 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 8790",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 8790"
+    "preview": "vite preview --host 127.0.0.1 --port 8790",
+    "test": "npm run test:node && npm run test:browser",
+    "test:all": "npm run test:python && npm test",
+    "test:python": "python -m unittest discover -s . -p \"test_*.py\" -t .",
+    "test:node": "node scripts/run_node_tests.mjs node",
+    "test:browser": "node scripts/run_node_tests.mjs browser",
+    "browser:install": "playwright-core install chromium"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.4",

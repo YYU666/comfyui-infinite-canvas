@@ -648,11 +648,12 @@ def main():
                     return 0
 
             cleanup_legacy_comfy_logs(log_dir)
-            if not (HERE / "dist" / "index.html").is_file():
+            dist_dir = Path(os.environ.get("H3_WORKBENCH_DIST_DIR", HERE / "dist")).resolve()
+            if not (dist_dir / "index.html").is_file():
                 raise RuntimeError("画布尚未构建。请先运行 install.bat，或在本目录执行 npm ci && npm run build。")
             (INPUT_DIR / "workbench").mkdir(parents=True, exist_ok=True)
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            handler = functools.partial(WorkbenchHandler, directory=str(HERE / "dist"))
+            handler = functools.partial(WorkbenchHandler, directory=str(dist_dir))
             for port in range(8790, 8800):
                 try:
                     server = WorkbenchServer(("127.0.0.1", port), handler)

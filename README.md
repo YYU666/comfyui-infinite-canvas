@@ -155,11 +155,13 @@ C:\ComfyUI_windows_portable\python_embeded\python.exe scripts\agent_benchmark.py
 ## 常用开发检查
 
 ```bat
+python -m pip install --require-hashes -r requirements.lock
 npm ci
+npm run browser:install
 npm run build
-node test-canvas-layout.mjs
-node test-canvas-projects.mjs
-python -m py_compile video_workbench_launcher.py install.py scripts\install_models.py scripts\prepare_cloud_package.py scripts\verify_workbench.py
+npm run test:all
 ```
+
+`test:all` 依次运行全部 Python 单元／故障注入测试、17 个纯 Node 测试文件和 5 个隔离浏览器／后端测试文件；不需要真实模型、ComfyUI 任务或用户项目。浏览器默认使用 Playwright 托管 Chromium，也可用 `CHROME_PATH` 指定浏览器；后端浏览器测试默认使用 PATH 中的 `python`，可用 `H3_TEST_PYTHON` 覆盖。CI 配置见 `.github/workflows/ci.yml`，覆盖 Windows 默认编码、UTF-8、前端构建及临时目录中的隔离验收。
 
 更新 Python 版本约束后，在便携版根目录执行 `python_embeded\python.exe video-workbench\scripts\generate_requirements_lock.py` 重建哈希锁。`requirements.txt`、`requirements.lock` 和生成脚本的变更必须放在同一个可独立审查的提交中。

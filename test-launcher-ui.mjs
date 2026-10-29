@@ -4,10 +4,10 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
+import { chromium } from './test-browser.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const python = process.env.H3_TEST_PYTHON || 'C:/ComfyUI_windows_portable/python_embeded/python.exe';
+const python = process.env.H3_TEST_PYTHON || process.env.PYTHON || 'python';
 const temporary = await mkdtemp(path.join(tmpdir(), 'h3-launcher-ui-'));
 const runtime = path.join(temporary, 'runtime');
 const projects = path.join(temporary, 'projects');
@@ -54,7 +54,7 @@ try {
   const emptyQueueResponse = await fetch(`${base}/api/queue`, { headers: { 'X-H3-Token': token } });
   assert.equal(emptyQueueResponse.status, 200, 'queue API is available in the isolated backend');
   assert.deepEqual((await emptyQueueResponse.json()).jobs, [], 'isolated queue starts empty');
-  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
+  browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   page = await context.newPage();
   page.on('pageerror', (error) => errors.push(error.message));
@@ -199,6 +199,7 @@ try {
   assert.equal(errors.length, 0, errors.join('\n'));
   console.log(JSON.stringify({ ok: true, launcher: true, reopen: true, assetRange: true, trash: true, migration3: true, projects100: true, browserCloseKeepsService: true }));
 } catch (error) {
+  console.error('UI_TEST_ERROR', error);
   if (page) console.error('UI_FAILURE_DEBUG', JSON.stringify({ url: page.url(), errors, text: (await page.locator('body').innerText()).slice(0, 5000) }));
   throw error;
 } finally {
@@ -208,5 +209,10 @@ try {
     for (let count = 0; count < 50 && backend.exitCode === null; count += 1) await sleep(100);
   }
   if (backend.exitCode === null) backend.kill();
-  await rm(temporary, { recursive: true, force: true });
+  for (let count = 0; count < 50 && backend.exitCode === null; count += 1) await sleep(100);
+  let removed = false;
+  for (let count = 0; count < 30 && !removed; count += 1) {
+    try { await rm(temporary, { recursive: true, force: true }); removed = true; }
+    catch (error) { if (error.code !== 'EBUSY' || count === 29) throw error; await sleep(200); }
+  }
 }
