@@ -39,9 +39,11 @@ set PYTHONUTF8=0
 
 ```bat
 python scripts\qa_soak.py --root .qa-soak
+rem 暂停后复用已有合成素材和样本继续累计到 8 小时：
+python scripts\qa_soak.py --root .qa-soak --resume
 ```
 
-该脚本只操作新建的隔离目录和合成上游，不提交真实 GPU 任务。`--root` 必须为空；短参数 smoke test 不能作为发布验收。正式报告写入 `.qa-soak/report.json`，逐轮样本写入 `.qa-soak/samples.jsonl`。
+该脚本只操作隔离目录和合成上游，不提交真实 GPU 任务。首次运行时 `--root` 必须为空；`--resume` 核对 seed、项目身份与配置后复用素材和样本，不重新上传。短参数 smoke test 不能作为发布验收。正式报告写入 `.qa-soak/report.json`，逐轮样本写入 `.qa-soak/samples.jsonl`。
 
 ## 本候选版实际结果
 

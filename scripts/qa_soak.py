@@ -4,9 +4,11 @@ Creates synthetic projects and media only below --root. The fake upstream never
 runs ComfyUI or submits GPU work. A normal invocation still takes eight hours:
 
     python scripts/qa_soak.py --root .qa-soak
+    python scripts/qa_soak.py --root .qa-soak --resume
 
-Use tiny --hours/--projects/--asset-total-bytes values only for a script smoke
-test; such a run is not release acceptance.
+--resume reuses the existing synthetic seed and completed samples without
+re-uploading. Use tiny --hours/--projects/--asset-total-bytes values only for a
+script smoke test; such a run is not release acceptance.
 """
 from __future__ import annotations
 
@@ -288,6 +290,7 @@ class Soak:
                        "removedBytes": removed["bytes"], "protectedAssetBytes": protected_file.stat().st_size,
                        "protectedAssetPreserved": True}
         self.request("POST", f"/api/projects/{project_id}/close", {})
+        write_json(self.root / "orphan.json", self.orphan)
 
     def sample(self, sample_index):
         started = time.perf_counter()
@@ -351,6 +354,7 @@ class Soak:
                     "totalRecoverySeconds": time.monotonic() - stopped,
                     "projects": len(after), "revisionIdentityPreserved": True}
         self.recoveries.append(recovery)
+        write_json(self.root / "recoveries.json", self.recoveries)
         print(json.dumps({"restart": recovery}), flush=True)
 
     def final_report(self, status, error=None):
@@ -383,10 +387,11 @@ class Soak:
             "configuration": {
                 "projects": self.args.projects, "syntheticAssetBytes": self.args.asset_total_bytes,
                 "requestedHours": self.args.hours, "sampleIntervalSeconds": self.args.interval_seconds,
+                "resumeUsed": self.args.resume,
                 "upstream": "synthetic empty ComfyUI HTTP fixture; no GPU jobs submitted",
             },
             "samples": len(samples),
-            "actualSoakSeconds": samples[-1]["elapsedSeconds"] if samples else 0,
+            "actualSoakSeconds": (time.monotonic() - self.started_monotonic) if self.started_monotonic is not None else 0,
             "seedConnectRetries": self.connect_retry_count,
             "listP95Ms": percentile95(self.list_latencies),
             "saveP95Ms": percentile95(self.save_latencies),
@@ -408,6 +413,7 @@ class Soak:
         }
         report["passed"] = bool(status == "completed" and self.projects_info and not error and not asset_errors
                                 and len(rows) == self.args.projects and self.recoveries
+                                and report["actualSoakSeconds"] >= self.args.hours * 3600
                                 and self.orphan and self.orphan["protectedAssetPreserved"])
         write_json(self.report_path, report)
         self.progress(status=status, passed=report["passed"], report=str(self.report_path), error=error)
@@ -415,22 +421,53 @@ class Soak:
 
     def run(self):
         self.root.mkdir(parents=True, exist_ok=True)
-        if any(self.root.iterdir()):
+        previous_samples = []
+        previous_elapsed = 0
+        if self.args.resume:
+            seed_data = json.loads((self.root / "seed.json").read_text(encoding="utf-8"))
+            self.projects_info = seed_data["projects"]
+            self.initial_revisions = {project_id: info["revision"] for project_id, info in self.projects_info.items()}
+            if len(self.projects_info) != self.args.projects or seed_data["syntheticAssetBytes"] != self.args.asset_total_bytes:
+                raise RuntimeError("resume configuration does not match seed.json")
+            previous_samples = [json.loads(line) for line in self.samples_path.read_text(encoding="utf-8").splitlines() if line]
+            if not previous_samples:
+                raise RuntimeError("resume requires at least one completed sample")
+            previous_elapsed = float(previous_samples[-1]["elapsedSeconds"])
+            if previous_elapsed >= self.args.hours * 3600:
+                raise RuntimeError("the saved run already reached the requested total duration")
+            self.list_latencies = [sample["listMs"] for sample in previous_samples]
+            self.save_latencies = [value for sample in previous_samples for value in sample["saveMsLastBatch"]]
+            recoveries_path = self.root / "recoveries.json"
+            if recoveries_path.is_file():
+                self.recoveries = json.loads(recoveries_path.read_text(encoding="utf-8"))
+        elif any(self.root.iterdir()):
             raise RuntimeError(f"refusing non-empty QA root: {self.root}")
         self.fake = ThreadingHTTPServer(("127.0.0.1", 0), FakeComfyHandler)
         threading.Thread(target=self.fake.serve_forever, daemon=True).start()
         error = None
         try:
             self.start_backend()
-            self.allow_connect_retries = True
-            self.seed()
-            self.allow_connect_retries = False
-            self.collect_orphan_evidence()
-            self.started_monotonic = time.monotonic()
+            if self.args.resume:
+                rows = self.request("GET", "/api/projects")["projects"]
+                if {row["id"] for row in rows} != set(self.projects_info):
+                    raise RuntimeError("saved project identities do not match the isolated project root")
+                orphan_path = self.root / "orphan.json"
+                if orphan_path.is_file():
+                    self.orphan = json.loads(orphan_path.read_text(encoding="utf-8"))
+                else:
+                    # Older paused runs did not persist this sideband; repeat the
+                    # tiny synthetic orphan check rather than re-uploading 50 GiB.
+                    self.collect_orphan_evidence()
+            else:
+                self.allow_connect_retries = True
+                self.seed()
+                self.allow_connect_retries = False
+                self.collect_orphan_evidence()
+            self.started_monotonic = time.monotonic() - previous_elapsed
             deadline = self.started_monotonic + self.args.hours * 3600
             midpoint = self.started_monotonic + self.args.hours * 1800
-            restarted = False
-            sample_index = 0
+            restarted = bool(self.recoveries)
+            sample_index = len(previous_samples)
             revisions = dict(self.initial_revisions)
             while True:
                 revisions = self.sample(sample_index)
@@ -469,6 +506,7 @@ def main():
     parser.add_argument("--asset-total-bytes", type=int, default=50 * GIB)
     parser.add_argument("--hours", type=float, default=8)
     parser.add_argument("--interval-seconds", type=float, default=60)
+    parser.add_argument("--resume", action="store_true", help="continue existing seed/samples without re-uploading")
     args = parser.parse_args()
     if args.projects < 2 or args.hours <= 0 or args.interval_seconds <= 0:
         parser.error("projects must be >=2; hours and interval must be positive")
