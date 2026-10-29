@@ -254,7 +254,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         def flaky_read(path, *args, **kwargs):
             nonlocal attempts
-            if Path(path) == self.path and attempts == 0:
+            if os.path.samefile(path, self.path) and attempts == 0:
                 attempts += 1
                 raise PermissionError(13, "模拟原子替换期间的共享冲突", str(path))
             return original(path, *args, **kwargs)
