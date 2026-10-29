@@ -76,14 +76,41 @@ def choose_data_dir(candidates, legacy=None):
     return max(available, key=lambda item: item[0])[1] / "H3_Workbench"
 
 
-def default_data_dir():
-    configured = os.environ.get("H3_WORKBENCH_DATA_DIR")
+def resolve_data_dir(candidates, legacy=None, configured=None, state_path=None):
+    """Reuse the first selected data root; never silently follow free-space changes."""
     if configured:
         return Path(configured)
+    state_path = Path(state_path) if state_path else runtime_dir() / "data-directory.json"
+    try:
+        stored = json.loads(state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        stored = None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"数据目录配置无法读取，未重新选盘：{state_path}；{exc}") from exc
+    if stored is not None:
+        value = stored.get("dataDir") if isinstance(stored, dict) else None
+        path = Path(value) if isinstance(value, str) and value.strip() else None
+        if path is None or not path.is_absolute():
+            raise RuntimeError(f"数据目录配置无效，未重新选盘：{state_path}")
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(f"此前选择的数据目录不可用：{path}。请恢复该目录，或显式设置 H3_WORKBENCH_DATA_DIR。") from exc
+        return path
+    selected = choose_data_dir(candidates, legacy=legacy).resolve()
+    try:
+        atomic_write_json(state_path, {"dataDir": str(selected)})
+    except OSError as exc:
+        raise RuntimeError(f"无法保存首次选择的数据目录，未继续启动：{state_path}") from exc
+    return selected
+
+
+def default_data_dir():
+    configured = os.environ.get("H3_WORKBENCH_DATA_DIR")
     legacy = Path("D:/H3_Workbench")
     partitions = [Path(item.mountpoint) for item in psutil.disk_partitions(all=False)
                   if os.name != "nt" or "fixed" in item.opts.lower()]
-    return choose_data_dir(partitions or [Path(HERE.anchor)], legacy=legacy)
+    return resolve_data_dir(partitions or [Path(HERE.anchor)], legacy=legacy, configured=configured)
 
 
 DATA_DIR = default_data_dir()

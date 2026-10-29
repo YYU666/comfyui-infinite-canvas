@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from video_workbench_launcher import choose_data_dir
+from video_workbench_launcher import choose_data_dir, resolve_data_dir
 from workbench_settings import WorkbenchSettings
 
 ROOT = Path(__file__).resolve().parent
@@ -45,6 +45,32 @@ class InstallPathTests(unittest.TestCase):
             usage = {str(small): shutil._ntuple_diskusage(100, 80, 20), str(large): shutil._ntuple_diskusage(100, 10, 90)}
             with mock.patch("video_workbench_launcher.shutil.disk_usage", side_effect=lambda path: usage[str(path)]):
                 self.assertEqual(choose_data_dir([small, large]), large / "H3_Workbench")
+
+    def test_selected_data_root_survives_free_space_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_disk, second_disk = root / "first", root / "second"
+            first_disk.mkdir()
+            second_disk.mkdir()
+            state = root / "runtime" / "data-directory.json"
+            usage = {str(first_disk): shutil._ntuple_diskusage(200, 1, 199), str(second_disk): shutil._ntuple_diskusage(200, 50, 150)}
+            with mock.patch("video_workbench_launcher.shutil.disk_usage", side_effect=lambda path: usage[str(path)]):
+                selected = resolve_data_dir([first_disk, second_disk], state_path=state)
+            self.assertEqual(selected, first_disk / "H3_Workbench")
+            self.assertTrue(state.is_file())
+            usage[str(first_disk)] = shutil._ntuple_diskusage(200, 150, 50)
+            with mock.patch("video_workbench_launcher.shutil.disk_usage", side_effect=lambda path: usage[str(path)]):
+                restarted = resolve_data_dir([first_disk, second_disk], state_path=state)
+            self.assertEqual(restarted, selected)
+            self.assertTrue((selected / "references").parent.is_dir())
+
+    def test_invalid_saved_data_root_does_not_silently_select_another_disk(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = root / "data-directory.json"
+            state.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "未重新选盘"):
+                resolve_data_dir([root], state_path=state)
 
     def test_settings_default_comfy_root_is_repository_relative(self):
         settings = WorkbenchSettings(ROOT / "nonexistent-test-config.json")
