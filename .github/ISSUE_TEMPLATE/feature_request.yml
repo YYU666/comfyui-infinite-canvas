@@ -1,0 +1,37 @@
+name: 功能建议
+description: 提出边界清晰、可验收的改进
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 描述当前限制和使用场景，不只描述想增加的按钮或模型
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案与最小范围
+      description: 尽量限定为一个工作流或一个界面能力
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准与停止条件
+      description: 写清如何证明完成、哪些扩展不在本次范围内
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 新依赖、模型与许可证
+      description: 如果涉及新节点或模型，给出官方来源、许可证、商用和再分发状态
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 提交确认
+      options:
+        - label: 建议不包含未经授权的代码、素材、模型或参考网站资产
+          required: true

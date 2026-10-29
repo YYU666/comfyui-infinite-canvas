@@ -172,11 +172,12 @@
 - 验收：新 clone 无需作者本机目录即可运行 CI 同等命令；默认编码测试也全部通过；G0 故障注入测试进入 CI；构建产物写入 CI 临时目录。
 - 证据：新增 `npm run test:all`、独立 `test:python`／`test:node`／`test:browser` 和 GitHub Actions Windows 工作流。全部浏览器测试改用 `test-browser.mjs` 的托管 Chromium／`CHROME_PATH`，隔离后端默认使用 PATH Python 或 `H3_TEST_PYTHON`，不再依赖作者本机固定路径；`H3_WORKBENCH_DIST_DIR` 支持 CI 临时构建目录。实际验收：默认编码 146 项、UTF-8 146 项均通过，17 个 Node 文件通过，5 个隔离浏览器／后端文件在临时构建目录下通过；200 节点打开 242 ms、拖拽 406 ms，队列关闭浏览器后完成且重启未重复提交。
 
-### [ ] OSS-04｜G1｜补齐贡献、安全和项目说明文件
+### [x] OSS-04｜G1｜补齐贡献、安全和项目说明文件
 
 - 位置：新增 `CONTRIBUTING.md`、`SECURITY.md`、Issue／PR 模板；按需添加 `CODE_OF_CONDUCT.md`。
 - 修改：写清开发环境、测试要求、提交范围、数据／模型禁止入库、漏洞私下报告渠道、功能支持矩阵和已知限制；README 添加自有截图或演示素材。
 - 验收：外部贡献者能判断如何安装、测试、报告问题和提交 PR；安全报告不需要公开粘贴令牌或私人素材；英文说明可作为后续增强，不阻断首次开源。
+- 证据：贡献指南包含环境、统一测试、故障注入、提交范围、禁止入库内容与许可证要求；安全政策使用 GitHub Private Vulnerability Reporting，不伪造维护者邮箱；缺陷／功能 Issue 表单、联系链接和 PR 模板要求脱敏、实测与未执行项。README 增加候选版状态、七项功能支持矩阵及已知限制。`scripts/capture_docs_screenshot.mjs` 在临时后端与项目中仅创建合成节点，生成并人工查看 `docs/images/workbench-overview.png`（1600×1000，105725 字节）；没有读取真实画布、用户素材或参考网站资产。
 
 ## 7. 验收与发布
 
