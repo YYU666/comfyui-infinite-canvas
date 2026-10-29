@@ -112,6 +112,7 @@ try {
   await page.locator('button[title="添加元素"]').click();
   await page.getByRole('button', { name: /本地生图/ }).click();
   await page.locator('.react-flow__node-generator').click();
+  await page.locator('.react-flow__node-generator.selected').waitFor();
   await openCreative();
   await page.getByRole('button', { name: '将选中生成节点提升为镜头', exact: true }).click();
   await page.locator('.creative-shot').filter({ hasText: 'S02' }).waitFor();

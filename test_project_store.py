@@ -11,6 +11,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -246,6 +247,22 @@ class ProjectStoreTests(unittest.TestCase):
         finally:
             other.close()
         self.assertEqual(self.store.get(self.document["id"])["name"], "释放后可编辑")
+
+    def test_23_transient_windows_project_read_is_retried(self):
+        original = Path.read_text
+        attempts = 0
+
+        def flaky_read(path, *args, **kwargs):
+            nonlocal attempts
+            if Path(path) == self.path and attempts == 0:
+                attempts += 1
+                raise PermissionError(13, "模拟原子替换期间的共享冲突", str(path))
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", new=flaky_read), \
+             mock.patch("project_store.time.sleep") as sleep:
+            self.assertEqual(self.store.get(self.document["id"])["name"], "测试项目")
+            sleep.assert_called_once_with(0.01)
 
 
 if __name__ == "__main__":

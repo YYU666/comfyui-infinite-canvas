@@ -141,6 +141,18 @@ def _writer_running(pid):
         return False
 
 
+def _read_project_json(path):
+    # Windows can briefly deny a reader while another thread atomically replaces
+    # project.json. Retry only that transient sharing violation, never bad JSON.
+    for attempt in range(50):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            if attempt == 49:
+                raise
+            time.sleep(0.01)
+
+
 def _safe_project_file(path):
     path = path.resolve()
     for temporary in path.parent.glob(f".{path.name}.*.tmp"):
@@ -152,7 +164,7 @@ def _safe_project_file(path):
     if not path.is_file():
         raise StoreError("NOT_FOUND", "项目不存在或尚未打开。", 404)
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = _read_project_json(path)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StoreError("BAD_REQUEST", f"project.json 无法读取：{exc}") from exc
     return path, document
@@ -185,7 +197,7 @@ class ProjectStore:
                 if not candidate.is_dir() or candidate.name.startswith(".") or not path.is_file():
                     continue
                 try:
-                    document = json.loads(path.read_text(encoding="utf-8"))
+                    document = _read_project_json(path)
                 except (OSError, UnicodeError, json.JSONDecodeError):
                     continue
                 if document.get("id") == project_id:
