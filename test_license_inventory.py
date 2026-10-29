@@ -95,6 +95,20 @@ class LicenseInventoryTests(unittest.TestCase):
         self.assertIn("Version 2.0", license_text)
         self.assertIn("does not relicense", notice)
 
+    def test_gpl_linked_plugin_has_separate_license_and_notice(self):
+        plugin = ROOT / "comfy-nodes" / "h3_workbench_refine"
+        license_text = (plugin / "LICENSE").read_text(encoding="utf-8")
+        notice = (plugin / "NOTICE").read_text(encoding="utf-8")
+        root_notice = (ROOT / "NOTICE").read_text(encoding="utf-8")
+        source = (plugin / "__init__.py").read_text(encoding="utf-8")
+        self.assertIn("GNU GENERAL PUBLIC LICENSE", license_text)
+        self.assertIn("Version 3, 29 June 2007", license_text)
+        self.assertIn("GPL-3.0-only", notice)
+        self.assertIn("H3 Relay", notice)
+        self.assertIn("custom_nodes.h3-relay.h3_relay.toolkit", source)
+        self.assertIn("comfy-nodes/h3_workbench_refine", root_notice)
+        self.assertIn("GPL-3.0-only", root_notice)
+
 
 if __name__ == "__main__":
     unittest.main()

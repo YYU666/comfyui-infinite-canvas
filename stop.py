@@ -32,7 +32,7 @@ def own_process(instance):
 def main():
     instance = read_instance()
     if not instance:
-        print("H3 视频工作台未运行。")
+        print("Refmuse 本地工作台未运行。")
         return 0
     port = int(instance.get("port", 0))
     url = f"http://127.0.0.1:{port}/api/shutdown"
@@ -65,7 +65,7 @@ def main():
     if probe_health(instance, timeout=0.3):
         print("停止失败：健康检查仍可访问。", flush=True)
         return 1
-    print("H3 视频工作台已停止；用户自己启动的 ComfyUI 未受影响。")
+    print("Refmuse 本地工作台已停止；用户自己启动的 ComfyUI 未受影响。")
     return 0
 
 

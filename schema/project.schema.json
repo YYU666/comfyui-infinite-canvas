@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://h3.local/schema/project.schema.json",
-  "title": "H3 Workbench project",
+  "title": "Refmuse Local Workbench project",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "id", "name", "revision", "createdAt", "updatedAt", "appVersion", "settings", "characters", "outfits", "locations", "shots", "canvas", "assets"],

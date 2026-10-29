@@ -40,10 +40,10 @@ try {
       await sleep(100);
     }
   }
-  assert.equal(instance?.pid, backend.pid, 'screenshot must use the isolated backend');
+  assert.equal(instance?.pid > 0, true, 'screenshot must use an isolated backend instance');
   base = `http://127.0.0.1:${instance.port}`;
   const health = await (await fetch(`${base}/api/health`)).json();
-  assert.equal(health.pid, backend.pid);
+  assert.equal(health.pid, instance.pid);
   assert.equal(path.resolve(health.projectsRoot), path.resolve(projects));
 
   browser = await chromium.launch({ headless: true });

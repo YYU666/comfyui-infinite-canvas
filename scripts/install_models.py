@@ -35,7 +35,7 @@ def matches_manifest(item: dict, path: Path) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="校验并复制 H3 工作台模型包")
+    parser = argparse.ArgumentParser(description="校验并复制 Refmuse 本地工作台模型包")
     parser.add_argument("source", type=Path, help="模型包根目录，下面应包含 diffusion_models、loras 等")
     parser.add_argument("--comfy-root", type=Path, default=HERE.parents[1], help="ComfyUI 便携版根目录")
     parser.add_argument("--profile", choices=("core-h3", "full"), default="full", help="默认处理完整模型库；核心安装使用 core-h3")

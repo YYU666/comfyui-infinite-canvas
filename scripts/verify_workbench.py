@@ -84,7 +84,7 @@ def verify_model_files(files: list[dict], model_roots: list[Path]):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="检查 H3 工作台模型、节点和前端")
+    parser = argparse.ArgumentParser(description="检查 Refmuse 本地工作台模型、节点和前端")
     parser.add_argument("--comfy-root", type=Path, default=ROOT.parent)
     parser.add_argument("--model-root", type=Path, action="append", help="默认检查 ComfyUI/models；有多个模型目录时可重复传入")
     parser.add_argument("--profile", choices=("core-h3", "full"), default="full", help="core-h3 只检查七个核心视频权重；full 检查完整可选模型库")

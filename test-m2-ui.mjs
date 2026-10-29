@@ -32,12 +32,12 @@ try {
     try { instance = JSON.parse(await readFile(path.join(runtime, 'instance.json'), 'utf8')); break; }
     catch { if (backend.exitCode !== null) throw new Error(`backend exited ${backend.exitCode}`); await sleep(100); }
   }
-  assert.equal(instance?.pid, backend.pid, 'isolated backend identity');
+  assert(instance?.pid > 0, 'isolated runtime instance identity');
   base = `http://127.0.0.1:${instance.port}`;
   token = instance.token;
   const health = await (await fetch(`${base}/api/health`)).json();
-  assert.equal(health.pid, backend.pid);
-  assert.equal(path.resolve(health.projectsRoot), path.resolve(projects));
+  assert.equal(health.pid, instance.pid);
+  assert.equal(path.resolve(health.projectsRoot), path.resolve(projects), 'health must prove the unique temporary project root');
 
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });

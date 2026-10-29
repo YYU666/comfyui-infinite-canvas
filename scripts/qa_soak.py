@@ -1,4 +1,4 @@
-"""Reproducible isolated scale/soak acceptance for H3 Workbench.
+"""Reproducible isolated scale/soak acceptance for Refmuse Local Workbench.
 
 Creates synthetic projects and media only below --root. The fake upstream never
 runs ComfyUI or submits GPU work. A normal invocation still takes eight hours:

@@ -240,7 +240,7 @@ export default function App({ onCanvasMode }) {
 
   return <div className="app-shell">
     <aside className="side-rail">
-      <button className="brand" onClick={() => setPage('create')} aria-label="H3 视频工作台"><span>H</span><b>3</b></button>
+      <button className="brand" onClick={() => setPage('create')} aria-label="Refmuse 本地工作台"><span>R</span></button>
       <nav>
         <button className={page === 'create' ? 'active' : ''} onClick={() => setPage('create')}><WandSparkles size={21} /><span>创作</span></button>
         <button className={page === 'history' ? 'active' : ''} onClick={() => { setPage('history'); refreshHistory(); }}><History size={21} /><span>作品</span></button>

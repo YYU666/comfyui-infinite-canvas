@@ -1,4 +1,4 @@
-"""Dual first-pass / refined window assembly for the H3 Workbench.
+"""Dual first-pass / refined window assembly for the Refmuse Local Workbench.
 
 Keeps H3 Relay's native window contract and source audio. The extra state stays
 inside StartLoop/EndLoop, so long videos export complete comparison clips rather
@@ -21,7 +21,7 @@ class H3PortraitSkinMask:
     RETURN_TYPES = ("MASK", "IMAGE")
     RETURN_NAMES = ("skin_mask", "mask_preview")
     FUNCTION = "build"
-    CATEGORY = "H3 Workbench"
+    CATEGORY = "Refmuse Local Workbench"
 
     def build(self, image, mode="front"):
         height, width = image.shape[1:3]
@@ -71,7 +71,7 @@ class H3WorkbenchAppendRefinedWindow:
 
     RETURN_TYPES = ("H3_RELAY_WINDOW_STATE",)
     FUNCTION = "append"
-    CATEGORY = "H3 Workbench"
+    CATEGORY = "Refmuse Local Workbench"
 
     def append(self, refined_frames, first_pass_frames, window, previous=None):
         append_window = _toolkit().H3RelayAppendWindow()
@@ -96,7 +96,7 @@ class H3WorkbenchFinishRefinedWindows:
     RETURN_TYPES = ("IMAGE", "IMAGE", "AUDIO", "FLOAT", "STRING")
     RETURN_NAMES = ("refined_frames", "first_pass_frames", "audio", "fps", "report")
     FUNCTION = "finish"
-    CATEGORY = "H3 Workbench"
+    CATEGORY = "Refmuse Local Workbench"
 
     def finish(self, state, audio_mode="source", source_audio=None):
         first_state = state.get("first_pass_state")
@@ -119,9 +119,9 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "H3WorkbenchAppendRefinedWindow": "H3 Workbench · Append Dual-Pass Window",
-    "H3WorkbenchFinishRefinedWindows": "H3 Workbench · Finish Dual-Pass Windows",
-    "H3PortraitSkinMask": "H3 Workbench · Front Portrait Skin Mask",
+    "H3WorkbenchAppendRefinedWindow": "Refmuse Local Workbench · Append Dual-Pass Window",
+    "H3WorkbenchFinishRefinedWindows": "Refmuse Local Workbench · Finish Dual-Pass Windows",
+    "H3PortraitSkinMask": "Refmuse Local Workbench · Front Portrait Skin Mask",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

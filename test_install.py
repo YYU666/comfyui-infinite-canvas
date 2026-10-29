@@ -51,6 +51,26 @@ class InstallTests(unittest.TestCase):
             self.assertIn("--require-hashes", commands[0])
             self.assertEqual(Path(commands[0][-1]).name, "requirements.lock")
 
+    def test_models_source_defaults_to_core_and_explicit_full_is_forwarded(self):
+        for extra, expected in (([], "core-h3"), (["--profile", "full"], "full")):
+            with self.subTest(profile=expected), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "ComfyUI").mkdir()
+                (root / "ComfyUI" / "main.py").write_text("# fixture", encoding="utf-8")
+                (root / "python_embeded").mkdir()
+                python = root / "python_embeded" / "python.exe"
+                python.write_bytes(b"fixture")
+                commands = []
+                argv = ["install.py", "--comfy-root", str(root), "--models-source", str(root / "models"),
+                        "--skip-python", "--skip-nodes", "--skip-frontend", *extra]
+                with mock.patch.object(install, "run", side_effect=lambda command, cwd=None: commands.append(command)), \
+                     mock.patch.object(sys, "argv", argv):
+                    self.assertEqual(install.main(), 0)
+                self.assertEqual(len(commands), 1)
+                command = commands[0]
+                self.assertEqual(Path(command[1]).name, "install_models.py")
+                self.assertEqual(command[command.index("--profile") + 1], expected)
+
     def test_lock_covers_every_pin_with_sha256(self):
         pins = [line.strip() for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
                 if line.strip() and not line.startswith("#")]

@@ -65,9 +65,10 @@ def install_nodes(comfy_dir: Path, python: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="安装 H3 视频工作台、节点和前端")
+    parser = argparse.ArgumentParser(description="安装 Refmuse 本地工作台、节点和前端")
     parser.add_argument("--comfy-root", type=Path, default=HERE.parent, help="ComfyUI 便携版根目录")
     parser.add_argument("--models-source", type=Path, help="可选：已下载并解压的模型包目录")
+    parser.add_argument("--profile", choices=("core-h3", "full"), default="core-h3", help="模型安装范围，默认核心七项")
     parser.add_argument("--skip-nodes", action="store_true")
     parser.add_argument("--skip-python", action="store_true")
     parser.add_argument("--skip-frontend", action="store_true")
@@ -90,7 +91,7 @@ def main() -> int:
     if args.models_source:
         run([
             str(python), str(HERE / "scripts" / "install_models.py"),
-            str(args.models_source), "--comfy-root", str(root),
+            str(args.models_source), "--comfy-root", str(root), "--profile", args.profile,
         ])
     if not args.skip_frontend:
         node = shutil.which("node") or shutil.which("node.exe")

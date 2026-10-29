@@ -46,12 +46,7 @@ from workbench_lifecycle import (
     startup_guard,
     utc_now,
 )
-from workbench_logging import (
-    RotatingTextLog,
-    cleanup_legacy_comfy_logs,
-    configure_application_logging,
-    pump_text_log,
-)
+from workbench_logging import cleanup_legacy_comfy_logs, configure_application_logging
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_COMFY_ROOT = HERE.parent
@@ -158,6 +153,42 @@ def stop_owned_comfy(process, queue_probe=comfy_queue_counts):
     except subprocess.TimeoutExpired:
         process.kill()
     return "terminated"
+
+
+def start_owned_comfy(command, root, log_path):
+    """Keep draining ComfyUI output even after the workbench parent exits."""
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    logger_process = subprocess.Popen(
+        [sys.executable, "-s", str(HERE / "workbench_comfy_log.py"), "--log", str(log_path)],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=flags,
+    )
+    try:
+        process = subprocess.Popen(
+            command, cwd=root, stdout=logger_process.stdin, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=flags,
+        )
+    except Exception:
+        logger_process.stdin.close()
+        logger_process.wait(timeout=5)
+        raise
+    finally:
+        logger_process.stdin.close()
+    return process, logger_process
+
+
+def stop_comfy_logger(process, comfy_outcome):
+    if not process or comfy_outcome.startswith("preserved-"):
+        return
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
 SHARE_URL_PATTERN = re.compile(r"https?://[^\s<>\"'，。！？；、【】（）]+", re.IGNORECASE)
@@ -660,8 +691,7 @@ def main():
     log_dir = configure_logging(debug)
     server = None
     comfy_process = None
-    comfy_log = None
-    comfy_log_thread = None
+    comfy_logger_process = None
     try:
         with startup_guard():
             instance = read_instance()
@@ -721,14 +751,7 @@ def main():
                     "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch",
                     "--enable-cors-header", WEB_URL,
                 ]
-                comfy_log = RotatingTextLog(log_dir / "comfyui.log")
-                flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-                comfy_process = subprocess.Popen(
-                    command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=flags,
-                )
-                comfy_log_thread = threading.Thread(target=pump_text_log, args=(comfy_process.stdout, comfy_log), daemon=True)
-                comfy_log_thread.start()
+                comfy_process, comfy_logger_process = start_owned_comfy(command, ROOT, log_dir / "comfyui.log")
                 server.comfy_owned = True
                 server.comfy_process = comfy_process
                 LOGGER.info("已隐藏启动 ComfyUI，PID=%s", comfy_process.pid)
@@ -762,12 +785,8 @@ def main():
         if server:
             server.server_close()
         remove_instance(os.getpid())
-        if comfy_process:
-            stop_owned_comfy(comfy_process)
-        if comfy_log_thread:
-            comfy_log_thread.join(timeout=5)
-        if comfy_log:
-            comfy_log.close()
+        comfy_outcome = stop_owned_comfy(comfy_process) if comfy_process else "not-owned"
+        stop_comfy_logger(comfy_logger_process, comfy_outcome)
 
 
 if __name__ == "__main__":

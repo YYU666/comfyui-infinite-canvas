@@ -541,9 +541,15 @@ class AgentProtocol:
         for output in files:
             result = {**output, "url": output_url(output)}
             identity = self._output_identity(project_id, job, output)
-            existing = next((take for take in shot["takes"] if take.get("recipe", {}).get("outputIdentity") == identity
-                             or (take.get("recipe", {}).get("promptId") == prompt_id
-                                 and take.get("recipe", {}).get("output", {}).get("filename") == output.get("filename"))), None)
+            def matches(take):
+                recipe = take.get("recipe", {})
+                if recipe.get("outputIdentity"):
+                    return recipe["outputIdentity"] == identity
+                # Compatibility is only for legacy takes without a full output identity.
+                return (recipe.get("promptId") == prompt_id
+                        and recipe.get("output", {}).get("filename") == output.get("filename"))
+
+            existing = next((take for take in shot["takes"] if matches(take)), None)
             if existing:
                 created.append(existing["id"])
                 continue

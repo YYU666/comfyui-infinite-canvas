@@ -33,6 +33,19 @@ def read_exact(connection, length):
     return bytes(data)
 
 
+class BufferedReceiver:
+    def __init__(self, connection, initial=b""):
+        self.connection = connection
+        self.buffer = bytearray(initial)
+
+    def recv(self, length):
+        if self.buffer:
+            chunk = bytes(self.buffer[:length])
+            del self.buffer[:length]
+            return chunk
+        return self.connection.recv(length)
+
+
 def read_frame(connection):
     first, second = read_exact(connection, 2)
     length = second & 0x7F
@@ -204,10 +217,13 @@ class ComfyProxyTests(unittest.TestCase):
             response = bytearray()
             while b"\r\n\r\n" not in response:
                 response.extend(connection.recv(4096))
-            self.assertTrue(response.startswith(b"HTTP/1.1 101 "), response.decode(errors="replace"))
-            self.assertEqual(read_frame(connection), (1, b"ready"))
+            header, separator, initial = bytes(response).partition(b"\r\n\r\n")
+            self.assertEqual(separator, b"\r\n\r\n")
+            self.assertTrue(header.startswith(b"HTTP/1.1 101 "), header.decode(errors="replace"))
+            receiver = BufferedReceiver(connection, initial)
+            self.assertEqual(read_frame(receiver), (1, b"ready"))
             send_frame(connection, "hello", masked=True)
-            self.assertEqual(read_frame(connection), (1, b"echo:hello"))
+            self.assertEqual(read_frame(receiver), (1, b"echo:hello"))
             self.assertNotIn("X-H3-Token", self.upstream.last_headers)
         finally:
             connection.close()

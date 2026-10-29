@@ -1,4 +1,4 @@
-# H3 视频工作台 v1.0.1-rc.1
+# Refmuse 本地工作台 v1.0.1-rc.1
 
 这是开源发布候选版，不是稳定版。v1.0.0 的历史标签保持不变；本版集中修复数据安全、任务生命周期、Agent／Take 一致性、安装复现、许可证和社区工程问题。
 
@@ -16,7 +16,7 @@
 - 统一 CLI／MCP UTF-8；WebMCP 以 queueJobId 表示入队成功；wait、Take 和导出强制校验项目／镜头归属，按 attempt＋输出身份去重。
 - 便携版 Python 缺失时安装直接失败，不回退系统 Python；10 个 Python 直接依赖带哈希锁定，六个第三方节点固定仓库＋commit。
 - 核心 `core-h3` 七项模型提供官方来源、字节数和 SHA256；完整 33 项逐文件记录许可证与待核实边界，不捆绑模型权重。
-- 采用 Apache-2.0，补齐 NOTICE、第三方与模型许可证矩阵、贡献指南、安全政策、Issue／PR 模板和 CI。
+- 根目录采用 Apache-2.0；直接调用 H3 Relay GPL 组件的 `comfy-nodes/h3_workbench_refine` 插件单独采用 GPL-3.0-only 并附许可证与 NOTICE。补齐第三方与模型许可证矩阵、贡献指南、安全政策、Issue／PR 模板和 CI。
 
 ## 可复现验收命令
 
@@ -49,11 +49,13 @@ python scripts\qa_soak.py --root .qa-soak --resume
 
 ### 全量回归与构建
 
-- Windows 默认编码：148 项 Python 测试通过。
-- `PYTHONUTF8=1`：148 项 Python 测试通过，未再出现 ACL 输出解码异常。
+以下结果在由 `git archive HEAD` 加当前修复 diff 组成的干净源码快照中实测，快照不包含本地项目、模型、日志或审计附件：
+
+- Windows 默认编码：160 项 Python 测试通过。
+- `PYTHONUTF8=1`：160 项 Python 测试通过，未再出现 ACL 输出解码异常。
 - 17 个纯 Node 测试文件通过；6 个隔离浏览器／后端文件通过，包括迁移后的画布剪贴板测试。
-- `npm run build` 通过；仅有单 chunk 体积警告，不属于功能失败。
-- 200 节点短测：打开 234 ms、拖拽 412 ms。该短测不替代规模长跑。
+- `npm ci` 安装 88 个包并报告 0 个已知漏洞；`npm run build` 通过，仅有单 chunk 体积警告，不属于功能失败。
+- 200 节点短测：打开 228 ms、拖拽 415 ms。该短测不替代规模长跑。
 
 ### 干净安装与路径
 
@@ -89,6 +91,7 @@ python scripts\qa_soak.py --root .qa-soak --resume
 ## 真实边界与已知限制
 
 - 完整 8 小时 QA-03 尚未完成，不能宣称稳定版规模与长期运行矩阵通过。
+- GitHub Actions 工作流已提供，但本轮未在远程 CI 实跑；上述结果均为本地干净源码验收，不记为远程 CI 通过。
 - Muse V3.0 FP8 的精确公开来源，以及部分模型的 SHA256、许可证与再分发条件仍待核实；未知项不得推定为可商用或可再分发。
 - 服务端语义生成覆盖 H3 文生视频和图片参考视频；其他专用工作流仍走画布。模型生成质量及速度取决于授权、显卡、输入和参数。
 - `estTokens` 是四字符／token 的确定性预算估算，不是特定模型的精确 tokenizer。

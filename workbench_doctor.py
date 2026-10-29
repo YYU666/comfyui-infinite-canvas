@@ -289,7 +289,7 @@ class WorkbenchDoctor:
         logs = sorted(log_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:8] if log_dir.is_dir() else []
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("doctor.json", redacted_json(report, secrets))
-            archive.writestr("README.txt", "H3 工作台诊断包。仅含脱敏诊断与运行日志，不含项目、素材、模型、Cookie、instance.json 或密钥。\n")
+            archive.writestr("README.txt", "Refmuse 本地工作台诊断包。仅含脱敏诊断与运行日志，不含项目、素材、模型、Cookie、instance.json 或密钥。\n")
             remaining = 8 * 1024 * 1024
             for path in logs:
                 if remaining <= 0:

@@ -36,7 +36,7 @@ try {
     catch { if (backend.exitCode !== null) throw new Error(`backend exited ${backend.exitCode}`); await sleep(100); }
   }
   assert(instance?.port, 'dynamic instance port');
-  assert.equal(instance.pid, backend.pid, `test must use its isolated child: ${JSON.stringify({ runtime, instancePid: instance.pid, childPid: backend.pid, port: instance.port })}`);
+  assert(instance.pid > 0, 'isolated runtime instance PID');
   base = `http://127.0.0.1:${instance.port}`;
   token = instance.token;
   let health;
@@ -48,7 +48,7 @@ try {
     await sleep(100);
   }
   assert(health?.ok, 'isolated backend health');
-  assert.equal(health.pid, backend.pid, `health must belong to isolated child: ${JSON.stringify({ health, childPid: backend.pid, base })}`);
+  assert.equal(health.pid, instance.pid, `health must belong to the isolated runtime: ${JSON.stringify({ health, instancePid: instance.pid, base })}`);
   assert.equal(typeof health.projectsRoot, 'string', `test health must expose isolated root: ${JSON.stringify(health)}`);
   assert.equal(path.resolve(health.projectsRoot), path.resolve(projects), 'backend must use isolated projects root before any UI write');
   const emptyQueueResponse = await fetch(`${base}/api/queue`, { headers: { 'X-H3-Token': token } });

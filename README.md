@@ -1,10 +1,10 @@
-# H3 视频工作台
+# Refmuse 本地工作台
 
 把本地 ComfyUI 包装为无限画布：素材引用、全能参考、首尾帧、角色替换、Krea2／MOSS 生图、Qwen 2.1 图生图、局部写实修复、无抠图换装、四视图、图片／视频高清和显存清理。Agent 协议 v2 提供 HTTP、CLI、MCP 和浏览器 WebMCP，可不打开浏览器完成建镜头、生成、选片与导出。
 
 > **当前为开源发布候选版，不是稳定版。** 隔离测试、故障注入、构建、真实 Agent 队列全链路及干净环境在线安装已验证；中文空格路径、模拟无 D 盘和逻辑非 C 盘启动通过，8 小时规模长跑仍待完成。详见下方支持矩阵与 `docs/OPEN_SOURCE_REMEDIATION.md`。
 
-![H3 视频工作台的无限画布，图中仅含合成演示节点](docs/images/workbench-overview.png)
+![Refmuse 本地工作台的无限画布，图中仅含合成演示节点](docs/images/workbench-overview.png)
 
 ## 功能支持矩阵
 
@@ -28,7 +28,7 @@
 
 ## 许可证与商用边界
 
-本仓库自有代码和文档采用 [Apache-2.0](LICENSE)，归属与第三方边界见 [NOTICE](NOTICE)。这不代表 ComfyUI、第三方节点、模型／LoRA、用户素材或生成输出也采用 Apache-2.0。
+本仓库自有代码和文档采用 [Apache-2.0](LICENSE)，归属与第三方边界见 [NOTICE](NOTICE)。唯一目录级例外是直接调用 H3 Relay GPL 组件的 [`comfy-nodes/h3_workbench_refine`](comfy-nodes/h3_workbench_refine/NOTICE)，该插件单独采用 GPL-3.0-only 并附许可证全文。上述许可不覆盖 ComfyUI、其他第三方节点、模型／LoRA、用户素材或生成输出。
 
 - 33 个模型的作者、官方页、许可证、商用与再分发状态逐项见 [`models/LICENSES.md`](models/LICENSES.md) 和机器可读 [`models/licenses.json`](models/licenses.json)。
 - 六个锁定节点的许可证见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)；安装器独立克隆节点，不在本仓库捆绑其源码。
@@ -46,8 +46,8 @@
 
 1. 把本仓库文件夹 `video-workbench` 放到 `ComfyUI_windows_portable` 根目录，使其旁边同时存在 `ComfyUI/` 和 `python_embeded/`。
 2. 双击 `install.bat` 安装节点、Python 依赖并构建画布。
-3. 打开 `models/SOURCES.md`，让 Agent 按其中的夸克原链接／官方备用链接逐项下载，并按清单重命名、放入临时模型目录。不要全量转存 TB 级分享。
-4. 校验并复制已整理的模型：
+3. 先从 `https://huggingface.co/Comfy-Org/MiniMax-H3` 下载 `models/manifest.json` 中 `profiles.core-h3.files` 点名的七项，按相对路径放入临时模型目录；完整 33 项是可选配置，不是最快安装的前置条件。
+4. 校验并复制已整理的核心模型（安装器默认 `--profile core-h3`）：
 
    ```bat
    install.bat --models-source "D:\H3-Workbench-Models"
@@ -92,10 +92,10 @@
 先将下载文件按清单整理到 `D:\H3-Workbench-Models`，然后在 ComfyUI 便携版根目录运行：
 
 ```bat
-python_embeded\python.exe video-workbench\scripts\install_models.py "D:\H3-Workbench-Models" --comfy-root "."
+python_embeded\python.exe video-workbench\scripts\install_models.py "D:\H3-Workbench-Models" --comfy-root "." --profile core-h3
 ```
 
-脚本会校验文件名和字节数，再复制到 `ComfyUI\models\`。若临时模型目录与 `ComfyUI\models` 位于同一磁盘，可加 `--link` 使用硬链接，避免重复占用空间；跨盘不要加。
+只有明确安装完整 33 项时才改用 `--profile full`。脚本会校验文件名、已登记的 SHA256 和字节数，再复制到 `ComfyUI\models\`。若临时模型目录与 `ComfyUI\models` 位于同一磁盘，可加 `--link` 使用硬链接，避免重复占用空间；跨盘不要加。
 
 ### 方式 B：保留外置模型目录
 
@@ -127,13 +127,13 @@ python_embeded\python.exe video-workbench\scripts\verify_workbench.py --profile 
 python scripts\verify_workbench.py --model-root "D:\H3-Workbench-Models" --comfy-root ".." --profile core-h3
 ```
 
-生成一个用于上传网盘的规范目录（本机维护者使用）：
+整理本地模型目录（不授予公开上传权限）：
 
 ```bat
-python scripts\prepare_cloud_package.py --model-root "C:\ComfyUI_windows_portable\ComfyUI\models" --model-root "D:\H3-Models" --output "D:\H3-Workbench-Models" --mode copy
+python scripts\prepare_cloud_package.py --model-root "<MODEL_ROOT>" --output "<LOCAL_OUTPUT>" --profile core-h3 --mode copy
 ```
 
-同盘可使用 `--mode hardlink` 避免重复占用空间；跨盘必须使用 `copy`。先用 `--dry-run` 检查匹配结果。
+同盘可使用 `--mode hardlink` 避免重复占用空间；跨盘必须使用 `copy`，先用 `--dry-run` 检查。只有明确取得公开分发条件时才使用 `--purpose public`：该模式会阻断 `unknown` 或未确认允许再分发的项目，并要求用 `--license-file "模型相对路径=实际许可文本路径"` 为清单内每一项附上许可文本（可重复传入）。生成后仍须人工复核 `DISTRIBUTION_NOTICE.md`，脚本成功不等于免除作者条款。
 
 ## 自动安装的第三方节点
 

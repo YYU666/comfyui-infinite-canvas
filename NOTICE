@@ -1,8 +1,10 @@
-H3 Video Workbench
-Copyright (c) 2026 H3 Video Workbench contributors
+Refmuse Local Workbench
+Copyright (c) 2026 Refmuse Local Workbench contributors
 
 This repository's original source code and documentation are licensed under
-Apache License 2.0. See LICENSE.
+Apache License 2.0. See LICENSE, except for the deliberately separated
+comfy-nodes/h3_workbench_refine plugin, which is GPL-3.0-only and carries its
+own LICENSE and NOTICE because it directly calls H3 Relay's GPL toolkit.
 
 This notice does not relicense or grant rights to ComfyUI, third-party custom
 nodes, model weights, LoRAs, user-provided assets, or generated outputs. Those

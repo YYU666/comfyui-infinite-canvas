@@ -13,7 +13,7 @@ from agent_io import configure_utf8
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="h3wb", description="H3 视频工作台本地项目工具")
+    parser = argparse.ArgumentParser(prog="h3wb", description="Refmuse 本地工作台项目工具")
     parser.add_argument("--root", help="项目根目录，默认读取 H3_PROJECTS_ROOT 或 Documents/H3 Workbench")
     commands = parser.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("list", help="列出项目")

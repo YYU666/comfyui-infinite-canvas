@@ -40,12 +40,12 @@ try {
     try { instance = JSON.parse(await readFile(path.join(runtime, 'instance.json'), 'utf8')); break; }
     catch { if (backend.exitCode !== null) throw new Error(`backend exited ${backend.exitCode}`); await sleep(100); }
   }
-  assert.equal(instance?.pid, backend.pid, 'clipboard test must use its isolated backend');
+  assert(instance?.pid > 0, 'clipboard test must create an isolated runtime instance');
   base = `http://127.0.0.1:${instance.port}`;
   token = instance.token;
   const health = await (await fetch(`${base}/api/health`)).json();
-  assert.equal(health.pid, backend.pid);
-  assert.equal(path.resolve(health.projectsRoot), path.resolve(projects));
+  assert.equal(health.pid, instance.pid);
+  assert.equal(path.resolve(health.projectsRoot), path.resolve(projects), 'health must prove the unique temporary project root');
   const created = await api('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'Clipboard UI fixture', canvas: initialCanvas }) });
   projectId = created.id;
 

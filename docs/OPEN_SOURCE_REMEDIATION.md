@@ -1,10 +1,10 @@
-# H3 视频工作台开源版本整改清单
+# Refmuse 本地工作台开源版本整改清单
 
 - 日期：2026-10-29
 - 基线：`web` / `909be8b7b773d64aa7f004a4117188167938c260` / 本地 `v1.0.0`
-- 依据：[深度审计](audits/2026-10-29-deep-audit.md)与 `C:\Users\a\Documents\DSH\H3工作台-v1.0.0-审计报告-20261029.md`
+- 依据：[深度审计](audits/2026-10-29-deep-audit.md)与第二份外部审计《H3工作台 v1.0.0 审计报告（2026-10-29）》；外部原件路径不进入公开文档
 - 目标：不仅“源码可见”，还要达到可合法使用、可独立安装、可复现验收、可持续维护的开源发布水平。
-- 当前状态：安全、生命周期、Agent／Take 三批已完成。本批全量后端 22 个文件、120 项测试通过；WebMCP 队列状态、输出身份测试及前端构建通过。共享合同测试修复了 9:16／720P 在 Agent 端由 736 错算为 704 的取整偏差。其余批次仍按下列勾选状态执行。
+- 当前状态：公开候选版的必修代码项已完成，并在由 `git archive HEAD` 加当前修复组成的干净源码快照中通过两种编码各 160 项 Python 测试、17 个 Node 文件、6 个隔离浏览器／后端文件及生产构建。8 小时长跑、远程 CI 实跑和远程公开发布仍未完成，边界保留下列勾选状态。
 
 ## 1. 发布门禁
 
@@ -123,7 +123,7 @@
 - 位置：`video_workbench_launcher.py` 及自有 ComfyUI 日志配置。
 - 修改：应用日志采用大小轮转（建议 10 MB×5），明确保留上限；请求日志不得记录 token、密钥和个人素材内容；自有 ComfyUI 日志采用同等策略。
 - 验收：持续写入超过上限后文件数量和总大小受限；旧日志按策略清理；诊断包仍可用且不泄露凭据。
-- 证据：新增统一轮转与脱敏格式器；应用和自有 ComfyUI 均为 10 MB＋5 备份，ComfyUI stdout 由后台线程持续读取，旧时间戳日志只保留最新五份；请求日志不再包含 URL。临时目录测试验证容量上限、旧内容轮出、管道排空和密钥脱敏，诊断包回归通过；全量后端 140 项测试通过。
+- 证据：新增统一轮转与脱敏格式器；应用和自有 ComfyUI 均为 10 MB＋5 备份，旧时间戳日志只保留最新五份，请求日志不再包含 URL。自有 ComfyUI stdout 改由独立日志进程持续读取；保留 ComfyUI 时工作台父进程退出不会关闭读取端，停止自有 ComfyUI 后日志进程按 EOF 或超时退出。真实合成子进程测试覆盖父进程退出后的继续写入，另有容量、轮出、管道排空和密钥脱敏回归。
 
 ## 5. 安装、路径与供应链
 
@@ -147,7 +147,7 @@
 - 位置：`models/manifest.json`、`models/SOURCES.md`、`models/README.md`、`scripts/verify_workbench.py`。
 - 修改：优先官方来源，逐项补充可用来源与 SHA256；Muse V3.0 FP8 未解决前不得列入“完整可下载保证”；拆分核心运行模型与完整 33 文件可选配置。
 - 验收：新用户不持有作者本机权重时，可按文档得到明确可用的核心配置；完整配置逐项显示已核实／待核实；错误版本和损坏文件能被哈希校验拒绝。
-- 证据：`core-h3` 七项、71.164 GiB 已全部核对 Comfy-Org 官方路径、字节数与 LFS SHA256；完整清单共登记 15 项官方 SHA256，其余 18 项明确为待核实。安装器与校验器均支持 profile，临时小文件测试覆盖同尺寸损坏拒绝和核心配置不依赖可选文件；全量后端 136 项测试通过。未读取或哈希用户真实模型。
+- 证据：`core-h3` 七项、71.164 GiB 已全部核对 Comfy-Org 官方路径、字节数与 LFS SHA256；完整清单共登记 15 项官方 SHA256，其余 18 项明确为待核实。安装器与校验器均支持 profile，临时小文件测试覆盖同尺寸损坏拒绝和核心配置不依赖可选文件；当前干净源码全量后端 160 项测试通过。未读取或哈希用户真实模型。
 
 ## 6. 开源合规与社区工程
 
@@ -156,7 +156,7 @@
 - 位置：新增 `LICENSE`、`NOTICE` 或等价文件；更新 `package.json`、README。
 - 修改：由项目负责人确认许可证（可评估 Apache-2.0），填写真实版权主体／年份；`package.json` 增加 license 并处理 `private:true`；列出直接捆绑的第三方代码／资产。
 - 验收：GitHub 能识别许可证；代码许可证明确不覆盖 ComfyUI、第三方节点、模型、LoRA 和用户素材；没有未经授权复制的参考网站图片、商标或私有素材。
-- 证据：根目录采用 Apache-2.0 标准全文，版权主体为 `H3 Video Workbench contributors`；`package.json` 与锁文件均声明 Apache-2.0 且移除 `private`。NOTICE 明确代码许可证不覆盖第三方节点、模型、素材和输出；第三方节点另列 `THIRD_PARTY_NOTICES.md`。
+- 证据：根目录采用 Apache-2.0 标准全文，版权主体为 `Refmuse Local Workbench contributors`；`package.json` 与锁文件均声明 Apache-2.0 且移除 `private`。直接 import H3 Relay GPL toolkit 的 `comfy-nodes/h3_workbench_refine` 作为目录级例外单独采用 GPL-3.0-only，附完整 LICENSE 与 NOTICE；根 NOTICE、README 和贡献指南均明确该边界。其他第三方节点另列 `THIRD_PARTY_NOTICES.md`，模型、素材与输出不被重新许可。
 
 ### [x] OSS-02｜G0｜补齐模型／LoRA／节点许可证矩阵
 
@@ -170,14 +170,14 @@
 - 位置：新增 `.github/workflows/`；更新 `package.json`、浏览器测试启动方式。
 - 修改：提供统一 Python／Node 测试命令；CI 至少覆盖 Windows 默认编码、UTF-8、Python 后端、前端构建和隔离浏览器回归；浏览器路径统一用 Playwright 托管浏览器或 `CHROME_PATH`，删除对单机 Chrome 路径的依赖。
 - 验收：新 clone 无需作者本机目录即可运行 CI 同等命令；默认编码测试也全部通过；G0 故障注入测试进入 CI；构建产物写入 CI 临时目录。
-- 证据：新增 `npm run test:all`、独立 `test:python`／`test:node`／`test:browser` 和 GitHub Actions Windows 工作流。全部浏览器测试改用 `test-browser.mjs` 的托管 Chromium／`CHROME_PATH`，隔离后端默认使用 PATH Python 或 `H3_TEST_PYTHON`，不再依赖作者本机固定路径；`H3_WORKBENCH_DIST_DIR` 支持 CI 临时构建目录。实际验收：默认编码 148 项、UTF-8 148 项均通过，17 个 Node 文件通过，6 个隔离浏览器／后端文件通过；200 节点打开 234 ms、拖拽 412 ms，队列关闭浏览器后完成且重启未重复提交。
+- 证据：新增 `npm run test:all`、独立 `test:python`／`test:node`／`test:browser` 和 GitHub Actions Windows 工作流。全部浏览器测试改用 `test-browser.mjs` 的托管 Chromium／`CHROME_PATH`，隔离后端默认使用 PATH Python 或 `H3_TEST_PYTHON`，不再依赖作者本机固定路径；`H3_WORKBENCH_DIST_DIR` 支持 CI 临时构建目录。在由 `git archive HEAD` 加当前修复 diff 组成的干净源码快照中，默认编码与 UTF-8 各 160 项、17 个 Node 文件、6 个隔离浏览器／后端文件均通过；200 节点打开 228 ms、拖拽 415 ms，队列关闭浏览器后完成且重启未重复提交。远程 GitHub Actions 未实跑，不记为 CI 通过。
 
 ### [x] OSS-04｜G1｜补齐贡献、安全和项目说明文件
 
 - 位置：新增 `CONTRIBUTING.md`、`SECURITY.md`、Issue／PR 模板；按需添加 `CODE_OF_CONDUCT.md`。
 - 修改：写清开发环境、测试要求、提交范围、数据／模型禁止入库、漏洞私下报告渠道、功能支持矩阵和已知限制；README 添加自有截图或演示素材。
 - 验收：外部贡献者能判断如何安装、测试、报告问题和提交 PR；安全报告不需要公开粘贴令牌或私人素材；英文说明可作为后续增强，不阻断首次开源。
-- 证据：贡献指南包含环境、统一测试、故障注入、提交范围、禁止入库内容与许可证要求；安全政策使用 GitHub Private Vulnerability Reporting，不伪造维护者邮箱；缺陷／功能 Issue 表单、联系链接和 PR 模板要求脱敏、实测与未执行项。README 增加候选版状态、七项功能支持矩阵及已知限制。`scripts/capture_docs_screenshot.mjs` 在临时后端与项目中仅创建合成节点，生成并人工查看 `docs/images/workbench-overview.png`（1600×1000，105725 字节）；没有读取真实画布、用户素材或参考网站资产。
+- 证据：贡献指南包含环境、统一测试、故障注入、提交范围、禁止入库内容与许可证要求；安全政策使用 GitHub Private Vulnerability Reporting，不伪造维护者邮箱；缺陷／功能 Issue 表单、联系链接和 PR 模板要求脱敏、实测与未执行项。README 增加候选版状态、七项功能支持矩阵及已知限制。`scripts/capture_docs_screenshot.mjs` 在临时后端与项目中仅创建合成节点，生成并人工查看 `docs/images/workbench-overview.png`（1600×1000，105695 字节）；没有读取真实画布、用户素材或参考网站资产。
 
 ## 7. 验收与发布
 
@@ -185,7 +185,7 @@
 
 - 内容：全部 Python、Node、浏览器、Agent 预算、安全探针和构建；新增 SAFE/LIFE/LOCK/AGENT/TAKE 测试必须进入统一命令。
 - 验收：默认 Windows 编码与 UTF-8 均通过；无 `95/96` 被环境变量掩盖；构建前真实 ComfyUI 队列为空；测试不读写真实用户项目和权重。
-- 证据：构建前真实 `/queue` 返回运行 0、排队 0。默认编码与 UTF-8 各 148 项后端测试通过，17 个 Node 文件、6 个浏览器／后端文件及前端构建通过。`workbench_lifecycle.py` 与 `workbench_settings.py` 的 `icacls` 输出固定按 Windows `mbcs` 解码，两个 PYTHONUTF8=1 回归测试防止本地化输出再次触发后台 `UnicodeDecodeError`；重跑未再出现该异常。遗留 `test-canvas-clipboard-ui.mjs` 已从旧 IndexedDB 启动方式迁移到临时后端与 HTTP 项目存储，并加入统一浏览器套件；复制、粘贴、图片字节持久化及刷新恢复均通过。
+- 证据：构建前真实 `/queue` 返回运行 0、排队 0。在不含本地项目、模型、日志或审计附件的干净源码快照中，默认编码与 UTF-8 各 160 项后端测试通过，17 个 Node 文件、6 个浏览器／后端文件及前端构建通过。`workbench_lifecycle.py` 与 `workbench_settings.py` 的 `icacls` 输出固定按 Windows `mbcs` 解码，两个 PYTHONUTF8=1 回归测试防止本地化输出再次触发后台 `UnicodeDecodeError`；重跑未再出现该异常。遗留 `test-canvas-clipboard-ui.mjs` 已从旧 IndexedDB 启动方式迁移到临时后端与 HTTP 项目存储，并加入统一浏览器套件；复制、粘贴、图片字节持久化及刷新恢复均通过。
 
 ### [x] QA-02｜G1｜补真实 Agent 队列全链路和运行版本检查（B3）
 
@@ -207,7 +207,7 @@
 - 位置：`RELEASE.md`、`docs/PROGRESS.md`、M 系列报告、必要的变更记录。
 - 修改：修复默认编码后更新测试结论；记录真实与仿真边界、干净安装、CI 和长跑结果；保留旧 `v1.0.0` 标签，不移动或改写历史；修复完成后使用新 tag（如 `v1.0.1` 或候选版）。
 - 验收：报告中的每个数字均可由当前命令复现；未执行项明确写未执行；没有“测试通过”但条件被隐藏的表述。
-- 证据：`RELEASE.md` 和 `docs/PROGRESS.md` 已更新全量回归、真实 Agent、干净安装及暂停长跑数字；应用、npm 与锁文件版本统一为 `1.0.1-rc.1`。版本一致性复核及默认编码／UTF-8 各 148 项、17 个 Node 文件和构建重新通过；本地候选 tag 为 `v1.0.1-rc.1`，旧 `v1.0.0` 未移动。
+- 证据：`RELEASE.md` 和 `docs/PROGRESS.md` 已更新全量回归、真实 Agent、干净安装及暂停长跑数字；应用、npm 与锁文件版本统一为 `1.0.1-rc.1`。版本一致性复核及默认编码／UTF-8 各 160 项、17 个 Node 文件和构建重新通过；本地候选 tag 为 `v1.0.1-rc.1`，旧 `v1.0.0` 未移动。
 
 ### [ ] REL-02｜G1｜最后同步远程并公开
 

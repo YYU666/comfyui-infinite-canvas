@@ -35,7 +35,7 @@ export default function QueueNotificationCenter() {
       const timer = setTimeout(() => { timers.current.delete(timer); dismiss(id); }, 6000);
       timers.current.add(timer);
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        try { new Notification('H3 视频工作台', { body: item.text, tag: id }); } catch { /* The in-page toast remains available. */ }
+        try { new Notification('Refmuse 本地工作台', { body: item.text, tag: id }); } catch { /* The in-page toast remains available. */ }
       }
     };
     const refreshSettings = (event) => {

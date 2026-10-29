@@ -718,7 +718,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     }
   }, [getPromptTarget, getReferences, updateNode]);
 
-  const completeGeneration = useCallback(async (id, promptId, completedEntry = null) => {
+  const completeGeneration = useCallback(async (id, promptId, completedEntry = null, attempt = 1) => {
     if (completedJobsRef.current.has(promptId) || nodesRef.current.some((node) => node.type === 'media' && node.data.sourcePromptId === promptId)) return;
     completedJobsRef.current.add(promptId);
     try {
@@ -742,13 +742,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       if (source?.data.shotId) {
         await persistProject();
         const current = { ...projectRef.current, revision: revisionRef.current };
-        const outputIdentity = takeOutputIdentity({ projectId: project.id, shotId: source.data.shotId, jobId: source.data.queueJobId, promptId, output: result });
+        const outputIdentity = takeOutputIdentity({ projectId: project.id, shotId: source.data.shotId, jobId: source.data.queueJobId, attempt, promptId, output: result });
         const shot = current.shots?.find((item) => item.id === source.data.shotId);
         const existing = shot?.takes?.find((take) => take.recipe?.outputIdentity === outputIdentity);
         if (!existing) {
           const takeResult = await createTake(current, source.data.shotId, {
             asset: comfyExternalAsset(result),
-            recipe: { output: result, outputIdentity, promptId, jobId: source.data.queueJobId, mode: source.data.mode, seed: source.data.seed, prompt: source.data.prompt,
+            recipe: { output: result, outputIdentity, promptId, jobId: source.data.queueJobId, attempt, mode: source.data.mode, seed: source.data.seed, prompt: source.data.prompt,
               ratio: source.data.ratio, resolution: source.data.resolution, duration: source.data.duration, turbo: source.data.turbo },
           });
           updateProjectDocument(takeResult.project);
@@ -773,7 +773,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     if (!job || job.projectId !== project.id || !job.nodeId) return;
     const node = nodesRef.current.find((item) => item.id === job.nodeId && item.type === 'generator');
     const action = queueJobAction(node, job);
-    if (action?.type === 'complete') await completeGeneration(node.id, action.promptId, action.history);
+    if (action?.type === 'complete') await completeGeneration(node.id, action.promptId, action.history, action.attempt);
     else if (action?.type === 'patch') updateNode(node.id, action.patch);
   }, [completeGeneration, project.id, updateNode]);
 
@@ -1265,7 +1265,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
     const selected = nodesRef.current.filter((node) => node.selected);
     fitView({ nodes: selected.length ? selected : undefined, duration: 350, padding: selected.length ? 0.32 : 0.15, maxZoom: 1 });
   };
-  // RefMuse-style progressive detail: only cross render tiers, not on every zoom frame.
+  // Refmuse-style progressive detail: only cross render tiers, not on every zoom frame.
   const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
   const context = useMemo(() => ({ updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, viewTier }), [updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, viewTier, edges]);
   useCanvasMcp({

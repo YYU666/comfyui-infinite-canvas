@@ -254,6 +254,24 @@ class AgentProtocolTests(unittest.TestCase):
         source = next(node for node in document["canvas"]["nodes"] if node["id"] == job["nodeId"])
         self.assertEqual((source["data"]["status"], source["data"]["progress"]), ("done", 100))
 
+    def test_same_filename_in_different_output_directories_creates_distinct_takes(self):
+        document = self.store.create("输出完整身份")
+        pid = document["id"]
+        self.protocol.apply(pid, {"opId": "shot-output-identity", "ops": [{"op": "shot.create"}]})
+        document = self.store.get(pid)
+        job = {"id": "job_identity", "projectId": pid, "shotId": "s1", "nodeId": document["shots"][0]["canvasNodeId"],
+               "status": "done", "attempts": 2, "comfyPromptId": "prompt_identity",
+               "history": {"outputs": {"save": {"images": [
+                   {"filename": "same.png", "subfolder": "first", "type": "output"},
+                   {"filename": "same.png", "subfolder": "second", "type": "output"},
+               ]}}}}
+        self.assertEqual(len(self.protocol._materialize(pid, job)), 2)
+        self.assertEqual(len(self.protocol._materialize(pid, job)), 2, "repeated completion remains idempotent")
+        takes = self.store.get(pid)["shots"][0]["takes"]
+        self.assertEqual(len(takes), 2)
+        self.assertEqual({take["recipe"]["attempt"] for take in takes}, {2})
+        self.assertEqual({take["recipe"]["output"]["subfolder"] for take in takes}, {"first", "second"})
+
     def test_dry_run_builds_workflow_without_side_effects(self):
         document = self.store.create("预检无副作用")
         pid = document["id"]

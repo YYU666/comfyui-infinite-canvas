@@ -1,0 +1,19 @@
+Refmuse Local Workbench Refine ComfyUI Plugin
+Copyright (c) 2026 Refmuse Local Workbench contributors
+
+The original source code in this directory is licensed under GNU General
+Public License version 3 only (GPL-3.0-only). See LICENSE.
+
+This directory is a deliberate license exception to the repository's root
+Apache-2.0 license. The plugin directly imports and calls H3 Relay's GPL-3.0
+toolkit at runtime. H3 Relay is installed separately from the pinned upstream
+repository; its source code is not copied into this plugin or repository.
+
+H3 Relay: https://github.com/akatz-ai/h3-relay
+Pinned revision: e2a7665b6eb8ea37a88c0de2c9c6b69a8f7c9220
+Upstream license: GPL-3.0
+
+When distributing this plugin, retain this NOTICE and the GPL-3.0 license,
+provide the corresponding source, and preserve the upstream H3 Relay license
+and notices in the aggregated installation. The plugin license does not
+relicense ComfyUI, H3 Relay, model weights, LoRAs, user assets, or outputs.

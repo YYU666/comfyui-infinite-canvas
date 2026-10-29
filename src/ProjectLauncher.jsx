@@ -163,13 +163,13 @@ export default function ProjectLauncher({ onOpen }) {
 
   return <div className="launcher-shell">
     <aside className="launcher-sidebar">
-      <div className="launcher-brand"><span>H<b>3</b></span><div><strong>视频工作台</strong><small>本地创作空间</small></div></div>
+      <div className="launcher-brand"><span>R</span><div><strong>Refmuse</strong><small>本地工作台</small></div></div>
       <button className="launcher-new" onClick={() => setDialog({ type: 'new', template: 'blank' })}><Plus size={17} />新建项目</button>
       <nav aria-label="项目导航">{SECTIONS.map(([id, label, Icon]) => <button key={id} className={section === id ? 'active' : ''} onClick={() => { setSection(id); setSelectedId(null); }}><Icon size={16} /><span>{label}</span>{id === 'all' && <small>{projects.length}</small>}{id === 'trash' && <small>{trash.length}</small>}</button>)}</nav>
       <div className="launcher-sidebar-bottom">
         <button onClick={() => setDialog({ type: 'settings' })}><Settings2 size={15} />设置</button>
         <button onClick={openDoctor}><ShieldCheck size={15} />诊断</button>
-        <div className="launcher-local"><i /><span>仅在本机运行<small>H3 Workbench · v1.0.0</small></span></div>
+        <div className="launcher-local"><i /><span>仅在本机运行<small>Refmuse 本地工作台</small></span></div>
       </div>
     </aside>
 

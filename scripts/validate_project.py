@@ -33,7 +33,7 @@ def validate_project(document: dict) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="校验 H3 工作台 project.json（schema v3）")
+    parser = argparse.ArgumentParser(description="校验 Refmuse 本地工作台 project.json（schema v3）")
     parser.add_argument("project", type=Path)
     args = parser.parse_args()
     try:

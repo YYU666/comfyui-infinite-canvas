@@ -42,7 +42,9 @@ const job = (data = {}) => ({ id: 'job-1', projectId: 'project-1', nodeId: 'gene
 {
   const history = { status: { completed: true }, outputs: {} };
   const action = queueJobAction(node({ queueJobId: 'job-1', status: 'finishing' }), job({ status: 'done', progress: 100, comfyPromptId: 'prompt-1', history }));
-  assert.deepEqual(action, { type: 'complete', promptId: 'prompt-1', history });
+  assert.deepEqual(action, { type: 'complete', promptId: 'prompt-1', history, attempt: 1 });
+  const retried = queueJobAction(node({ queueJobId: 'job-1', status: 'finishing' }), job({ status: 'done', attempts: 2, comfyPromptId: 'prompt-2', history }));
+  assert.equal(retried.attempt, 2, 'a remounted retry keeps its real attempt identity');
 }
 
 {

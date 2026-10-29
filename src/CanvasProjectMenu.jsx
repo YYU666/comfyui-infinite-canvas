@@ -38,7 +38,7 @@ export default function CanvasProjectMenu({ current, projects, name, onNameChang
   };
   return <div className="canvas-project-control" ref={container}>
     <div className="neo-project-pill">
-      <span className="neo-logo">H<b>3</b></span>
+      <span className="neo-logo" title="Refmuse 本地工作台">R</span>
       <i />
       <input value={name} onChange={(event) => onNameChange(event.target.value)} disabled={busy} aria-label="画布项目名称" maxLength={120} />
       <button className="project-list-toggle" onClick={show} aria-label="项目列表" aria-expanded={open} aria-controls="canvas-project-list"><ChevronDown size={13} style={{ transform: open ? 'rotate(180deg)' : undefined }} /></button>

@@ -33,7 +33,7 @@ export function queueJobAction(node, job) {
     return { type: 'patch', patch: { ...identity, status: 'running', stage: job.stage || (job.comfyPromptId ? '本地 GPU 生成中' : '正在提交 ComfyUI'), progress: Math.max(progress, node.data.progress || 0), error: null } };
   }
   if (job.status === 'finishing') return { type: 'patch', patch: { ...identity, status: 'finishing', stage: job.stage || '正在读取生成结果', progress, error: null } };
-  if (job.status === 'done' && job.comfyPromptId && job.history) return { type: 'complete', promptId: job.comfyPromptId, history: job.history };
+  if (job.status === 'done' && job.comfyPromptId && job.history) return { type: 'complete', promptId: job.comfyPromptId, history: job.history, attempt: job.attempts || 1 };
   if (job.status === 'error') return { type: 'patch', patch: { ...identity, status: 'error', stage: '生成失败', error: job.error?.message || String(job.error || '后台生成失败，请查看诊断信息。') } };
   if (job.status === 'cancelled') return { type: 'patch', patch: { ...identity, status: 'cancelled', stage: '已取消', progress: 0, error: null } };
   return null;
