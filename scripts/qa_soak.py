@@ -102,9 +102,26 @@ class Soak:
         self.started_monotonic = None
         self.next_restart = None
         self.initial_revisions = {}
+        self.allow_connect_retries = False
+        self.connect_retry_count = 0
 
     def progress(self, **values):
         write_json(self.progress_path, {"updatedAt": utc_now(), **values})
+
+    def connect(self, connection):
+        # Retries are limited to seeding and happen before any HTTP bytes are
+        # sent. During the timed soak every connection error fails the run.
+        attempts = 4 if self.allow_connect_retries else 1
+        for attempt in range(attempts):
+            try:
+                connection.connect()
+                return
+            except OSError:
+                connection.close()
+                if attempt + 1 == attempts:
+                    raise
+                self.connect_retry_count += 1
+                time.sleep(0.25 * (2 ** attempt))
 
     def request(self, method, path, payload=None, timeout=60):
         body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -113,6 +130,7 @@ class Soak:
             headers["Content-Type"] = "application/json"
         connection = http.client.HTTPConnection("127.0.0.1", self.instance["port"], timeout=timeout)
         try:
+            self.connect(connection)
             connection.request(method, path, body=body, headers=headers)
             response = connection.getresponse()
             data = response.read()
@@ -127,6 +145,7 @@ class Soak:
         connection = http.client.HTTPConnection("127.0.0.1", self.instance["port"], timeout=300)
         chunk = hashlib.sha256(seed.encode("ascii")).digest() * (MIB // 32)
         try:
+            self.connect(connection)
             connection.putrequest("PUT", path)
             connection.putheader("X-H3-Token", self.token)
             connection.putheader("Content-Type", "video/mp4")
@@ -368,6 +387,7 @@ class Soak:
             },
             "samples": len(samples),
             "actualSoakSeconds": samples[-1]["elapsedSeconds"] if samples else 0,
+            "seedConnectRetries": self.connect_retry_count,
             "listP95Ms": percentile95(self.list_latencies),
             "saveP95Ms": percentile95(self.save_latencies),
             "listMaxMs": max(self.list_latencies, default=None),
@@ -402,7 +422,9 @@ class Soak:
         error = None
         try:
             self.start_backend()
+            self.allow_connect_retries = True
             self.seed()
+            self.allow_connect_retries = False
             self.collect_orphan_evidence()
             self.started_monotonic = time.monotonic()
             deadline = self.started_monotonic + self.args.hours * 3600
