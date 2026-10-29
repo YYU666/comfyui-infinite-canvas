@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agent_io import configure_utf8
+
 HERE = Path(__file__).resolve().parent
 
 NODE_PACKAGES = {
@@ -107,6 +109,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    configure_utf8()
     try:
         raise SystemExit(main())
     except subprocess.CalledProcessError as exc:

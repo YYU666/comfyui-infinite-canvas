@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -49,7 +50,12 @@ const env = {
 
 for (const test of tests) {
   console.log(`\n[${suiteName}] ${test}`);
-  const args = [path.join(root, test)];
+  const testPath = path.join(root, test);
+  if (!existsSync(testPath)) {
+    console.error(`测试入口缺失：${test}。请确认它已纳入 Git 和发布源码包。`);
+    process.exit(1);
+  }
+  const args = [testPath];
   const exitCode = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { cwd: root, env, stdio: 'inherit' });
     child.once('error', reject);
