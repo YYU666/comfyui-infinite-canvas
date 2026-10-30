@@ -671,7 +671,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     // Asset uploads also advance project revision: finish the content PUT first,
     // then serialize this page's uploads and observe once the whole batch settles.
     const idle = autoSaveRef.current?.waitForIdle() || Promise.resolve();
-    const pending = Promise.all([idle, mediaUploadTailRef.current]).then(() => saveProjectFile(project.id, mediaStorageId, file));
+    const pending = Promise.all([idle, mediaUploadTailRef.current]).then(() => saveProjectFile(project.id, mediaStorageId, file, revisionRef.current));
     mediaUploadTailRef.current = pending.catch(() => {});
     mediaWritesRef.current.set(mediaStorageId, pending);
     mediaAttemptsRef.current.set(id, mediaStorageId);

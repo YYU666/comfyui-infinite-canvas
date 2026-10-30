@@ -102,7 +102,9 @@ class WorkbenchUpdateManager:
         self.process_launcher = process_launcher or subprocess.Popen
         self.update_root = Path(update_root).resolve() if update_root else runtime_dir() / "updates"
         self.status_path = self.update_root / "status.json"
-        self.installed_manifest_path = self.update_root / "installed-files.json"
+        self.installation_root = os.path.normcase(str(self.root))
+        installation_id = hashlib.sha256(self.installation_root.encode("utf-8")).hexdigest()[:24]
+        self.installed_manifest_path = self.update_root / "installations" / installation_id / "installed-files.json"
         self._lock = threading.Lock()
         self._state = {"phase": "idle", "message": ""}
         self._last_check = None
@@ -142,6 +144,10 @@ class WorkbenchUpdateManager:
         try:
             with self._open(request, 10) as response:
                 release = json.loads(_read_limited(response, MAX_RELEASE_BYTES).decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise UpdateError("官方仓库尚未发布可用的正式版本。代码提交不会直接触发更新通知。", status=404, code="NO_RELEASE") from exc
+            raise UpdateError("暂时无法连接 GitHub Release，请稍后重试。", status=503, code="UPDATE_UNAVAILABLE") from exc
         except (OSError, urllib.error.URLError, TimeoutError, UnicodeError, json.JSONDecodeError) as exc:
             raise UpdateError("暂时无法连接 GitHub Release，请稍后重试。", status=503, code="UPDATE_UNAVAILABLE") from exc
         if not isinstance(release, dict) or release.get("draft") is True:
@@ -172,7 +178,8 @@ class WorkbenchUpdateManager:
         try:
             release = self._fetch_release()
         except UpdateError as exc:
-            result = {"currentVersion": APP_VERSION, "status": "unavailable", "updateAvailable": False, "message": exc.message}
+            result = {"currentVersion": APP_VERSION, "status": "no_release" if exc.code == "NO_RELEASE" else "unavailable",
+                      "updateAvailable": False, "message": exc.message}
             self._last_check = result
             return result
         package = release.pop("package")
@@ -297,16 +304,39 @@ class WorkbenchUpdateManager:
             raise UpdateError("升级包程序版本与 Release 标签不一致。", code="PACKAGE_INVALID")
 
     def _git_clean(self):
+        installed = None
+        if self.installed_manifest_path.exists():
+            try:
+                installed = json.loads(self.installed_manifest_path.read_text(encoding="utf-8"))
+                if installed.get("installationRoot") != self.installation_root:
+                    raise ValueError("different installation")
+                self._validate_manifest(installed, installed.get("version"))
+                from workbench_update_helper import safe_path
+                for item in installed["files"]:
+                    path = safe_path(self.root, item["path"])
+                    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
+                        raise ValueError("locally modified installed file")
+            except (OSError, ValueError, TypeError, AttributeError, RuntimeError, UpdateError) as exc:
+                raise UpdateError("已安装程序与本机更新记录不一致。请先备份本地修改，再升级。", status=409, code="LOCAL_CHANGES") from exc
         if not (self.root / ".git").exists():
             return
         git = shutil.which("git")
         if not git:
             raise UpdateError("无法检查本地代码修改，已停止升级。", code="LOCAL_CHANGES")
-        result = self.runner([git, "-C", str(self.root), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
+        result = self.runner([git, "-C", str(self.root), "status", "--porcelain", "-z", "--untracked-files=no"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
         if result.returncode:
             raise UpdateError("无法确认本地代码状态，已停止升级。", code="LOCAL_CHANGES")
         if result.stdout.strip():
-            raise UpdateError("工作台程序有本地代码修改。请先备份或提交修改，再升级。", status=409, code="LOCAL_CHANGES")
+            owned = {item["path"] for item in installed["files"]} if installed else set()
+            # An updater replaces files without rewriting the user's Git index.
+            # Only exact installed hashes and known removed paths are eligible.
+            changes = result.stdout.rstrip("\0").split("\0")
+            for change in changes:
+                kind, path = change[:3], change[3:]
+                if installed and ((kind == " M " and path in owned)
+                                  or (kind == " D " and path not in owned and not self.root.joinpath(path).exists())):
+                    continue
+                raise UpdateError("工作台程序有本地代码修改。请先备份或提交修改，再升级。", status=409, code="LOCAL_CHANGES")
 
     def _run_stage(self, command, timeout, label):
         try:
@@ -337,6 +367,19 @@ class WorkbenchUpdateManager:
         with self._lock:
             if self._state["phase"] in ACTIVE_PHASES:
                 raise UpdateError("已经有一个升级操作正在进行。", status=409, code="UPDATE_BUSY")
+            # Reserve the entire preparation, including slow preflight/network IO.
+            self._state = {"phase": "preparing", "message": "正在检查升级条件…", "version": tag, "updatedAt": utc_now()}
+        try:
+            return self._prepare_update(tag)
+        except Exception as exc:
+            if self.status()["phase"] != "error":
+                self._set_state("error", exc.message if isinstance(exc, UpdateError) else "更新准备失败，旧版尚未替换。", version=tag)
+            if isinstance(exc, UpdateError):
+                raise
+            LOGGER.exception("更新准备失败：%s", exc)
+            raise UpdateError("更新准备失败，旧版尚未替换。", status=500, code="PREPARE_FAILED") from exc
+
+    def _prepare_update(self, tag):
         self.preflight()
         self._git_clean()
         checked = self.check()

@@ -252,15 +252,18 @@ class ProjectStore:
         raise StoreError("NOT_FOUND", "项目不存在或尚未打开。", 404)
 
     def _read(self, path, migrate=True):
-        path, document = _safe_project_file(path)
-        document, changed = _migrate(document) if migrate else (document, False)
-        if changed:
-            backup = path.parent / "backups" / f"project-r{document['revision'] - 1}-before-v3.json"
-            backup.parent.mkdir(parents=True, exist_ok=True)
-            if not backup.exists():
-                shutil.copy2(path, backup)
-            atomic_write_json(path, document)
-        return document
+        # Schema/handle repair can write: serialize the entire read-modify-write,
+        # including callers that already hold this project's reentrant guard.
+        with self._guard(path):
+            path, document = _safe_project_file(path)
+            document, changed = _migrate(document) if migrate else (document, False)
+            if changed:
+                backup = path.parent / "backups" / f"project-r{document['revision'] - 1}-before-v3.json"
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                if not backup.exists():
+                    shutil.copy2(path, backup)
+                atomic_write_json(path, document)
+            return document
 
     def _write(self, path, document, expected_revision=None, backup=True):
         with self._guard(path):
@@ -491,7 +494,7 @@ class ProjectStore:
                     removed.append(item.name)
         return removed
 
-    def put_asset(self, project_id, filename, source, content_type=None):
+    def put_asset(self, project_id, filename, source, content_type=None, expected_revision=None):
         path = self._project_path(project_id)
         self._require_writable(path)
         self.acquire_lock(path)
@@ -518,16 +521,22 @@ class ProjectStore:
                 os.fsync(target.fileno())
             sha256 = digest.hexdigest()
             relative = f"assets/{sha256}{extension}"
-            final = path.parent / relative
-            if final.exists():
-                temporary.unlink()
-            else:
-                os.replace(temporary, final)
-            document = self._read(path)
-            if not any(item["path"] == relative for item in document["assets"]):
-                document["assets"].append({"path": relative, "sha256": sha256, "bytes": size, "mime": content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"})
-                document = self._write(path, document, document["revision"])
-            return {"asset": next(item for item in document["assets"] if item["path"] == relative), "revision": document["revision"]}
+            with self._guard(path):
+                document = self._read(path)
+                # Check even for deduplicated uploads: returning a newer revision
+                # would let a stale browser overwrite changes it has never read.
+                if expected_revision is not None and document["revision"] != int(expected_revision):
+                    raise StoreError("REVISION_CONFLICT", "项目版本已更新，素材尚未导入；当前画布修改仍保留在本页。", 409,
+                                     {"revision": document["revision"]})
+                final = path.parent / relative
+                if final.exists():
+                    temporary.unlink()
+                else:
+                    os.replace(temporary, final)
+                if not any(item["path"] == relative for item in document["assets"]):
+                    document["assets"].append({"path": relative, "sha256": sha256, "bytes": size, "mime": content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"})
+                    document = self._write(path, document, document["revision"])
+                return {"asset": next(item for item in document["assets"] if item["path"] == relative), "revision": document["revision"]}
         finally:
             temporary.unlink(missing_ok=True)
 

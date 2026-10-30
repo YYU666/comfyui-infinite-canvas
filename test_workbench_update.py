@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.error
 import zipfile
@@ -128,6 +129,15 @@ class ReleaseTests(UpdateTestCase):
         self.release["tag_name"] = 9
         self.assertEqual(self.manager.check()["status"], "unavailable")
 
+    def test_no_published_release_is_distinct_from_connection_failure(self):
+        self.opener.side_effect = urllib.error.HTTPError("https://api.github.com/releases/latest", 404, "Not Found", {}, None)
+        result = self.manager.check()
+        self.assertEqual(result["status"], "no_release")
+        self.assertFalse(result["updateAvailable"])
+        self.assertIn("尚未发布", result["message"])
+        self.opener.side_effect = urllib.error.HTTPError("https://api.github.com/releases/latest", 403, "Forbidden", {}, None)
+        self.assertEqual(self.manager.check()["status"], "unavailable")
+
     def test_apply_downloads_verifies_stages_and_launches_external_helper(self):
         self.manager._prepare_frontend = self.prepare
         result = self.manager.apply("v9.9.9")
@@ -163,6 +173,47 @@ class ReleaseTests(UpdateTestCase):
         self.assertEqual(caught.exception.code, "UPDATE_BUSY")
         self.preflight.assert_not_called()
 
+    def test_concurrent_apply_is_rejected_during_preflight(self):
+        entered, release = threading.Event(), threading.Event()
+        outcomes = []
+        def slow_preflight():
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("test preflight was not released")
+        self.preflight.side_effect = slow_preflight
+        self.manager._prepare_frontend = self.prepare
+        def first_apply():
+            try:
+                outcomes.append(self.manager.apply("v9.9.9"))
+            except Exception as exc:
+                outcomes.append(exc)
+        worker = threading.Thread(target=first_apply)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(3))
+            with self.assertRaises(UpdateError) as caught:
+                self.manager.apply("v9.9.9")
+            self.assertEqual(caught.exception.code, "UPDATE_BUSY")
+            self.assertEqual(self.preflight.call_count, 1)
+            self.opener.assert_not_called()
+        finally:
+            release.set()
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(outcomes), 1)
+        self.assertIsInstance(outcomes[0], dict)
+        self.assertTrue(outcomes[0]["accepted"])
+        self.process_launcher.assert_called_once()
+
+    def test_failed_preflight_releases_reservation_for_retry(self):
+        self.preflight.side_effect = UpdateError("busy", code="QUEUE_BUSY")
+        with self.assertRaises(UpdateError):
+            self.manager.apply("v9.9.9")
+        self.assertEqual(self.manager.status()["phase"], "error")
+        self.preflight.side_effect = None
+        self.manager._prepare_frontend = self.prepare
+        self.assertTrue(self.manager.apply("v9.9.9")["accepted"])
+
     def test_dirty_git_blocks_before_download(self):
         (self.root / ".git").mkdir()
         result = mock.Mock(returncode=0, stdout=" M src/App.jsx\n")
@@ -170,6 +221,31 @@ class ReleaseTests(UpdateTestCase):
             with self.assertRaises(UpdateError) as caught: self.manager.apply("v9.9.9")
         self.assertEqual(caught.exception.code, "LOCAL_CHANGES")
         self.opener.assert_not_called()
+
+    def test_installation_records_are_isolated_for_a_shared_runtime(self):
+        second = WorkbenchUpdateManager(self.root.parent / "other", self.preflight, update_root=self.runtime)
+        self.assertNotEqual(self.manager.installed_manifest_path, second.installed_manifest_path)
+
+    def test_recorded_upgrade_diff_allows_next_upgrade_but_user_edits_do_not(self):
+        # The first update installs all package files without changing Git HEAD.
+        with zipfile.ZipFile(io.BytesIO(self.archive)) as package:
+            package.extractall(self.root)
+        manifest = json.loads((self.root / "release-files.json").read_text(encoding="utf-8"))
+        manifest["installationRoot"] = self.manager.installation_root
+        self.manager.installed_manifest_path.parent.mkdir(parents=True)
+        self.manager.installed_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        (self.root / ".git").mkdir()
+        git_status = mock.Mock(returncode=0, stdout=" M src/App.jsx\0 D obsolete.py\0")
+        with mock.patch("workbench_update.shutil.which", return_value="git"), mock.patch.object(self.manager, "runner", return_value=git_status):
+            self.manager._git_clean()
+            (self.root / "src" / "App.jsx").write_text("user edit", encoding="utf-8")
+            with self.assertRaises(UpdateError) as caught:
+                self.manager._git_clean()
+            self.assertEqual(caught.exception.code, "LOCAL_CHANGES")
+            (self.root / "src" / "App.jsx").write_bytes(b"new app\n")
+            git_status.stdout = "M  src/App.jsx\0"
+            with self.assertRaises(UpdateError):
+                self.manager._git_clean()
 
 
 class PackageSecurityTests(UpdateTestCase):

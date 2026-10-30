@@ -73,6 +73,7 @@ try {
       if (method === 'PUT') {
         assetWrites += 1; activeAssets += 1; maximumAssets = Math.max(maximumAssets, activeAssets);
         await new Promise((resolve) => setTimeout(resolve, 180));
+        assert.equal(Number(route.request().headers()['if-match']), project.revision, 'each upload uses the page revision after preceding writes');
         activeAssets -= 1; project.revision += 1;
         return json({ revision: project.revision, asset: { path: `assets/import-${assetWrites}.txt` } });
       }
