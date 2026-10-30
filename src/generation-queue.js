@@ -8,6 +8,30 @@ export function comfyExternalAsset(output) {
   return `comfy://view?${new URLSearchParams({ filename: output?.filename || '', subfolder: output?.subfolder || '', type: output?.type || 'output' })}`;
 }
 
+/** A revision conflict defers Take registration, not the completed GPU output. */
+export async function resolveCanvasCompletion({ shotId, pinResultToCanvas, output, persistProject, registerTake }) {
+  let takePending = false;
+  let deferredRegistration = false;
+  if (shotId) {
+    try {
+      await persistProject();
+      await registerTake();
+    } catch (error) {
+      if (error.code !== 'REVISION_CONFLICT' && error.status !== 409 && error.code !== 'SAVE_DEFERRED') throw error;
+      takePending = true;
+      deferredRegistration = error.code === 'SAVE_DEFERRED';
+    }
+  }
+  return {
+    deferredRegistration,
+    pinMedia: !shotId || Boolean(pinResultToCanvas) || takePending,
+    patch: {
+      status: 'done', progress: 100, resultUrl: output.url, error: null, takePending,
+      stage: takePending ? '已生成，待同步／待登记 Take' : shotId ? '已加入 Take 栈' : '生成完成',
+    },
+  };
+}
+
 export function queueOwnsCompletion(node) {
   return Boolean(node?.data?.queueJobId);
 }

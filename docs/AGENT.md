@@ -32,6 +32,20 @@ Take 的 `comfy://view?...` 是对 ComfyUI 原输出的引用，不是项目内�
 
 ## 核心 HTTP
 
+若用户要求在当前已打开网页制作，画布创建、连接、修改和生成必须使用该页面 WebMCP 或下述当前页通道，不能另开后台浏览器，也不能同时用服务端 `apply` 修改同一画布。纯后端协议仍用于明确要求的无界面流程。
+
+```text
+GET  /api/agent/canvas/current?projectId=<project>
+POST /api/agent/canvas/commands
+GET  /api/agent/canvas/commands/<opId>
+```
+
+`current` 返回 `epoch/sessionId/projectId`；提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","wait":false}`。实际执行发生在现有页面，修改工具等待正常保存后回执。返回 `done` 后还须检查 `result.ok`。无页或多个可见候选时明确报错，不自动创建页面；页面心跳只由前端发送。
+
+命令按 ID 去重，断线后不重发已派发的生成。`unknown/dispatched` 应先核对队列和节点，不换 ID 盲目再生成。服务重启后旧 epoch 被拒绝。新通道需要启动新版后端并重新载入现有网页；不会为升级通道自动中断任务。完整流程与容量边界见 `.agents/skills/comfyui-infinite-canvas/references/canvas-operations.md`。
+
+画布自动保存只跟随实际内容和任务状态变化；平移、缩放使用独立本机视口偏好，纯进度更新不写整份项目。拖动、调整大小与批量导入完成后合并保存。保存失败可显式重试；版本冲突会停止写入并保留本页结果，可下载仅含数据与素材引用的 JSON 快照后重新载入，快照不是包含素材的项目备份。
+
 ```text
 GET  /api/agent/projects/<project>/state?view=digest&since=&maxChars=
 POST /api/agent/projects/<project>/query

@@ -82,6 +82,23 @@ class AgentTransportTests(unittest.TestCase):
         page = self.client.call_tool("query", {"projectId": self.pid, "source": "nodes", "fields": ["handle", "title"], "limit": 1, "maxChars": 200})
         self.assertEqual(len(page["rows"]), 1)
 
+    def test_current_page_channel_uses_existing_page_and_deduplicates(self):
+        base = "/api/agent/canvas"
+        page = {"sessionId": "existing_page", "projectId": self.pid, "visible": True, "busy": False}
+        with self.assertRaisesRegex(RuntimeError, "可见画布"):
+            self.client.request("GET", base + "/current")
+        self.client.request("POST", base + "/heartbeat", page)
+        current = self.client.request("GET", base + "/current?projectId=" + self.pid)
+        command = {**current, "opId": "http_current_page", "tool": "canvas_generate_node", "args": {"nodeId": "g1", "wait": False}}
+        self.assertEqual(self.client.request("POST", base + "/commands", command)["status"], "queued")
+        self.assertEqual(self.client.request("POST", base + "/commands", command)["status"], "queued")
+        delivered = self.client.request("POST", base + "/heartbeat", page)["command"]
+        self.assertEqual(delivered["opId"], command["opId"])
+        self.assertIsNone(self.client.request("POST", base + "/heartbeat", page)["command"])
+        self.client.request("POST", base + "/result", {**delivered, "result": {"ok": True, "node": {"queueJobId": "test_only"}}})
+        self.assertEqual(self.client.request("GET", base + "/commands/http_current_page")["status"], "done")
+        self.assertEqual(self.queue.snapshot()["jobs"], [], "transport never generates outside the browser handler")
+
     def test_cli_and_mcp_stdio_without_browser(self):
         root = Path(__file__).resolve().parent
         cli = subprocess.run([sys.executable, str(root / "agent_cli.py"), "state", "--project", self.pid], env=self.env,

@@ -6,11 +6,24 @@
 
 工具返回 JSON 字符串。先检查 `ok`，再读取 `node`、`edge` 或 `resultNode`。节点完整 ID 必须来自 `canvas_get_state` 或创建接口返回值。
 
+### 当前已打开页面的 HTTP 通道
+
+原生工具无法附着当前页时，使用同一服务的公开通道，沿用 `X-H3-Token`，不要创建第二个浏览器：
+
+1. `GET /api/agent/canvas/current?projectId=<项目ID>` 获取 `epoch/sessionId/projectId`。没有可见页返回 `NO_VISIBLE_CANVAS`；多个可见候选返回 `AMBIGUOUS_CANVAS`。只读页面不接收命令。
+2. `POST /api/agent/canvas/commands` 发送上述三个字段，以及唯一 `opId`、`tool`、`args`。页面调用现有工具，复用用户当前节点、保存队列和生成队列。
+3. `GET /api/agent/canvas/commands/<opId>` 读取 `queued/dispatched/done/expired/unknown`。只有 `done` 且 `result.ok=true` 表示工具成功；修改工具还会等待正常保存屏障。
+
+同一 `opId` 和参数重发只读原回执，不重复执行；不同参数复用 ID 返回冲突。`dispatched/unknown` 时不可换 ID 重新生成，应先核对画布节点和队列任务；断线不能证明任务未提交。服务重启会改变 `epoch`，旧命令拒绝执行。会话心跳有效期为 15 秒，命令记录最多 512 条，达到容量后明确报错，不删除去重记录再重放。
+
+当前页通道支持下表工具，但长等待使用 `canvas_get_state` 查询，生成必须 `wait:false`。页面心跳与回执由前端管理，Agent 不得伪造页面心跳。新版本后端启动、现有网页重新载入后才会连接；旧实例不支持时明确报告，不以另开网页降级。
+
 ## 2. 工具清单
 
 | 工具 | 用途 | 关键参数 |
 | --- | --- | --- |
 | `canvas_get_state` | 读取当前项目、真实节点、连线和状态 | 可选 `nodeId`、`includePrompt` |
+| `canvas_import_asset` | 在当前页复用本项目已保存素材 | 必填 `nodeId`、`assetPath`；可选 `name` |
 | `canvas_create_node` | 在当前画布创建节点 | 必填 `preset`；可选 `title`、`prompt`、`text`、`x`、`y`、`focus` |
 | `canvas_update_node` | 更新标题、提示词、备注或白名单参数 | 必填 `nodeId`；可选 `title`、`prompt`、`text`、`settings` |
 | `canvas_connect_nodes` | 连接两个真实节点 | 必填 `sourceId`、`targetId`；通常省略 `targetHandle` 自动判断 |

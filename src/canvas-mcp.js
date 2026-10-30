@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { startCurrentCanvasPage } from './canvas-current-page.js';
 
 const NODE_PRESETS = {
   image_asset: ['image', {}],
@@ -130,13 +131,12 @@ export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, 
   return { node: nodeSummary(finished), resultNode: resultEdge ? nodeSummary(mcpNode(latest, resultEdge.target)) : null };
 }
 
-export function useCanvasMcp({ nodesRef, edgesRef, projectName, server, actions }) {
+export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readOnly = false, server, actions }) {
   const latest = useRef(null);
-  latest.current = { nodesRef, edgesRef, projectName, server, actions };
+  latest.current = { nodesRef, edgesRef, projectName, projectId, readOnly, server, actions };
 
   useEffect(() => {
     const context = document.modelContext;
-    if (!context?.registerTool) return undefined;
     const controller = new AbortController();
     const getNode = (id) => {
       const node = latest.current.nodesRef.current.find((item) => item.id === id);
@@ -297,11 +297,35 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, server, actions 
         }),
       },
     ];
+    tools.push({
+      name: 'canvas_import_asset',
+      description: '在当前页面的素材节点复用本项目已保存的素材，使用正常导入与保存流程。新文件请在当前页上传，不要从另一个写入端直接修改项目素材清单。',
+      inputSchema: schema({ nodeId: nodeIdProperty, assetPath: { type: 'string' }, name: { type: 'string' } }, ['nodeId', 'assetPath']),
+      execute: respond(async ({ nodeId, assetPath, name }) => {
+        const node = getNode(nodeId);
+        if (node.type !== 'media' || !/^assets\/[a-f0-9]{64}\.[a-z0-9]+$/i.test(assetPath)) throw new Error('需要当前项目的有效素材路径和素材节点。');
+        await latest.current.actions.importAsset(nodeId, assetPath, name);
+        return { node: nodeSummary(getNode(nodeId)) };
+      }),
+    });
     for (const tool of tools) {
-      Promise.resolve(context.registerTool(tool, { signal: controller.signal })).catch((error) => {
+      const original = tool.execute;
+      tool.execute = async (args = {}) => {
+        const mutation = !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node'].includes(tool.name);
+        if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
+        const result = JSON.parse(await original(args));
+        if (mutation && result.ok) {
+          try { await latest.current.actions.persistProject?.(); }
+          catch (error) { return JSON.stringify({ ...result, ok: false, error: error.message, localChangesRetained: true }); }
+        }
+        return JSON.stringify(result);
+      };
+      if (context?.registerTool) Promise.resolve(context.registerTool(tool, { signal: controller.signal })).catch((error) => {
         console.warn(`[WebMCP] ${tool.name} 注册失败`, error);
       });
     }
-    return () => controller.abort();
-  }, []);
+    const stop = startCurrentCanvasPage({ tools, getPage: () => ({ projectId: latest.current.projectId,
+      readOnly: latest.current.readOnly, visible: document.visibilityState === 'visible' }) });
+    return () => { stop(); controller.abort(); };
+  }, [projectId, readOnly]);
 }
