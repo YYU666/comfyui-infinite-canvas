@@ -56,6 +56,8 @@ def parser():
             command.add_argument("b")
     commands.add_parser("protocol")
     commands.add_parser("schema")
+    start = commands.add_parser("start", help="确保本地画布和 ComfyUI 已就绪，再返回地址；不打开额外网页。")
+    start.add_argument("--timeout", type=float, default=120, help="等待服务就绪的秒数，最多 600 秒。")
     return root
 
 
@@ -68,7 +70,12 @@ def json_value(value):
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    if args.command in {"protocol", "schema"}:
+    if args.command == "start":
+        from workbench_lifecycle import ensure_workbench
+        if args.url or args.token:
+            raise ValueError("start 使用本地实例配置，不接受 --url 或 --token。")
+        result = ensure_workbench(args.timeout)
+    elif args.command in {"protocol", "schema"}:
         result = protocol_resource() if args.command == "protocol" else schema_resource()
     else:
         client = WorkbenchClient(args.url, args.token)
