@@ -613,13 +613,14 @@ export const CHARACTER_SWAP_MODELS = {
 export function buildCharacterSwapPrompt(details = '', target = '') {
   const subject = target.trim() || 'the selected person';
   const appearance = details.trim();
-  return `Replace only ${subject} with the complete reference character, including face, hair, body shape and the exact visible outfit. Preserve the source performance, scene, other people, camera and original audio.${appearance ? ` Reference details: ${appearance}` : ''}`;
+  return `Replace only ${subject} with the character designated by the user in <Picture 1>, including face, hair, body shape and the visible outfit. Use the supplied reference as it is; do not assume a fixed panel count, panel order, layout, clothing or camera view. If it shows multiple views of the same person, treat them as complementary appearance references for one character, never as extra people or a storyboard. Follow the user's description of which person or view to use when provided. Transfer appearance only; do not copy the reference sheet layout, background or standing pose. Preserve the source video's exact subject placement, apparent head and body size, framing, camera distance, cropping, occlusion, movement, performance, scene, other people and original audio. Keep a close-up as a close-up; do not zoom out or invent off-screen limbs to fit a full-body reference.${appearance ? ` User instructions and reference details: ${appearance}` : ''}`;
 }
 
 export function buildCharacterSwapWorkflow(options) {
   const guide = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'video');
   const identity = options.references?.find((ref) => ref.slot === 'identity' && ref.kind === 'image');
-  if (!guide || !identity) throw new Error('角色替换需要连接一段源视频和一张包含全身与穿搭的单人参考图。');
+  if (!guide || !identity) throw new Error('角色替换需要连接一段源视频和一张人物参考图；单人照片或同一人物的多视角设定图均可。');
+  if (options.references.filter((ref) => ref.slot === 'identity' && ref.kind === 'image').length > 1) throw new Error('当前角色替换只支持一张人物参考图；请合并参考或只连接一张，避免其余图片被忽略。');
   const [width, height] = resolveDimensions(options.ratio, options.resolution);
   const length = durationToFrames(options.duration || 5);
   const prompt = buildCharacterSwapPrompt(options.prompt, options.targetDescription);

@@ -6,6 +6,7 @@ import urllib.parse
 
 from agent_protocol import AgentProtocol
 from project_store import StoreError
+from canvas_page_bridge import CanvasPageBridge
 
 
 PROJECT_PATH = re.compile(r"/api/agent/projects/(prj_[A-Za-z0-9_-]+)/(state|query|apply|wait|prompt/([0-9a-f]{8})|prompt\.diff)")
@@ -15,6 +16,7 @@ RESOURCE_PATH = re.compile(r"/api/agent/resources/(protocol|context|schema)")
 class AgentAPI:
     def __init__(self, store, queue_manager=None):
         self.protocol = AgentProtocol(store, queue_manager)
+        self.canvas = CanvasPageBridge()
 
     @staticmethod
     def _json(handler):
@@ -37,6 +39,12 @@ class AgentAPI:
         if not path.startswith("/api/agent/"):
             return False
         try:
+            if path == "/api/agent/canvas/current":
+                handler.send_json(200, self.canvas.current(self._query(handler).get("projectId", [None])[0]))
+                return True
+            if re.fullmatch(r"/api/agent/canvas/commands/[A-Za-z0-9_-]{1,100}", path):
+                handler.send_json(200, self.canvas.get(path.rsplit("/", 1)[1]))
+                return True
             match = PROJECT_PATH.fullmatch(path)
             if match and match.group(2) == "state":
                 query = self._query(handler)
@@ -75,6 +83,12 @@ class AgentAPI:
         if not path.startswith("/api/agent/"):
             return False
         try:
+            canvas_actions = {"heartbeat": self.canvas.heartbeat, "commands": self.canvas.submit,
+                              "result": self.canvas.complete, "release": self.canvas.release}
+            if path.startswith("/api/agent/canvas/") and path.rsplit("/", 1)[1] in canvas_actions:
+                result = canvas_actions[path.rsplit("/", 1)[1]](self._json(handler))
+                handler.send_json(200, result)
+                return True
             match = PROJECT_PATH.fullmatch(path)
             if not match:
                 handler.send_json(404, {"code": "NOT_FOUND", "message": "Agent 接口不存在。", "details": {}})

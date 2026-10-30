@@ -12,7 +12,9 @@ const suites = {
     'test-canvas-history.mjs',
     'test-canvas-layout.mjs',
     'test-canvas-mcp-queue.mjs',
+    'test-canvas-current-page.mjs',
     'test-generation-queue.mjs',
+    'test-lifecycle.mjs',
     'test-local-realism.mjs',
     'test-moss-workflow.mjs',
     'test-object-url-lru.mjs',
@@ -25,6 +27,8 @@ const suites = {
     'test-resolution.mjs',
   ],
   browser: [
+    'test-canvas-current-page-ui.mjs',
+    'test-canvas-save-ui.mjs',
     'test-canvas-clipboard-ui.mjs',
     'test-canvas-projects.mjs',
     'test-launcher-ui.mjs',

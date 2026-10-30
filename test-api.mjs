@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { selectCharacterSwapVideo } from './src/canvas-output-selection.js';
 globalThis.window = { location: { hostname: '127.0.0.1' } };
 const api = await import('./src/workbench-api.js');
 assert.equal(api.durationToFrames(5), 124);
@@ -29,11 +30,32 @@ assert.deepEqual(image['7'].inputs.last_frame, ['18', 0]);
 const files = api.extractVideos({ outputs: { '16': { videos: [{ filename: 'H3_Workbench_00001_.mp4', subfolder: 'video', type: 'output' }] } } });
 assert.equal(files.length, 1);
 assert.ok(files[0].url.includes('H3_Workbench_00001_.mp4'));
+const swapFiles = api.extractVideos({ outputs: {
+  source: { images: [{ filename: 'source-24fps.mp4', subfolder: 'workbench', type: 'input' }] },
+  misleading: { videos: [
+    { filename: 'H3_CharacterSwap_00005_.mp4', subfolder: 'workbench', type: 'input' },
+    { filename: 'H3_Workbench_00006_.mp4', subfolder: 'video', type: 'output' },
+  ] },
+  save: { images: [{ filename: 'H3_CharacterSwap_00006_.mp4', subfolder: 'video', type: 'output' }] },
+} });
+assert.equal(selectCharacterSwapVideo(swapFiles), swapFiles[3], 'choose the saved video even when source/input appears first');
+assert.equal(selectCharacterSwapVideo(swapFiles).url, swapFiles[3].url, 'preserve the output media provenance');
+assert.throws(() => selectCharacterSwapVideo(swapFiles.slice(0, 3)), /未找到.*成品视频/);
+assert.throws(() => selectCharacterSwapVideo([]), /未找到.*成品视频/);
+assert.throws(() => selectCharacterSwapVideo([{ filename: 'H3_CharacterSwap_00001_.png', type: 'output' }]), /未找到.*成品视频/);
 const swapOptions = {
   ...base, prompt: 'Female, short black bob hair, oval face, red jacket', preserveBackground: true,
   references: [{ kind: 'video', slot: 'guide', name: 'workbench/guide.mp4' }, { kind: 'image', slot: 'identity', name: 'workbench/identity.png' }],
 };
 const swap = api.buildCharacterSwapWorkflow(swapOptions);
+assert.ok(swap.reference_conditioning.inputs.prompt.includes(swapOptions.prompt), 'keep custom user details');
+const genericSwapPrompt = api.buildCharacterSwapPrompt('', 'the person on the left');
+assert.match(genericSwapPrompt, /the person on the left/);
+assert.match(genericSwapPrompt, /If it shows multiple views of the same person/);
+assert.match(genericSwapPrompt, /do not assume a fixed panel count, panel order, layout/);
+assert.match(genericSwapPrompt, /exact subject placement, apparent head and body size/);
+assert.doesNotMatch(genericSwapPrompt, /white T|khaki|upper.left panel|four.panels/i);
+assert.throws(() => api.buildCharacterSwapWorkflow({ ...swapOptions, references: [...swapOptions.references, swapOptions.references[1]] }), /只支持一张/);
 assert.equal(swap.adapter.inputs.lora_name, 'h3_character_swap_v1.5.safetensors');
 assert.equal(swap.turbo.inputs.lora_name, api.CHARACTER_SWAP_MODELS.turboLora);
 assert.equal(swap.frames.inputs.length, 124);
@@ -42,7 +64,7 @@ assert.equal(swap.source_audio.inputs.duration, 124 / 24);
 assert.deepEqual(swap.reference_conditioning.inputs['ref_videos.ref_video_0'], ['window', 5]);
 assert.deepEqual(swap.reference_conditioning.inputs['ref_images.ref_image_0'], ['reference', 0]);
 assert.deepEqual(swap.reference_conditioning.inputs['ref_audios.ref_audio_0'], ['window', 6]);
-assert.ok(swap.reference_conditioning.inputs.prompt.includes('complete reference character'));
+assert.ok(swap.reference_conditioning.inputs.prompt.includes('including face, hair, body shape and the visible outfit'));
 assert.equal(swap.guider.inputs.cfg, 1);
 assert.equal(swap.sampler.inputs.sampler_name, 'er_sde');
 assert.equal(swap.schedule.inputs.scheduler, 'normal');

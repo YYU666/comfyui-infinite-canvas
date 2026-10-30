@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, takeOutputIdentity } from './src/generation-queue.js';
+import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, resolveCanvasCompletion, takeOutputIdentity } from './src/generation-queue.js';
 
 const node = (data = {}) => ({ id: 'generator-1', type: 'generator', data: { status: 'idle', progress: 0, ...data } });
 const job = (data = {}) => ({ id: 'job-1', projectId: 'project-1', nodeId: 'generator-1', status: 'queued', progress: 0, comfyPromptId: null, ...data });
@@ -63,4 +63,42 @@ const job = (data = {}) => ({ id: 'job-1', projectId: 'project-1', nodeId: 'gene
   assert.equal(comfyExternalAsset(output), 'comfy://view?filename=%E4%B8%AD%E6%96%87+%E7%BB%93%E6%9E%9C.png&subfolder=shots%2Fa&type=output');
 }
 
-console.log('GENERATION_QUEUE_STATE_OK stale=false progressRegression=false terminal=true outputIdentity=true');
+{
+  const output = { filename: 'H3_CharacterSwap_00006_.mp4', subfolder: 'video', type: 'output', url: '/api/comfy/view?filename=H3_CharacterSwap_00006_.mp4&type=output' };
+  for (const failureAt of ['persist', 'take']) {
+    for (const marker of [{ code: 'REVISION_CONFLICT' }, { status: 409 }, { code: 'SAVE_DEFERRED' }, { status: 503 }]) {
+      const failure = Object.assign(new Error('写入失败'), marker);
+      const calls = [];
+      const completion = resolveCanvasCompletion({
+        shotId: 'shot-1', pinResultToCanvas: false, output,
+        persistProject: async () => { calls.push('persist'); if (failureAt === 'persist') throw failure; },
+        registerTake: async () => { calls.push('take'); if (failureAt === 'take') throw failure; },
+      });
+      if (marker.status === 503) {
+        await assert.rejects(completion, (error) => error === failure, 'non-conflict errors remain failures');
+      } else {
+        const local = await completion;
+        assert.equal(local.pinMedia, true, 'a deferred shot result is visible even when normal canvas pinning is off');
+        assert.equal(local.patch.status, 'done', 'GPU success must not become a read-result failure');
+        assert.equal(local.patch.resultUrl, output.url, 'retain the actual generated output locally');
+        assert.equal(local.patch.takePending, true);
+        assert.equal(local.deferredRegistration, marker.code === 'SAVE_DEFERRED');
+        assert.equal(local.patch.stage, '已生成，待同步／待登记 Take');
+      }
+      assert.deepEqual(calls, failureAt === 'persist' ? ['persist'] : ['persist', 'take'], 'never register a Take after failed persistence or retry either write');
+    }
+  }
+  const calls = [];
+  const normal = await resolveCanvasCompletion({
+    shotId: 'shot-1', pinResultToCanvas: false, output,
+    persistProject: async () => calls.push('persist'), registerTake: async () => calls.push('take'),
+  });
+  assert.deepEqual(calls, ['persist', 'take']);
+  assert.equal(normal.pinMedia, false);
+  assert.equal(normal.patch.takePending, false);
+  assert.equal(normal.patch.stage, '已加入 Take 栈');
+  const unbound = await resolveCanvasCompletion({ output });
+  assert.equal(unbound.pinMedia, true);
+  assert.equal(unbound.patch.stage, '生成完成');
+}
+console.log('GENERATION_QUEUE_STATE_OK stale=false progressRegression=false terminal=true outputIdentity=true deferredTake=true');

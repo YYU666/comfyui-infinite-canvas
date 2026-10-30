@@ -109,6 +109,9 @@ try {
   await page.locator('button[title="添加元素"]').click();
   await page.getByRole('button', { name: /文本备注/ }).click();
   assert.equal(await page.locator('.note-shell textarea').count(), 1, 'note added');
+  // addNode starts a delayed fitView animation. Let it finish before undo removes
+  // its target; otherwise virtualization can hide the restored note or drop focus.
+  await sleep(500);
   await page.locator('.react-flow__pane').click({ position: { x: 1100, y: 700 } });
   await page.keyboard.press('Control+z');
   await page.waitForFunction(() => document.querySelectorAll('.note-shell textarea').length === 0);

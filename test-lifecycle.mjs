@@ -80,3 +80,19 @@ const deferred = () => {
 }
 
 console.log('lifecycle tests passed');
+
+// Imports added while a save barrier waits must finish before observing canvas refs.
+{
+  const first = deferred();
+  const second = deferred();
+  const mediaWrites = new Map([['first', first.promise]]);
+  let flushed = false;
+  const leaving = flushProjectAfterMedia({ mediaWrites, observeAndFlush: async () => { flushed = true; } });
+  mediaWrites.set('second', second.promise);
+  first.resolve();
+  for (let i = 0; i < 5; i += 1) await Promise.resolve();
+  assert.equal(flushed, false, 'the newly added import still blocks content writes and navigation');
+  second.resolve();
+  await leaving;
+  assert.equal(flushed, true);
+}
