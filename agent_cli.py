@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -83,19 +84,19 @@ def main(argv=None):
         elif args.command == "shot-create":
             operation = {"op": "shot.create", "character": args.character, "outfit": args.outfit, "location": args.location,
                          "prompt": args.prompt, "name": args.name, "duration": args.duration}
-            result = client.request("POST", f"{base}/apply", {"opId": f"shot-{uuid.uuid4().hex}", "ops": [operation]})
+            result = client.request("POST", f"{base}/apply", {"opId": f"shot-{uuid.uuid4().hex}", "agent": os.environ.get("H3_AGENT_NAME", "cli"), "ops": [operation]})
         elif args.command == "generate":
-            result = client.request("POST", f"{base}/apply", {"opId": f"generate-{uuid.uuid4().hex}", "ops": [{"op": "generate", "target": args.shot}]})
+            result = client.request("POST", f"{base}/apply", {"opId": f"generate-{uuid.uuid4().hex}", "agent": os.environ.get("H3_AGENT_NAME", "cli"), "ops": [{"op": "generate", "target": args.shot}]})
             if args.wait:
                 job = next(item["job"] for item in result["results"] if "job" in item)
                 result = client.request("POST", f"{base}/wait", {"jobs": [job], "timeoutMs": args.timeout_ms})
         elif args.command == "take-select":
-            result = client.request("POST", f"{base}/apply", {"opId": f"select-{uuid.uuid4().hex}", "ops": [{"op": "take.select", "shot": args.shot, "take": args.take}]})
+            result = client.request("POST", f"{base}/apply", {"opId": f"select-{uuid.uuid4().hex}", "agent": os.environ.get("H3_AGENT_NAME", "cli"), "ops": [{"op": "take.select", "shot": args.shot, "take": args.take}]})
         elif args.command == "export":
             operation = {"op": "delivery.export"}
             if args.takes:
                 operation["takeIds"] = args.takes.split(",")
-            result = client.request("POST", f"{base}/apply", {"opId": f"export-{uuid.uuid4().hex}", "ops": [operation]})
+            result = client.request("POST", f"{base}/apply", {"opId": f"export-{uuid.uuid4().hex}", "agent": os.environ.get("H3_AGENT_NAME", "cli"), "ops": [operation]})
         elif args.command == "prompt-get":
             result = client.request("GET", f"/api/agent/projects/{args.project}/prompt/{args.hash}")
         elif args.command == "prompt-diff":

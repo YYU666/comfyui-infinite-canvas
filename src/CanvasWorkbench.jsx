@@ -27,7 +27,8 @@ import ImageLightbox from './ImageLightbox';
 import { useCanvasMcp } from './canvas-mcp';
 import CanvasProjectMenu from './CanvasProjectMenu';
 import CreativePanel from './CreativePanel';
-import { initializeProjects, listProjects, createProject, openProject, closeProject, saveProject, projectSummary, saveProjectFile, readProjectFile, createDomainEntity, createTake } from './project-store-http';
+import HandoffDialog from './HandoffDialog';
+import { initializeProjects, listProjects, createProject, openProject, closeProject, saveProject, projectSummary, saveProjectFile, readProjectFile, createDomainEntity, createTake, updateProjectHandoff } from './project-store-http';
 import { AutoSaveController } from './auto-save';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
 import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, takeOutputIdentity } from './generation-queue';
@@ -440,6 +441,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectError, setProjectError] = useState('');
   const [creativeOpen, setCreativeOpen] = useState(false);
+  const [handoffOpen, setHandoffOpen] = useState(false);
   const revisionRef = useRef(project.revision);
   const projectRef = useRef(project);
   projectRef.current = project;
@@ -540,6 +542,14 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       },
     });
   }, [project.readOnly]);
+  const saveHandoff = useCallback(async (data) => {
+    await persistProject();
+    const current = { ...projectRef.current, revision: revisionRef.current };
+    const next = await updateProjectHandoff(current, data);
+    updateProjectDocument(next);
+    setProjectError('');
+    return next;
+  }, [persistProject, updateProjectDocument]);
   useEffect(() => {
     const flush = () => { if (document.visibilityState === 'hidden') persistProject().catch(() => {}); };
     const beforeUnload = (event) => {
@@ -1303,6 +1313,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
           </div>
           <div className="neo-header-actions">
             <button className={creativeOpen ? 'active' : ''} onClick={() => setCreativeOpen(!creativeOpen)} title="角色、镜头与审片"><Film size={15} /><span>创作</span></button>
+            <button className={handoffOpen ? 'active' : ''} disabled={project.readOnly} onClick={() => setHandoffOpen(true)} title="保存目标、验收结论并切换 Agent"><Link2 size={15} /><span>接力{project.settings?.handoff?.status === 'paused' ? ' · 已暂停' : ''}</span></button>
             <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={clearMemory} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
             <button className={`server-status ${server.online ? 'online' : ''}`} onClick={checkServer} title={server.label}><i />{server.online ? '本地已连接' : '本地未连接'}</button>
             <button onClick={async () => { if (!switchingRef.current && !hasActiveTask()) { try { await persistProject(); onSimpleMode(); } catch { /* Keep the unsaved canvas open. */ } } }} title="切换简易模式"><MousePointer2 size={15} /></button>
@@ -1412,6 +1423,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange }) {
       {creativeOpen && <CreativePanel project={project} onProjectChange={updateProjectDocument} onClose={() => setCreativeOpen(false)}
         beforeWrite={async () => { await persistProject(); projectRef.current = { ...projectRef.current, revision: revisionRef.current }; return projectRef.current; }}
         onPromote={promoteToShot} onLocateShot={(shot) => { if (shot.canvasNodeId) { focusNode(shot.canvasNodeId); setCreativeOpen(false); } }} />}
+      {handoffOpen && <HandoffDialog project={project} onClose={() => setHandoffOpen(false)} onSaved={saveHandoff} />}
       {libraryOpen && <aside className="floating-library">
         <div className="floating-panel-title"><span><Library size={15} />本地作品</span><button onClick={() => setLibraryOpen(false)}><X size={15} /></button></div>
         <p>点击作品添加到画布，也可以继续作为视频参考。</p>

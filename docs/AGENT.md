@@ -68,6 +68,28 @@ GET  /api/agent/resources/<protocol|context|schema>
 
 `revision` 可省略，省略时使用刚读取的当前版本；显式传入过期版本会返回 409 并保留冲突副本，绝不覆盖其他窗口修改。
 
+## 多 Agent 接力
+
+Kimi、GPT、Codex 等可以连接同一个本地后端；Edge、Chrome 或 Kimi 侧面页只是同一项目的显示入口。接手时先读取 `state(view=context)`，其中的 `handoff` 给出当前目标、验收标准、已验证结论与下一步，`activeJobs` 给出尚未结束的任务。不要重复提交活动任务。
+
+写操作可在顶层携带 `agent` 记录操作者；CLI 快捷命令默认记录 `cli`，可通过 `H3_AGENT_NAME` 改名。接手或离开前使用 `handoff.update` 保存交接信息：
+
+```json
+{
+  "opId": "handoff-7",
+  "agent": "Kimi",
+  "ops": [{
+    "op": "handoff.update",
+    "objective": "完成场景概念图",
+    "acceptance": "保持角色和空间透视一致",
+    "notes": "已确认参考；下一步生成两张候选",
+    "status": "paused"
+  }]
+}
+```
+
+`status` 仅支持 `active` 和 `paused`。暂停是供其他 Agent 遵循的协调信号，不是硬锁：不会取消生成、不阻止浏览器保存，也不替代 revision/CAS。`handoff` 保存在项目 `settings` 中，旧项目缺省时返回空接力，无需迁移；增量状态会用 `changed: ["handoff"]` 报告变化。画布顶栏“接力”也可填写相同内容。
+
 ## CLI 全链路
 
 ```bat

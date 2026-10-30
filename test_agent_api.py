@@ -102,6 +102,20 @@ class AgentTransportTests(unittest.TestCase):
         self.assertEqual(responses[2]["result"]["contents"][0]["uri"], "canvas://context")
         self.assertIn("nodes=0", responses[3]["result"]["content"][0]["text"])
 
+    def test_handoff_http_uses_revision_without_overwriting_new_value(self):
+        current = self.client.request("GET", f"/api/projects/{self.pid}")
+        saved = self.client.request("PUT", f"/api/projects/{self.pid}/handoff", {
+            "revision": current["revision"], "agent": "Kimi", "objective": "第一版目标", "status": "paused",
+        })
+        self.assertEqual(saved["settings"]["handoff"]["objective"], "第一版目标")
+        with self.assertRaises(RuntimeError):
+            self.client.request("PUT", f"/api/projects/{self.pid}/handoff", {
+                "revision": current["revision"], "agent": "GPT", "objective": "过期覆盖",
+            })
+        latest = self.client.request("GET", f"/api/projects/{self.pid}")
+        self.assertEqual(latest["settings"]["handoff"]["objective"], "第一版目标")
+        self.assertEqual(latest["settings"]["handoff"]["agent"], "Kimi")
+
 
 if __name__ == "__main__":
     unittest.main()

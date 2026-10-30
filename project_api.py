@@ -9,7 +9,7 @@ from pathlib import Path
 
 from delivery_export import export_delivery
 from project_domain import ProjectDomain
-from project_store import ProjectStore, StoreError, default_projects_root
+from project_store import ProjectStore, StoreError, default_projects_root, update_handoff
 
 
 class LimitedStream:
@@ -248,6 +248,15 @@ class ProjectAPI:
             if match:
                 payload = self._json(handler, maximum=16384)
                 handler.send_json(200, self.domain.metadata(match.group(1), payload, self._revision(handler, payload)))
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/handoff", path)
+            if match:
+                payload = self._json(handler, maximum=16384)
+                revision = self._revision(handler, payload)
+                changes = {key: value for key, value in payload.items() if key != "revision"}
+                document = self.store.get(match.group(1))
+                update_handoff(document, changes)
+                handler.send_json(200, self.store.save(match.group(1), document, revision))
                 return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/shots/(s[1-9][0-9]*)/takes/(t[1-9][0-9]*)", path)
             if match:

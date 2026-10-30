@@ -177,6 +177,10 @@ export async function updateProjectMetadata(project, data) {
   return request(`/${project.id}/metadata`, json('PUT', { ...data, revision: project.revision }));
 }
 
+export async function updateProjectHandoff(project, data) {
+  return editable(await request(`/${project.id}/handoff`, json('PUT', { ...data, revision: project.revision })), project.readOnly);
+}
+
 export async function searchProject(projectId, query, kind) {
   const params = new URLSearchParams({ q: query });
   if (kind) params.set('kind', kind);

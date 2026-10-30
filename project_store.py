@@ -36,6 +36,50 @@ class RevisionConflict(StoreError):
         super().__init__("REVISION_CONFLICT", "项目已被其他窗口更新，修改已保存为冲突副本。", 409, {"revision": revision, "conflict": conflict})
 
 
+HANDOFF_DEFAULT = {"status": "active", "agent": "", "objective": "", "acceptance": "", "notes": "", "updatedAt": None}
+HANDOFF_LIMITS = {"agent": 80, "objective": 2000, "acceptance": 2000, "notes": 4000}
+
+
+def handoff_state(document):
+    stored = document.get("settings", {}).get("handoff", {})
+    if not isinstance(stored, dict):
+        stored = {}
+    return {key: stored.get(key, value) for key, value in HANDOFF_DEFAULT.items()}
+
+
+def update_handoff(document, changes, default_agent=None):
+    if not isinstance(changes, dict):
+        raise StoreError("BAD_REQUEST", "接力信息必须是对象。")
+    unknown = set(changes) - set(HANDOFF_DEFAULT)
+    if unknown:
+        raise StoreError("BAD_REQUEST", f"不支持的接力字段：{', '.join(sorted(unknown))}")
+    handoff = handoff_state(document)
+    for key, limit in HANDOFF_LIMITS.items():
+        if key not in changes:
+            continue
+        value = changes[key]
+        if not isinstance(value, str):
+            raise StoreError("BAD_REQUEST", f"接力字段 {key} 必须是字符串。")
+        value = value.strip()
+        if len(value) > limit:
+            raise StoreError("BAD_REQUEST", f"接力字段 {key} 不能超过 {limit} 个字符。")
+        handoff[key] = value
+    if "status" in changes:
+        if changes["status"] not in {"active", "paused"}:
+            raise StoreError("BAD_REQUEST", "接力状态仅支持 active 或 paused。")
+        handoff["status"] = changes["status"]
+    if default_agent is not None and "agent" not in changes:
+        if not isinstance(default_agent, str):
+            raise StoreError("BAD_REQUEST", "agent 必须是字符串。")
+        default_agent = default_agent.strip()
+        if len(default_agent) > HANDOFF_LIMITS["agent"]:
+            raise StoreError("BAD_REQUEST", "agent 不能超过 80 个字符。")
+        handoff["agent"] = default_agent
+    handoff["updatedAt"] = utc_now()
+    document.setdefault("settings", {})["handoff"] = handoff
+    return handoff
+
+
 def default_projects_root():
     configured = os.environ.get("H3_PROJECTS_ROOT")
     if configured:

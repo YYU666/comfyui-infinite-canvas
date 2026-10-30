@@ -170,6 +170,8 @@ MiniMax H3、Qwen 2.1、SAM3、SeedVR2 和循环节点由新版 ComfyUI 本体�
 
 Agent 默认使用后端 HTTP、CLI 或 MCP，无需打开浏览器。完整接口、凭据、MCP 配置和全链路示例见 [`docs/AGENT.md`](docs/AGENT.md)；日常操作规范见 `.agents/skills/comfyui-infinite-canvas/SKILL.md`。
 
+不同 Agent 可接力同一项目：`state(view=context)` 返回持久化的目标、验收标准、已验证结论、下一步和活动任务，`handoff.update` 用于接手与交接。画布顶栏“接力”提供相同记录；暂停只作协调提示，不取消任务，写入仍受 revision 冲突保护。
+
 ```bat
 C:\ComfyUI_windows_portable\python_embeded\python.exe agent_cli.py state --project prj_xxx
 C:\ComfyUI_windows_portable\python_embeded\python.exe agent_mcp.py

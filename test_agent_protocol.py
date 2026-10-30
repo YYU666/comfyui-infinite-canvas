@@ -301,6 +301,56 @@ class AgentProtocolTests(unittest.TestCase):
         self.assertEqual(self.queue.snapshot()["jobs"], [])
         self.assertEqual(self.adapter.submissions, 0)
 
+    def test_persistent_agent_handoff_and_coordination(self):
+        document = self.store.create("Agent 接力")
+        pid = document["id"]
+        context = self.protocol.state(pid, view="context")
+        self.assertEqual(context["handoff"], {"status": "active", "agent": "", "objective": "", "acceptance": "", "notes": "", "updatedAt": None})
+        self.assertEqual(context["activeJobs"], [])
+        result = self.protocol.apply(pid, {"opId": "handoff-save", "agent": "Kimi", "ops": [{
+            "op": "handoff.update", "objective": "完成场景概念图", "acceptance": "两张图保持透视一致", "notes": "已确认参考，下一步生成", "status": "paused",
+        }]})
+        saved = self.store.get(pid)
+        self.assertEqual(saved["settings"]["handoff"]["agent"], "Kimi")
+        self.assertEqual(saved["settings"]["handoff"]["status"], "paused")
+        self.assertEqual(result["changed"], ["handoff"])
+        self.assertTrue(saved["settings"]["handoff"]["updatedAt"])
+        revision = saved["revision"]
+        replay = self.protocol.apply(pid, {"opId": "handoff-save", "ops": [{"op": "handoff.update", "status": "active"}]})
+        self.assertTrue(replay["idempotent"])
+        self.assertEqual(self.store.get(pid)["revision"], revision)
+        resumed = self.protocol.apply(pid, {"opId": "handoff-resume", "ops": [{"op": "handoff.update", "status": "active", "notes": "已恢复"}]})
+        self.assertEqual(resumed["results"][0]["handoff"]["objective"], "完成场景概念图")
+        increment = self.protocol.state(pid, since=revision)
+        self.assertEqual(increment["changed"], ["handoff"])
+        before_dry_run = self.store.get(pid)
+        dry = self.protocol.apply(pid, {"opId": "handoff-dry", "agent": "GPT", "dryRun": True, "ops": [{"op": "handoff.update", "objective": "不会保存"}]})
+        self.assertTrue(dry["dryRun"])
+        self.assertEqual(self.store.get(pid), before_dry_run)
+
+    def test_agent_attribution_does_not_change_semantic_receipt(self):
+        document = self.store.create("操作者记录")
+        pid = document["id"]
+        result = self.protocol.apply(pid, {"opId": "attributed", "agent": "Codex", "ops": [{"op": "create", "preset": "text_video"}, {"op": "set", "target": "g1", "settings": {"seed": 42}}]})
+        self.assertEqual(result["changed"], ["g1"])
+        self.assertEqual(self.store.get(pid)["settings"]["handoff"]["agent"], "Codex")
+        increment = self.protocol.state(pid, since=1)
+        self.assertEqual(increment["changed"], ["handoff"])
+        self.assertEqual(increment["added"], ["g1"])
+
+    def test_handoff_rejects_invalid_fields(self):
+        document = self.store.create("接力校验")
+        pid = document["id"]
+        invalid = [
+            {"status": "locked"}, {"agent": 42}, {"objective": "x" * 2001},
+            {"acceptance": "x" * 2001}, {"notes": "x" * 4001}, {"unknown": "value"},
+        ]
+        for index, operation in enumerate(invalid):
+            with self.subTest(operation=operation), self.assertRaises(StoreError) as caught:
+                self.protocol.apply(pid, {"opId": f"invalid-handoff-{index}", "ops": [{"op": "handoff.update", **operation}]})
+            self.assertEqual(caught.exception.code, "BAD_REQUEST")
+        self.assertNotIn("handoff", self.store.get(pid)["settings"])
+
 
 if __name__ == "__main__":
     unittest.main()
