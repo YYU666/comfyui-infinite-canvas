@@ -78,10 +78,20 @@ try {
   await page.locator('button[title="添加元素"]').click();
   await page.getByRole('button', { name: /图片素材/ }).click();
   await page.locator('.media-shell input[type=file]').setInputFiles({ name: 'reference.png', mimeType: 'image/png', buffer: png });
-  await page.waitForFunction(() => document.querySelector('.media-shell img') && document.querySelector('[aria-label="已保存"]'));
+  await page.locator('.media-shell img').waitFor();
   const summaries = await (await fetch(`${base}/api/projects`, { headers: { 'X-H3-Token': token } })).json();
   const projectId = summaries.projects[0].id;
-  const before = await projectDocument(projectId);
+  // The visible save label later changes from 已保存 to 已自动保存. Verify the
+  // committed project instead of racing that transient presentation state.
+  let before;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    before = await projectDocument(projectId);
+    const candidate = before.canvas.nodes.find((node) => node.type === 'media');
+    if (candidate?.data.assetPath && before.assets.length === 1) break;
+    const saveErrors = await page.locator('.project-save-error').allTextContents();
+    assert.equal(saveErrors.length, 0, saveErrors.join('\n'));
+    await sleep(100);
+  }
   const media = before.canvas.nodes.find((node) => node.type === 'media');
   assert(media?.data.assetPath);
   assert.equal(before.assets.length, 1);
