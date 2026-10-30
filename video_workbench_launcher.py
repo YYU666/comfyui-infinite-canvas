@@ -159,15 +159,17 @@ def stop_owned_comfy(process, queue_probe=comfy_queue_counts):
 def start_owned_comfy(command, root, log_path):
     """Keep draining ComfyUI output even after the workbench parent exits."""
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    environment = os.environ.copy()
+    environment.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     logger_process = subprocess.Popen(
         [sys.executable, "-s", str(HERE / "workbench_comfy_log.py"), "--log", str(log_path)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        creationflags=flags,
+        creationflags=flags, env=environment,
     )
     try:
         process = subprocess.Popen(
             command, cwd=root, stdout=logger_process.stdin, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=flags,
+            text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=flags, env=environment,
         )
     except Exception:
         logger_process.stdin.close()

@@ -3,8 +3,10 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import json
+import math
 import os
 import socket
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -82,6 +84,57 @@ def probe_health(instance: dict, timeout: float = 0.6) -> dict | None:
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, urllib.error.URLError):
         pass
     return None
+
+
+def ensure_workbench(timeout: float = 120) -> dict:
+    """Start the local service if needed and return only after both APIs respond."""
+    if not math.isfinite(timeout) or not 0 < timeout <= 600:
+        raise ValueError("启动等待时间必须大于 0 且不超过 600 秒。")
+    deadline = time.monotonic() + timeout
+    process = None
+    instance = read_instance()
+    health = probe_health(instance) if instance else None
+    if not health:
+        # Import lazily: settings uses lifecycle helpers as well.
+        from workbench_settings import WorkbenchSettings
+
+        settings = WorkbenchSettings()
+        settings.load()
+        root = Path(settings.data["comfyRoot"])
+        python = root / "python_embeded" / "python.exe"
+        if not python.is_file() or not (root / "ComfyUI" / "main.py").is_file():
+            raise RuntimeError("未找到配置的 ComfyUI 便携版 Python 或 main.py；请设置 H3_COMFY_ROOT 或修正工作台设置。")
+        here = Path(__file__).resolve().parent
+        environment = os.environ.copy()
+        environment.update(H3_WORKBENCH_NO_BROWSER="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+        process = subprocess.Popen(
+            [str(python), "-X", "utf8", str(here / "video_workbench_launcher.py")],
+            cwd=here, env=environment,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+
+    while time.monotonic() < deadline:
+        instance = read_instance()
+        health = probe_health(instance, timeout=min(0.6, max(0.01, deadline - time.monotonic()))) if instance else None
+        if health:
+            url = f"http://127.0.0.1:{instance['port']}"
+            request = urllib.request.Request(url + "/api/comfy/system_stats", headers={"X-H3-Token": instance.get("token", "")})
+            try:
+                with urllib.request.urlopen(request, timeout=min(1, max(0.01, deadline - time.monotonic()))) as response:
+                    stats = json.load(response)
+                if isinstance(stats, dict) and isinstance(stats.get("system"), dict) and isinstance(stats.get("devices"), list):
+                    return {"ok": True, "url": url + "/", "pid": health["pid"],
+                            "started": process is not None and process.pid == health["pid"],
+                            "workbenchReady": True, "comfyReady": True}
+            except (OSError, ValueError, urllib.error.URLError):
+                pass
+        if process is not None and process.poll() not in (None, 0):
+            raise RuntimeError(f"工作台启动失败；请检查 {runtime_dir() / 'logs' / 'app.log'}。")
+        time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+    if health:
+        raise RuntimeError(f"画布服务已运行，但 ComfyUI 尚未就绪；请检查 {runtime_dir() / 'logs' / 'comfyui.log'}。未停止或重启已有服务。")
+    raise RuntimeError(f"等待画布服务启动超时；请检查 {runtime_dir() / 'logs' / 'app.log'}。未停止后台启动过程。")
 
 
 def remove_instance(pid: int) -> None:

@@ -4,7 +4,15 @@ Agent 通过本地 HTTP、CLI 或 MCP 操作项目，无需打开浏览器。所
 
 ## 启动与凭据
 
-先启动工作台。CLI/MCP 默认读取 `%LOCALAPPDATA%\H3Workbench\instance.json` 中的回环地址和令牌，也可通过 `H3_WORKBENCH_URL`、`H3_WORKBENCH_TOKEN` 显式配置。不要把令牌写入仓库或日志。
+打开侧面画布或使用 CLI/MCP 前，先运行就绪检查；仅打开浏览器地址不会启动服务：
+
+```bat
+<ComfyUI便携版>\python_embeded\python.exe agent_cli.py start --timeout 120
+```
+
+该命令使用已保存的 ComfyUI 路径（首次启动可用 `H3_COMFY_ROOT`，仓库默认位于便携版根目录），缺少服务时隐藏启动，已有实例则复用。它等待画布健康检查和 ComfyUI 实际 API 均通过后返回 JSON：`ok:true`、`workbenchReady:true`、`comfyReady:true` 和真实 `url`。端口被占用时可能是 8791 等，Agent 应使用返回地址复用当前侧面页；命令自身不打开额外浏览器，也不停止已有任务。等待超时或启动失败返回非零退出码并指出日志，不能报告为启动成功。ComfyUI 冷启动较慢时可增加等待时间，最多 600 秒。
+
+CLI/MCP 默认读取 `%LOCALAPPDATA%\H3Workbench\instance.json` 中的回环地址和令牌，也可通过 `H3_WORKBENCH_URL`、`H3_WORKBENCH_TOKEN` 显式配置（`start` 只管理本地实例，不接受地址或令牌覆盖）。不要把令牌写入仓库或日志。
 
 ```bat
 C:\ComfyUI_windows_portable\python_embeded\python.exe agent_cli.py state --project prj_xxx

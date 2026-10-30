@@ -60,7 +60,7 @@ class OwnedComfyShutdownTests(unittest.TestCase):
             log = root / "comfyui.log"
             child = (
                 "import sys,time; from pathlib import Path; "
-                "time.sleep(0.6); print('COMFY_SURVIVED_PARENT', flush=True); "
+                "time.sleep(0.6); print('COMFY_SURVIVED_PARENT 中文 🎉', flush=True); "
                 f"Path({str(marker)!r}).write_text('done', encoding='utf-8')"
             )
             parent = (
@@ -73,6 +73,7 @@ class OwnedComfyShutdownTests(unittest.TestCase):
             env = os.environ.copy()
             env["H3_WORKBENCH_DATA_DIR"] = str(root / "data")
             env["H3_WORKBENCH_RUNTIME_DIR"] = str(root / "runtime")
+            env.update(PYTHONUTF8="0", PYTHONIOENCODING="gbk")
             processes = []
             alive = []
             try:
@@ -89,7 +90,7 @@ class OwnedComfyShutdownTests(unittest.TestCase):
                 self.assertEqual(marker.read_text(encoding="utf-8"), "done")
                 while time.monotonic() < deadline and (not log.exists() or "COMFY_SURVIVED_PARENT" not in log.read_text(encoding="utf-8")):
                     time.sleep(0.05)
-                self.assertIn("COMFY_SURVIVED_PARENT", log.read_text(encoding="utf-8"))
+                self.assertIn("COMFY_SURVIVED_PARENT 中文 🎉", log.read_text(encoding="utf-8"))
             finally:
                 if processes:
                     _, alive = psutil.wait_procs(processes, timeout=10)
