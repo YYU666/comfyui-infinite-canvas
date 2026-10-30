@@ -31,6 +31,7 @@ const suites = {
     'test-m2-ui.mjs',
     'test-m2-acceptance.mjs',
     'test-m3-ui.mjs',
+    'test-update-center-ui.mjs',
   ],
 };
 

@@ -34,6 +34,7 @@ class SettingsTests(unittest.TestCase):
             "queue": {"concurrency": 2},
             "defaults": {"ratio": "9:16", "resolution": "720P", "duration": 8},
             "notifications": False,
+            "updates": {"autoCheck": False},
             "logLevel": "WARNING",
         }
         payload.update(overrides)
@@ -44,6 +45,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["queue"]["concurrency"], 2)
         self.assertEqual(result["defaults"], {"ratio": "9:16", "resolution": "720P", "duration": 8})
         self.assertFalse(result["notifications"])
+        self.assertFalse(result["updates"]["autoCheck"])
         loaded = WorkbenchSettings(self.path).load()
         self.assertEqual([Path(path).name for path in loaded["modelRoots"]], ["models-a", "models-b"])
         for path in loaded["modelRoots"]:
@@ -56,7 +58,7 @@ class SettingsTests(unittest.TestCase):
         for update in (
             {"projectsRoot": "relative/path"}, {"queue": {"concurrency": 3}},
             {"defaults": {"duration": 3}}, {"defaults": {"ratio": "2:1"}},
-            {"notifications": "yes"}, {"logLevel": "TRACE"}, {"modelRoots": "D:/models"},
+            {"notifications": "yes"}, {"updates": {"autoCheck": "yes"}}, {"logLevel": "TRACE"}, {"modelRoots": "D:/models"},
         ):
             with self.subTest(update=update), self.assertRaises(SettingsError):
                 self.settings.update(update)

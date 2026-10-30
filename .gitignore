@@ -2,6 +2,7 @@ node_modules/
 dist/
 .venv/
 .ci-temp/
+.release/
 __pycache__/
 *.pyc
 .env

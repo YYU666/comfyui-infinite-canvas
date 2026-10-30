@@ -3,6 +3,7 @@ import LegacyWorkbench from './LegacyWorkbench';
 import CanvasWorkbench from './CanvasWorkbench';
 import ProjectLauncher from './ProjectLauncher';
 import QueueNotificationCenter from './QueueNotificationCenter';
+import UpdateCenter from './UpdateCenter';
 
 export default function App() {
   const [project, setProject] = useState(null);
@@ -14,5 +15,5 @@ export default function App() {
   const content = !project ? <ProjectLauncher onOpen={setProject} /> : mode === 'canvas'
     ? <CanvasWorkbench initialProject={project} onLauncher={() => setProject(null)} onSimpleMode={() => changeMode('simple')} />
     : <LegacyWorkbench onCanvasMode={() => changeMode('canvas')} />;
-  return <><QueueNotificationCenter />{content}</>;
+  return <><QueueNotificationCenter /><UpdateCenter projectOpen={Boolean(project)} />{content}</>;
 }

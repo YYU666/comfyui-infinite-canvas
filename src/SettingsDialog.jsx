@@ -30,6 +30,7 @@ export default function SettingsDialog({ onClose, onSaved }) {
       },
       queue: { concurrency: Number(form.get('concurrency')) },
       notifications: form.get('notifications') === 'on',
+      updates: { autoCheck: form.get('autoCheckUpdates') === 'on' },
       logLevel: form.get('logLevel'),
     };
     const key = String(form.get('deepseekKey') || '').trim();
@@ -70,6 +71,11 @@ export default function SettingsDialog({ onClose, onSaved }) {
             <label>日志级别<select name="logLevel" defaultValue={settings.logLevel}>{['DEBUG', 'INFO', 'WARNING', 'ERROR'].map((value) => <option key={value}>{value}</option>)}</select></label>
             <label className="settings-checkbox"><input name="notifications" type="checkbox" defaultChecked={settings.notifications} /><span>启用任务完成通知</span></label>
           </div>
+        </section>
+        <section className="settings-section"><h3>程序更新</h3>
+          <label className="settings-checkbox"><input name="autoCheckUpdates" type="checkbox" defaultChecked={settings.updates?.autoCheck !== false} /><span>启动时检查 GitHub Release</span></label>
+          <p className="modal-help">只检查官方仓库的 Release；发现新版后由你确认，不会静默安装。活动任务、打开的项目或本地代码修改会阻止升级。</p>
+          <button type="button" disabled={busy} onClick={() => { onClose(); window.dispatchEvent(new Event('refmuse-check-updates')); }}>立即检查更新</button>
         </section>
         <section className="settings-section"><h3>DeepSeek 提示词优化</h3>
           <p className="settings-key-status">当前状态：{settings.deepseek.configured ? '已配置' : '未配置'} · {KEY_SOURCES[settings.deepseek.source] || settings.deepseek.source}</p>

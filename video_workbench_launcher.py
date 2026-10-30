@@ -47,6 +47,7 @@ from workbench_lifecycle import (
     utc_now,
 )
 from workbench_logging import cleanup_legacy_comfy_logs, configure_application_logging
+from workbench_update import UpdateError, WorkbenchUpdateManager, validate_update_request
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_COMFY_ROOT = HERE.parent
@@ -472,6 +473,10 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if write and path.startswith("/api/") and not valid_content_type(self.command, path, self.headers):
             self.send_json(415, {"code": "UNSUPPORTED_MEDIA_TYPE", "message": "写接口要求 application/json；素材和项目包使用各自受支持的类型。"})
             return False
+        update_manager = getattr(self.server, "update_manager", None)
+        if write and update_manager and update_manager.status()["phase"] == "restarting" and path not in {"/api/updates/apply", "/api/shutdown"}:
+            self.send_json(409, {"code": "UPDATE_RESTARTING", "message": "工作台正在安全重启，暂不能修改项目或任务。"})
+            return False
         return True
 
     def do_GET(self):
@@ -507,6 +512,15 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/settings":
             self.send_json(200, self.server.settings.public())
+            return
+        if path in {"/api/updates/check", "/api/updates/status"}:
+            manager = getattr(self.server, "update_manager", None)
+            if not manager:
+                self.send_json(503, {"code": "UPDATE_UNAVAILABLE", "message": "当前实例未启用更新服务。"})
+            elif path == "/api/updates/status":
+                self.send_json(200, manager.status())
+            else:
+                self.send_json(200, manager.check())
             return
         if self.server.queue_api.handle_get(self, path):
             return
@@ -573,6 +587,26 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if path == "/api/shutdown":
             self.send_json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+        if path == "/api/updates/apply":
+            manager = getattr(self.server, "update_manager", None)
+            try:
+                if not manager:
+                    raise UpdateError("当前实例未启用更新服务。", status=503, code="UPDATE_UNAVAILABLE")
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 1024:
+                    raise UpdateError("升级请求内容无效。", code="BAD_REQUEST")
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                result = manager.apply(validate_update_request(payload))
+                self.send_json(200, result)
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+            except UpdateError as exc:
+                self.send_json(exc.status, {"code": exc.code, "message": exc.message, "details": {}})
+            except (ValueError, TypeError, json.JSONDecodeError):
+                self.send_json(400, {"code": "BAD_REQUEST", "message": "升级请求不是有效 JSON。", "details": {}})
+            except Exception as exc:
+                LOGGER.exception("升级请求失败：%s", exc)
+                self.send_json(500, {"code": "UPDATE_ERROR", "message": "更新暂时无法开始，旧版尚未替换。", "details": {}})
             return
         if self.server.queue_api.handle_post(self, path):
             return
@@ -641,6 +675,21 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         if not self.server.project_api.handle_delete(self, path):
             self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
+
+
+def validate_update_ready(server):
+    if server.project_store._held:
+        raise UpdateError("仍有项目处于打开或编辑状态。请先保存并返回项目启动页，再升级。", status=409, code="PROJECT_OPEN")
+    active = [job for job in server.queue_manager.snapshot()["jobs"] if job.get("status") in {"queued", "running", "finishing"}]
+    if active:
+        raise UpdateError("队列仍有活动任务，完成或取消后才能升级。", status=409, code="QUEUE_BUSY")
+    for path in (HERE, runtime_dir()):
+        try:
+            free = shutil.disk_usage(path).free
+        except OSError as exc:
+            raise UpdateError("无法确认更新所需磁盘空间，已停止升级。", status=503, code="DISK_SPACE") from exc
+        if free < 750 * 1024 * 1024:
+            raise UpdateError("更新需要至少 750 MB 临时空间用于构建和备份，请先释放磁盘空间。", status=409, code="DISK_SPACE")
 
 
 def validate_settings_change(server, candidate):
@@ -739,6 +788,7 @@ def main():
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
             server.queue_api = QueueAPI(server.queue_manager)
             server.agent_api = AgentAPI(server.project_store, server.queue_manager)
+            server.update_manager = WorkbenchUpdateManager(HERE, lambda: validate_update_ready(server))
             server.queue_manager.start()
 
             try:

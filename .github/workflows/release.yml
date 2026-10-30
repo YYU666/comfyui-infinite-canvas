@@ -1,0 +1,26 @@
+name: Release update package
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build checksummed source update package
+        shell: pwsh
+        run: python scripts/build_update_package.py --tag "${{ github.event.release.tag_name }}" --output "$env:RUNNER_TEMP\refmuse-release"
+      - name: Attach update package and SHA256
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$env:TAG" "$env:RUNNER_TEMP\refmuse-release\refmuse-update-$env:TAG.zip" "$env:RUNNER_TEMP\refmuse-release\refmuse-update-$env:TAG.zip.sha256" --clobber

@@ -136,6 +136,7 @@ class WorkbenchSettings:
             "queue": {"concurrency": 1},
             "defaults": {"ratio": "16:9", "resolution": "480P", "duration": 5},
             "notifications": True,
+            "updates": {"autoCheck": True},
             "logLevel": "INFO",
             "language": "zh-CN",
         }
@@ -187,6 +188,8 @@ class WorkbenchSettings:
             raise SettingsError("默认分辨率不受支持。")
         if not isinstance(candidate.get("notifications"), bool):
             raise SettingsError("通知开关必须是布尔值。")
+        if not isinstance(candidate.get("updates"), dict) or not isinstance(candidate["updates"].get("autoCheck"), bool):
+            raise SettingsError("启动时检查更新开关必须是布尔值。")
         if candidate.get("logLevel") not in LOG_LEVELS:
             raise SettingsError("日志级别不受支持。")
         candidate["language"] = "zh-CN"
