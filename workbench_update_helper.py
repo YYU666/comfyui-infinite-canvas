@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -32,18 +33,30 @@ def safe_path(root, relative):
     if not isinstance(relative, str) or not relative or "\\" in relative or "\x00" in relative:
         raise RuntimeError("更新清单包含无效路径。")
     pure = PurePosixPath(relative)
-    if pure.is_absolute() or pure.parts[0].endswith(":") or any(part in {"", ".", ".."} for part in pure.parts):
+    if pure.is_absolute() or ":" in relative or any(part in {"", ".", ".."} for part in relative.split("/")):
         raise RuntimeError("更新清单包含越界路径。")
     root = Path(root).resolve()
     target = root.joinpath(*pure.parts)
-    if root != target.parent and root not in target.parents:
+    current = root
+    for part in pure.parts:
+        current = current / part
+        try:
+            attributes = current.lstat()
+        except FileNotFoundError:
+            continue
+        if current.is_symlink() or getattr(attributes, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise RuntimeError("工作台程序路径包含目录链接，已停止升级。")
+    resolved = target.resolve()
+    if root not in resolved.parents:
         raise RuntimeError("更新目标不在工作台目录内。")
     return target
 
 
-def manifest_paths(path):
+def manifest_paths(path, installation_root=None):
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
+        if installation_root is not None and value.get("installationRoot") != os.path.normcase(str(Path(installation_root).resolve())):
+            raise ValueError("manifest belongs to another installation")
         files = value["files"]
         paths = [item["path"] for item in files]
         if not paths or len(paths) != len(set(paths)):
@@ -104,7 +117,7 @@ def backup_current(root, backup, paths):
                 raise RuntimeError("工作台程序路径异常，已停止升级。")
             copy_file(source, safe_path(backup / "program", relative))
     for name in ("dist", "node_modules"):
-        source = root / name
+        source = safe_path(root, name)
         if source.exists():
             if source.is_symlink() or not source.is_dir():
                 raise RuntimeError(f"工作台 {name} 目录异常，已停止升级。")
@@ -122,7 +135,7 @@ def replace_program(root, source, backup, new_paths, old_paths):
     for relative in new_paths:
         copy_file(safe_path(source, relative), safe_path(root, relative))
     for name in ("dist", "node_modules"):
-        target = root / name
+        target = safe_path(root, name)
         if target.exists():
             shutil.rmtree(target)
         staged = source / name
@@ -145,7 +158,7 @@ def restore_program(root, backup, new_paths, old_paths):
             if source.is_file():
                 copy_file(source, root / source.relative_to(old_program))
     for name in ("dist", "node_modules"):
-        target = root / name
+        target = safe_path(root, name)
         if target.exists():
             shutil.rmtree(target)
         if (backup / name).exists():
@@ -177,11 +190,11 @@ def read_instance(runtime_dir):
         return None
 
 
-def wait_for_health(runtime_dir, target_version=None, timeout=90):
+def wait_for_health(runtime_dir, target_version=None, timeout=90, expected_pid=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         instance = read_instance(runtime_dir)
-        if instance:
+        if instance and (expected_pid is None or instance.get("pid") == expected_pid):
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{int(instance['port'])}/api/health", timeout=1) as response:
                     health = json.load(response)
@@ -217,7 +230,7 @@ def run(request):
     status_path = Path(request["status"])
     new_paths = manifest_paths(request["manifest"])
     installed_manifest = Path(request["installedManifest"])
-    old_paths = manifest_paths(installed_manifest) if installed_manifest.exists() else []
+    old_paths = manifest_paths(installed_manifest, root) if installed_manifest.exists() else []
     all_paths = sorted(set(new_paths) | set(old_paths))
     atomic_json(status_path, {"phase": "restarting", "message": "正在备份旧版并安装更新…", "version": request["targetVersion"]})
     backup_current(root, backup, all_paths)
@@ -226,15 +239,17 @@ def run(request):
         replace_program(root, source, backup, new_paths, old_paths)
         install_dependencies(request["python"], root / "requirements.lock")
         process = start_workbench(request["python"], root)
-        health = wait_for_health(request["runtimeDir"], request["targetVersion"])
-        atomic_json(installed_manifest, json.loads(Path(request["manifest"]).read_text(encoding="utf-8")))
+        health = wait_for_health(request["runtimeDir"], request["targetVersion"], expected_pid=process.pid)
+        manifest = json.loads(Path(request["manifest"]).read_text(encoding="utf-8"))
+        manifest["installationRoot"] = os.path.normcase(str(root))
+        atomic_json(installed_manifest, manifest)
         atomic_json(status_path, {"phase": "success", "message": "更新安装成功。", "version": request["targetVersion"], "pid": health.get("pid")})
     except Exception as original:
         atomic_json(status_path, {"phase": "restarting", "message": "新版启动失败，正在恢复旧版…", "version": request["targetVersion"]})
         instance = read_instance(request["runtimeDir"])
-        if instance:
-            stop_workbench(request["runtimeDir"], instance.get("pid"))
-        elif process and process.poll() is None:
+        if process and instance and instance.get("pid") == process.pid:
+            stop_workbench(request["runtimeDir"], process.pid)
+        if process and process.poll() is None:
             process.terminate()
             process.wait(timeout=30)
         restore_program(root, backup, new_paths, old_paths)
@@ -245,7 +260,7 @@ def run(request):
             raise
         restored = start_workbench(request["python"], root)
         try:
-            health = wait_for_health(request["runtimeDir"])
+            health = wait_for_health(request["runtimeDir"], expected_pid=restored.pid)
         except Exception:
             atomic_json(status_path, {"phase": "error", "message": "新版安装失败，旧版文件已恢复但无法自动启动。请运行 install.bat 后启动，旧版备份仍保留。", "version": request["targetVersion"]})
             raise

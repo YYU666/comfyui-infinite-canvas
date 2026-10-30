@@ -100,9 +100,10 @@ export function projectSummary(project) {
   };
 }
 
-export async function saveProjectFile(projectId, nodeId, file) {
+export async function saveProjectFile(projectId, nodeId, file, revision) {
+  if (!Number.isInteger(revision) || revision < 1) throw new Error('导入素材必须提供当前画布的项目版本。');
   const result = await request(`/${projectId}/assets/${encodeURIComponent(file.name || nodeId)}`, {
-    method: 'PUT', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file,
+    method: 'PUT', headers: { 'Content-Type': file.type || 'application/octet-stream', 'If-Match': String(revision) }, body: file,
   });
   return result;
 }

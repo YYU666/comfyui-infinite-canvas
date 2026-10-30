@@ -15,6 +15,7 @@ const suites = {
     'test-canvas-current-page.mjs',
     'test-generation-queue.mjs',
     'test-lifecycle.mjs',
+    'test-project-store-http.mjs',
     'test-local-realism.mjs',
     'test-moss-workflow.mjs',
     'test-object-url-lru.mjs',
@@ -25,6 +26,7 @@ const suites = {
     'test-reference-quality.mjs',
     'test-reference-tags.mjs',
     'test-resolution.mjs',
+    'test-update-check-scheduler.mjs',
   ],
   browser: [
     'test-canvas-current-page-ui.mjs',

@@ -265,5 +265,108 @@ class ProjectStoreTests(unittest.TestCase):
             sleep.assert_called_once_with(0.01)
 
 
+    def test_24_stale_page_asset_upload_cannot_adopt_a_newer_revision(self):
+        current = copy.deepcopy(self.document)
+        current["canvas"]["nodes"].append({"id": "remote-node", "type": "note", "data": {"text": "keep"}})
+        saved = self.store.save(current["id"], current, self.document["revision"])
+        with self.assertRaises(StoreError) as caught:
+            self.store.put_asset(current["id"], "a.png", io.BytesIO(b"synthetic"), expected_revision=self.document["revision"])
+        self.assertEqual(caught.exception.code, "REVISION_CONFLICT")
+        self.assertEqual(caught.exception.status, 409)
+        actual = self.store.get(current["id"])
+        self.assertEqual(actual["revision"], saved["revision"])
+        self.assertEqual(actual["canvas"], saved["canvas"])
+        self.assertEqual(actual["assets"], [])
+        self.assertEqual(list((self.path.parent / "assets").iterdir()), [])
+
+    def test_25_asset_cas_also_applies_to_deduplication_and_mid_upload_changes(self):
+        first = self.store.put_asset(self.document["id"], "a.png", io.BytesIO(b"same"), expected_revision=1)
+        duplicate = self.store.put_asset(self.document["id"], "a.png", io.BytesIO(b"same"), expected_revision=first["revision"])
+        self.assertEqual(duplicate["revision"], first["revision"])
+        with self.assertRaises(StoreError) as caught:
+            self.store.put_asset(self.document["id"], "a.png", io.BytesIO(b"same"), expected_revision=1)
+        self.assertEqual(caught.exception.code, "REVISION_CONFLICT")
+        store, project_id = self.store, self.document["id"]
+
+        class ConcurrentEdit(io.BytesIO):
+            edited = False
+            def read(stream, size=-1):
+                if not stream.edited:
+                    stream.edited = True
+                    document = store.get(project_id)
+                    document["canvas"]["nodes"].append({"id": "during-upload", "type": "note"})
+                    store.save(project_id, document, document["revision"])
+                return super().read(size)
+
+        with self.assertRaises(StoreError) as caught:
+            store.put_asset(project_id, "b.png", ConcurrentEdit(b"new"), expected_revision=first["revision"])
+        self.assertEqual(caught.exception.code, "REVISION_CONFLICT")
+        actual = store.get(project_id)
+        self.assertEqual(actual["canvas"]["nodes"][-1]["id"], "during-upload")
+        self.assertEqual(len(actual["assets"]), 1)
+
+    def test_26_read_repair_cannot_overwrite_concurrent_committed_save(self):
+        from project_store import _migrate
+        document = copy.deepcopy(self.document)
+        document["canvas"]["nodes"] = [{"id": "needs-handle", "type": "note", "data": {"text": "old"}}]
+        saved = self.store.save(document["id"], document, 1)
+        editing = copy.deepcopy(saved)
+        editing["canvas"]["nodes"][0]["data"]["text"] = "new committed text"
+        read_ready, release_read, writer_started, writer_done = (threading.Event() for _ in range(4))
+        errors = []
+
+        def paused_migration(value):
+            migrated = _migrate(value)
+            if threading.current_thread().name == "repair-reader":
+                read_ready.set()
+                if not release_read.wait(5):
+                    raise TimeoutError("read repair barrier")
+            return migrated
+
+        def reader():
+            try: self.store.get(document["id"])
+            except Exception as error: errors.append(error)
+
+        def writer():
+            writer_started.set()
+            try: self.store.save(document["id"], editing, saved["revision"])
+            except Exception as error: errors.append(error)
+            finally: writer_done.set()
+
+        with mock.patch("project_store._migrate", side_effect=paused_migration):
+            read_thread = threading.Thread(target=reader, name="repair-reader")
+            write_thread = threading.Thread(target=writer)
+            read_thread.start()
+            try:
+                self.assertTrue(read_ready.wait(5))
+                write_thread.start()
+                self.assertTrue(writer_started.wait(5))
+                self.assertFalse(writer_done.wait(0.1), "writer must wait for the migration read-modify-write")
+            finally:
+                release_read.set()
+                read_thread.join(5)
+                if write_thread.ident is not None: write_thread.join(5)
+        self.assertFalse(read_thread.is_alive())
+        self.assertFalse(write_thread.is_alive())
+        self.assertEqual(errors, [])
+        actual = self.store.get(document["id"])
+        self.assertEqual(actual["revision"], saved["revision"] + 1)
+        self.assertEqual(actual["canvas"]["nodes"][0]["data"]["text"], "new committed text")
+
+    def test_27_asset_http_if_match_reaches_store_and_legacy_import_still_works(self):
+        from project_api import ProjectAPI
+        current = self.store.save(self.document["id"], copy.deepcopy(self.document), 1)
+        handler = mock.Mock()
+        handler.headers = {"Content-Length": "4", "Content-Type": "image/png", "If-Match": "1"}
+        handler.rfile = io.BytesIO(b"test")
+        ProjectAPI(self.store).handle_put(handler, f"/api/projects/{self.document['id']}/assets/a.png")
+        self.assertEqual(handler.send_json.call_args.args[0], 409)
+        handler.headers.pop("If-Match")
+        handler.rfile = io.BytesIO(b"test")
+        ProjectAPI(self.store).handle_put(handler, f"/api/projects/{self.document['id']}/assets/a.png")
+        self.assertEqual(handler.send_json.call_args.args[0], 201)
+        self.assertEqual(handler.send_json.call_args.args[1]["revision"], current["revision"] + 1)
+
+
 if __name__ == "__main__":
     unittest.main()

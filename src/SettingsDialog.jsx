@@ -73,8 +73,8 @@ export default function SettingsDialog({ onClose, onSaved }) {
           </div>
         </section>
         <section className="settings-section"><h3>程序更新</h3>
-          <label className="settings-checkbox"><input name="autoCheckUpdates" type="checkbox" defaultChecked={settings.updates?.autoCheck !== false} /><span>启动时检查 GitHub Release</span></label>
-          <p className="modal-help">只检查官方仓库的 Release；发现新版后由你确认，不会静默安装。活动任务、打开的项目或本地代码修改会阻止升级。</p>
+          <label className="settings-checkbox"><input name="autoCheckUpdates" type="checkbox" defaultChecked={settings.updates?.autoCheck !== false} /><span>自动检查 GitHub Release</span></label>
+          <p className="modal-help">启动时及每 4 小时检查官方仓库的 Release；仅在页面可见且联网时检查，返回页面后补查。发现新版会显示轻提示，忽略的版本不再自动提醒；安装仍需你确认。活动任务、打开的项目或本地代码修改会阻止升级。</p>
           <button type="button" disabled={busy} onClick={() => { onClose(); window.dispatchEvent(new Event('refmuse-check-updates')); }}>立即检查更新</button>
         </section>
         <section className="settings-section"><h3>DeepSeek 提示词优化</h3>

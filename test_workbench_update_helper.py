@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -9,7 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from workbench_update_helper import backup_current, replace_program, restore_program, run, safe_path
+from workbench_update_helper import backup_current, replace_program, restore_program, run, safe_path, wait_for_health
 
 
 class HelperTests(unittest.TestCase):
@@ -38,7 +40,7 @@ class HelperTests(unittest.TestCase):
             {"path": "video_workbench_launcher.py"}, {"path": "requirements.lock"},
         ]}), encoding="utf-8")
         self.installed = self.runtime / "installed-files.json"
-        self.installed.write_text(json.dumps({"version": "v1.0.0", "files": [
+        self.installed.write_text(json.dumps({"version": "v1.0.0", "installationRoot": os.path.normcase(str(self.root.resolve())), "files": [
             {"path": "video_workbench_launcher.py"}, {"path": "requirements.lock"}, {"path": "obsolete.py"},
         ]}), encoding="utf-8")
         self.status = self.runtime / "status.json"
@@ -102,8 +104,63 @@ class HelperTests(unittest.TestCase):
         self.assert_user_data_untouched()
 
     def test_manifest_paths_cannot_escape_install_root(self):
-        for value in ("../outside", "/absolute", "C:/outside", "folder\\outside"):
+        for value in ("../outside", "/absolute", "C:/outside", "folder\\outside", ".", "folder/../outside", "file:stream"):
             with self.subTest(value=value), self.assertRaises(RuntimeError): safe_path(self.root, value)
+
+    def test_parent_directory_link_cannot_write_outside_installation(self):
+        outside = self.base / "outside"
+        outside.mkdir()
+        sentinel = outside / "keep.py"
+        sentinel.write_text("private data", encoding="utf-8")
+        link = self.root / "linked"
+        if os.name == "nt":
+            # Junction creation does not require admin or Developer Mode.
+            command = "New-Item -ItemType Junction -Path $env:TEST_UPDATE_LINK -Target $env:TEST_UPDATE_TARGET | Out-Null"
+            subprocess.run(["powershell", "-NoProfile", "-Command", command], check=True,
+                           env={**os.environ, "TEST_UPDATE_LINK": str(link), "TEST_UPDATE_TARGET": str(outside)},
+                           capture_output=True, timeout=15)
+        else:
+            link.symlink_to(outside, target_is_directory=True)
+        try:
+            with self.assertRaises(RuntimeError):
+                backup_current(self.root, self.backup, ["linked/keep.py"])
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "private data")
+        finally:
+            if os.name == "nt": link.rmdir()
+            else: link.unlink()
+
+    def test_foreign_installation_manifest_is_rejected_before_replacement(self):
+        record = json.loads(self.installed.read_text(encoding="utf-8"))
+        record["installationRoot"] = str(self.base / "another-installation")
+        self.installed.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaises(RuntimeError):
+            run(self.request)
+        self.assertFalse(self.backup.exists())
+        self.assertEqual((self.root / "video_workbench_launcher.py").read_text(encoding="utf-8"), "old")
+        self.assert_user_data_untouched()
+
+    def test_health_check_does_not_accept_another_instance(self):
+        with mock.patch("workbench_update_helper.read_instance", return_value={"pid": 999, "port": 12345}), \
+             mock.patch("workbench_update_helper.urllib.request.urlopen") as request, \
+             mock.patch("workbench_update_helper.time.sleep"):
+            with self.assertRaises(RuntimeError):
+                wait_for_health(self.runtime, expected_pid=123, timeout=0.01)
+        request.assert_not_called()
+
+    def test_rollback_does_not_stop_another_instance(self):
+        owned, restored = mock.Mock(pid=123), mock.Mock(pid=124)
+        owned.poll.return_value = None
+        with mock.patch("workbench_update_helper.install_dependencies"), \
+             mock.patch("workbench_update_helper.start_workbench", side_effect=[owned, restored]), \
+             mock.patch("workbench_update_helper.wait_for_health", side_effect=[RuntimeError("wrong instance"), {"pid": 124}]) as health, \
+             mock.patch("workbench_update_helper.read_instance", return_value={"pid": 999}), \
+             mock.patch("workbench_update_helper.stop_workbench") as stop:
+            run(self.request)
+        stop.assert_not_called()
+        owned.terminate.assert_called_once()
+        self.assertEqual([call.kwargs["expected_pid"] for call in health.call_args_list], [123, 124])
+        self.assertEqual((self.root / "video_workbench_launcher.py").read_text(encoding="utf-8"), "old")
+        self.assert_user_data_untouched()
 
 
 if __name__ == "__main__": unittest.main()

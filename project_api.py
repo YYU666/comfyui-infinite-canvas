@@ -274,7 +274,8 @@ class ProjectAPI:
                 if length <= 0 or length > 2 * 1024 * 1024 * 1024:
                     raise StoreError("BAD_REQUEST", "素材为空或超过 2 GB。")
                 filename = Path(urllib.parse.unquote(match.group(2))).name
-                result = self.store.put_asset(match.group(1), filename, LimitedStream(handler.rfile, length), handler.headers.get("Content-Type"))
+                revision = self._revision(handler) if handler.headers.get("If-Match") is not None else None
+                result = self.store.put_asset(match.group(1), filename, LimitedStream(handler.rfile, length), handler.headers.get("Content-Type"), expected_revision=revision)
                 handler.send_json(201, result)
                 return True
             handler.send_json(404, {"code": "NOT_FOUND", "message": "项目接口不存在。", "details": {}})
