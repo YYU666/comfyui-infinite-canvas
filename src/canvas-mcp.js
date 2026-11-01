@@ -214,6 +214,13 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
         }),
       },
       {
+        name: 'canvas_open_reference_library',
+        description: '在当前画布内打开衣装、姿势或 Refmuse 参考库。不下载、不生成、不改项目。返回容器及首页来源，不能确认外站内容加载成功。',
+        inputSchema: schema({ library: { type: 'string', enum: ['costume', 'pose', 'refmuse'] } }, ['library']),
+        annotations: { readOnlyHint: true },
+        execute: respond(async ({ library }) => latest.current.actions.openReferenceLibrary(library)),
+      },
+      {
         name: 'canvas_inspect_node',
         description: '在当前画布内打开节点的 ComfyUI 工作流查看副本；可指定 stage。读取真实任务记录，不生成、不保存参数，只有图导入确认后才返回 opened。',
         inputSchema: schema({ nodeId: nodeIdProperty, stage: { type: 'string', description: '可选阶段，如 front_portrait、three_quarter_portrait、back_body、front_body、stitch。' } }, ['nodeId']),
@@ -369,7 +376,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
     for (const tool of tools) {
       const original = tool.execute;
       tool.execute = async (args = {}, executionOptions) => {
-        const mutation = !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node'].includes(tool.name);
+        const mutation = !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
         const result = JSON.parse(await original(args, executionOptions));
         if (mutation && result.ok && !['canvas_create_project', 'canvas_open_project'].includes(tool.name)) {

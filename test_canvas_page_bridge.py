@@ -92,6 +92,14 @@ class CanvasPageBridgeTests(unittest.TestCase):
                          "projectId": "prj_two", "result": {"ok": True}}))
         self.assertEqual(self.bridge.complete({**command, "result": {"ok": True}})["status"], "done")
 
+    def test_reference_library_dispatches_without_claiming_remote_load(self):
+        self.bridge.heartbeat(self.page)
+        self.submit('gallery', tool='canvas_open_reference_library', args={'library': 'pose'})
+        command = self.bridge.heartbeat(self.page)['command']
+        self.assertEqual(command['tool'], 'canvas_open_reference_library')
+        result = self.bridge.complete({**command, 'result': {'ok': True, 'opened': True, 'remoteContentVerified': False}})
+        self.assertFalse(result['result']['remoteContentVerified'])
+
     def test_inspect_node_dispatches_and_returns_only_confirmed_ack(self):
         self.bridge.heartbeat(self.page)
         result = self.submit('inspect', tool='canvas_inspect_node', args={'nodeId': 'g1', 'stage': 'three_quarter_portrait'})

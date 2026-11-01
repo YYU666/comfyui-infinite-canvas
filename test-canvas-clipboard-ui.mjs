@@ -126,8 +126,8 @@ try {
   assert.ok((await storedImage.arrayBuffer()).byteLength > 0, '图片文件本体已持久化到隔离项目目录');
 
   await page.reload({ waitUntil: 'networkidle' });
-  await page.locator('.project-open').click();
   await page.getByLabel('画布项目名称', { exact: true }).waitFor();
+  assert.equal(await page.locator('.project-open').count(), 0, '刷新自动恢复当前画布');
   await page.locator(`[data-id="${pastedImage.id}"] img`).waitFor({ state: 'visible' });
   project = await readProject();
   assert.equal(project.canvas.nodes.length, 7, '刷新后节点副本和粘贴图片仍存在');

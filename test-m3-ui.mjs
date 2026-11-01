@@ -93,7 +93,7 @@ try {
   await page.locator('.creative-search button').click();
   await page.locator('.creative-search-results').getByText(/雨夜追逐/).first().waitFor();
 
-  await page.reload(); await page.locator('.project-open').click(); await page.locator('.neo-app').waitFor(); await openCreative();
+  await page.reload(); await page.getByLabel('画布项目名称').waitFor(); await openCreative();
   await page.locator('.creative-tabs').getByRole('button', { name: '审片', exact: true }).click();
   await page.locator('.creative-compare article').first().waitFor();
   assert.equal(await page.locator('.creative-compare article').count(), 4, 'four takes fit the comparison grid');
@@ -144,7 +144,7 @@ try {
   assert.equal(doc.canvas.nodes.filter((node) => node.type === 'media').length, mediaCount, 'bound generation does not add a media node');
   assert.equal(doc.assets.length, 1, 'ComfyUI output is referenced without an early project asset copy');
 
-  await page.reload(); await page.locator('.project-open').click(); await page.locator('.neo-app').waitFor(); await openCreative();
+  await page.reload(); await page.getByLabel('画布项目名称').waitFor(); await openCreative();
   await page.locator('.creative-tabs').getByRole('button', { name: '审片', exact: true }).click();
   doc = await document(projectId);
   assert.equal(doc.shots[0].takes.find((take) => take.id === 't3').selected, true);
