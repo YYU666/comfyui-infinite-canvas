@@ -155,10 +155,12 @@ assert.deepEqual(quadEdit.patch.inputs.model, ['quadview', 0]);
 assert.throws(() => api.buildIdentityEditWorkflow({ prompt: 'test', seed: 42, references: [] }), /母图编辑/);
 const mixedFiles = api.extractImages({ outputs: { save: { images: [
   { filename: 'H3_Image_00001_.png', subfolder: 'image', type: 'output' },
+  { filename: 'H3_CharacterSheet_00003_.png', subfolder: 'image', type: 'output' },
   { filename: 'H3_Workbench_00001_.mp4', subfolder: 'video', type: 'output' },
 ] } } });
-assert.equal(mixedFiles.length, 1);
+assert.equal(mixedFiles.length, 2);
 assert.equal(mixedFiles[0].filename, 'H3_Image_00001_.png');
+assert.equal(mixedFiles[1].filename, 'H3_CharacterSheet_00003_.png');
 assert.equal(api.extractVideos({ outputs: { save: { images: [{ filename: 'H3_Image_00001_.png', subfolder: 'image', type: 'output' }] } } }).length, 0);
 const outfitOptions = { prompt: 'white summer camisole and denim shorts', seed: 42, outfitPanel: 'br', references: [{ kind: 'image', slot: 'guide', name: 'workbench/mother.png' }] };
 const legacyOutfit = api.buildOutfitQuadWorkflow(outfitOptions);

@@ -11,7 +11,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from outfit_queue import initial_state, stage_transfer, stage_workflow, validate_plan
+from outfit_queue import initial_state, sheet_stage_label, stage_transfer, stage_workflow, validate_plan
 from workbench_lifecycle import atomic_write_json, runtime_dir, utc_now
 
 TERMINAL = {"done", "error", "cancelled"}
@@ -36,7 +36,8 @@ class ComfyQueueAdapter:
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         request = urllib.request.Request(self.origin + path, data=data, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=timeout or self.timeout) as response:
-            return json.load(response)
+            content = response.read()
+            return json.loads(content) if content.strip() else {}
 
     def submit(self, workflow, client_id):
         return self._request("/prompt", {"prompt": workflow, "client_id": client_id})["prompt_id"]
@@ -241,6 +242,87 @@ class QueueManager:
             self._changed_locked("job.queued", job)
             return _public(job)
 
+    def inspect_workflow(self, project_id, node_id=None, job_id=None, prompt_id=None):
+        """Return one scoped, bounded view copy; never submit or mutate a job."""
+        if not project_id or not (node_id or job_id or prompt_id):
+            raise ValueError("查看工作流需要项目和节点、任务或提示词 ID。")
+        with self._lock:
+            candidates = [job for job in self.jobs if job.get("projectId") == project_id
+                          and (not node_id or job.get("nodeId") == node_id)
+                          and (not job_id or job.get("id") == job_id)]
+            if prompt_id:
+                candidates = [job for job in candidates if prompt_id == job.get("comfyPromptId")
+                              or prompt_id in (job.get("planState") or {}).get("promptIds", [])]
+            if not candidates:
+                raise KeyError("尚无执行记录，或指定记录已清理。")
+            job = copy.deepcopy(candidates[-1])
+        plan = job.get("plan")
+        state = job.get("planState") or {}
+        submitted = state.get("promptIds") or []
+        history_prompt = (job.get("history") or {}).get("prompt")
+        exact = history_prompt[2] if isinstance(history_prompt, list) and len(history_prompt) > 2 and isinstance(history_prompt[2], dict) else None
+        exact_id = history_prompt[1] if exact is not None else None
+        stages = []
+
+        def add(stage_id, label, graph, stage_prompt=None, executed=None, reason=None):
+            actual = exact is not None and stage_prompt == exact_id
+            graph = copy.deepcopy(exact if actual else graph)
+            if graph is not None and (not isinstance(graph, dict) or len(graph) > 2048):
+                raise ValueError("工作流超过查看上限（2048 个节点）。")
+            stages.append({"id": stage_id, "label": label, "graph": graph,
+                           "promptId": stage_prompt, "executed": executed,
+                           "provenance": "execution" if actual else "persisted-plan" if graph else "unavailable",
+                           "reason": reason if not graph else None})
+
+        if not plan:
+            add("workflow", "工作流", job.get("workflow"), job.get("comfyPromptId"), bool(job.get("comfyPromptId")))
+        elif plan.get("kind") == "characterSheet":
+            for index, panel in enumerate(plan["panels"]):
+                stage_state = {**state, "phase": "single", "panelIndex": index}
+                try:
+                    graph = stage_workflow({**job, "planState": stage_state})
+                    reason = None
+                except (KeyError, ValueError):
+                    graph, reason = None, "前序图片尚未保存，无法还原实际加载路径。"
+                add(panel["id"], panel["label"], graph, submitted[index] if index < len(submitted) else None, index < len(submitted), reason)
+            try:
+                graph = stage_workflow({**job, "planState": {**state, "phase": "stitch"}})
+                reason = None
+            except (KeyError, ValueError):
+                graph, reason = None, "四张图片尚未全部保存，拼接输入不可用。"
+            add("stitch", "最终拼接", graph, submitted[4] if len(submitted) > 4 else None, len(submitted) > 4, reason)
+        else:
+            for index, panel in enumerate(plan["panels"]):
+                current = index == state.get("panelIndex")
+                add(f"{panel['id']}:single", f"{panel['label']} · 单图", panel["single"],
+                    job.get("comfyPromptId") if current and state.get("phase") == "single" else None)
+                if panel.get("hd"):
+                    is_current = current and state.get("phase") == "hd"
+                    # A completed single-panel HD run overwrites currentInput
+                    # with its HD output. That is not the input it sampled.
+                    graph = stage_workflow(job) if is_current and job.get("status") != "done" and state.get("currentInput") else None
+                    add(f"{panel['id']}:hd", f"{panel['label']} · 高清", graph,
+                        job.get("comfyPromptId") if is_current else None, reason="这一步的原始高清输入未单独保留，无法准确还原。")
+            if plan.get("stitch"):
+                ready = all(panel["id"] in state.get("images", {}) for panel in plan["panels"])
+                graph = stage_workflow({**job, "planState": {**state, "phase": "stitch"}}) if ready else None
+                add("stitch", "最终拼接", graph, job.get("comfyPromptId") if state.get("phase") == "stitch" else None,
+                    reason="拼接图片尚未全部保存。")
+        default = stages[0]["id"]
+        if plan and job.get("status") in ACTIVE | {"error", "cancelled"}:
+            phase = state.get("phase")
+            if phase == "stitch":
+                default = "stitch"
+            elif isinstance(state.get("panelIndex"), int) and state["panelIndex"] < len(plan["panels"]):
+                panel_id = plan["panels"][state["panelIndex"]]["id"]
+                default = panel_id if plan["kind"] == "characterSheet" else f"{panel_id}:{phase}"
+        result = {"jobId": job["id"], "nodeId": job.get("nodeId"), "projectId": project_id,
+                  "kind": job.get("kind"), "status": job.get("status"), "attempt": job.get("attempts", 1),
+                  "defaultStage": default, "stages": stages}
+        if len(stages) > 12 or len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 8 * 1024 * 1024:
+            raise ValueError("工作流查看数据超过上限，请导出后检查。")
+        return result
+
     def pause(self, value=True):
         with self._lock:
             self.paused = bool(value)
@@ -352,7 +434,7 @@ class QueueManager:
                         if job.get("plan"):
                             panel = job["plan"]["panels"][job["planState"]["panelIndex"]]
                             count = len(job["plan"]["panels"])
-                            job["stage"] = f"{'保留原图' if panel['preserve'] else '千问独立换装'} {job['planState']['panelIndex'] + 1}/{count} · {panel['label']}"
+                            job["stage"] = sheet_stage_label(job["planState"], job["plan"]) if job["kind"] == "characterSheet" else f"{'保留原图' if panel['preserve'] else '千问独立换装'} {job['planState']['panelIndex'] + 1}/{count} · {panel['label']}"
                         submissions.append(job)
                         self._changed_locked("job.started", job)
                 active = [job for job in self.jobs if job["status"] in ACTIVE]
@@ -362,6 +444,10 @@ class QueueManager:
             for job in to_submit:
                 submit_attempt = job["attempts"]
                 try:
+                    if job.get("kind") == "characterSheet":
+                        with self._lock:
+                            if job.get("cancelRequested") or job["status"] in TERMINAL:
+                                continue
                     workflow = stage_workflow(job) if job.get("plan") else job["workflow"]
                     prompt_id = self.adapter.submit(workflow, job["clientId"])
                     with self._lock:
@@ -428,6 +514,12 @@ class QueueManager:
                         continue
                     for key in ("progress", "eta", "outputs", "history", "error"):
                         if key in update:
+                            if key == "progress" and job.get("kind") == "characterSheet":
+                                fraction = max(0, min(100, float(update[key]))) / 100
+                                state = job["planState"]
+                                stage_progress = 94 + fraction * 5 if state["phase"] == "stitch" else (state["panelIndex"] + fraction) * 90 / 4
+                                job[key] = max(job["progress"], stage_progress)
+                                continue
                             job[key] = update[key]
                     status = update.get("status")
                     if not outfit_done:
@@ -444,7 +536,8 @@ class QueueManager:
                     try:
                         patch = stage_transfer(transfer_job, self.adapter)
                     except Exception as exc:
-                        patch = {"status": "error", "stage": "换装阶段失败", "error": _error("OUTFIT_STAGE_FAILED", exc, "检查中间图、ComfyUI 上传接口和磁盘空间后重试。")}
+                        sheet = job.get("kind") == "characterSheet"
+                        patch = {"status": "error", "stage": "角色表阶段失败" if sheet else "换装阶段失败", "error": _error("CHARACTER_SHEET_STAGE_FAILED" if sheet else "OUTFIT_STAGE_FAILED", exc, "检查中间图、ComfyUI 上传接口和磁盘空间后重试。")}
                     with self._lock:
                         if job["status"] in TERMINAL or job["attempts"] != poll_attempt:
                             continue

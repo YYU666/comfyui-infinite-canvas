@@ -6,9 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_io import configure_utf8
-
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+from agent_io import configure_utf8
 
 NODE_PACKAGES = {
     "h3-relay": ("https://github.com/akatz-ai/h3-relay.git", "e2a7665b6eb8ea37a88c0de2c9c6b69a8f7c9220"),

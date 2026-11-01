@@ -23,6 +23,7 @@
 | 工具 | 用途 | 关键参数 |
 | --- | --- | --- |
 | `canvas_get_state` | 读取当前项目、真实节点、连线和状态 | 可选 `nodeId`、`includePrompt` |
+| `canvas_inspect_node` | 在当前页内打开节点对应的 ComfyUI 工作流查看器；不提交生成 | 必填 `nodeId`；可选 `stage`（四视图支持单张阶段及 `stitch`） |
 | `canvas_import_asset` | 在当前页复用本项目已保存素材 | 必填 `nodeId`、`assetPath`；可选 `name` |
 | `canvas_create_node` | 在当前画布创建节点 | 必填 `preset`；可选 `title`、`prompt`、`text`、`x`、`y`、`focus` |
 | `canvas_update_node` | 更新标题、提示词、备注或白名单参数 | 必填 `nodeId`；可选 `title`、`prompt`、`text`、`settings` |
@@ -41,7 +42,7 @@
 | 素材 | `image_asset`、`video_asset`、`audio_asset` |
 | 文本 | `note`、`prompt_optimizer` |
 | 视频 | `reference_video`、`character_swap`、`text_video`、`frames_video` |
-| 图片 | `krea_image`、`moss_image`、`identity_edit`、`qwen_edit` |
+| 图片 | `krea_image`、`moss_image`、`identity_edit`、`qwen_edit`、`character_sheet` |
 | 修复与增强 | `local_realism`、`outfit_edit`、`image_upscale`、`video_upscale` |
 
 素材上传、遮罩编辑等没有独立 WebMCP 工具时，使用工作台现有用户界面完成，不要构造绕过前端校验的私有调用。
@@ -87,3 +88,11 @@
 ## 7. 完成报告
 
 简洁列出：创建／修改的节点、实际连线、最终状态、结果节点、生成文件目录，以及仍存在的错误。不要罗列内部调用过程。
+
+## 8. 查看内部 ComfyUI 工作流
+
+右键生成节点或生成结果节点，选择「进入 ComfyUI」，可在当前画布内打开 ComfyUI 查看器。双击图片仍用于预览大图。`canvas_inspect_node` 使用同一入口；只有实际导入完成且节点与连线校验通过才返回 `opened: true`。它不会创建 H3 结果节点或提交生成，也不改变项目 revision。
+
+生成结果按自身的任务／prompt 记录定位，不能用生成节点的最新任务替代历史结果。分阶段四视图可选 `front_portrait`、`three_quarter_portrait`、`back_body`、`front_body`、`stitch`；旧单图工作流通常为 `workflow`。界面区分实际执行图、持久化计划还原和尚未执行；无记录的节点不能预览草稿。
+
+查看器载入 ComfyUI 临时工作流副本，修改不自动写回 H3。用户仍可手动操作 ComfyUI，包括运行；打开与切换本身不生成。关闭查看器回到同一画布。ComfyUI 临时标签可能保存在其本地工作区。

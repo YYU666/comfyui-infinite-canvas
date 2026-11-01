@@ -7,11 +7,12 @@ import {
 } from 'lucide-react';
 import {
   createProject, deleteProject, duplicateProject, exportProject, importProject, listProjects,
-  openProject, openProjectPath, renameProject, restoreProject, revealProject,
+  openProject, closeProject, openProjectPath, renameProject, restoreProject, revealProject,
 } from './project-store-http';
 import { listLegacyProjects, migrateLegacyProjects } from './legacy-migration';
 import { downloadDoctorLogs, runDoctor } from './doctor-client';
 import SettingsDialog from './SettingsDialog';
+import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page';
 import './launcher.css';
 
 const TEMPLATES = [
@@ -52,6 +53,37 @@ export default function ProjectLauncher({ onOpen }) {
   const [doctorNotice, setDoctorNotice] = useState(null);
   const fileInput = useRef(null);
   const operationRef = useRef('');
+  const onOpenRef = useRef(onOpen);
+  onOpenRef.current = onOpen;
+  useEffect(() => {
+    const controller = new AbortController();
+    const reset = () => { operationRef.current = ''; setBusy(''); };
+    const tools = createProjectPageTools({
+      prepare: async (id, name) => {
+        if (operationRef.current) throw new Error('项目操作进行中，请稍后重试。');
+        operationRef.current = 'agent-open'; setBusy('agent-open');
+        try {
+          const created = id ? null : await createProject(name, templateCanvas(TEMPLATES[0]));
+          return await openProject(id || created.id, { fallbackToReadOnly: false });
+        } catch (error) { reset(); setNotice({ type: 'error', text: error.message }); throw error; }
+      },
+      commit: async (target) => { reset(); onOpenRef.current(target); },
+      abandon: async (target) => { try { await closeProject(target.id); } finally { reset(); } },
+    });
+    tools.push({ name: 'canvas_get_state', description: '读取当前项目启动页与可用项目列表。',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      execute: async () => {
+        try { return JSON.stringify({ ok: true, projectId: 'launcher', projects: await listProjects(), busy: Boolean(operationRef.current) }); }
+        catch (error) { return JSON.stringify({ ok: false, error: error.message }); }
+      },
+    });
+    for (const tool of tools) if (document.modelContext?.registerTool) {
+      Promise.resolve(document.modelContext.registerTool(tool, { signal: controller.signal })).catch(() => {});
+    }
+    const stop = startCurrentCanvasPage({ tools, getPage: () => ({ projectId: 'launcher', visible: document.visibilityState === 'visible' }) });
+    return () => { stop(); controller.abort(); };
+  }, []);
 
   const diagnose = async (checkDeepSeek = false) => {
     if (doctorBusy) return;

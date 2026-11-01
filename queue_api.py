@@ -4,6 +4,7 @@ import json
 import logging
 import queue
 import re
+import urllib.parse
 
 LOGGER = logging.getLogger("h3-workbench")
 JOB_PATH = re.compile(r"^/api/queue/(job_[A-Za-z0-9_-]+)$")
@@ -30,6 +31,19 @@ class QueueAPI:
         return payload
 
     def handle_get(self, handler, path):
+        if path == "/api/queue/inspect":
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+                allowed = {"projectId", "nodeId", "jobId", "promptId"}
+                if set(query) - allowed or any(len(values) != 1 or len(values[0]) > 256 for values in query.values()):
+                    raise ValueError("工作流查看参数无效。")
+                values = {key: value[0] for key, value in query.items()}
+                handler.send_json(200, self.manager.inspect_workflow(values.get("projectId"), values.get("nodeId"), values.get("jobId"), values.get("promptId")))
+            except KeyError:
+                self._error(handler, 404, "NO_EXECUTION", "尚无执行记录，或指定记录已清理；不会改用其他任务。")
+            except (ValueError, TypeError) as exc:
+                self._error(handler, 400, "BAD_REQUEST", exc)
+            return True
         if path == "/api/queue/events":
             self._events(handler)
             return True

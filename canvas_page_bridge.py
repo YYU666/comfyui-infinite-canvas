@@ -11,7 +11,9 @@ import uuid
 from project_store import StoreError
 
 TOOLS = frozenset({"canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
-                   "canvas_generate_node", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset"})
+                   "canvas_generate_node", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset",
+                   "canvas_create_project", "canvas_open_project", "canvas_inspect_node"})
+LAUNCHER_TOOLS = frozenset({"canvas_get_state", "canvas_create_project", "canvas_open_project"})
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 
@@ -55,7 +57,7 @@ class CanvasPageBridge:
     def heartbeat(self, payload):
         with self.lock:
             session_id, project_id = self._id(payload, "sessionId"), self._id(payload, "projectId")
-            if not project_id.startswith("prj_") or not isinstance(payload.get("visible"), bool) or not isinstance(payload.get("busy", False), bool):
+            if (project_id != "launcher" and not project_id.startswith("prj_")) or not isinstance(payload.get("visible"), bool) or not isinstance(payload.get("busy", False), bool):
                 raise StoreError("BAD_REQUEST", "Invalid canvas heartbeat.")
             self._expire()
             previous = self.sessions.get(session_id)
@@ -86,6 +88,8 @@ class CanvasPageBridge:
             tool, args = payload.get("tool"), payload.get("args", {})
             if not isinstance(tool, str) or tool not in TOOLS or not isinstance(args, dict):
                 raise StoreError("BAD_REQUEST", "Unsupported canvas tool or arguments.")
+            if project_id == "launcher" and tool not in LAUNCHER_TOOLS:
+                raise StoreError("BAD_REQUEST", "请先在当前页面打开项目，再操作画布节点。")
             if tool == "canvas_generate_node" and args.get("wait", False) is not False:
                 raise StoreError("BAD_REQUEST", "当前页通道只提交生成（wait:false），请用 canvas_get_state 查询结果。")
             identity = {"sessionId": session_id, "projectId": project_id, "tool": tool, "args": args}

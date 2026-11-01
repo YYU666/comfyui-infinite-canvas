@@ -180,7 +180,11 @@ class ComfyProxyTests(unittest.TestCase):
         self.assertIn("default-src 'self'", csp)
         self.assertIn("object-src 'none'", csp)
         self.assertIn("frame-ancestors 'none'", csp)
-        self.assertNotIn(":8188", csp)
+        directives = {part.strip().split(" ", 1)[0]: part.strip().split(" ")[1:] for part in csp.split(";") if part.strip()}
+        self.assertEqual(directives["frame-src"], ["http://127.0.0.1:8188", "http://localhost:8188"])
+        for name, sources in directives.items():
+            if name != "frame-src":
+                self.assertFalse(any(":8188" in source for source in sources), name)
         self.assertNotIn("Cookie", self.upstream.last_headers)
         self.assertNotIn("X-H3-Token", self.upstream.last_headers)
 

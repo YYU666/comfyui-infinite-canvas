@@ -99,6 +99,25 @@ class AgentTransportTests(unittest.TestCase):
         self.assertEqual(self.client.request("GET", base + "/commands/http_current_page")["status"], "done")
         self.assertEqual(self.queue.snapshot()["jobs"], [], "transport never generates outside the browser handler")
 
+    def test_mcp_canvas_command_preserves_explicit_stale_routing(self):
+        base = "/api/agent/canvas"
+        page = {"sessionId": "current_page", "projectId": self.pid, "visible": True, "busy": False}
+        self.client.request("POST", base + "/heartbeat", page)
+        current = self.client.call_tool("canvas_current", {"projectId": self.pid})
+        command = {"projectId": self.pid, "opId": "same_generation", "tool": "canvas_generate_node",
+                   "args": {"nodeId": "g1", "wait": False}}
+        for stale in ({"epoch": "previous_process"}, {"sessionId": "previous_page"},
+                      {"epoch": "previous_process", "sessionId": "previous_page"}):
+            with self.assertRaises(RuntimeError):
+                self.client.call_tool("canvas_command", {**command, **stale})
+            self.assertIsNone(self.client.request("POST", base + "/heartbeat", page)["command"])
+        self.assertEqual(self.client.call_tool("canvas_command", command)["status"], "queued")
+        self.assertEqual(self.client.call_tool("canvas_command", {**command, **current})["status"], "queued")
+        delivered = self.client.request("POST", base + "/heartbeat", page)["command"]
+        self.assertEqual(delivered["opId"], "same_generation")
+        self.assertIsNone(self.client.request("POST", base + "/heartbeat", page)["command"])
+        self.assertEqual(self.queue.snapshot()["jobs"], [])
+
     def test_cli_and_mcp_stdio_without_browser(self):
         root = Path(__file__).resolve().parent
         cli = subprocess.run([sys.executable, str(root / "agent_cli.py"), "state", "--project", self.pid], env=self.env,
@@ -115,7 +134,7 @@ class AgentTransportTests(unittest.TestCase):
         responses = [json.loads(line) for line in process.stdout.splitlines() if line.strip()]
         self.assertEqual(len(responses), 4, process.stderr)
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "h3-workbench")
-        self.assertEqual([tool["name"] for tool in responses[1]["result"]["tools"]], ["state", "query", "apply", "wait"])
+        self.assertEqual([tool["name"] for tool in responses[1]["result"]["tools"]], ["state", "query", "apply", "wait", "canvas_current", "canvas_command", "canvas_call", "canvas_result"])
         self.assertEqual(responses[2]["result"]["contents"][0]["uri"], "canvas://context")
         self.assertIn("nodes=0", responses[3]["result"]["content"][0]["text"])
 

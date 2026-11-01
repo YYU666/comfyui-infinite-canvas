@@ -17,6 +17,38 @@ export function validateCanvasArgs(value, schema, path = 'args') {
   }
 }
 
+// Preparing opens the target only after the native page has flushed its saves.
+// Keep that page mounted until the transport has acknowledged the result.
+export function createProjectPageTools({ prepare, commit, abandon }) {
+  return [
+    ['canvas_create_project', '在当前页面新建空白项目，保留已有项目。', 'name'],
+    ['canvas_open_project', '保存当前项目后，在当前页面打开已有项目。', 'projectId'],
+  ].map(([name, description, key]) => {
+    let pending = null;
+    return {
+      name, description,
+      inputSchema: { type: 'object', properties: { [key]: { type: 'string' } }, required: [key], additionalProperties: false },
+      execute: async (args, { deferPageSwitch = false } = {}) => {
+        try {
+          if (pending) throw new Error('已有项目切换等待确认。');
+          if (!args[key]?.trim() || (key === 'projectId' && !/^prj_[a-zA-Z0-9_-]+$/.test(args[key]))) throw new Error('项目名称或 ID 无效。');
+          pending = await prepare(key === 'projectId' ? args.projectId : null, args.name?.trim());
+          const result = { ok: true, projectId: pending.id, projectName: pending.name, switchPending: deferPageSwitch };
+          if (!deferPageSwitch) { const target = pending; pending = null; await commit(target); }
+          return JSON.stringify(result);
+        } catch (error) { return JSON.stringify({ ok: false, error: error.message || String(error) }); }
+      },
+      afterResultDelivered: async () => { if (pending) { const target = pending; pending = null; await commit(target); } },
+      onResultDeliveryAbandoned: () => {
+        if (pending) {
+          const target = pending; pending = null;
+          Promise.resolve(abandon?.(target)).catch((error) => console.warn('释放待切换项目失败', error));
+        }
+      },
+    };
+  });
+}
+
 export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, intervalMs = 1500 }) {
   const sessionId = globalThis.crypto?.randomUUID?.() || `page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const toolMap = new Map(tools.map((tool) => [tool.name, tool]));
@@ -43,25 +75,32 @@ export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, inte
   const deliver = async () => {
     if (!delivery || stopped) return;
     const sent = delivery;
-    await request('result', sent, { signal: abort.signal });
-    if (delivery === sent) delivery = null;
+    await request('result', sent.payload, { signal: abort.signal });
+    if (delivery === sent) {
+      delivery = null;
+      await sent.afterResultDelivered?.();
+    }
   };
   const execute = async (command, epoch) => {
     executing = true;
     let result;
+    let tool;
     try {
       const page = getPage();
       if (page.readOnly || !page.visible || page.projectId !== command.projectId
         || command.sessionId !== sessionId || command.epoch !== epoch) throw new Error('当前可见页面已改变，命令未执行。');
-      const tool = toolMap.get(command.tool);
+      tool = toolMap.get(command.tool);
       if (!tool) throw new Error('Unsupported current-page tool.');
       validateCanvasArgs(command.args, tool.inputSchema);
       if (command.tool === 'canvas_generate_node' && command.args.wait) throw new Error('Use wait:false and read canvas_get_state.');
-      result = JSON.parse(await tool.execute(command.args));
+      result = JSON.parse(await tool.execute(command.args, { deferPageSwitch: true }));
     } catch (error) {
       result = { ok: false, error: error.message || String(error) };
     }
-    delivery = { epoch, sessionId, projectId: command.projectId, opId: command.opId, result };
+    if (stopped) { tool?.onResultDeliveryAbandoned?.(); executing = false; return; }
+    delivery = { payload: { epoch, sessionId, projectId: command.projectId, opId: command.opId, result },
+      afterResultDelivered: result.ok ? tool?.afterResultDelivered : null,
+      abandon: result.ok ? tool?.onResultDeliveryAbandoned : null };
     executing = false;
     try { await deliver(); } catch { /* Retry delivery, never execution, on the next heartbeat. */ }
   };
@@ -70,12 +109,15 @@ export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, inte
     polling = true;
     try {
       const page = getPage();
+      // A backgrounded tab is still the current canvas. `visible` here means
+      // "this session may operate", not browser focus; a second tab would make
+      // the bridge ambiguous and is rejected instead of stealing the lease.
       const reply = await request('heartbeat', { sessionId, projectId: initial.projectId,
-        visible: !page.readOnly && page.visible && page.projectId === initial.projectId,
+        visible: !page.readOnly && Boolean(initial.projectId) && page.projectId === initial.projectId,
         busy: executing || Boolean(delivery),
       }, { signal: abort.signal });
       if (stopped) return;
-      if (delivery && delivery.epoch !== reply.epoch) delivery = null; // New backend cannot accept old receipts.
+      if (delivery && delivery.payload.epoch !== reply.epoch) { delivery.abandon?.(); delivery = null; }
       if (delivery) await deliver();
       if (reply.command && !executing && !seen.has(reply.command.opId)) {
         seen.add(reply.command.opId);
@@ -92,6 +134,7 @@ export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, inte
     stopped = true;
     clearInterval(timer);
     abort.abort();
+    delivery?.abandon?.(); delivery = null;
     void request('release', { sessionId }, { keepalive: true }).catch(() => {});
   };
 }
