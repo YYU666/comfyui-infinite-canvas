@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
 import { validateCharacterSheetAngleSeed, validateQwenCacheDevice, validateQwenSourceCrop } from './workbench-api.js';
 
@@ -30,7 +31,7 @@ export const NODE_PRESETS = {
 };
 
 const EDITABLE_SETTINGS = new Set([
-  'ratio', 'resolution', 'duration', 'turbo', 'seed', 'randomSeed', 'refImageSize', 'characterSheetAngleSeed',
+  'workflowParameters', 'ratio', 'resolution', 'duration', 'turbo', 'seed', 'randomSeed', 'refImageSize', 'characterSheetAngleSeed',
   'qwenSteps', 'qwenRefResolution', 'localRealismSteps', 'localRealismSize', 'localRealismDenoise', 'localMaskMode', 'localMaskExpand', 'localMaskBlend', 'imageModel', 'imageLora', 'loraStrength', 'imageScale',
   'qwenModel', 'qwenCacheDevice', 'qwenSourceCrop', 'outfitModel', 'upscaleModel', 'outfitUpscale', 'outfitHdScale', 'museSteps',
   'outfitPreset', 'outfitPanel', 'outfitLayout', 'outfitPanels', 'outfitDenoise', 'targetQuery', 'targetDescription', 'targetSelection', 'targetIndex',
@@ -72,6 +73,7 @@ function nodeSummary(node, includeContent = true) {
     title: node.data.title || '',
     kind: node.data.kind,
     mode: node.data.mode,
+    ...(node.data.mode === 'customWorkflow' ? { extensionDigest: node.data.extensionDigest, nodeDefinitionId: node.data.nodeDefinitionId, workflowDefinition: node.data.workflowDefinition, workflowParameters: node.data.workflowParameters } : {}),
     status: node.data.status,
     stage: node.data.stage,
     progress: node.data.progress,
@@ -231,6 +233,15 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
         }),
       },
       {
+        name: 'canvas_create_extension',
+        description: '从已导入的本地工作流包创建单个生成节点，固定摘要与节点定义；通过当前页面保存。',
+        inputSchema: schema({ digest: { type: 'string' }, nodeDefinitionId: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, focus: { type: 'boolean' } }, ['digest', 'nodeDefinitionId']),
+        execute: respond(async ({ digest, nodeDefinitionId, x, y, focus = false }) => {
+          const id = await latest.current.actions.createExtensionNode(digest, nodeDefinitionId, Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null, focus);
+          return { node: nodeSummary(await waitFor(() => latest.current.nodesRef.current.find((node) => node.id === id))) };
+        }),
+      },
+      {
         name: 'canvas_create_node',
         description: '在当前可见画布创建一个真实节点，使用与用户界面相同的节点和持久化逻辑。可用于准备图生图、视频、素材或备注测试。',
         inputSchema: schema({
@@ -264,7 +275,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
           title: { type: 'string' },
           prompt: { type: 'string' },
           text: { type: 'string' },
-          settings: { type: 'object', description: '可选参数包含 qwenModel（standard/turbo）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。' },
+          settings: { type: 'object', description: '自定义工作流使用 workflowParameters 对象，键来自 workflowDefinition.parameters.properties；仅支持声明的标量参数。内置节点可选参数包含 qwenModel（standard/turbo）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。' },
         }, ['nodeId']),
         execute: respond(async ({ nodeId, title, prompt, text, settings = {} }) => {
           const current = getNode(nodeId);
@@ -273,6 +284,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
           if (unknown.length) throw new Error(`不支持的参数：${unknown.join(', ')}`);
           validateModelSettings(settings, current.data.mode ?? '');
           const patch = { ...settings };
+          if ('workflowParameters' in settings) patch.workflowParameters = validateWorkflowParameters(current.data, settings.workflowParameters);
           if (title !== undefined) patch.title = title;
           if (prompt !== undefined) { patch.prompt = prompt; patch.outfitPreset = null; }
           if (text !== undefined) patch.text = text;
@@ -290,7 +302,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
         inputSchema: schema({
           sourceId: nodeIdProperty,
           targetId: nodeIdProperty,
-          targetHandle: { type: 'string', enum: ['references', 'first', 'last', 'guide', 'identity', 'prompt'], description: '可选目标端口；通常留空自动判断。' },
+          targetHandle: { type: 'string', description: '目标端口。自定义工作流必须指定定义中的输入 id；内置节点通常留空自动判断。' },
         }, ['sourceId', 'targetId']),
         execute: respond(async ({ sourceId, targetId, targetHandle }) => {
           const source = getNode(sourceId);

@@ -14,9 +14,20 @@ from project_store import ProjectStore
 from queue_api import QueueAPI
 from video_workbench_launcher import WorkbenchHandler, WorkbenchServer
 from workbench_queue import QueueManager
+from workbench_security import valid_content_type
 
 
 class SecurityProbeTests(unittest.TestCase):
+    def test_extension_archive_types_are_scoped_to_import_post(self):
+        for content_type in ["application/vnd.h3pack", "application/zip", "application/octet-stream", "application/json"]:
+            headers = {"Content-Length": "20", "Content-Type": content_type}
+            self.assertTrue(valid_content_type("POST", "/api/extensions/import", headers))
+            if content_type != "application/json":
+                self.assertFalse(valid_content_type("POST", "/api/extensions/import/extra", headers))
+                self.assertFalse(valid_content_type("POST", "/api/extensions/abc/prepare", headers))
+                self.assertFalse(valid_content_type("PUT", "/api/extensions/import", headers))
+        self.assertFalse(valid_content_type("POST", "/api/extensions/import", {"Content-Length": "20", "Content-Type": "text/plain"}))
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)

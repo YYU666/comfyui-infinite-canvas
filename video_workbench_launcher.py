@@ -27,6 +27,8 @@ import psutil
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_api import AgentAPI
+from extension_api import ExtensionAPI
+from workflow_extensions import ExtensionStore
 from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_websocket
 from project_api import ProjectAPI
 from project_store import ProjectStore
@@ -525,6 +527,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             else:
                 self.send_json(200, manager.check())
             return
+        extension_api = getattr(self.server, "extension_api", None)
+        if extension_api and extension_api.handle_get(self, path):
+            return
         if self.server.queue_api.handle_get(self, path):
             return
         agent_api = getattr(self.server, "agent_api", None)
@@ -610,6 +615,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 LOGGER.exception("升级请求失败：%s", exc)
                 self.send_json(500, {"code": "UPDATE_ERROR", "message": "更新暂时无法开始，旧版尚未替换。", "details": {}})
+            return
+        extension_api = getattr(self.server, "extension_api", None)
+        if extension_api and extension_api.handle_post(self, path):
             return
         if self.server.queue_api.handle_post(self, path):
             return
@@ -791,6 +799,7 @@ def main():
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
             server.queue_api = QueueAPI(server.queue_manager)
             server.agent_api = AgentAPI(server.project_store, server.queue_manager)
+            server.extension_api = ExtensionAPI(ExtensionStore(runtime_dir() / "extensions"), COMFY_URL, comfy_root=ROOT)
             server.update_manager = WorkbenchUpdateManager(HERE, lambda: validate_update_ready(server))
             server.queue_manager.start()
 

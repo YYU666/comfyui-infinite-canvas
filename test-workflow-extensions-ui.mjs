@@ -1,0 +1,158 @@
+import assert from 'node:assert/strict';
+import { mkdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { chromium } from './test-browser.mjs';
+import { extensionNodeData, customInput, extensionMedia } from './src/workflow-extensions.js';
+import { buildCharacterSheetQueuePlan } from './src/workbench-api.js';
+
+const digest = 'a'.repeat(64);
+const definition = { nodeDefinitionId: 'three-images', name: '三图合成', inputs: ['left', 'middle', 'right'].map((id) => ({ id, type: 'image', required: true, list: false })), parameters: { type: 'object', properties: { strength: { type: 'number', default: 0.5, minimum: 0, maximum: 1 }, title: { type: 'string', default: 'fixture' }, enabled: { type: 'boolean', default: true } } }, outputs: [{ id: 'result', type: 'image', nodeId: '9' }] };
+const bundle = { digest, manifest: { packageId: 'fixture.three', name: '三图测试包', version: '1.0.0' }, nodes: [{ definition, workflow: {} }] };
+assert.equal(customInput(extensionNodeData(bundle, definition.nodeDefinitionId), 'right').id, 'right');
+assert.throws(() => extensionNodeData(bundle, 'missing'));
+const file = (filename) => ({ filename, subfolder: '', type: 'output' });
+const history = { outputs: { '9': { images: [file('custom-result.png'), file('custom-second.png')] }, '8': { images: [file('H3_Image_intermediate.png')] } } };
+assert.deepEqual(extensionMedia(history, definition.outputs).map((item) => item.filename), ['custom-result.png', 'custom-second.png']);
+const pairedOutputs = [...definition.outputs, { id: 'second-result', type: 'image', nodeId: '10' }];
+assert.throws(() => extensionMedia(history, pairedOutputs), /second-result.*10/);
+assert.throws(() => extensionMedia({ outputs: { ...history.outputs, '10': { videos: [file('wrong-kind.mp4')] } } }, pairedOutputs), /second-result.*10/);
+const sharedHistory = { outputs: { '9': { images: [file('shared.png')] }, '10': { images: [file('shared.png')] } } };
+assert.equal(extensionMedia(sharedHistory, pairedOutputs).length, 1, 'each declared output is validated before shared-file deduplication');
+assert.equal(extensionMedia(sharedHistory, [...definition.outputs, { id: 'same-node-alias', type: 'image', nodeId: '9' }]).length, 1);
+
+const origin = 'http://127.0.0.1:8799';
+const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
+let project = { id: 'prj_extensions_fixture', name: 'Extensions fixture', revision: 1, shots: [], canvas: { viewport: { x: 0, y: 0, zoom: 0.8 }, edges: [], nodes: ['left', 'middle', 'right'].map((id, index) => ({ id, type: 'media', position: { x: 0, y: index * 320 }, data: { kind: 'image', title: id, name: `${id}.png`, remoteName: `${id}.png` } })) } };
+let imported = false;
+let dependencyFailure = false;
+let stagedRun = false;
+const stagedPlan = buildCharacterSheetQueuePlan({ prompt: 'Public fixture character', seed: 123, references: [{ kind: 'image', slot: 'guide', name: 'left.png' }] });
+stagedPlan.stitch.stitch__save = stagedPlan.stitch.save;
+delete stagedPlan.stitch.save;
+const stagedOutputs = [{ id: 'image', type: 'image', nodeId: 'stitch__save' }];
+const prepared = [];
+const queued = [];
+const failures = [];
+const browser = await chromium.launch({ headless: true });
+try {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 950 } });
+  await context.addInitScript(() => {
+    window.fixtureTools = new Map(); window.fixtureSources = [];
+    Object.defineProperty(document, 'modelContext', { value: { registerTool(tool, options) { window.fixtureTools.set(tool.name, tool); options?.signal?.addEventListener('abort', () => window.fixtureTools.delete(tool.name)); } } });
+    window.EventSource = class { constructor(url) { this.url = url; this.listeners = {}; window.fixtureSources.push(this); } addEventListener(name, fn) { this.listeners[name] = fn; } close() { this.closed = true; } };
+    window.WebSocket = class { addEventListener() {} close() {} };
+  });
+  await context.route('**/*', async (route) => {
+    const request = route.request(); const url = new URL(request.url());
+    const json = (value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
+    if (url.origin === 'https://refmuse.cn') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><p>Intercepted node library</p>' });
+    assert.equal(url.origin, origin, 'fixture forbids live services');
+    if (url.pathname === '/api/extensions/import') { imported = true; return json(bundle); }
+    if (url.pathname === '/api/extensions') return json({ items: imported ? [{ ...bundle.manifest, digest, nodes: [{ nodeDefinitionId: definition.nodeDefinitionId, name: definition.name }] }] : [] });
+    if (url.pathname === `/api/extensions/${digest}`) return json(bundle);
+    if (url.pathname.endsWith('/prepare')) { prepared.push(request.postDataJSON()); return dependencyFailure ? json({ message: '缺少节点：FixtureMissingNode' }, 422) : json(stagedRun ? { plan: stagedPlan, outputs: stagedOutputs, digest } : { workflow: { fixture: request.postDataJSON() }, outputs: definition.outputs, digest }); }
+    if (url.pathname === '/api/projects') return json({ projects: [project] });
+    if (url.pathname === '/api/projects/trash') return json({ projects: [] });
+    if (url.pathname === '/api/projects/open') return json(project);
+    if (url.pathname === `/api/projects/${project.id}`) {
+      if (request.method() === 'PUT') project = { ...request.postDataJSON(), revision: project.revision + 1 };
+      return json(project);
+    }
+    if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'native fixture only' }, 503);
+    if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
+    if (url.pathname === '/api/queue') { if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: stagedRun ? 'job_sheet' : 'job_fixture' }); } return json({ jobs: [] }); }
+    if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
+    if (url.pathname === '/api/comfy/view') return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=', 'base64') });
+    if (url.pathname === '/api/hardware-metrics') return json({});
+    if (url.pathname.startsWith('/api/')) return json({});
+    const filename = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
+    return route.fulfill({ contentType: filename.endsWith('.js') ? 'text/javascript' : filename.endsWith('.css') ? 'text/css' : 'text/html', body: await readFile(filename) });
+  });
+  const page = await context.newPage(); page.on('pageerror', (error) => failures.push(error.message));
+  const call = (name, args = {}) => page.evaluate(async ({ name, args }) => JSON.parse(await window.fixtureTools.get(name).execute(args)), { name, args });
+  await page.goto(origin); await page.locator('.project-open').click();
+  await page.getByRole('button', { name: '节点库', exact: true }).click();
+  await page.getByRole('button', { name: '本地节点 / 导入工作流' }).click();
+  await page.getByLabel('选择工作流文件').waitFor({ state: 'visible' });
+  assert.equal((await call('canvas_open_reference_library', { library: 'refmuse' })).ok, false);
+  assert.equal(await page.locator('.reference-library-backdrop:not([hidden])').count(), 0);
+  assert.equal((await call('canvas_create_extension', { digest, nodeDefinitionId: definition.nodeDefinitionId })).ok, false);
+  await page.waitForFunction(() => !document.querySelector('input[aria-label="选择工作流文件"]').disabled);
+  await page.getByLabel('选择工作流文件').focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), '关闭本地工作流');
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), '选择工作流文件');
+  await page.getByLabel('选择工作流文件').setInputFiles({ name: 'three-images.json', mimeType: 'application/json', buffer: Buffer.from('{}') });
+  await page.getByRole('button', { name: '确认添加到当前画布' }).click();
+  await page.locator('.custom-workflow-node').waitFor();
+  let state = await call('canvas_get_state');
+  const node = state.nodes.find((item) => item.mode === 'customWorkflow'); assert.ok(node);
+  assert.equal(state.nodes.filter((item) => item.type === 'generator').length, 1);
+  assert.equal(node.extensionDigest, digest);
+  for (const port of ['left', 'middle', 'right']) assert.equal((await call('canvas_connect_nodes', { sourceId: port, targetId: node.id, targetHandle: port })).ok, true);
+  assert.equal(await page.locator('.custom-workflow-node .react-flow__handle-left').count(), 3);
+  await page.getByLabel('strength', { exact: true }).fill('0.7');
+  await page.getByLabel('title', { exact: true }).fill('changed');
+  await page.getByLabel('enabled', { exact: true }).uncheck();
+  await page.getByRole('button', { name: '运行工作流' }).click();
+  await page.waitForFunction(() => document.querySelector('.custom-workflow-footer').textContent.includes('已加入后台队列'));
+  assert.equal(queued.length, 1);
+  assert.deepEqual(prepared[0].inputs, { left: 'left.png', middle: 'middle.png', right: 'right.png' });
+  assert.deepEqual(prepared[0].parameters, { strength: 0.7, title: 'changed', enabled: false });
+  await page.evaluate(({ nodeId, projectId, history }) => {
+    const source = window.fixtureSources.findLast((item) => item.url === '/api/queue/events' && !item.closed);
+    source.listeners['job.done']({ data: JSON.stringify({ job: { id: 'job_fixture', nodeId, projectId, status: 'done', comfyPromptId: 'prompt_fixture', history } }) });
+  }, { nodeId: node.id, projectId: project.id, history });
+  await page.waitForFunction(() => document.querySelector('.custom-workflow-footer').textContent.includes('生成完成'));
+  state = await call('canvas_get_state');
+  assert.equal(state.nodes.filter((item) => item.name === 'custom-result.png').length, 1);
+  assert.equal(state.nodes.filter((item) => item.name === 'custom-second.png').length, 1);
+  assert.equal(state.nodes.some((item) => item.name === 'H3_Image_intermediate.png'), false);
+  await call('canvas_update_node', { nodeId: node.id, title: 'Saved custom workflow' });
+  assert.equal(project.canvas.nodes.find((item) => item.id === node.id).data.workflowParameters.strength, 0.7);
+  await page.reload(); await page.locator('.neo-header').waitFor();
+  state = await call('canvas_get_state');
+  assert.deepEqual(state.edges.filter((edge) => edge.target === node.id).map((edge) => edge.targetHandle).sort(), ['left', 'middle', 'right']);
+  assert.equal(state.nodes.find((item) => item.id === node.id).extensionDigest, digest);
+  assert.deepEqual(state.edges.filter((edge) => edge.source === node.id).map((edge) => edge.sourceHandle), ['image', 'image']);
+  assert.equal(await page.locator('.react-flow__edge').count(), 5);
+  dependencyFailure = true;
+  await call('canvas_generate_node', { nodeId: node.id });
+  await page.getByRole('alert').filter({ hasText: 'FixtureMissingNode' }).waitFor();
+  assert.equal(queued.length, 1, 'dependency error must not enqueue');
+  assert.equal((await call('canvas_update_node', { nodeId: node.id, settings: { workflowParameters: { strength: 2 } } })).ok, false);
+  assert.equal((await call('canvas_update_node', { nodeId: node.id, settings: { workflowParameters: { extra: 'unknown' } } })).ok, false);
+  assert.equal((await call('canvas_update_node', { nodeId: node.id, settings: { workflowParameters: { strength: 0.2 } } })).ok, true);
+  // A staged package must queue its plan unchanged and consume only its prepared final output.
+  dependencyFailure = false; stagedRun = true;
+  await call('canvas_generate_node', { nodeId: node.id });
+  await page.waitForFunction(() => document.querySelector('.custom-workflow-footer').textContent.includes('已加入后台队列'));
+  assert.equal(queued.length, 2);
+  assert.equal(queued[1].workflow, null);
+  assert.deepEqual(queued[1].plan, stagedPlan);
+  assert.deepEqual(queued[1].plan.panels[1].dependsOn, ['front_portrait']);
+  const stagedHistory = { outputs: { stitch__save: { images: [file('sheet-final.png')] }, front_portrait__save: { images: [file('sheet-intermediate.png')] } } };
+  await page.evaluate(({ nodeId, projectId, history }) => {
+    const source = window.fixtureSources.findLast((item) => item.url === '/api/queue/events' && !item.closed);
+    source.listeners['job.done']({ data: JSON.stringify({ job: { id: 'job_sheet', nodeId, projectId, status: 'done', comfyPromptId: 'prompt_sheet', history } }) });
+  }, { nodeId: node.id, projectId: project.id, history: stagedHistory });
+  await page.waitForFunction(() => document.querySelector('.custom-workflow-footer').textContent.includes('生成完成'));
+  state = await call('canvas_get_state');
+  assert.equal(state.nodes.filter((item) => item.name === 'sheet-final.png').length, 1);
+  assert.equal(state.nodes.some((item) => item.name === 'sheet-intermediate.png'), false);
+  definition.execution = { kind: 'characterSheet', version: 1 };
+  const created = await call('canvas_create_extension', { digest, nodeDefinitionId: definition.nodeDefinitionId, x: 900, y: 0 });
+  assert.equal(created.ok, true); assert.equal(created.node.mode, 'customWorkflow');
+  await call('canvas_focus_node', { nodeId: created.node.id });
+  await page.locator(`.react-flow__node[data-id="${created.node.id}"]`).getByRole('button', { name: '上传此节点' }).click();
+  const share = page.getByRole('dialog', { name: '上传节点到节点库' });
+  await share.waitFor();
+  assert.match(await share.innerText(), /逐张生成、最后拼接/);
+  assert.equal(await share.getByRole('button', { name: '整理依赖并预览' }).isDisabled(), true, 're-sharing imported staged nodes also requires prompt consent');
+  await share.getByRole('button', { name: '关闭上传节点到节点库' }).click();
+  await mkdir('.cache/extensions-review', { recursive: true });
+  await page.screenshot({ path: '.cache/extensions-review/three-image-workflow.jpg', type: 'jpeg', quality: 75 });
+  assert.deepEqual(failures, []);
+  console.log('PASS: local import, dynamic inputs, typed parameters, single/staged queue completion, final declared outputs only, persistence, dependency rejection, staged re-share consent, current-page create tool; all network intercepted.');
+} finally { await browser.close(); }

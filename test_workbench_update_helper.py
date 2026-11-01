@@ -31,6 +31,9 @@ class HelperTests(unittest.TestCase):
         (self.root / "projects").mkdir(); (self.root / "projects" / "project.json").write_text("user project", encoding="utf-8")
         (self.root / "models").mkdir(); (self.root / "models" / "model.bin").write_text("user model", encoding="utf-8")
         (self.root / "local-notes.txt").write_text("untracked and preserved", encoding="utf-8")
+        (self.runtime / "extensions").mkdir()
+        self.extension_bytes = b'{"packageId":"user/three-image","version":"1.0.0","fixture":true}'
+        (self.runtime / "extensions" / "fixture.h3pack").write_bytes(self.extension_bytes)
         (self.source / "video_workbench_launcher.py").write_text("new", encoding="utf-8")
         (self.source / "requirements.lock").write_text("new lock", encoding="utf-8")
         (self.source / "dist").mkdir(); (self.source / "dist" / "index.html").write_text("new dist", encoding="utf-8")
@@ -58,6 +61,7 @@ class HelperTests(unittest.TestCase):
         self.assertEqual((self.root / "projects" / "project.json").read_text(encoding="utf-8"), "user project")
         self.assertEqual((self.root / "models" / "model.bin").read_text(encoding="utf-8"), "user model")
         self.assertEqual((self.root / "local-notes.txt").read_text(encoding="utf-8"), "untracked and preserved")
+        self.assertEqual((self.runtime / "extensions" / "fixture.h3pack").read_bytes(), self.extension_bytes)
 
     def test_swap_and_rollback_preserve_user_directories_and_unknown_files(self):
         backup_current(self.root, self.backup, self.old_paths)

@@ -69,7 +69,14 @@
 .project-switching { position: absolute; inset: 0; z-index: 39; display: flex; align-items: center; justify-content: center; gap: 10px; background: rgba(17,17,19,.5); color: #d4d4da; font-size: 13px; cursor: wait; }
 .project-switching.readonly { inset: 64px auto auto 50%; transform: translateX(-50%); padding: 9px 14px; border: 1px solid #504834; border-radius: 8px; background: rgba(43,39,27,.94); color: #d2c8a7; font-size: 11px; cursor: default; pointer-events: none; }
 .neo-header-right { display: flex; align-items: center; gap: 8px; }
-.hardware-monitor { height: 42px; display: flex; align-items: center; gap: 13px; padding: 6px 11px; border: 1px solid rgba(255,255,255,.07); border-radius: 12px; background: rgba(25,25,28,.88); box-shadow: 0 5px 24px rgba(0,0,0,.2); backdrop-filter: blur(16px); pointer-events: auto; }
+.canvas-bottom-right { position: absolute; z-index: 20; right: 16px; bottom: 15px; display: flex; align-items: center; gap: 12px; max-width: calc(100% - 32px); overflow-x: auto; }
+.hardware-monitor { flex-shrink: 0; height: 46px; display: flex; align-items: center; gap: 13px; padding: 6px 11px; border: 1px solid rgba(255,255,255,.07); border-radius: 12px; background: rgba(25,25,28,.88); box-shadow: 0 5px 24px rgba(0,0,0,.2); backdrop-filter: blur(16px); pointer-events: auto; }
+.hardware-monitor .memory-cleanup { display: flex; align-items: center; gap: 5px; height: 29px; padding: 0 8px; border: 1px solid #ffffff13; border-radius: 7px; color: #b4b4bc; background: #ffffff06; font-size: 10px; white-space: nowrap; cursor: pointer; }
+.hardware-monitor .memory-cleanup:hover:not(:disabled) { background: #ffffff12; color: #fff; }
+.hardware-monitor .memory-cleanup:disabled { opacity: .45; cursor: default; }
+.hardware-monitor .hardware-metric.ram-metric { width: 111px; }
+.neo-canvas-wrap .react-flow__minimap { right: 0; bottom: 68px; }
+.neo-app:has(.floating-pins,.floating-library) .react-flow__minimap { visibility: hidden; }
 .hardware-metric { width: 132px; display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 8px; row-gap: 4px; }
 .hardware-metric > span { display: flex; align-items: center; gap: 4px; color: #85858d; font-size: 8px; white-space: nowrap; }
 .hardware-metric > span svg { color: #a5a5ad; }
@@ -281,7 +288,7 @@
 .zoom-menu .zoom-current { width: 50px; font-size: 10px; }
 .zoom-menu > i { width: 1px; height: 17px; margin: 0 3px; background: rgba(255,255,255,.09); }
 .round-control { width: 36px; height: 36px; border: 1px solid rgba(255,255,255,.055); background: rgba(24,24,27,.96); }
-.canvas-dock { position: absolute; z-index: 20; left: 62%; bottom: 15px; transform: translateX(-50%); display: flex; align-items: center; gap: 3px; padding: 5px; border: 1px solid rgba(255,255,255,.06); border-radius: 23px; background: rgba(24,24,27,.97); box-shadow: 0 7px 28px #0005; }
+.canvas-dock { flex-shrink: 0; display: flex; align-items: center; gap: 3px; padding: 5px; border: 1px solid rgba(255,255,255,.06); border-radius: 23px; background: rgba(24,24,27,.97); box-shadow: 0 7px 28px #0005; }
 .canvas-dock > button { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 16px; color: #88888f; }
 .canvas-dock > button:hover, .canvas-dock > button.active { background: rgba(255,255,255,.07); color: #fff; }
 .canvas-dock .dock-add { background: rgba(255,255,255,.94); color: #171719; }
@@ -300,7 +307,7 @@
 .empty-canvas { position: absolute; left: 50%; top: 44%; transform: translate(-50%,-50%); display: flex; align-items: center; flex-direction: column; gap: 12px; color: #5f5f66; }
 .empty-canvas strong { color: #aaaab0; font-size: 15px; font-weight: 500; }
 .empty-canvas span { font-size: 10px; }
-.floating-library, .floating-pins { position: absolute; z-index: 35; right: 16px; bottom: 68px; width: 315px; max-height: min(570px,calc(100vh - 150px)); padding: 13px; overflow: hidden; border: 1px solid rgba(255,255,255,.09); border-radius: 16px; background: rgba(25,25,28,.98); box-shadow: 0 18px 55px #0008; backdrop-filter: blur(18px); }
+.floating-library, .floating-pins { position: absolute; z-index: 35; right: 16px; bottom: 76px; width: 315px; max-height: min(570px,calc(100vh - 156px)); padding: 13px; overflow: hidden; border: 1px solid rgba(255,255,255,.09); border-radius: 16px; background: rgba(25,25,28,.98); box-shadow: 0 18px 55px #0008; backdrop-filter: blur(18px); }
 .floating-panel-title { display: flex; align-items: center; justify-content: space-between; color: #d3d3d7; font-size: 11px; }
 .floating-panel-title > span { display: flex; align-items: center; gap: 7px; }
 .floating-panel-title > button { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 7px; color: #777; }
@@ -365,7 +372,12 @@
   .neo-header-actions .server-status { font-size: 0; }
   .neo-header-actions .server-status i { margin: 0 3px; }
   .creator-toolbar { width: 570px; }
-  .canvas-dock { left: 66%; }
+  .canvas-bottom-left { bottom: 76px; }
+  .canvas-dock > button { width: 30px; }
+  .hardware-monitor { gap: 8px; }
+  .hardware-monitor .hardware-metric { width: 100px; }
+  .hardware-monitor .hardware-metric.cpu-metric { width: 47px; }
+  .hardware-monitor .hardware-metric.ram-metric { width: 90px; }
   .param-pill { padding: 0 7px; }
 }
 @media (max-height: 760px) {
