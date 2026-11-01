@@ -28,6 +28,6 @@ vae/
 
 - `Qwen2.1_Anything2RealCharacters.safetensors` 是目标文件名；若下载源使用 `Qwen21-任转真Anything2RealCharacters.safetensors`，请按清单重命名。
 - 不要重复保存 C、D 两个模型根目录中的相同文件。
-- 用 `python scripts/verify_workbench.py --model-root "模型包路径" --profile core-h3` 校验核心配置；省略 `--profile` 时默认校验完整 33 项。
+- 用便携版 Python 运行 `scripts/verify_workbench.py --model-root "模型包路径" --profile core-h3` 校验核心配置；省略 `--profile` 时默认核心七项，完整 33 项需显式指定 `--profile full`。
 - 清单中有 `sha256` 的文件会执行内容哈希校验；其余文件只检查文件名和字节数，并在结果中明确列为“待核实”。相同字节数不等于内容相同。
 - 本清单只保证工作台代码所需文件完整，不表示其他 ComfyUI 工作流也已满足全部依赖。

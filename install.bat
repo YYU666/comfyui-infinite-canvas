@@ -10,12 +10,14 @@ if not exist "%PYTHON%" (
   exit /b 1
 )
 "%PYTHON%" "%~dp0install.py" --comfy-root "%PORTABLE_ROOT%" %*
-if errorlevel 1 (
+set "INSTALL_EXIT=%ERRORLEVEL%"
+if not "%INSTALL_EXIT%"=="0" (
   echo.
   echo 安装未完成，请查看上方错误信息。
   pause
-  exit /b 1
+  exit /b %INSTALL_EXIT%
 )
 echo.
-echo 安装完成。之后双击 启动.vbs 启动工作台。
+echo 本次请求的安装步骤已完成；工作台离线和在线验收尚未运行。
+echo 请按安装器提示执行 verify_workbench.py 验收。
 pause
