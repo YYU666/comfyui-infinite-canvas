@@ -102,6 +102,13 @@ class CanvasPageBridgeTests(unittest.TestCase):
 
     def test_inspect_node_dispatches_and_returns_only_confirmed_ack(self):
         self.bridge.heartbeat(self.page)
+        self.submit('extension', tool='canvas_create_extension', args={'digest': 'a' * 64, 'nodeDefinitionId': 'three-image'})
+        command = self.bridge.heartbeat(self.page)['command']
+        self.assertEqual(command['tool'], 'canvas_create_extension')
+        self.bridge.complete({**command, 'result': {'ok': True, 'node': {'id': 'generator-test'}}})
+
+    def test_inspection_confirmed_ack(self):
+        self.bridge.heartbeat(self.page)
         result = self.submit('inspect', tool='canvas_inspect_node', args={'nodeId': 'g1', 'stage': 'three_quarter_portrait'})
         self.assertEqual(result['status'], 'queued')
         command = self.bridge.heartbeat(self.page)['command']

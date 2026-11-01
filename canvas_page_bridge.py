@@ -12,7 +12,8 @@ from project_store import StoreError
 
 TOOLS = frozenset({"canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
                    "canvas_generate_node", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset",
-                   "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library"})
+                   "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
+                   "canvas_create_extension"})
 LAUNCHER_TOOLS = frozenset({"canvas_get_state", "canvas_create_project", "canvas_open_project"})
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
