@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from workflow_extensions import ExtensionError, ExtensionStore, MAX_ARCHIVE, inspect_package, require, scalar
+from workflow_extensions import ExtensionError, ExtensionStore, MAX_ARCHIVE, comfy_input_fields, inspect_package, require, scalar
 
 WEIGHT_SUFFIXES = (".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf")
 MODEL_FIELDS = {
@@ -58,9 +58,8 @@ def _safe_model_name(value):
 
 
 def _choices(info, field):
-    inputs = info.get("input", {})
-    for section in ("required", "optional"):
-        spec = inputs.get(section, {}).get(field)
+    for section in comfy_input_fields(info):
+        spec = section.get(field)
         if isinstance(spec, (list, tuple)) and spec and isinstance(spec[0], list):
             return [v for v in spec[0] if isinstance(v, str)]
     return None

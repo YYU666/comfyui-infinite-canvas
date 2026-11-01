@@ -3,6 +3,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from './test-browser.mjs';
 import { extensionNodeData, customInput, extensionMedia } from './src/workflow-extensions.js';
+import { buildCharacterSheetQueuePlan } from './src/workbench-api.js';
 
 const digest = 'a'.repeat(64);
 const definition = { nodeDefinitionId: 'three-images', name: '三图合成', inputs: ['left', 'middle', 'right'].map((id) => ({ id, type: 'image', required: true, list: false })), parameters: { type: 'object', properties: { strength: { type: 'number', default: 0.5, minimum: 0, maximum: 1 }, title: { type: 'string', default: 'fixture' }, enabled: { type: 'boolean', default: true } } }, outputs: [{ id: 'result', type: 'image', nodeId: '9' }] };
@@ -24,6 +25,11 @@ const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 let project = { id: 'prj_extensions_fixture', name: 'Extensions fixture', revision: 1, shots: [], canvas: { viewport: { x: 0, y: 0, zoom: 0.8 }, edges: [], nodes: ['left', 'middle', 'right'].map((id, index) => ({ id, type: 'media', position: { x: 0, y: index * 320 }, data: { kind: 'image', title: id, name: `${id}.png`, remoteName: `${id}.png` } })) } };
 let imported = false;
 let dependencyFailure = false;
+let stagedRun = false;
+const stagedPlan = buildCharacterSheetQueuePlan({ prompt: 'Public fixture character', seed: 123, references: [{ kind: 'image', slot: 'guide', name: 'left.png' }] });
+stagedPlan.stitch.stitch__save = stagedPlan.stitch.save;
+delete stagedPlan.stitch.save;
+const stagedOutputs = [{ id: 'image', type: 'image', nodeId: 'stitch__save' }];
 const prepared = [];
 const queued = [];
 const failures = [];
@@ -44,7 +50,7 @@ try {
     if (url.pathname === '/api/extensions/import') { imported = true; return json(bundle); }
     if (url.pathname === '/api/extensions') return json({ items: imported ? [{ ...bundle.manifest, digest, nodes: [{ nodeDefinitionId: definition.nodeDefinitionId, name: definition.name }] }] : [] });
     if (url.pathname === `/api/extensions/${digest}`) return json(bundle);
-    if (url.pathname.endsWith('/prepare')) { prepared.push(request.postDataJSON()); return dependencyFailure ? json({ message: '缺少节点：FixtureMissingNode' }, 422) : json({ workflow: { fixture: request.postDataJSON() }, outputs: definition.outputs, digest }); }
+    if (url.pathname.endsWith('/prepare')) { prepared.push(request.postDataJSON()); return dependencyFailure ? json({ message: '缺少节点：FixtureMissingNode' }, 422) : json(stagedRun ? { plan: stagedPlan, outputs: stagedOutputs, digest } : { workflow: { fixture: request.postDataJSON() }, outputs: definition.outputs, digest }); }
     if (url.pathname === '/api/projects') return json({ projects: [project] });
     if (url.pathname === '/api/projects/trash') return json({ projects: [] });
     if (url.pathname === '/api/projects/open') return json(project);
@@ -54,7 +60,7 @@ try {
     }
     if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'native fixture only' }, 503);
     if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
-    if (url.pathname === '/api/queue') { if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: 'job_fixture' }); } return json({ jobs: [] }); }
+    if (url.pathname === '/api/queue') { if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: stagedRun ? 'job_sheet' : 'job_fixture' }); } return json({ jobs: [] }); }
     if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
     if (url.pathname === '/api/comfy/view') return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=', 'base64') });
     if (url.pathname === '/api/hardware-metrics') return json({});
@@ -118,10 +124,35 @@ try {
   assert.equal((await call('canvas_update_node', { nodeId: node.id, settings: { workflowParameters: { strength: 2 } } })).ok, false);
   assert.equal((await call('canvas_update_node', { nodeId: node.id, settings: { workflowParameters: { extra: 'unknown' } } })).ok, false);
   assert.equal((await call('canvas_update_node', { nodeId: node.id, settings: { workflowParameters: { strength: 0.2 } } })).ok, true);
+  // A staged package must queue its plan unchanged and consume only its prepared final output.
+  dependencyFailure = false; stagedRun = true;
+  await call('canvas_generate_node', { nodeId: node.id });
+  await page.waitForFunction(() => document.querySelector('.custom-workflow-footer').textContent.includes('已加入后台队列'));
+  assert.equal(queued.length, 2);
+  assert.equal(queued[1].workflow, null);
+  assert.deepEqual(queued[1].plan, stagedPlan);
+  assert.deepEqual(queued[1].plan.panels[1].dependsOn, ['front_portrait']);
+  const stagedHistory = { outputs: { stitch__save: { images: [file('sheet-final.png')] }, front_portrait__save: { images: [file('sheet-intermediate.png')] } } };
+  await page.evaluate(({ nodeId, projectId, history }) => {
+    const source = window.fixtureSources.findLast((item) => item.url === '/api/queue/events' && !item.closed);
+    source.listeners['job.done']({ data: JSON.stringify({ job: { id: 'job_sheet', nodeId, projectId, status: 'done', comfyPromptId: 'prompt_sheet', history } }) });
+  }, { nodeId: node.id, projectId: project.id, history: stagedHistory });
+  await page.waitForFunction(() => document.querySelector('.custom-workflow-footer').textContent.includes('生成完成'));
+  state = await call('canvas_get_state');
+  assert.equal(state.nodes.filter((item) => item.name === 'sheet-final.png').length, 1);
+  assert.equal(state.nodes.some((item) => item.name === 'sheet-intermediate.png'), false);
+  definition.execution = { kind: 'characterSheet', version: 1 };
   const created = await call('canvas_create_extension', { digest, nodeDefinitionId: definition.nodeDefinitionId, x: 900, y: 0 });
   assert.equal(created.ok, true); assert.equal(created.node.mode, 'customWorkflow');
+  await call('canvas_focus_node', { nodeId: created.node.id });
+  await page.locator(`.react-flow__node[data-id="${created.node.id}"]`).getByRole('button', { name: '上传此节点' }).click();
+  const share = page.getByRole('dialog', { name: '上传节点到节点库' });
+  await share.waitFor();
+  assert.match(await share.innerText(), /逐张生成、最后拼接/);
+  assert.equal(await share.getByRole('button', { name: '整理依赖并预览' }).isDisabled(), true, 're-sharing imported staged nodes also requires prompt consent');
+  await share.getByRole('button', { name: '关闭上传节点到节点库' }).click();
   await mkdir('.cache/extensions-review', { recursive: true });
   await page.screenshot({ path: '.cache/extensions-review/three-image-workflow.jpg', type: 'jpeg', quality: 75 });
   assert.deepEqual(failures, []);
-  console.log('PASS: local import, single custom node, three dynamic inputs, typed parameters, queue completion, declared outputs only, persistence, dependency rejection, current-page create tool; all network intercepted.');
+  console.log('PASS: local import, dynamic inputs, typed parameters, single/staged queue completion, final declared outputs only, persistence, dependency rejection, staged re-share consent, current-page create tool; all network intercepted.');
 } finally { await browser.close(); }

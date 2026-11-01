@@ -1097,14 +1097,16 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const seed = node.data.randomSeed ? Math.floor(Math.random() * 2147483647) : Number(node.data.seed || 42);
       const options = { ...node.data, seed, references };
       updateNode(id, { status: 'queued', stage: '任务已排队', seed });
-      const plan = node.data.mode === 'characterSheet' ? buildCharacterSheetQueuePlan(options) : node.data.mode === 'outfitEdit' ? buildOutfitQueuePlan(options) : null;
+      let plan = node.data.mode === 'characterSheet' ? buildCharacterSheetQueuePlan(options) : node.data.mode === 'outfitEdit' ? buildOutfitQueuePlan(options) : null;
       let preparedExtension;
       if (node.data.mode === 'customWorkflow') {
         preparedExtension = await prepareExtension(node.data, Object.fromEntries(references.map((ref) => [ref.slot, ref.name])));
         assertCurrent();
+        if (Boolean(preparedExtension.workflow) === Boolean(preparedExtension.plan)) throw new Error('工作流准备结果无效：需要一个图片工作流或分阶段计划。');
+        plan = preparedExtension.plan || null;
         updateNode(id, { workflowOutputs: preparedExtension.outputs });
       }
-      const workflow = preparedExtension ? preparedExtension.workflow : plan ? null : node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
+      const workflow = preparedExtension ? preparedExtension.workflow || null : plan ? null : node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
           : node.data.mode === 'localRealism' ? buildLocalRealismWorkflow(options)
           : node.data.mode === 'identityEdit' ? buildIdentityEditWorkflow(options)
             : node.data.mode === 'image' ? buildImageWorkflow(options)
@@ -1310,7 +1312,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const node = nodesRef.current.find((item) => item.id === id);
       if (!node) throw new Error('节点不存在。');
       if (['uploading', 'queued', 'running', 'finishing'].includes(node.data.status)) throw new Error('请等待当前节点运行结束后再上传。');
-      setNodeShare({ source: shareSource(node, getReferences(id)), title: node.data.title });
+      setNodeShare({ source: shareSource(node, getReferences(id)), title: node.data.title, staged: node.data.mode === 'characterSheet' || node.data.workflowDefinition?.execution?.kind === 'characterSheet' });
     } catch (error) { updateNode(id, { error: error.message }); }
   }, [assertExtensionWritable, getReferences, updateNode]);
   useEffect(() => () => { catalogRequestRef.current?.reject?.(new Error('画布已关闭，导入未完成。')); }, []);

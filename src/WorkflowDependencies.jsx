@@ -24,7 +24,15 @@ export function ExchangeDialog({ title, onClose, busy, children }) {
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
     window.addEventListener('keydown', keydown, true);
-    return () => { window.removeEventListener('keydown', keydown, true); inertBefore.forEach(([element, inert]) => { element.inert = inert; }); if (previous?.isConnected) previous.focus(); };
+    return () => {
+      window.removeEventListener('keydown', keydown, true);
+      inertBefore.forEach(([element, inert]) => {
+        // Sharing may open a previously hidden sidebar in the same React commit.
+        // Restore its current visibility state instead of making the new panel inert.
+        element.inert = element.matches('.node-library-backdrop,.reference-library-backdrop') ? element.getAttribute('aria-hidden') === 'true' : inert;
+      });
+      if (previous?.isConnected && !previous.closest('[inert]')) previous.focus();
+    };
   }, []);
   return <div className="workflow-exchange-backdrop"><section className="workflow-exchange" ref={panel} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}><header><h2>{title}</h2><button disabled={busy} onClick={onClose} aria-label={`关闭${title}`}>关闭</button></header>{children}</section></div>;
 }

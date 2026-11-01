@@ -69,6 +69,9 @@ class SharingTests(unittest.TestCase):
         inputs = result["nodes"][0]["workflow"]["extra"]["inputs"]
         self.assertEqual(inputs, {"text_encoder": "encoder.safetensors", "text_encoder_device": "cpu", "positive": ""})
         self.assertTrue(any(m["name"] == "encoder.safetensors" for m in result["manifest"]["dependencies"]["models"]))
+        self.info["CustomLoader"]["input"]["required"]["text_encoder_device"] = ["COMBO", {"options": ["cpu", "cuda"], "multiselect": False}]
+        result = share_extension(self.store, self.payload, self.info)
+        self.assertEqual(result["nodes"][0]["workflow"]["extra"]["inputs"]["text_encoder_device"], "cpu")
 
 
 if __name__ == "__main__":

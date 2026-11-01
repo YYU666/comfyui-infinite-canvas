@@ -7,7 +7,7 @@ import json
 import re
 import zipfile
 
-from workflow_extensions import convert_api_json, inspect_package, require, scalar, validate_definition
+from workflow_extensions import comfy_input_fields, convert_api_json, inspect_package, require, scalar, validate_definition
 
 
 def _text(value, label, maximum=4096):
@@ -15,7 +15,7 @@ def _text(value, label, maximum=4096):
     return value.strip()
 
 
-def _sanitize(workflow, include_prompts, object_info):
+def _sanitize(workflow, include_prompts, object_info, staged=False):
     clean = {}
     cleared = set()
     for node_id, node in workflow.items():
@@ -27,14 +27,16 @@ def _sanitize(workflow, include_prompts, object_info):
                     f"字段 {node_id}/{key} 含嵌入媒体或凭据，请先移除。")
             if re.search(r"(?:api.?key|password|secret|access.?token|authorization|cookie)", key, re.I):
                 require(not value, "工作流含凭据字段，请先移除后再分享。")
-            metadata = object_info.get(node["class_type"], {}).get("input", {})
-            spec = metadata.get("required", {}).get(key, metadata.get("optional", {}).get(key, []))
+            required, optional = comfy_input_fields(object_info.get(node["class_type"], {}))
+            spec = required.get(key, optional.get(key, []))
             enum = isinstance(spec, (tuple, list)) and spec and isinstance(spec[0], list)
             weight = value.lower().endswith((".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf"))
             if node["class_type"] == "LoadImage" and key == "image":
-                fields[key] = "input.png"
+                if not (staged and value.startswith("__H3_CHARACTER_SHEET_PANEL_")):
+                    fields[key] = "input.png"
             elif node["class_type"] == "SaveImage" and key == "filename_prefix":
-                fields[key] = "H3/extensions/shared"
+                if not staged:
+                    fields[key] = "H3/extensions/shared"
             elif not include_prompts and not enum and not weight and re.search(r"(?:text|prompt|caption|instruction|description|positive|negative|message)", key, re.I):
                 fields[key] = ""
                 cleared.add((node_id, key))
@@ -59,9 +61,9 @@ def _archive(files):
 def share_extension(store, payload, object_info):
     from extension_dependencies import dependency_report
 
-    allowed = {"workflow", "digest", "nodeDefinitionId", "parameters", "name", "packageId", "version", "description", "license", "includePrompts"}
+    allowed = {"workflow", "plan", "digest", "nodeDefinitionId", "parameters", "name", "packageId", "version", "description", "license", "includePrompts"}
     require(isinstance(payload, dict) and set(payload) <= allowed, "分享请求字段无效。")
-    require(("workflow" in payload) != ("digest" in payload), "请选择一个工作流来源。")
+    require(sum(key in payload for key in ("workflow", "plan", "digest")) == 1, "请选择一个工作流来源。")
     require(type(payload.get("includePrompts", False)) is bool, "提示词分享选项无效。")
     name = _text(payload.get("name"), "节点名称", 120)
     package_id = _text(payload.get("packageId"), "包身份", 160)
@@ -69,7 +71,11 @@ def share_extension(store, payload, object_info):
     description = _text(payload.get("description") or "从本地画布分享的 ComfyUI 工作流。", "说明")
     license_id = payload.get("license", "UNSPECIFIED")
     require(license_id in ("UNSPECIFIED", "MIT", "Apache-2.0", "CC0-1.0", "CC-BY-4.0"), "请选择支持的工作流许可。")
-    if "workflow" in payload:
+    if "plan" in payload:
+        from extension_stages import flatten_plan
+        require(not any(k in payload for k in ("nodeDefinitionId", "parameters")), "原始阶段计划不能同时指定包参数。")
+        chosen = flatten_plan(payload["plan"])
+    elif "workflow" in payload:
         require(not any(k in payload for k in ("nodeDefinitionId", "parameters")), "原始工作流不能同时指定包参数。")
         bundle = inspect_package(convert_api_json(json.dumps(payload["workflow"]).encode(), "shared.json"))
         chosen = bundle["nodes"][0]
@@ -78,6 +84,9 @@ def share_extension(store, payload, object_info):
         chosen = next((n for n in bundle["nodes"] if n["definition"]["nodeDefinitionId"] == payload.get("nodeDefinitionId")), None)
         require(chosen is not None, "分享的节点定义不存在。")
     definition, workflow = copy.deepcopy(chosen["definition"]), copy.deepcopy(chosen["workflow"])
+    staged = "execution" in definition
+    require(not staged or payload.get("includePrompts") is True,
+            "四视图的固定视角提示词属于阶段工作流，请勾选包含提示词并预览确认文字后分享。")
     properties = definition["parameters"]["properties"]
     parameters = payload.get("parameters", {})
     require(isinstance(parameters, dict) and set(parameters) <= set(properties), "分享参数无效。")
@@ -87,7 +96,7 @@ def share_extension(store, payload, object_info):
             value = parameters.get(key, properties[key].get("default"))
             scalar(value, properties[key], key)
             workflow[binding["nodeId"]]["inputs"][binding["input"]] = value
-    workflow, cleared = _sanitize(workflow, payload.get("includePrompts", False), object_info)
+    workflow, cleared = _sanitize(workflow, payload.get("includePrompts", False), object_info, staged)
     # Rebuild descriptions from the public contract; imported metadata may contain private paths.
     definition["name"] = name
     definition["description"] = description
@@ -111,7 +120,7 @@ def share_extension(store, payload, object_info):
                 field.pop("enum", None)
     validate_definition(definition, workflow, definition["nodeDefinitionId"])
     # Strip any unknown package/definition members and example attachments, retaining only executable data contracts.
-    definition = {k: definition[k] for k in ("nodeDefinitionSchemaVersion", "nodeDefinitionId", "name", "description", "inputs", "outputs", "bindings", "parameters")}
+    definition = {k: definition[k] for k in ("nodeDefinitionSchemaVersion", "nodeDefinitionId", "name", "description", "inputs", "outputs", "bindings", "parameters", "execution") if k in definition}
     manifest = {"manifestSchemaVersion": "0.1", "packageId": package_id, "version": version,
                 "type": "workflow", "publisherId": package_id.split("/")[0], "name": name,
                 "summary": description[:200], "description": description, "source": {"kind": "direct-upload"},
@@ -120,6 +129,8 @@ def share_extension(store, payload, object_info):
                 "permissions": {"network": [], "externalServices": [], "fileAccess": [], "background": False},
                 "licenses": {"workflow": license_id}, "verification": {"environments": [], "examples": []},
                 "nodes": [{"nodeDefinitionId": definition["nodeDefinitionId"], "definition": "nodes/workflow.json", "workflow": "workflows/workflow.json"}]}
+    if staged:
+        manifest["compatibility"]["workbenchVersion"] = ">=1.0.2"
     report = dependency_report({"manifest": manifest, "nodes": [{"definition": definition, "workflow": workflow}]},
                                {"nodeDefinitionId": definition["nodeDefinitionId"], "parameters": {}}, object_info)
     manifest["dependencies"]["comfyNodes"] = [{"classType": n["classType"]} for n in report["comfyNodes"]]

@@ -106,6 +106,10 @@ def validate_workflow(workflow):
 
 def validate_definition(definition, workflow, expected_id):
     validate_workflow(workflow)
+    internal = set()
+    if "execution" in definition:
+        from extension_stages import internal_inputs
+        internal = internal_inputs(definition, workflow)
     display_fields(definition)
     require(definition.get("nodeDefinitionSchemaVersion") == "0.1" and definition.get("nodeDefinitionId") == expected_id, "节点定义身份或协议版本不一致。")
     require(isinstance(definition.get("name"), str) and definition["name"].strip(), "节点缺少名称。")
@@ -147,6 +151,7 @@ def validate_definition(definition, workflow, expected_id):
         require(kind in {"input", "parameter"} and source in (inputs if kind == "input" else properties), "绑定来源不存在。")
         require(node_id in workflow and field in workflow[node_id]["inputs"], "绑定目标字段不存在。")
         require((node_id, field) not in targets and not isinstance(workflow[node_id]["inputs"][field], list), "绑定字段重复或覆盖工作流连接。")
+        require((node_id, field) not in internal, "阶段内部图片不能绑定外部输入或参数。")
         require(not (workflow[node_id]["class_type"] == "SaveImage" and field == "filename_prefix"), "输出文件名前缀由工作台安全生成。")
         if kind == "input":
             require(workflow[node_id]["class_type"] == "LoadImage" and field == "image", "首版图像端口必须绑定 LoadImage.image。", "EXTENSION_UNSUPPORTED")
@@ -155,7 +160,7 @@ def validate_definition(definition, workflow, expected_id):
         targets.add((node_id, field))
         sources.add((kind, source))
     require(all(("input", k) in sources for k in inputs) and all(("parameter", k) in sources for k in properties), "存在未绑定的输入或参数。")
-    require(all((node_id, "image") in targets for node_id, node in workflow.items() if node["class_type"] == "LoadImage"), "所有 LoadImage 必须绑定画布图像端口。")
+    require(all((node_id, "image") in targets | internal for node_id, node in workflow.items() if node["class_type"] == "LoadImage"), "所有 LoadImage 必须绑定画布图像端口。")
     output_ids = set()
     require(definition["outputs"], "节点必须声明图像输出。")
     for output in definition["outputs"]:
@@ -215,6 +220,8 @@ def inspect_package(data):
             require(entry[field] in contents, f"缺少 {field} 文件。")
         definition = read_json(contents[entry["definition"]], "definition")
         workflow = read_json(contents[entry["workflow"]], "workflow")
+        if "execution" in definition:
+            require(manifest["compatibility"].get("workbenchVersion") == ">=1.0.2", "分阶段扩展必须声明工作台版本 >=1.0.2。")
         validate_definition(definition, workflow, entry["nodeDefinitionId"])
         nodes.append({"definition": definition, "workflow": workflow})
     return {"digest": hashlib.sha256(data).hexdigest(), "manifest": manifest, "nodes": nodes}
@@ -343,6 +350,12 @@ class ExtensionStore:
             values[key] = value
         for binding in definition["bindings"]:
             workflow[binding["nodeId"]]["inputs"][binding["input"]] = (inputs if binding["sourceKind"] == "input" else values)[binding["sourceId"]]
+        if "execution" in definition:
+            from extension_stages import unpack_stages
+            plan = unpack_stages(definition, workflow)
+            for graph in [p["single"] for p in plan["panels"]] + [plan["stitch"]]:
+                validate_comfy(graph, object_info)
+            return {"plan": plan, "outputs": [{k: output[k] for k in ("id", "type", "nodeId")} for output in definition["outputs"]], "digest": digest}
         for node_id, node in workflow.items():
             if node["class_type"] == "SaveImage":
                 node["inputs"]["filename_prefix"] = f"H3/extensions/{digest[:16]}/{node_id}"
@@ -395,6 +408,15 @@ def comfy_input_fields(metadata):
                 qualified = key + "." + name
                 require(qualified not in required and qualified not in optional, "ComfyUI 动态输入字段重复。")
                 target[qualified] = inner
+    for section in (required, optional):
+        for key, spec in list(section.items()):
+            if not isinstance(spec, (list, tuple)) or not spec or spec[0] != "COMBO":
+                continue
+            config = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+            require(config.get("multiselect", False) is False, "暂不支持 ComfyUI 多选 COMBO 输入。", "EXTENSION_UNSUPPORTED")
+            options = config.get("options")
+            require(isinstance(options, list) and all(type(v) in (str, int, float, bool) for v in options), "ComfyUI COMBO 选项无效。")
+            section[key] = [options, config]
     return required, optional
 
 
