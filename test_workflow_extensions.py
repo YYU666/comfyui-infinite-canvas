@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import zipfile
 
-from workflow_extensions import ExtensionError, ExtensionStore, convert_api_json, inspect_package, scalar
+from workflow_extensions import ExtensionError, ExtensionStore, convert_api_json, inspect_package, scalar, validate_comfy
 
 
 def workflow_fixture():
@@ -35,6 +35,17 @@ def rewrite_package(data, mutate):
 
 
 class ExtensionTests(unittest.TestCase):
+    def test_v3_autogrow_declared_image_inputs(self):
+        info = info_fixture()
+        info["QwenFixture"] = {"input": {"required": {"images": ["COMFY_AUTOGROW_V3", {"template": {"input": {"required": {"image": ["IMAGE", {}]}}, "names": ["image_1", "image_2"], "min": 1}}]}}, "output": ["IMAGE"]}
+        graph = {"a": workflow_fixture()["a"], "b": workflow_fixture()["b"], "encode": {"class_type": "QwenFixture", "inputs": {"images.image_1": ["a", 0], "images.image_2": ["b", 0]}}}
+        validate_comfy(graph, info)
+        for patch in ({"images.image_2": ["b", 0]}, {"images.image_1": ["a", 1]}, {"images.image_1": ["a", 0], "images.image_3": ["b", 0]}):
+            with self.assertRaises(ExtensionError):
+                validate_comfy({**graph, "encode": {"class_type": "QwenFixture", "inputs": patch}}, info)
+        info["QwenFixture"]["input"]["required"]["images"][1]["template"].update(names=["image_1", "image_2"], min=0)
+        validate_comfy({"encode": {"class_type": "QwenFixture", "inputs": {}}}, info)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

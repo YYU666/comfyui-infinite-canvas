@@ -40,6 +40,7 @@ const suites = {
     'test-reference-library-ui.mjs',
     'test-node-library-ui.mjs',
     'test-workflow-extensions-ui.mjs',
+    'test-workflow-exchange-ui.mjs',
     'test-canvas-save-ui.mjs',
     'test-project-resume-ui.mjs',
     'test-canvas-clipboard-ui.mjs',

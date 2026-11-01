@@ -29,6 +29,20 @@ export function extensionNodeData(bundle, nodeDefinitionId) {
   };
 }
 
+const post = (path, body) => request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+export const importCatalogExtension = ({ packageId, packageVersion, digest }) => post('/catalog-import', { packageId, version: packageVersion, digest });
+export const extensionDependencies = (digest, nodeDefinitionId, parameters = {}) => post(`${extensionPath(digest)}/dependencies`, { nodeDefinitionId, parameters });
+export const downloadExtensionModels = (digest, nodeDefinitionId, parameters, modelIds) => post(`${extensionPath(digest)}/models/download`, { nodeDefinitionId, parameters, modelIds });
+export const extensionDownloadJob = (jobId) => request(`/download-jobs/${encodeURIComponent(jobId)}`);
+export const shareExtension = (payload) => post('/share', payload);
+export async function extensionArchive(digest) {
+  const response = await fetch(`/api/extensions${extensionPath(digest)}/download`);
+  if (!response.ok) throw new Error('无法读取打包后的节点。');
+  const blob = await response.blob();
+  if (blob.size > 64 * 1024 * 1024) throw new Error('节点包超过 64 MiB。');
+  return blob.arrayBuffer();
+}
+
 export function customInput(data, portId) {
   return data?.mode === 'customWorkflow' && data.workflowDefinition?.inputs?.find((port) => port.id === portId && port.type === 'image' && !port.list);
 }

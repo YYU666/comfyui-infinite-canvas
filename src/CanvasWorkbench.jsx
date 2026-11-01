@@ -29,7 +29,10 @@ import WorkflowInspector from './WorkflowInspector';
 import ReferenceLibrary, { REFERENCE_LIBRARIES } from './ReferenceLibrary';
 import NodeLibrary from './NodeLibrary';
 import WorkflowLibrary from './WorkflowLibrary';
-import { customInput, declaredHistory, extensionMedia, extensionNodeData, getExtension, prepareExtension } from './workflow-extensions';
+import WorkflowDependencies from './WorkflowDependencies';
+import WorkflowShare from './WorkflowShare';
+import { shareSource } from './workflow-sharing';
+import { customInput, declaredHistory, extensionMedia, extensionNodeData, getExtension, prepareExtension, importCatalogExtension, extensionDependencies } from './workflow-extensions';
 import { flushSync } from 'react-dom';
 import { inspectionQuery, canInspectNode } from './workflow-inspector';
 import CanvasProjectMenu from './CanvasProjectMenu';
@@ -295,7 +298,7 @@ function MediaNode({ id, data, selected }) {
 }
 
 function CustomWorkflowNode({ id, data, selected }) {
-  const { updateNode, generateNode, cancelNode, serverOnline, getReferences } = useContext(NodeContext);
+  const { updateNode, generateNode, cancelNode, serverOnline, getReferences, openNodeShare, checkNodeDependencies } = useContext(NodeContext);
   const running = ['uploading', 'queued', 'running', 'finishing'].includes(data.status);
   const refs = getReferences(id);
   return <div className={`generator-shell h3-node custom-workflow-node ${selected ? 'selected' : ''}`}>
@@ -309,7 +312,8 @@ function CustomWorkflowNode({ id, data, selected }) {
       return <label key={key} title={field.description}>{field.title || key}{field.enum ? <select aria-label={field.title || key} disabled={running} value={String(value)} onChange={(event) => change(field.enum.find((option) => String(option) === event.target.value))}>{field.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}</select> : field.type === 'boolean' ? <input aria-label={field.title || key} type="checkbox" checked={Boolean(value)} disabled={running} onChange={(event) => change(event.target.checked)} /> : <input aria-label={field.title || key} type={['integer', 'number'].includes(field.type) ? 'number' : 'text'} value={value} min={field.minimum} max={field.maximum} step={field.type === 'integer' ? 1 : 'any'} disabled={running} onChange={(event) => change(['integer', 'number'].includes(field.type) && event.target.value !== '' ? Number(event.target.value) : event.target.value)} />}</label>;
     })}</div>
     {data.error && <p className="custom-workflow-error" role="alert">{data.error}</p>}
-    <div className="custom-workflow-footer"><span>{data.stage || '固定版本 · 本地工作流'}{running ? ` ${data.progress || 0}%` : ''}</span><button className="send-button nodrag" aria-label={running ? '取消工作流' : '运行工作流'} disabled={!running && !serverOnline} onClick={() => running ? cancelNode(id) : generateNode(id)}>{running ? <Square size={16} /> : <ArrowUp size={16} />}</button></div>
+    {data.dependencyWarning && <p className="custom-workflow-error">{data.dependencyWarning}</p>}
+    <div className="custom-workflow-footer"><span>{data.stage || '固定版本 · 本地工作流'}{running ? ` ${data.progress || 0}%` : ''}</span><button className="node-share-button nodrag" disabled={running} onClick={() => checkNodeDependencies(id)}>检查依赖</button><button className="node-share-button nodrag" disabled={running} aria-label="上传此节点" title="上传此节点到节点库" onClick={() => openNodeShare(id)}><Upload size={14} /></button><button className="send-button nodrag" aria-label={running ? '取消工作流' : '运行工作流'} disabled={!running && !serverOnline} onClick={() => running ? cancelNode(id) : generateNode(id)}>{running ? <Square size={16} /> : <ArrowUp size={16} />}</button></div>
     <Handle type="source" position={Position.Right} id="image" className="neo-handle source" /><Handle type="source" position={Position.Right} id="video" style={{ top: '65%' }} className="neo-handle source" />
   </div>;
 }
@@ -321,7 +325,7 @@ function GeneratorNode(props) {
 function BuiltinGeneratorNode({ id, data, selected }) {
   const {
     updateNode, generateNode, cancelNode, serverOnline, getReferences,
-    getMentionItems, attachFilesToGenerator, openImagePreview, viewTier,
+    getMentionItems, attachFilesToGenerator, openImagePreview, viewTier, openNodeShare,
   } = useContext(NodeContext);
   const promptEditorRef = useRef(null);
   const uploadRef = useRef(null);
@@ -446,6 +450,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
           {mode === 'reference' && <button className={`param-pill ${data.refImageSize === 'max' ? 'active' : ''}`} onClick={() => updateNode(id, { refImageSize: data.refImageSize === 'max' ? 'match' : 'max' })} title="高保真参考更慢，但保留更多主体细节"><Layers3 size={12} />{data.refImageSize === 'max' ? '高保真' : '均衡'}</button>}
           {mode === 'swap' && <span className="param-pill active" title="SAM3.1 遮罩直接作用于源视频 latent，而非生成后回填"><Crosshair size={12} />潜空间保护</span>}
         </div>
+        <button className="node-share-button nodrag" disabled={running} aria-label="上传此节点" title="上传此节点到节点库" onClick={() => openNodeShare(id)}><Upload size={14} /></button>
         {running ? <button className="send-button cancel" onClick={() => cancelNode(id)} title="取消生成"><Square size={15} fill="currentColor" /></button> : <button className="send-button node-generate" onClick={() => generateNode(id)} disabled={!serverOnline} title={mode === 'imageUpscale' ? '本地高清放大' : '本地生成'}><ArrowUp size={17} /></button>}
       </div>
       <div className="creator-footnote"><span>{mode === 'characterSheet' ? '正面头像 + 45° 头像 + 无头背面全身 + 无头正面全身；统一浅灰背景；四张原生 9:16；依次保存四张单图后拼接，画布交付最终整图；不做高清化' : mode === 'outfitEdit' ? (outfitLayout === 'legacy' ? '旧版兼容：只换两张身体图并保留近景原图' : `逐面板换装 · ${models.outfitHdLabel}；近景不拉远、全身不补头；保持母图原尺寸与版面`) : mode === 'qwenEdit' ? '原生整图编辑；继承第一张母图比例；与 Identity V2 同题对照后选用 · Qwen Research License' : mode === 'identityEdit' ? '母图保持身份；可换装、换姿态、做四视图；结果可继续连图片高清或视频参考' : mode === 'image' ? (isMoss ? 'MOSS 从零生成新角色和场景；25 步 Spectrum 加速；模型依赖会在提交前检查' : '人物建议写明“全身、完整穿搭”；结果可直接连视频参考或首尾帧') : mode === 'imageUpscale' ? '只放大图片，不重新设计人物和场景；默认 1.5 倍，按需运行' : mode === 'swap' ? '仅运行一采角色替换；需要高清时，再连接独立高清二采节点' : mode === 'upscale' ? '默认 720P；画幅需与一采一致；Sage 加速；保留原音轨' : mode === 'reference' ? `已连接 ${refs.length} 个素材 · 本地上限 9 图 / 3 视频 / 3 音频` : mode === 'frames' ? '首尾帧是次要模式，从图片节点连线到对应端口' : '无需参考素材，直接通过文字生成'}</span><b>本地免费</b></div>
@@ -471,7 +476,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const [nodeLibraryOpen, setNodeLibraryOpen] = useState(false);
   const [nodeLibraryMounted, setNodeLibraryMounted] = useState(false);
   const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false);
-  const libraryModalOpen = Boolean(referenceLibrary || nodeLibraryOpen || workflowLibraryOpen);
+  const [dependencyRequest, setDependencyRequest] = useState(null);
+  const [nodeShare, setNodeShare] = useState(null);
+  const [sharePacket, setSharePacket] = useState(null);
+  const catalogBusyRef = useRef(false);
+  const catalogRequestRef = useRef(null);
+  const catalogSaveRetriesRef = useRef(new Map());
+  const libraryModalOpen = Boolean(referenceLibrary || workflowLibraryOpen || dependencyRequest || nodeShare);
   const referenceImportBusyRef = useRef(false);
   const revisionRef = useRef(project.revision);
   const projectRef = useRef(project);
@@ -620,7 +631,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     catch (error) { setProjectError(error.message); }
   };
   const prepareProjectSwitch = async (id, name, { allowReadOnly = false } = {}) => {
-    if (libraryModalOpen) throw new Error('请关闭参考库或节点库后再切换项目。');
+    if (referenceLibrary) throw new Error('请关闭参考库后再切换项目。');
+    if (libraryModalOpen || catalogBusyRef.current) throw new Error('请完成节点导入并关闭当前窗口后再切换项目。');
     if (project.readOnly && !allowReadOnly) throw new Error('当前画布为只读，不能通过 Agent 切换项目。');
     if (switchingRef.current) throw new Error('正在切换项目，请稍后重试。');
     if (hasActiveTask()) throw new Error('任务进行中，请等待完成后再新建或切换项目。');
@@ -1209,6 +1221,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }, [screenToFlowPosition, setNodes, fitView]);
 
   const openReferenceLibrary = useCallback((library = 'refmuse') => {
+    if (catalogBusyRef.current) throw new Error('节点正在导入，请先完成依赖检查。');
     if (workflowLibraryOpen) throw new Error('请先关闭本地工作流窗口，再打开参考库。');
     if (referenceImportBusyRef.current) throw new Error('参考图正在导入，请等待保存完成后再切换参考库。');
     if (switchingRef.current) throw new Error('正在切换项目，请稍后打开参考库。');
@@ -1216,6 +1229,91 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     flushSync(() => { setNodeLibraryOpen(false); setReferenceLibraryTab(library); setReferenceLibrary(library); });
     return { opened: true, container: 'current-canvas-modal', library, sourceUrl: REFERENCE_LIBRARIES[library].url, remoteContentVerified: false };
   }, [workflowLibraryOpen]);
+  const assertExtensionWritable = useCallback(() => {
+    if (projectRef.current.readOnly || switchingRef.current || autoSaveRef.current?.conflict) throw new Error('当前画布不可写，请先处理保存冲突或项目切换。');
+  }, []);
+  const addImportedExtension = useCallback(async (bundle, definitionId, parameters = {}, report = null, existingId = null) => {
+    assertExtensionWritable();
+    const data = extensionNodeData(bundle, definitionId);
+    data.workflowParameters = { ...data.workflowParameters, ...parameters };
+    data.dependencyWarning = report && !report.ready ? '工作流依赖未就绪，请点击检查依赖补齐后再运行。' : '';
+    const request = catalogRequestRef.current;
+    const targetId = existingId || request?.addedId;
+    if (targetId) {
+      const target = nodesRef.current.find((node) => node.id === targetId);
+      if (!target || ['uploading', 'queued', 'running', 'finishing'].includes(target.data.status)) throw new Error('节点已删除或正在运行，请稍后再修改依赖。');
+      flushSync(() => updateNode(targetId, { workflowParameters: data.workflowParameters, dependencyWarning: data.dependencyWarning, error: null }));
+    } else {
+      let addedId;
+      flushSync(() => { addedId = addNode('generator', data); });
+      if (request) {
+        request.addedId = addedId;
+        catalogSaveRetriesRef.current.set(`${projectRef.current.id}:${bundle.digest}`, addedId);
+      }
+    }
+    await persistProject(Boolean(targetId));
+    catalogSaveRetriesRef.current.delete(`${projectRef.current.id}:${bundle.digest}`);
+  }, [assertExtensionWritable, addNode, updateNode, persistProject]);
+  const importCatalogNode = useCallback(async (selection) => {
+    assertExtensionWritable();
+    if (catalogBusyRef.current) throw new Error('另一项节点导入尚未结束，请先完成当前检查。');
+    catalogBusyRef.current = true;
+    const projectId = projectRef.current.id;
+    const operation = { addedId: null, resolve: null, reject: null };
+    catalogRequestRef.current = operation;
+    try {
+      const bundle = await importCatalogExtension(selection);
+      assertExtensionWritable();
+      if (projectRef.current.id !== projectId) throw new Error('当前项目已改变，尚未添加节点。');
+      const retryKey = `${projectId}:${bundle.digest}`;
+      const retryId = catalogSaveRetriesRef.current.get(retryKey);
+      if (retryId && nodesRef.current.some((node) => node.id === retryId && node.data.extensionDigest === bundle.digest)) {
+        // A failed save leaves the original node visible. A new catalog request
+        // retries that save instead of inserting a second copy of the package.
+        operation.addedId = retryId;
+        await persistProject(true);
+        catalogSaveRetriesRef.current.delete(retryKey);
+        return;
+      }
+      catalogSaveRetriesRef.current.delete(retryKey);
+      const definitionId = bundle.nodes[0]?.definition.nodeDefinitionId;
+      if (!definitionId) throw new Error('节点包没有可用节点。');
+      let report;
+      try { report = await extensionDependencies(bundle.digest, definitionId); } catch { /* The review dialog exposes check errors and retry. */ }
+      assertExtensionWritable();
+      if (bundle.nodes.length === 1 && report?.ready) await addImportedExtension(bundle, definitionId, {}, report);
+      else await new Promise((resolve, reject) => { operation.resolve = resolve; operation.reject = reject; setDependencyRequest({ bundle, report, projectId }); });
+    } finally {
+      if (catalogRequestRef.current === operation) catalogRequestRef.current = null;
+      catalogBusyRef.current = false;
+    }
+  }, [assertExtensionWritable, addImportedExtension, persistProject]);
+  const closeDependencies = useCallback(() => {
+    setDependencyRequest(null);
+    catalogRequestRef.current?.reject?.(new Error('已取消添加节点。'));
+  }, []);
+  const checkNodeDependencies = useCallback(async (id) => {
+    try {
+      assertExtensionWritable();
+      if (catalogBusyRef.current || dependencyRequest) throw new Error('请先完成当前依赖检查。');
+      const node = nodesRef.current.find((item) => item.id === id);
+      if (!node || node.data.mode !== 'customWorkflow') return;
+      const bundle = await getExtension(node.data.extensionDigest);
+      const selected = bundle.nodes.find((entry) => entry.definition.nodeDefinitionId === node.data.nodeDefinitionId);
+      if (!selected) throw new Error('节点定义已缺失。');
+      setDependencyRequest({ bundle: { ...bundle, nodes: [selected] }, parameters: node.data.workflowParameters, existingId: id, projectId: projectRef.current.id });
+    } catch (error) { updateNode(id, { error: error.message }); }
+  }, [assertExtensionWritable, dependencyRequest, updateNode]);
+  const openNodeShare = useCallback((id) => {
+    try {
+      assertExtensionWritable();
+      const node = nodesRef.current.find((item) => item.id === id);
+      if (!node) throw new Error('节点不存在。');
+      if (['uploading', 'queued', 'running', 'finishing'].includes(node.data.status)) throw new Error('请等待当前节点运行结束后再上传。');
+      setNodeShare({ source: shareSource(node, getReferences(id)), title: node.data.title });
+    } catch (error) { updateNode(id, { error: error.message }); }
+  }, [assertExtensionWritable, getReferences, updateNode]);
+  useEffect(() => () => { catalogRequestRef.current?.reject?.(new Error('画布已关闭，导入未完成。')); }, []);
   const importReference = useCallback(async (file, library, reference = null) => {
     if (referenceImportBusyRef.current) throw new Error('另一张参考图正在导入。');
     referenceImportBusyRef.current = true;
@@ -1439,7 +1537,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   // Refmuse-style progressive detail: only cross render tiers, not on every zoom frame.
   const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
-  const context = useMemo(() => ({ updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, viewTier }), [updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, viewTier, edges]);
+  const context = useMemo(() => ({ updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, viewTier }), [updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, viewTier, edges]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -1490,8 +1588,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <div className="neo-header-actions">
             <button onClick={() => openReferenceLibrary(referenceLibraryTab || 'refmuse')}><Library size={15} /><span>Refmuse参考库</span></button>
             <button onClick={() => {
-              if (referenceImportBusyRef.current || switchingRef.current) return;
-              setReferenceLibrary(null); setNodeLibraryMounted(true); setNodeLibraryOpen(true);
+              if (referenceImportBusyRef.current || catalogBusyRef.current || switchingRef.current) return;
+              setReferenceLibrary(null); setNodeLibraryMounted(true); setNodeLibraryOpen((value) => !value);
               setCreativeOpen(false); setHandoffOpen(false); setWorkflowInspection(null); setImagePreview(null); setLibraryOpen(false); setPinOpen(false); setAddMenu(null); setNodeMenu(null);
             }}><Layers3 size={15} /><span>节点库</span></button>
             <button className={creativeOpen ? 'active' : ''} onClick={() => setCreativeOpen(!creativeOpen)} title="角色、镜头与审片"><Film size={15} /><span>创作</span></button>
@@ -1658,7 +1756,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       {imagePreview && <ImageLightbox preview={imagePreview} onClose={() => setImagePreview(null)} closeRef={previewCloseRef} />}
       {workflowInspection && <WorkflowInspector key={workflowInspection.nonce} request={workflowInspection} onClose={() => setWorkflowInspection(null)} />}
       {workflowLibraryOpen && <WorkflowLibrary onClose={() => setWorkflowLibraryOpen(false)} onAdd={async (bundle, definitionId) => { if (project.readOnly || switchingRef.current) throw new Error('当前画布不可写。'); flushSync(() => addNode('generator', extensionNodeData(bundle, definitionId))); await persistProject(); }} />}
-      {nodeLibraryMounted && <NodeLibrary open={nodeLibraryOpen} onClose={() => setNodeLibraryOpen(false)} onOpenLocal={() => { setNodeLibraryOpen(false); setWorkflowLibraryOpen(true); }} />}
+      {nodeLibraryMounted && <NodeLibrary open={nodeLibraryOpen} onClose={() => { if (!catalogBusyRef.current) setNodeLibraryOpen(false); }} onOpenLocal={() => { if (!catalogBusyRef.current) { setNodeLibraryOpen(false); setWorkflowLibraryOpen(true); } }} onImport={importCatalogNode} sharePacket={sharePacket} onShareSent={(requestId) => setSharePacket((value) => value?.requestId === requestId ? null : value)} />}
+      {dependencyRequest && <WorkflowDependencies request={dependencyRequest} onClose={closeDependencies} onAdd={async (bundle, definitionId, parameters, report) => {
+        if (dependencyRequest.projectId !== projectRef.current.id) throw new Error('项目已改变，请重新检查。');
+        await addImportedExtension(bundle, definitionId, parameters, report, dependencyRequest.existingId);
+        setDependencyRequest(null); catalogRequestRef.current?.resolve?.();
+      }} />}
+      {nodeShare && <WorkflowShare {...nodeShare} onClose={() => setNodeShare(null)} onSend={async (packet) => { setReferenceLibrary(null); setNodeLibraryMounted(true); setNodeLibraryOpen(true); setSharePacket(packet); setNodeShare(null); }} />}
       {referenceLibraryTab && <ReferenceLibrary library={referenceLibraryTab} open={Boolean(referenceLibrary)} onLibraryChange={openReferenceLibrary} readOnly={project.readOnly} onImport={importReference} onClose={() => setReferenceLibrary(null)} />}
     </div>
   </NodeContext.Provider>;

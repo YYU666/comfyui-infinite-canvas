@@ -1,0 +1,20 @@
+.workflow-exchange-backdrop { position: fixed; inset: 0; z-index: 1600; display: grid; place-items: center; padding: 24px; background: #0009; }
+.workflow-exchange { width: min(670px,100%); max-height: min(850px,92vh); overflow: auto; padding: 22px; border: 1px solid #3c3c3c; border-radius: 14px; background: #141414; color: #e5e5e1; font-size: 13px; box-shadow: 0 20px 90px #0009; }
+.workflow-exchange header, .workflow-exchange footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.workflow-exchange header h2 { font-size: 20px; margin: 0; }
+.workflow-exchange h3 { font-size: 14px; margin: 20px 0 8px; }
+.workflow-exchange p { color: #aaa; line-height: 1.65; }
+.workflow-exchange label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.workflow-exchange input, .workflow-exchange textarea, .workflow-exchange select { min-width: 0; width: 100%; box-sizing: border-box; background: #0b0b0b; color: #e7e7e3; border: 1px solid #414141; padding: 9px; border-radius: 5px; font: inherit; }
+.workflow-exchange textarea { resize: vertical; min-height: 80px; }
+.workflow-exchange button { padding: 8px 12px; border: 1px solid #515151; border-radius: 6px; color: #eee; background: #262626; cursor: pointer; }
+.workflow-exchange button:disabled { opacity: .4; cursor: default; }
+.workflow-exchange footer { margin-top: 22px; border-top: 1px solid #333; padding-top: 16px; }
+.workflow-exchange [role=alert], .workflow-exchange .workflow-warning { color: #e2b8a5; }
+.workflow-exchange .workflow-check { flex-direction: row; align-items: center; }
+.workflow-check input { width: auto; }
+.workflow-dependency { display: flex; flex-direction: column; gap: 4px; padding: 9px 0; border-bottom: 1px solid #292929; overflow-wrap: anywhere; }
+.workflow-dependency small { color: #92928a; }
+.workflow-dependency-resolution { margin-top: 13px; border: 1px solid #3b3b35; padding: 12px; border-radius: 6px; overflow-wrap: anywhere; }
+.workflow-node-types { overflow-wrap: anywhere; font-family: monospace; font-size: 11px; }
+.workflow-share-preview { max-height: 180px; overflow: auto; padding: 10px; background: #0a0a0a; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }

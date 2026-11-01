@@ -6,13 +6,15 @@ import urllib.parse
 import urllib.request
 
 from workflow_extensions import ExtensionError, ExtensionStore, MAX_ARCHIVE, read_json
+from extension_dependencies import ModelDownloads, catalog_import, dependency_report
 
 
 class ExtensionAPI:
-    def __init__(self, store: ExtensionStore, comfy_url="http://127.0.0.1:8188", object_info=None):
+    def __init__(self, store: ExtensionStore, comfy_url="http://127.0.0.1:8188", object_info=None, comfy_root=None):
         self.store = store
         self.comfy_url = comfy_url.rstrip("/")
         self.object_info = object_info or self._object_info
+        self.downloads = ModelDownloads(comfy_root)
 
     def _object_info(self):
         try:
@@ -51,7 +53,9 @@ class ExtensionAPI:
                 handler.send_json(200, self.store.list())
             else:
                 parts = path.removeprefix("/api/extensions/").split("/")
-                if len(parts) == 1:
+                if len(parts) == 2 and parts[0] == "download-jobs":
+                    handler.send_json(200, self.downloads.get(parts[1]))
+                elif len(parts) == 1:
                     handler.send_json(200, self.store.get(parts[0]))
                 elif len(parts) == 2 and parts[1] == "download":
                     data = self.store.download(parts[0])
@@ -77,14 +81,32 @@ class ExtensionAPI:
                 data = self._read(handler, MAX_ARCHIVE)
                 filename = urllib.parse.unquote(handler.headers.get("X-Filename", "workflow.json"))
                 result = self.store.import_bytes(data, filename)
+            elif path == "/api/extensions/share":
+                from extension_sharing import share_extension
+                payload = read_json(self._read(handler, MAX_ARCHIVE), "share")
+                result = share_extension(self.store, payload, self.object_info())
+            elif path == "/api/extensions/catalog-import":
+                payload = read_json(self._read(handler, 4096), "catalog import")
+                result = catalog_import(self.store, payload)
             else:
                 parts = path.removeprefix("/api/extensions/").split("/")
-                if len(parts) != 2 or parts[1] != "prepare":
+                if len(parts) == 2 and parts[1] == "dependencies":
+                    payload = read_json(self._read(handler, 2 * 1024 * 1024), "dependencies")
+                    result = dependency_report(self.store.get(parts[0]), payload, self.object_info(), self.downloads.sources)
+                elif len(parts) == 3 and parts[1:] == ["models", "download"]:
+                    payload = read_json(self._read(handler, 2 * 1024 * 1024), "model download")
+                    if set(payload) - {"nodeDefinitionId", "parameters", "modelIds"}:
+                        raise ExtensionError("模型下载请求字段无效。")
+                    model_ids = payload.pop("modelIds", None)
+                    report = dependency_report(self.store.get(parts[0]), payload, self.object_info(), self.downloads.sources)
+                    result = self.downloads.start(report, model_ids)
+                elif len(parts) == 2 and parts[1] == "prepare":
+                    payload = read_json(self._read(handler, 2 * 1024 * 1024), "prepare")
+                    # Resolve the pinned package before making an external request.
+                    self.store.get(parts[0])
+                    result = self.store.prepare(parts[0], payload, self.object_info())
+                else:
                     raise ExtensionError("扩展接口不存在。", "NOT_FOUND", 404)
-                payload = read_json(self._read(handler, 2 * 1024 * 1024), "prepare")
-                # Resolve the pinned package before making an external request.
-                self.store.get(parts[0])
-                result = self.store.prepare(parts[0], payload, self.object_info())
             handler.send_json(200, result)
         except ExtensionError as exc:
             self._error(handler, exc)

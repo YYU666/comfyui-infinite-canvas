@@ -799,7 +799,7 @@ def main():
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
             server.queue_api = QueueAPI(server.queue_manager)
             server.agent_api = AgentAPI(server.project_store, server.queue_manager)
-            server.extension_api = ExtensionAPI(ExtensionStore(runtime_dir() / "extensions"), COMFY_URL)
+            server.extension_api = ExtensionAPI(ExtensionStore(runtime_dir() / "extensions"), COMFY_URL, comfy_root=ROOT)
             server.update_manager = WorkbenchUpdateManager(HERE, lambda: validate_update_ready(server))
             server.queue_manager.start()
 

@@ -365,14 +365,46 @@ def validate_compatibility(compatibility):
         require(valid, "扩展要求不同工作台版本：" + value, "INCOMPATIBLE_WORKBENCH")
 
 
+def comfy_input_fields(metadata):
+    """Expand the official V3 autogrow template into its declared dotted fields."""
+    fields = metadata.get("input", {})
+    required, optional = dict(fields.get("required", {})), dict(fields.get("optional", {}))
+    for section in (required, optional):
+        for key, spec in list(section.items()):
+            if not isinstance(spec, (list, tuple)) or not spec or spec[0] != "COMFY_AUTOGROW_V3":
+                continue
+            require(len(spec) > 1 and isinstance(spec[1], dict), "ComfyUI 动态输入定义无效。")
+            template = spec[1].get("template", {})
+            require(isinstance(template, dict), "ComfyUI 动态输入模板无效。")
+            names = template.get("names")
+            if names is None:
+                maximum, prefix = template.get("max"), template.get("prefix")
+                require(type(maximum) is int and 0 < maximum <= 100 and isinstance(prefix, str), "ComfyUI 动态输入名称范围无效。")
+                names = [prefix + str(index) for index in range(maximum)]
+            require(isinstance(names, list) and 0 < len(names) <= 100 and all(identifier(n) for n in names) and len(set(names)) == len(names), "ComfyUI 动态输入名称无效。")
+            minimum = template.get("min", 0)
+            require(type(minimum) is int and 0 <= minimum <= len(names), "ComfyUI 动态输入最小数量无效。")
+            inputs = template.get("input", {})
+            require(isinstance(inputs, dict), "ComfyUI 动态输入类型无效。")
+            typed = [(kind, value) for kind in ("required", "optional") for value in inputs.get(kind, {}).values()]
+            require(len(typed) == 1, "暂不支持此 ComfyUI 动态输入模板。", "EXTENSION_UNSUPPORTED")
+            kind, inner = typed[0]
+            del section[key]
+            for index, name in enumerate(names):
+                target = required if kind == "required" and index < minimum else optional
+                qualified = key + "." + name
+                require(qualified not in required and qualified not in optional, "ComfyUI 动态输入字段重复。")
+                target[qualified] = inner
+    return required, optional
+
+
 def validate_comfy(workflow, object_info):
     require(isinstance(object_info, dict) and object_info, "ComfyUI 节点信息不可用。", "COMFY_UNAVAILABLE")
     missing = sorted({node["class_type"] for node in workflow.values()} - set(object_info))
     require(not missing, "ComfyUI 缺少节点：" + ", ".join(missing), "COMFY_NODES_MISSING")
     for node_id, node in workflow.items():
         metadata = object_info[node["class_type"]]
-        fields = metadata.get("input", {})
-        required, optional = fields.get("required", {}), fields.get("optional", {})
+        required, optional = comfy_input_fields(metadata)
         require(set(required) <= set(node["inputs"]), f"节点 {node_id} 缺少必填字段。")
         for field, value in node["inputs"].items():
             spec = required.get(field, optional.get(field))
