@@ -1,18 +1,48 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
+import io
 import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from scripts.verify_workbench import ROOT, select_model_files, verify_model_files
+from scripts import verify_workbench
 
 
 class ModelManifestTests(unittest.TestCase):
+    def test_cli_defaults_to_core_and_full_remains_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "dist").mkdir()
+            (root / "dist" / "index.html").write_text("fixture", encoding="utf-8")
+            models = root / "ComfyUI" / "models"
+            models.mkdir(parents=True)
+            (models / "core.bin").write_bytes(b"core")
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"profiles": {"core-h3": {"files": ["core.bin"]}, "full": {"include": "all"}},
+                "files": [{"path": "core.bin", "bytes": 4, "sha256": hashlib.sha256(b"core").hexdigest()},
+                          {"path": "optional.bin", "bytes": 1}]}), encoding="utf-8")
+            for extra, code, label in (([], 0, "core-h3"), (["--profile", "full"], 1, "full")):
+                output = io.StringIO()
+                with self.subTest(profile=label), mock.patch.object(verify_workbench, "ROOT", root), \
+                     mock.patch.object(verify_workbench, "NODE_DIRS", ()), \
+                     mock.patch.object(sys, "argv", ["verify_workbench.py", "--comfy-root", str(root), "--manifest", str(manifest), *extra]), \
+                     contextlib.redirect_stdout(output):
+                    self.assertEqual(verify_workbench.main(), code)
+                self.assertIn(f"模型配置：{label}", output.getvalue())
+                if code == 0:
+                    self.assertIn("已登记并核实 1 个", output.getvalue())
+                    self.assertNotIn("optional.bin", output.getvalue())
+                else:
+                    self.assertIn("optional.bin", output.getvalue())
+
     def test_real_manifest_has_core_and_complete_profiles(self):
         manifest = json.loads((ROOT / "models" / "manifest.json").read_text(encoding="utf-8"))
         core = select_model_files(manifest, "core-h3")

@@ -55,15 +55,15 @@
 ## 最快安装
 
 1. 把本仓库文件夹 `video-workbench` 放到 `ComfyUI_windows_portable` 根目录，使其旁边同时存在 `ComfyUI/` 和 `python_embeded/`。
-2. 双击 `install.bat` 安装节点、Python 依赖并构建画布。
+2. 双击 `install.bat` 安装节点、Python 依赖并构建画布，只需执行一次。默认显示步骤摘要，详细日志保存在 `.cache/install-logs/`；排错时可使用 `--verbose`。
 3. 先从 `https://huggingface.co/Comfy-Org/MiniMax-H3` 下载 `models/manifest.json` 中 `profiles.core-h3.files` 点名的七项，按相对路径放入临时模型目录；完整 33 项是可选配置，不是最快安装的前置条件。
 4. 校验并复制已整理的核心模型（安装器默认 `--profile core-h3`）：
 
    ```bat
-   install.bat --models-source "D:\H3-Workbench-Models"
+   install.bat --models-only --models-source "D:\H3-Workbench-Models" --profile core-h3
    ```
 
-   也可以手动把模型目录复制到 `ComfyUI\models\`，无需重复运行安装器。
+   `--models-only` 只校验和复制模型，不重复安装程序依赖或构建前端。若开始时模型已经整理好，可直接运行一次 `install.bat --models-source "<MODEL_STAGE>" --profile core-h3` 完成程序与模型安装，跳过前面的单独安装。也可用 `scripts/install_models.py` 或外部模型目录配置。
 5. 双击 `启动.vbs`，浏览器打开 `http://127.0.0.1:8790/`；`start.bat` 仅用于调试，`停止.bat` 用于优雅停止。
 
 安装器使用 `requirements.lock` 的 SHA256 校验 Python 依赖，并按 `install.py` 中的仓库＋commit 安装第三方节点。已有节点提交不一致时会保留原目录并停止，不会自动更新或覆盖；工作台自己的 `h3_workbench_refine` 节点会同步到 ComfyUI。便携版 Python 缺失时安装直接失败，不回退系统 Python。
@@ -72,7 +72,7 @@
 
 让 Agent 打开本地画布时，先在仓库根目录执行 `<ComfyUI便携版>\python_embeded\python.exe agent_cli.py start --timeout 120`。命令会启动服务或复用已有实例，确认画布与 ComfyUI 均就绪后返回实际网页地址，Agent 再在当前侧面页打开该地址。仅打开 `http://127.0.0.1:8790/` 不会启动服务器；失败时命令会明确返回错误和日志位置。
 
-> **交给 Agent 安装：**让 Agent 先阅读仓库根目录的 [`AGENTS.md`](AGENTS.md)，再严格按其中步骤执行。该文件包含环境检查、下载、重命名、模型配置、节点安装和最终验收命令。
+> **交给 Agent 安装：**先读 [`AGENTS.md`](AGENTS.md) 的“最短执行路径”，按需读取额外资料。默认安装核心七项，不预读完整模型/许可证清单，不扫描源码或运行开发测试；一次运行脚本，失败时只读对应步骤日志。程序步骤成功后还需完成模型和在线验收。实际额度节省取决于模型及会话，无法保证固定百分比。
 
 ## 模型与 LoRA 下载链接
 
@@ -131,7 +131,7 @@ python_embeded\python.exe video-workbench\scripts\install_models.py "D:\H3-Workb
 python_embeded\python.exe video-workbench\scripts\verify_workbench.py --profile core-h3
 ```
 
-省略 `--profile` 时默认校验完整 33 项。已登记 SHA256 的文件会校验实际内容；其余文件只校验字节数并显示“待核实”。
+省略 `--profile` 时默认校验核心七项；完整 33 项必须显式传入 `--profile full`。已登记 SHA256 的文件会校验实际内容；其余文件只校验字节数并显示“待核实”。
 
 直接校验已整理的核心模型目录：
 

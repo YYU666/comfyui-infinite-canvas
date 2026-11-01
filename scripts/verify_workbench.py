@@ -87,7 +87,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="检查 Refmuse 本地工作台模型、节点和前端")
     parser.add_argument("--comfy-root", type=Path, default=ROOT.parent)
     parser.add_argument("--model-root", type=Path, action="append", help="默认检查 ComfyUI/models；有多个模型目录时可重复传入")
-    parser.add_argument("--profile", choices=("core-h3", "full"), default="full", help="core-h3 只检查七个核心视频权重；full 检查完整可选模型库")
+    parser.add_argument("--profile", choices=("core-h3", "full"), default="core-h3", help="默认 core-h3 检查七个核心视频权重；full 检查完整可选模型库")
     parser.add_argument("--manifest", type=Path, default=ROOT / "models" / "manifest.json", help=argparse.SUPPRESS)
     parser.add_argument("--online", action="store_true", help="同时查询运行中的 ComfyUI 节点注册情况")
     args = parser.parse_args()

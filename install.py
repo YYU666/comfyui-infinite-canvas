@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import codecs
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import datetime
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -21,9 +28,105 @@ NODE_PACKAGES = {
 }
 
 
+class InstallFailure(RuntimeError):
+    def __init__(self, code: int, log: Path):
+        super().__init__(f"命令退出码：{code}")
+        self.code = code
+        self.log = log
+
+
+def safe_tail(path: Path) -> str:
+    """Read a bounded suffix; discard a partial line before redacting secrets."""
+    with path.open("rb") as stream:
+        size = stream.seek(0, 2)
+        start = max(0, size - 65536)
+        stream.seek(start)
+        data = stream.read(65536)
+    if start:
+        # A truncated assignment/URL may have lost its secret marker.
+        data = data.partition(b"\n")[2]
+    lines = data.decode("utf-8", errors="replace").splitlines()[-12:]
+    clean = []
+    for line in lines:
+        line = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", line)
+        if re.search(r"(?i)(?:password|passwd|pwd|token|api[_-]?key|access[_-]?key|secret|authorization|cookie)[\w-]*[\"']?\s*[:=]", line):
+            line = "[含凭据的日志行已隐藏]"
+        line = re.sub(r"(?i)(\b[a-z][a-z0-9+.-]{0,31}://)[^/\s]+@", r"\1[redacted]@", line)
+        clean.append(line)
+    text = "\n".join(clean) or "[没有完整日志行；请查看日志文件]"
+    return text.encode("utf-8")[-3072:].decode("utf-8", errors="ignore")
+
+
+class InstallerReport:
+    def __init__(self, directory: Path, verbose: bool = False):
+        directory.mkdir(parents=True, exist_ok=True)
+        self.directory = Path(tempfile.mkdtemp(prefix=datetime.now().strftime("%Y%m%d-%H%M%S-"), dir=directory))
+        self.verbose = verbose
+        self.stage_name = "前置检查"
+        self.sequence = 0
+        self.completed = 0
+        self.started = time.monotonic()
+
+    @contextmanager
+    def stage(self, name: str):
+        self.stage_name = name
+        started = time.monotonic()
+        print(f"[开始] {name}", flush=True)
+        yield
+        self.completed += 1
+        print(f"[完成] {name} ({time.monotonic() - started:.1f}s)", flush=True)
+
+    def command(self, command: list[str], cwd: Path | None = None) -> Path:
+        self.sequence += 1
+        label = re.sub(r"[^\w.-]+", "-", self.stage_name).strip("-")
+        log = self.directory / f"{self.sequence:03d}-{label}.log"
+        with log.open("wb") as stream:
+            if self.verbose:
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                with subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as child:
+                    assert child.stdout is not None
+                    while chunk := child.stdout.read(65536):
+                        stream.write(chunk)
+                        print(decoder.decode(chunk), end="", flush=True)
+                    print(decoder.decode(b"", final=True), end="", flush=True)
+                    code = child.wait()
+            else:
+                code = subprocess.run(command, cwd=cwd, stdout=stream, stderr=subprocess.STDOUT, check=False).returncode
+        if code:
+            raise InstallFailure(code, log)
+        return log
+
+    def capture(self, command: list[str]) -> str:
+        log = self.command(command)
+        with log.open("rb") as stream:
+            data = stream.read(4097)
+        if len(data) > 4096:
+            raise InstallFailure(1, log)
+        return data.decode("ascii").strip()
+
+    def failure(self, exc: Exception) -> int:
+        code = exc.code if isinstance(exc, InstallFailure) else 1
+        log = exc.log if isinstance(exc, InstallFailure) else self.directory / "failure.log"
+        try:
+            if not isinstance(exc, InstallFailure):
+                log.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            tail = safe_tail(log)
+        except OSError:
+            tail = "[无法保存或读取失败日志，请检查日志目录权限和磁盘空间]"
+        print(f"[失败] {self.stage_name}；退出码：{code}；耗时 {time.monotonic() - self.started:.1f}s；日志：{log}", file=sys.stderr)
+        print(tail, file=sys.stderr)
+        print("已停止；未完成安装验收。", file=sys.stderr)
+        return code if code > 0 else 1
+
+
+_REPORT: ContextVar[InstallerReport | None] = ContextVar("install_report", default=None)
+
+
 def run(command: list[str], cwd: Path | None = None) -> None:
-    print("+", " ".join(str(part) for part in command), flush=True)
-    subprocess.run(command, cwd=cwd, check=True)
+    reporter = _REPORT.get()
+    if reporter is None:
+        reporter = InstallerReport(HERE / ".cache" / "install-logs")
+    reporter.command(command, cwd)
 
 
 def portable_python(root: Path) -> Path:
@@ -31,7 +134,8 @@ def portable_python(root: Path) -> Path:
 
 
 def git_head(repository: Path) -> str:
-    return subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True, encoding="ascii").strip()
+    reporter = _REPORT.get() or InstallerReport(HERE / ".cache" / "install-logs")
+    return reporter.capture(["git", "-C", str(repository), "rev-parse", "HEAD"])
 
 
 def install_nodes(comfy_dir: Path, python: Path) -> None:
@@ -71,51 +175,85 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="安装 Refmuse 本地工作台、节点和前端")
     parser.add_argument("--comfy-root", type=Path, default=HERE.parent, help="ComfyUI 便携版根目录")
     parser.add_argument("--models-source", type=Path, help="可选：已下载并解压的模型包目录")
+    parser.add_argument("--models-only", action="store_true", help="只安装模型；必须同时指定 --models-source")
     parser.add_argument("--profile", choices=("core-h3", "full"), default="core-h3", help="模型安装范围，默认核心七项")
+    parser.add_argument("--verbose", action="store_true", help="同时在终端显示完整子进程输出（默认仅记录日志）")
+    parser.add_argument("--log-dir", type=Path, default=HERE / ".cache" / "install-logs", help="安装日志父目录，每次运行创建独立子目录")
     parser.add_argument("--skip-nodes", action="store_true")
     parser.add_argument("--skip-python", action="store_true")
     parser.add_argument("--skip-frontend", action="store_true")
     args = parser.parse_args()
+    if args.models_only and not args.models_source:
+        parser.error("--models-only 必须同时指定 --models-source。")
+    if args.models_only:
+        args.skip_python = args.skip_nodes = args.skip_frontend = True
 
     root = args.comfy_root.resolve()
     comfy_dir = root / "ComfyUI"
-    if not (comfy_dir / "main.py").is_file():
-        parser.error(f"没有找到 {comfy_dir / 'main.py'}；请传入 ComfyUI 便携版根目录。")
     python = portable_python(root)
-    if not python.is_file():
-        parser.error(f"没有找到 ComfyUI 便携版 Python：{python}；不会回退系统 Python。")
 
-    if not args.skip_python:
-        run([str(python), "-m", "pip", "install", "--require-hashes", "-r", str(HERE / "requirements.lock")])
-    if not args.skip_nodes:
-        if not shutil.which("git"):
-            parser.error("没有找到 Git，请先安装 Git 或手动安装节点。")
-        install_nodes(comfy_dir, python)
-    if args.models_source:
-        run([
-            str(python), str(HERE / "scripts" / "install_models.py"),
-            str(args.models_source), "--comfy-root", str(root), "--profile", args.profile,
-        ])
-    if not args.skip_frontend:
-        node = shutil.which("node") or shutil.which("node.exe")
-        npm = shutil.which("npm") or shutil.which("npm.cmd")
-        if not node or not npm:
-            parser.error("没有找到 Node.js / npm；请安装 Node.js 20.19+ 后重试。")
-        version = subprocess.check_output([node, "-p", "process.versions.node"], text=True, encoding="ascii").strip()
-        parts = tuple(int(part) for part in version.split("."))
-        if parts < (20, 19, 0):
-            parser.error(f"Node.js {version} 不受 Vite 7 支持；请升级到 20.19+。")
-        run([npm, "ci"], HERE)
-        run([npm, "run", "build"], HERE)
-
-    print("\n安装完成。双击 启动.vbs 启动；模型可用 scripts/verify_workbench.py 再次校验。")
-    return 0
+    try:
+        reporter = InstallerReport(args.log_dir.resolve(), args.verbose)
+    except OSError as exc:
+        print(f"[失败] 无法创建安装日志：{str(exc)[:500]}", file=sys.stderr)
+        return 1
+    token = _REPORT.set(reporter)
+    try:
+        print(f"安装日志：{reporter.directory}", flush=True)
+        with reporter.stage("前置检查"):
+            if not (comfy_dir / "main.py").is_file():
+                raise RuntimeError(f"没有找到 {comfy_dir / 'main.py'}；请传入 ComfyUI 便携版根目录。")
+            if not python.is_file():
+                raise RuntimeError(f"没有找到 ComfyUI 便携版 Python：{python}；不会回退系统 Python。")
+            # Check every enabled tool before installing Python, nodes or models.
+            if not args.skip_nodes:
+                git = shutil.which("git")
+                if not git:
+                    raise RuntimeError("没有找到 Git，请先安装 Git 或手动安装节点。")
+                reporter.capture([git, "--version"])
+            npm = None
+            if not args.skip_frontend:
+                node = shutil.which("node") or shutil.which("node.exe")
+                npm = shutil.which("npm") or shutil.which("npm.cmd")
+                if not node or not npm:
+                    raise RuntimeError("没有找到 Node.js / npm；请安装 Node.js 20.19+ 后重试。")
+                version = reporter.capture([node, "-p", "process.versions.node"])
+                if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+                    raise RuntimeError("无法解析 Node.js 版本；请检查前置检查日志。")
+                parts = tuple(int(part) for part in version.split("."))
+                if parts < (20, 19, 0):
+                    raise RuntimeError(f"Node.js {version} 不受 Vite 7 支持；请升级到 20.19+。")
+                reporter.capture([npm, "--version"])
+        if not args.skip_python:
+            with reporter.stage("Python 依赖（SHA256 锁定）"):
+                run([str(python), "-m", "pip", "install", "--require-hashes", "-r", str(HERE / "requirements.lock")])
+        if not args.skip_nodes:
+            with reporter.stage("ComfyUI 节点"):
+                install_nodes(comfy_dir, python)
+        if args.models_source:
+            with reporter.stage(f"模型安装（{args.profile}）"):
+                run([
+                    str(python), str(HERE / "scripts" / "install_models.py"),
+                    str(args.models_source), "--comfy-root", str(root), "--profile", args.profile,
+                ])
+        if not args.skip_frontend:
+            assert npm is not None
+            with reporter.stage("前端依赖"):
+                run([npm, "ci"], HERE)
+            with reporter.stage("前端构建"):
+                run([npm, "run", "build"], HERE)
+        print(f"本次请求的步骤已完成（含前置检查 {reporter.completed} 阶段，{time.monotonic() - reporter.started:.1f}s）。")
+        print("尚未运行工作台离线/在线验收；请运行 scripts/verify_workbench.py，并在服务就绪后加 --online。")
+        if not args.models_source:
+            print("本次未安装或校验模型。")
+        print(f"完整日志：{reporter.directory}")
+        return 0
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        return reporter.failure(exc)
+    finally:
+        _REPORT.reset(token)
 
 
 if __name__ == "__main__":
     configure_utf8()
-    try:
-        raise SystemExit(main())
-    except subprocess.CalledProcessError as exc:
-        print(f"\n安装命令失败，退出码：{exc.returncode}", file=sys.stderr)
-        raise SystemExit(exc.returncode) from exc
+    raise SystemExit(main())
