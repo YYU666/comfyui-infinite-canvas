@@ -13,6 +13,9 @@ const suites = {
     'test-canvas-layout.mjs',
     'test-canvas-mcp-queue.mjs',
     'test-canvas-current-page.mjs',
+    'test-versioned-canvas-models.mjs',
+    'test-versioned-canvas-projects.mjs',
+    'test-character-sheet-workflow.mjs',
     'test-generation-queue.mjs',
     'test-lifecycle.mjs',
     'test-project-store-http.mjs',
@@ -30,6 +33,8 @@ const suites = {
   ],
   browser: [
     'test-canvas-current-page-ui.mjs',
+    'test-versioned-canvas-ui.mjs',
+    'test-workflow-inspector-ui.mjs',
     'test-canvas-save-ui.mjs',
     'test-canvas-clipboard-ui.mjs',
     'test-canvas-projects.mjs',

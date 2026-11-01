@@ -130,6 +130,41 @@ class OutfitQueueTests(unittest.TestCase):
         self.assertEqual(result["history"]["outputs"]["save"]["images"][0]["filename"], "H3_OutfitSingle_tr_00001_.png")
         self.assertEqual(result["planState"]["images"]["tr"], "workbench/H3_OutfitSingle_tr_00001_.png")
 
+    def test_explicit_off_skips_hd_even_for_sub_1k_output(self):
+        value = plan()
+        value["upscalePolicy"] = "off"
+        for panel in value["panels"]:
+            panel["hd"] = None
+        job = self.manager.enqueue({"projectId": "prj_test", "nodeId": "plain", "plan": value})
+        self.manager.start()
+        wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
+        prefixes = [item["workflow"]["save"]["inputs"]["filename_prefix"] for item in self.adapter.submitted]
+        self.assertEqual(prefixes, ["image/H3_OutfitSingle_tl", "image/H3_OutfitSingle_tr", "image/H3_OutfitQuad"])
+        self.assertEqual(self.adapter.submitted[-1]["workflow"]["tl_load"]["inputs"]["image"], "workbench/H3_OutfitSingle_tl_00001_.png")
+
+    def test_explicit_7b_runs_hd_even_for_native_1k_output(self):
+        value = plan("tr")
+        value["upscalePolicy"] = "seedvr2_7b"
+        value["panels"][0]["hd"]["model"] = {"class_type": "UNETLoader", "inputs": {"unet_name": "seedvr2_7b_int8_convrot.safetensors"}}
+        job = self.manager.enqueue({"projectId": "prj_test", "nodeId": "hd7", "plan": value})
+        self.manager.start()
+        wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
+        self.assertEqual(len(self.adapter.submitted), 2)
+        self.assertEqual(self.adapter.submitted[-1]["workflow"]["model"]["inputs"]["unet_name"], "seedvr2_7b_int8_convrot.safetensors")
+        self.assertEqual(self.manager.get(job["id"])["history"]["outputs"]["save"]["images"][0]["filename"], "H3_OutfitHD_tr_00001_.png")
+
+    def test_hd_policy_validation_preserves_legacy_default(self):
+        from outfit_queue import validate_plan
+        self.assertEqual(validate_plan(plan())["upscalePolicy"], "auto")
+        for policy in ("bad", None, [], {}):
+            with self.subTest(policy=policy), self.assertRaises(ValueError):
+                validate_plan({**plan(), "upscalePolicy": policy})
+        value = plan()
+        value["upscalePolicy"] = "seedvr2_7b"
+        value["panels"][0]["hd"] = None
+        with self.assertRaises(ValueError):
+            validate_plan(value)
+
     def test_restart_recovers_submitted_stage_without_duplicate(self):
         self.adapter.done = False
         job = self.manager.enqueue({"projectId": "prj_test", "nodeId": "outfit-3", "plan": plan()})
@@ -144,6 +179,24 @@ class OutfitQueueTests(unittest.TestCase):
         self.assertEqual(len(self.adapter.submitted), 4)
         self.assertEqual([item["id"] for item in self.adapter.submitted], ["prompt-1", "prompt-2", "prompt-3", "prompt-4"])
         self.assertEqual(recovered.get(job["id"])["planState"]["promptIds"], ["prompt-1", "prompt-2", "prompt-3", "prompt-4"])
+
+    def test_restart_preserves_no_hd_policy_without_duplicate_sampling(self):
+        value = plan()
+        value["upscalePolicy"] = "off"
+        for panel in value["panels"]:
+            panel["hd"] = None
+        self.adapter.done = False
+        job = self.manager.enqueue({"projectId": "prj_test", "nodeId": "plain-recovery", "plan": value})
+        self.manager.start()
+        wait_for(lambda: len(self.adapter.submitted) == 1)
+        self.manager.stop()
+        self.adapter.done = True
+        self.manager = QueueManager(Path(self.temporary.name) / "queue.json", self.adapter, poll_interval=0.01)
+        self.manager.start()
+        wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
+        prefixes = [item["workflow"]["save"]["inputs"]["filename_prefix"] for item in self.adapter.submitted]
+        self.assertEqual(prefixes, ["image/H3_OutfitSingle_tl", "image/H3_OutfitSingle_tr", "image/H3_OutfitQuad"])
+        self.assertEqual(self.manager.get(job["id"])["planState"]["promptIds"], ["prompt-1", "prompt-2", "prompt-3"])
 
     def test_free_accepts_comfy_empty_success_response(self):
         adapter = ComfyQueueAdapter()

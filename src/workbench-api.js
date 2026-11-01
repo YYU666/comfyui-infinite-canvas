@@ -258,8 +258,57 @@ export const QWEN21_EDIT_MODEL = {
   realismLora: 'Qwen2.1_Anything2RealCharacters.safetensors',
 };
 
+export const VERSIONED_IMAGE_MODELS = {
+  qwenTurbo: 'qwen_image_2.1_turbo_int8_convrot.safetensors',
+  seedvr7b: 'seedvr2_7b_int8_convrot.safetensors',
+  museV4: 'museByStableYogi_v40INT8Extended.safetensors',
+};
+export const QWEN21_TURBO_SIGMAS = '1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0';
+
+function qwenModelName(options) {
+  const variant = options.qwenModel || 'standard';
+  if (!['standard', 'turbo'].includes(variant)) throw new Error('未知的 Qwen 2.1 模型版本。');
+  return variant === 'turbo' ? VERSIONED_IMAGE_MODELS.qwenTurbo : QWEN21_EDIT_MODEL.unet;
+}
+
+function addQwenTurboSampling(graph, model, seed) {
+  graph.cache = { class_type: 'QwenImage21Cache', inputs: { model, device: 'auto', dtype: 'default' } };
+  graph.noise = { class_type: 'RandomNoise', inputs: { noise_seed: seed } };
+  graph.sampler = { class_type: 'KSamplerSelect', inputs: { sampler_name: 'euler' } };
+  graph.sigmas = { class_type: 'ManualSigmas', inputs: { sigmas: QWEN21_TURBO_SIGMAS } };
+  graph.guider = { class_type: 'CFGGuider', inputs: { model: ['cache', 0], positive: ['encode', 0], negative: ['encode', 1], cfg: 1 } };
+  graph.sample = { class_type: 'SamplerCustomAdvanced', inputs: {
+    noise: ['noise', 0], guider: ['guider', 0], sampler: ['sampler', 0], sigmas: ['sigmas', 0], latent_image: ['encode', 2],
+  } };
+}
+
+export function validateQwenCacheDevice(device) {
+  if (!['auto', 'cpu'].includes(device)) throw new Error('qwenCacheDevice 仅支持 auto 或 cpu；参考缓存保持 default 精度。');
+  return device;
+}
+
+function addQwenCpuReferenceCache(graph, model) {
+  // Optional diagnostic: move the reference cache without quantizing it.
+  // Reuse the Turbo cache node instead of stacking a second cache patch.
+  graph.cache = { class_type: 'QwenImage21Cache', inputs: { model, device: 'cpu', dtype: 'default' } };
+  return ['cache', 0];
+}
+
+export function validateQwenSourceCrop(crop) {
+  const keys = ['x', 'y', 'width', 'height'];
+  if (!crop || typeof crop !== 'object' || Array.isArray(crop)
+    || Object.keys(crop).length !== keys.length
+    || keys.some((key) => !Object.hasOwn(crop, key) || !Number.isInteger(crop[key]))
+    || crop.x < 0 || crop.y < 0 || crop.width <= 0 || crop.height <= 0
+    || crop.x + crop.width > 16384 || crop.y + crop.height > 16384) {
+    throw new Error('qwenSourceCrop 必须包含整数 x、y、width、height；坐标非负，宽高大于 0，裁剪范围不超过 16384。');
+  }
+  return { x: crop.x, y: crop.y, width: crop.width, height: crop.height };
+}
+
 // Qwen Image 2.1 native editing: its encoder supplies the reference-matched latent.
 export function buildQwen21EditWorkflow(options) {
+  const cacheDevice = validateQwenCacheDevice(options.qwenCacheDevice === undefined ? 'auto' : options.qwenCacheDevice);
   const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
   const makeup = options.references?.find((ref) => ref.slot === 'identity' && ref.kind === 'image');
   if (!source) throw new Error('Qwen 2.1 图生图需要连接一张人物或场景母图。');
@@ -267,16 +316,18 @@ export function buildQwen21EditWorkflow(options) {
   if (!prompt) throw new Error('请先输入要保留和要修改的画面内容。');
   const instruction = prompt.includes('<image1>') ? prompt : `Edit <image1>: ${prompt}`;
   const useRealism = options.imageLora === 'qwen21Realism';
-  return {
-    model: { class_type: 'UNETLoader', inputs: { unet_name: QWEN21_EDIT_MODEL.unet, weight_dtype: 'default' } },
+  const sourceCrop = 'qwenSourceCrop' in options ? validateQwenSourceCrop(options.qwenSourceCrop) : null;
+  const graph = {
+    model: { class_type: 'UNETLoader', inputs: { unet_name: qwenModelName(options), weight_dtype: 'default' } },
     ...(useRealism ? { realism: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: QWEN21_EDIT_MODEL.realismLora, strength_model: Number(options.loraStrength ?? 0.6) } } } : {}),
     text: { class_type: 'CLIPLoader', inputs: { clip_name: QWEN21_EDIT_MODEL.clip, type: 'qwen_image', device: 'default' } },
     vae: { class_type: 'VAELoader', inputs: { vae_name: QWEN21_EDIT_MODEL.vae } },
     source: { class_type: 'LoadImage', inputs: { image: source.name } },
+    ...(sourceCrop ? { reference_crop: { class_type: 'ImageCrop', inputs: { image: ['source', 0], ...sourceCrop } } } : {}),
     ...(makeup ? { makeup: { class_type: 'LoadImage', inputs: { image: makeup.name } } } : {}),
     encode: { class_type: 'TextEncodeQwenImage21', inputs: {
       clip: ['text', 0], prompt: instruction, negative_prompt: '', resolution: Number(options.qwenRefResolution || 1024),
-      'images.image_1': ['source', 0], ...(makeup ? { 'images.image_2': ['makeup', 0] } : {}), vae: ['vae', 0],
+      'images.image_1': [sourceCrop ? 'reference_crop' : 'source', 0], ...(makeup ? { 'images.image_2': ['makeup', 0] } : {}), vae: ['vae', 0],
     } },
     sample: { class_type: 'KSampler', inputs: {
       model: [useRealism ? 'realism' : 'model', 0], seed: Number(options.seed), steps: Number(options.qwenSteps || 40), cfg: 1,
@@ -285,9 +336,141 @@ export function buildQwen21EditWorkflow(options) {
     decode: { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } },
     save: { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'image/H3_Qwen21Edit' } },
   };
+  if (options.qwenModel === 'turbo') addQwenTurboSampling(graph, [useRealism ? 'realism' : 'model', 0], Number(options.seed));
+  if (cacheDevice === 'cpu') {
+    const cachedModel = addQwenCpuReferenceCache(graph, [useRealism ? 'realism' : 'model', 0]);
+    if (options.qwenModel !== 'turbo') graph.sample.inputs.model = cachedModel;
+  }
+  return graph;
+}
+
+export const CHARACTER_SHEET_PANEL = Object.freeze({ width: 1152, height: 2048 });
+// Empirical baseline from the controlled male 45-degree test, not a universal fix.
+const CHARACTER_SHEET_ANGLE_SEED = 2096285145;
+
+export function validateCharacterSheetAngleSeed(seed) {
+  if (!Number.isSafeInteger(seed) || seed < 0) throw new Error('characterSheetAngleSeed 必须是非负安全整数。');
+  return seed;
+}
+
+export const CHARACTER_SHEET_VIEWS = Object.freeze([
+  { id: 'front_portrait', label: '正面头像', seedOffset: 0 },
+  { id: 'three_quarter_portrait', label: '45 度侧面头像', seedOffset: 0 },
+  { id: 'back_body', label: '无头背面全身', seedOffset: 0 },
+  { id: 'front_body', label: '无头正面全身', seedOffset: 0 },
+]);
+
+export const CHARACTER_SHEET_BODY_CROP = Object.freeze({ x: 108, y: 384, width: 936, height: 1664 });
+
+// Fixed templates: establish the front portrait from the reference, then inherit
+// its framing for the turn. Only body views receive the full outfit/proportion brief.
+export const CHARACTER_SHEET_PROMPT_VERSION = 'fixed-views-v1';
+const CHARACTER_SHEET_SHARED = 'Create ONE photographic image with exactly ONE INSTANCE of the same adult person, in ONE pose, from ONE camera angle, on a 9:16 canvas. Preserve the recognizable facial identity, hairstyle, hair length and accessories from <image1>. Use a neutral light-gray seamless studio background (#D9D9D9), soft even studio lighting and clear natural skin detail. No collage, split screen, inset portrait, extra person, text, border or watermark. ';
+
+export function buildCharacterSheetPanelPrompt(brief, viewId) {
+  const shared = CHARACTER_SHEET_SHARED;
+  if (viewId === 'front_portrait') return `Edit <image1> only. Create a FRONT-FACING CHEST-UP IDENTITY PORTRAIT of the same person. Use the reference for identity, complete hairstyle and visible upper garment. Reframe the source as needed to show the complete hair silhouette, neck, both shoulders and a short band of upper chest; leave a small clear margin above the topmost hair and crop the bottom at the upper chest. The head is upright without tilt, the face is centered and facing directly into the camera, and both eyes look into the camera. Preserve the visible garment and accessories. ${shared}Do not show the waist or hands, and do not turn this portrait into a half-body or full-body shot.`;
+  // This short edit instruction is the generic form of the successful standalone
+  // male 45-degree test. Do not impose fresh landmark positions on its input.
+  if (viewId === 'three_quarter_portrait') return 'Edit <image1> only. 只修改头部和视线方向：将人物的脸和视线从正面转为向角色左侧45度，头部保持直立，不歪头。严格保持输入图的胸以上特写景别、头部在画面中的大小和位置、五官身份、发型、可见上衣、浅灰背景、光线和画质不变。不要拉远，不要生成全身像或半身像，不要改变画幅。输出仍然是一张单人的9:16胸以上头像。';
+  // Full heads establish anatomy before the existing deterministic body crop.
+  // Position hints remain tied to that crop; the model is not asked to crop itself.
+  const bodyFraming = 'Show one complete natural head and the entire body down to the soles. Keep 5% clear background above the hair, the base of the neck near 18% of frame height, and both feet fully visible near 95% of frame height. Both arms, hands, legs and feet remain fully inside the frame, with arms relaxed at the sides. ';
+  if (viewId === 'back_body') return `Edit <image1> only. Create a HEAD-TO-TOE FULL-BODY BACK VIEW of the same person standing naturally. The head, shoulders, torso and feet face directly away from the camera; do not look back or show the face. ${bodyFraming}${shared}Use the following outfit and body-proportion specification for this one person, keeping natural anatomy and consistent garment colors, materials and fit: ${brief.trim()}`;
+  if (viewId === 'front_body') return `Edit <image1> only. Create a HEAD-TO-TOE FULL-BODY FRONT VIEW of the same person standing naturally, facing directly toward the camera. ${bodyFraming}${shared}Use the following outfit and body-proportion specification for this one person, keeping natural anatomy and consistent garment colors, materials and fit: ${brief.trim()}`;
+  throw new Error('未知的角色四视图面板。');
+}
+
+// One self-contained ComfyUI API graph: one reference, four native Qwen edits,
+// then a lossless 2×2 stitch. No intermediate SaveImage and no HD/refine stage.
+export function buildCharacterSheetWorkflow(options) {
+  const cacheDevice = validateQwenCacheDevice(options.qwenCacheDevice === undefined ? 'auto' : options.qwenCacheDevice);
+  const angleSeed = validateCharacterSheetAngleSeed(options.characterSheetAngleSeed === undefined ? CHARACTER_SHEET_ANGLE_SEED : options.characterSheetAngleSeed);
+  const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
+  if (!source) throw new Error('角色四视图生成需要连接一张单人角色参考图。');
+  const brief = options.prompt?.trim();
+  if (!brief) throw new Error('请先输入角色身份、穿搭和身材比例等创作要求。');
+  const useRealism = options.imageLora === 'qwen21Realism';
+  const graph = {
+    model: { class_type: 'UNETLoader', inputs: { unet_name: QWEN21_EDIT_MODEL.unet, weight_dtype: 'default' } },
+    ...(useRealism ? { realism: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: QWEN21_EDIT_MODEL.realismLora, strength_model: Number(options.loraStrength ?? 0.6) } } } : {}),
+    text: { class_type: 'CLIPLoader', inputs: { clip_name: QWEN21_EDIT_MODEL.clip, type: 'qwen_image', device: 'default' } },
+    vae: { class_type: 'VAELoader', inputs: { vae_name: QWEN21_EDIT_MODEL.vae } },
+    source: { class_type: 'LoadImage', inputs: { image: source.name } },
+    // Qwen derives its output latent from this reference canvas. Normalizing it
+    // fixes all four native outputs to 9:16 without a generative HD redraw.
+    reference: { class_type: 'ImageScale', inputs: { image: ['source', 0], upscale_method: 'lanczos', width: CHARACTER_SHEET_PANEL.width, height: CHARACTER_SHEET_PANEL.height, crop: 'center' } },
+  };
+  const sampledModel = cacheDevice === 'cpu' ? addQwenCpuReferenceCache(graph, [useRealism ? 'realism' : 'model', 0]) : [useRealism ? 'realism' : 'model', 0];
+  for (const view of CHARACTER_SHEET_VIEWS) {
+    graph[`${view.id}_encode`] = { class_type: 'TextEncodeQwenImage21', inputs: {
+      clip: ['text', 0], prompt: buildCharacterSheetPanelPrompt(brief, view.id), negative_prompt: '',
+      resolution: Number(options.qwenRefResolution || 1536),
+      'images.image_1': view.id === 'three_quarter_portrait' ? ['front_portrait_decode', 0] : ['reference', 0],
+      vae: ['vae', 0],
+    } };
+    graph[`${view.id}_sample`] = { class_type: 'KSampler', inputs: {
+      model: sampledModel, seed: view.id === 'three_quarter_portrait' ? angleSeed : Number(options.seed) + view.seedOffset,
+      steps: Number(options.qwenSteps || 40), cfg: 1, sampler_name: 'euler', scheduler: 'simple',
+      positive: [`${view.id}_encode`, 0], negative: [`${view.id}_encode`, 1], latent_image: [`${view.id}_encode`, 2], denoise: 1,
+    } };
+    graph[`${view.id}_decode`] = { class_type: 'VAEDecode', inputs: { samples: [`${view.id}_sample`, 0], vae: ['vae', 0] } };
+    if (view.id.endsWith('_body')) {
+      graph[`${view.id}_crop`] = { class_type: 'ImageCrop', inputs: { image: [`${view.id}_decode`, 0], ...CHARACTER_SHEET_BODY_CROP } };
+      graph[`${view.id}_output`] = { class_type: 'ImageScale', inputs: {
+        image: [`${view.id}_crop`, 0], upscale_method: 'lanczos',
+        width: CHARACTER_SHEET_PANEL.width, height: CHARACTER_SHEET_PANEL.height, crop: 'disabled',
+      } };
+    }
+  }
+  graph.top_row = { class_type: 'ImageStitch', inputs: { image1: ['front_portrait_decode', 0], image2: ['three_quarter_portrait_decode', 0], direction: 'right', match_image_size: false, spacing_width: 0, spacing_color: 'white' } };
+  graph.bottom_row = { class_type: 'ImageStitch', inputs: { image1: ['back_body_output', 0], image2: ['front_body_output', 0], direction: 'right', match_image_size: false, spacing_width: 0, spacing_color: 'white' } };
+  graph.quad = { class_type: 'ImageStitch', inputs: { image1: ['top_row', 0], image2: ['bottom_row', 0], direction: 'down', match_image_size: false, spacing_width: 0, spacing_color: 'white' } };
+  graph.save = { class_type: 'SaveImage', inputs: { images: ['quad', 0], filename_prefix: 'image/H3_CharacterSheet' } };
+  return graph;
 }
 
 export const LOCAL_REALISM_PROMPT = 'Edit <image1>: enhance only the selected skin with subtle natural photographic microtexture, realistic fine pores and softly varied skin tones. Keep the original person, identity, facial features, makeup colors, expression, lighting, hair and all unselected pixels unchanged. Avoid beauty filtering, waxy skin, airbrushing, contour changes and age changes.';
+
+// Derive each persisted stage from the comparison graph so model, prompt,
+// sampling and body-crop settings have one source of truth.
+export function buildCharacterSheetQueuePlan(options) {
+  const graph = buildCharacterSheetWorkflow(options);
+  const panelInput = (id) => `__H3_CHARACTER_SHEET_PANEL_${id}__`;
+  const collect = (source, output) => {
+    const result = {};
+    const visit = (id) => {
+      if (result[id]) return;
+      result[id] = structuredClone(source[id]);
+      for (const input of Object.values(source[id].inputs)) {
+        if (Array.isArray(input) && input.length === 2 && typeof input[0] === 'string' && source[input[0]] && Number.isInteger(input[1])) visit(input[0]);
+      }
+    };
+    visit(output);
+    return result;
+  };
+  const panels = CHARACTER_SHEET_VIEWS.map((view) => {
+    const source = structuredClone(graph);
+    const angle = view.id === 'three_quarter_portrait';
+    if (angle) {
+      // SaveImage -> upload -> LoadImage uses the same RGB boundary as a
+      // standalone edit, rather than retaining the prior decoded tensor.
+      source.angle_source = { class_type: 'LoadImage', inputs: { image: panelInput('front_portrait') } };
+      source[`${view.id}_encode`].inputs['images.image_1'] = ['angle_source', 0];
+    }
+    const output = `${view.id}_${view.id.endsWith('_body') ? 'output' : 'decode'}`;
+    source.save = { class_type: 'SaveImage', inputs: { images: [output, 0], filename_prefix: `image/H3_CharacterSheetPanel_${view.id}` } };
+    return { id: view.id, label: view.label, dependsOn: angle ? ['front_portrait'] : [], single: collect(source, 'save') };
+  });
+  const stitch = {};
+  for (const view of CHARACTER_SHEET_VIEWS) stitch[`${view.id}_load`] = { class_type: 'LoadImage', inputs: { image: panelInput(view.id) } };
+  for (const id of ['top_row', 'bottom_row', 'quad', 'save']) stitch[id] = structuredClone(graph[id]);
+  stitch.top_row.inputs.image1 = ['front_portrait_load', 0];
+  stitch.top_row.inputs.image2 = ['three_quarter_portrait_load', 0];
+  stitch.bottom_row.inputs.image1 = ['back_body_load', 0];
+  stitch.bottom_row.inputs.image2 = ['front_body_load', 0];
+  return { kind: 'characterSheet', memoryPolicy: 'preserve', panels, stitch };
+}
 
 export function buildLocalRealismWorkflow(options) {
   const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
@@ -424,6 +607,25 @@ export function resolveOutfitPanelSeed(options, panel, panels = resolveOutfitPan
   return Number(options.seed) + (OUTFIT_PANEL_SEED_OFFSETS[index] || 0);
 }
 
+// Fixed four-view framing. These are applied to the final composition, not
+// left to the diffusion model: a portrait is cropped above the chest, and a
+// headless body panel keeps its source top band so no head can be painted in.
+export const OUTFIT_PORTRAIT_CROP = [0, 0, 1, 0.72];
+export const OUTFIT_HEADLESS_GUARD = 0.12;
+
+function applyOutfitFraming(panel) {
+  const next = { ...panel };
+  if (next.role === 'portrait') {
+    if (!next.presentationCrop) next.presentationCrop = [...OUTFIT_PORTRAIT_CROP];
+    if (next.preserveOutsideRegion === undefined) next.preserveOutsideRegion = true;
+    if (!next.editRegion) next.editRegion = [0, 0.72, 1, 0.28];
+  } else {
+    if (next.preserveOutsideRegion === undefined) next.preserveOutsideRegion = true;
+    if (!next.editRegion) next.editRegion = [0, OUTFIT_HEADLESS_GUARD, 1, 1 - OUTFIT_HEADLESS_GUARD];
+  }
+  return next;
+}
+
 function normalizeCustomOutfitPanels(value) {
   let input = value;
   if (typeof input === 'string') {
@@ -442,19 +644,48 @@ function normalizeCustomOutfitPanels(value) {
     if (Object.values(bounds).some((number) => !Number.isFinite(number)) || bounds.width <= 0 || bounds.height <= 0 || bounds.x < 0 || bounds.y < 0 || bounds.x + bounds.width > 1.000001 || bounds.y + bounds.height > 1.000001) {
       throw new Error(`第 ${index + 1} 个面板边界无效：x/y/width/height 使用 0–1 比例，且不能超出原图。`);
     }
+    if (panel.preserveOutsideRegion !== undefined && typeof panel.preserveOutsideRegion !== 'boolean') throw new Error(`第 ${index + 1} 个面板的 preserveOutsideRegion 必须为布尔值。`);
+    if (panel.presentationCrop !== undefined && (!Array.isArray(panel.presentationCrop) || panel.presentationCrop.length !== 4 || panel.presentationCrop.some((n) => typeof n !== 'number' || !Number.isFinite(n)) || panel.presentationCrop[0] < 0 || panel.presentationCrop[1] < 0 || panel.presentationCrop[2] <= 0 || panel.presentationCrop[3] <= 0 || panel.presentationCrop[0] + panel.presentationCrop[2] > 1 || panel.presentationCrop[1] + panel.presentationCrop[3] > 1)) {
+      throw new Error(`第 ${index + 1} 个面板的 presentationCrop 必须为 [x, y, width, height]，使用 0–1 比例。`);
+    }
+    if (panel.editRegion !== undefined && (!Array.isArray(panel.editRegion) || panel.editRegion.length !== 4 || panel.editRegion.some((n) => typeof n !== 'number' || !Number.isFinite(n)) || panel.editRegion[0] < 0 || panel.editRegion[1] < 0 || panel.editRegion[2] <= 0 || panel.editRegion[3] <= 0 || panel.editRegion[0] + panel.editRegion[2] > 1 || panel.editRegion[1] + panel.editRegion[3] > 1)) {
+      throw new Error(`第 ${index + 1} 个面板的 editRegion 必须为面板内的 [x, y, width, height]，使用 0–1 比例。`);
+    }
+    // Missing editRegion is filled by applyOutfitFraming below (portrait:
+    // lower garment band; headless body: preserve the top neck/collar band).
+    if (panel.garmentPrompt !== undefined && (typeof panel.garmentPrompt !== 'string' || !panel.garmentPrompt.trim())) throw new Error(`第 ${index + 1} 个面板的 garmentPrompt 必须为非空文字，仅描述该面板可见的衣物。`);
     return {
       ...outfitLayoutPanel(id, role, view, bounds.x, bounds.y, bounds.width, bounds.height, Boolean(panel?.headless)),
       label: typeof panel?.label === 'string' && panel.label.trim() ? panel.label.trim() : `${OUTFIT_VIEWS[view].label}${role === 'portrait' ? '近景' : '全身'}`,
+      ...(panel.editRegion !== undefined ? { editRegion: [...panel.editRegion] } : {}),
+      ...(panel.preserveOutsideRegion !== undefined ? { preserveOutsideRegion: panel.preserveOutsideRegion } : {}),
+      ...(panel.presentationCrop !== undefined ? { presentationCrop: [...panel.presentationCrop] } : {}),
+      ...(panel.garmentPrompt !== undefined ? { garmentPrompt: panel.garmentPrompt.trim() } : {}),
     };
   });
 }
 
 export function resolveOutfitPanels(options = {}) {
   const layout = options.outfitLayout || 'legacy';
-  if (layout === 'legacy') return OUTFIT_PANELS;
-  if (layout === 'custom') return normalizeCustomOutfitPanels(options.outfitPanels);
+  if (layout === 'legacy') return OUTFIT_PANELS.map(applyOutfitFraming);
+  if (layout === 'custom') return normalizeCustomOutfitPanels(options.outfitPanels).map(applyOutfitFraming);
   if (!OUTFIT_LAYOUTS[layout]) throw new Error('未知的母图版面。');
-  return OUTFIT_LAYOUTS[layout].map((panel) => ({ ...panel }));
+  return OUTFIT_LAYOUTS[layout].map((panel) => applyOutfitFraming({ ...panel }));
+}
+
+function addNormalizedImageCrop(graph, image, crop, prefix = 'frame_') {
+  const key = (name) => `${prefix}${name}`;
+  const [x, y, width, height] = crop;
+  graph[key('size')] = { class_type: 'GetImageSize', inputs: { image } };
+  graph[key('x')] = { class_type: 'SimpleMath+', inputs: { a: [key('size'), 0], value: `round(a * ${x})` } };
+  graph[key('y')] = { class_type: 'SimpleMath+', inputs: { a: [key('size'), 1], value: `round(a * ${y})` } };
+  graph[key('width')] = { class_type: 'SimpleMath+', inputs: { a: [key('size'), 0], value: `max(1, round(a * ${width}))` } };
+  graph[key('height')] = { class_type: 'SimpleMath+', inputs: { a: [key('size'), 1], value: `max(1, round(a * ${height}))` } };
+  graph[key('crop')] = { class_type: 'ImageCrop', inputs: {
+    image,
+    x: [key('x'), 0], y: [key('y'), 0], width: [key('width'), 0], height: [key('height'), 0],
+  } };
+  return [key('crop'), 0];
 }
 
 function addOutfitPanelGeometry(graph, panel, prefix = '') {
@@ -470,11 +701,61 @@ function addOutfitPanelGeometry(graph, panel, prefix = '') {
   };
 }
 
+// Keep this mask binary at native resolution. The final composite must copy
+// untouched source pixels, even when a separate HD stage changes the whole image.
+function addOutfitRegionMask(graph, panel, width, height, prefix = 'edit_') {
+  const key = (name) => `${prefix}${name}`;
+  const [x, y, w, h] = panel.editRegion;
+  const math = (name, a, value, b) => {
+    graph[key(name)] = { class_type: 'SimpleMath+', inputs: { a, ...(b ? { b } : {}), value } };
+    return [key(name), 0];
+  };
+  const left = math('x', width, `min(a - 1, round(a * ${x}))`);
+  const top = math('y', height, `min(a - 1, round(a * ${y}))`);
+  const regionWidth = math('width', width, `max(1, round(a * ${x + w}) - b)`, left);
+  const regionHeight = math('height', height, `max(1, round(a * ${y + h}) - b)`, top);
+  graph[key('background')] = { class_type: 'SolidMask', inputs: { value: 0, width, height } };
+  graph[key('foreground')] = { class_type: 'SolidMask', inputs: { value: 1, width: regionWidth, height: regionHeight } };
+  graph[key('mask')] = { class_type: 'MaskComposite', inputs: { destination: [key('background'), 0], source: [key('foreground'), 0], x: left, y: top, operation: 'add' } };
+  return [key('mask'), 0];
+}
+
+function addOutfitRegionProtection(graph, panel, inputNode, isMuse) {
+  graph.edit_native_size = { class_type: 'GetImageSize', inputs: { image: [inputNode, 0] } };
+  const width = ['edit_native_size', 0], height = ['edit_native_size', 1];
+  const mask = addOutfitRegionMask(graph, panel, width, height);
+  if (isMuse) {
+    // Muse already VAE-encodes this exact crop for its identity patch. Reuse
+    // that encoded source as target, so its dimensions cannot drift.
+    graph.edit_latent = { class_type: 'SetLatentNoiseMask', inputs: { samples: ['source_latent', 0], mask } };
+    graph.patch.inputs.target_latent = ['edit_latent', 0];
+  } else {
+    // TextEncodeQwenImage21 chooses the reference dimensions from resolution.
+    // Its latent is spatially compressed by 16 (native nodes_qwen.py).
+    graph.edit_latent_size = { class_type: 'GetLatentSize', inputs: { latent: ['encode', 2] } };
+    for (const [name, index] of [['width', 0], ['height', 1]]) {
+      graph[`edit_sample_${name}`] = { class_type: 'SimpleMath+', inputs: { a: ['edit_latent_size', index], value: 'a * 16' } };
+    }
+    graph.edit_sample_source = { class_type: 'ImageScale', inputs: { image: [inputNode, 0], upscale_method: 'lanczos', width: ['edit_sample_width', 0], height: ['edit_sample_height', 0], crop: 'disabled' } };
+    graph.edit_sample_mask = { class_type: 'ResizeMask', inputs: { mask, width: ['edit_sample_width', 0], height: ['edit_sample_height', 0], keep_proportions: false, upscale_method: 'nearest-exact', crop: 'disabled' } };
+    graph.edit_source_latent = { class_type: 'VAEEncode', inputs: { pixels: ['edit_sample_source', 0], vae: ['vae', 0] } };
+    graph.edit_latent = { class_type: 'SetLatentNoiseMask', inputs: { samples: ['edit_source_latent', 0], mask: ['edit_sample_mask', 0] } };
+  }
+  graph.sample.inputs.latent_image = ['edit_latent', 0];
+  graph.edit_output_resize = { class_type: 'ImageScale', inputs: { image: ['decode', 0], upscale_method: 'lanczos', width, height, crop: 'disabled' } };
+  graph.edit_output = { class_type: 'ImageCompositeMasked', inputs: { destination: [inputNode, 0], source: ['edit_output_resize', 0], x: 0, y: 0, resize_source: false, mask } };
+  graph.save.inputs.images = ['edit_output', 0];
+}
+
 function buildGenericOutfitPrompt(panel, outfit, hasOutfitReference = false) {
   const view = OUTFIT_VIEWS[panel.view].prompt;
+  // A local portrait description comes from the current template/user. Never
+  // derive one by splitting a full outfit prompt or guessing reference crops.
+  const localPortraitGarment = panel.role === 'portrait' && panel.preserveOutsideRegion && panel.garmentPrompt;
+  if (localPortraitGarment) hasOutfitReference = false;
   const referenceInstruction = hasOutfitReference ? ' <image2> is ONLY a garment reference: reproduce its visible garment colors, neckline, fabric, details and footwear where applicable; ignore its person, skin, face, body shape, pose, camera and background.' : '';
   if (panel.role === 'portrait') {
-    return `Edit <image1> only: this is one exact ${view} CLOSE-UP PORTRAIT, not a half-body or outfit view. Image1 is authoritative for identity, camera, framing, head size and position, hair boundaries, pose and proportions. Preserve the exact original crop: the bottom edge must cut through the upper chest at exactly the same place as image1. Change only the visible upper-chest garment fabric and straps to ${outfit}; ignore every garment in the clothing reference that is outside this crop.${referenceInstruction} Preserve the exact face, facial landmark locations, expression, makeup, original hairstyle, accessories and background. The garment hem, waist, abdomen, hips, shorts, skirt and hands are outside the frame and must never appear. Do not zoom out, do not reveal more torso, do not expand the bust or shoulders. Remove only the visible original garment fabric. Same single view only, no collage, text, logos, extra people or duplicated limbs.`;
+    return `Edit <image1> only: this is one exact ${view} CLOSE-UP PORTRAIT, not a half-body or outfit view. Image1 is authoritative for identity, camera, framing, head size and position, hair boundaries, pose and proportions. Preserve the exact original crop: the bottom edge must cut through the upper chest at exactly the same place as image1. Change only the visible upper-chest garment fabric and straps to ${localPortraitGarment || outfit}; ignore every garment in the clothing reference that is outside this crop.${referenceInstruction} Preserve the exact face, facial landmark locations, expression, makeup, original hairstyle, accessories and background. The garment hem, waist, abdomen, hips, shorts, skirt and hands are outside the frame and must never appear. Do not zoom out, do not reveal more torso, do not expand the bust or shoulders. Remove only the visible original garment fabric. Same single view only, no collage, text, logos, extra people or duplicated limbs.`;
   }
   const cropInstruction = panel.headless
     ? `Preserve this exact neck-down ${view.toUpperCase()} body composition. The head is outside the image: no head, face, skull, scalp, ears, eyes, portrait or small face anywhere. Hair that was already hanging from above the frame must remain long and natural; do not create a head or hair bun at the top edge.`
@@ -482,7 +763,31 @@ function buildGenericOutfitPrompt(panel, outfit, hasOutfitReference = false) {
   return `Edit <image1> only. Image1 is the authoritative character, camera, framing, pose and proportions.${referenceInstruction} Change only the garments and footwear to ${outfit}. ${cropInstruction} Keep the original pose, shoulder width, waist circumference and height, torso length, hip width, long leg length and body silhouette in exactly the source positions. Never zoom out or extend the canvas. Keep the original hairstyle and hair length, skin tone, smooth skin texture, soft tonal transitions, knee shape and shading, calf contours and background. Do not enhance or invent musculature, tendons, veins, knee dimples or high-contrast anatomical shadows. Garments must follow the existing body without widening or slimming it. Both feet must remain naturally planted in their original positions with the original heel contact; do not raise the heels. Do not transfer the reference person body shape or shorten the legs. Remove the original garments completely with no leftover clothing. Same single view only, no collage, text, logos, extra people or duplicated limbs.`;
 }
 
-// Qwen edits every selected panel at its native aspect ratio. SeedVR2 runs in
+function addMuseOutfitEditing(graph, options, inputNode, prompt, seed, hasOutfitReference) {
+  graph.model = { class_type: 'UNETLoader', inputs: { unet_name: VERSIONED_IMAGE_MODELS.museV4, weight_dtype: 'default' } };
+  graph.identity = { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: IDENTITY_EDIT_MODEL.lora, strength_model: 1 } };
+  graph.text = { class_type: 'CLIPLoader', inputs: { clip_name: IMAGE_MODEL.clip, type: 'krea2', device: 'default' } };
+  graph.vae = { class_type: 'VAELoader', inputs: { vae_name: IMAGE_MODEL.vae } };
+  graph.crop_size = { class_type: 'GetImageSize', inputs: { image: [inputNode, 0] } };
+  graph.source_latent = { class_type: 'VAEEncode', inputs: { pixels: [inputNode, 0], vae: ['vae', 0] } };
+  graph.latent = { class_type: 'EmptySD3LatentImage', inputs: { width: ['crop_size', 0], height: ['crop_size', 1], batch_size: 1 } };
+  const referenceImages = { image: [inputNode, 0], ...(hasOutfitReference ? { image_b: ['outfit_reference', 0] } : {}) };
+  graph.positive = { class_type: 'Krea2EditGroundedEncode', inputs: { clip: ['text', 0], prompt, ...referenceImages, grounding_px: 768 } };
+  graph.negative = { class_type: 'Krea2EditGroundedEncode', inputs: { clip: ['text', 0], prompt: '', ...referenceImages, grounding_px: 768 } };
+  if (hasOutfitReference) graph.outfit_latent = { class_type: 'VAEEncode', inputs: { pixels: ['outfit_reference', 0], vae: ['vae', 0] } };
+  graph.patch = { class_type: 'Krea2EditModelPatch', inputs: {
+    model: ['identity', 0], source_latent: ['source_latent', 0], vae: ['vae', 0], source_image: [inputNode, 0], target_latent: ['latent', 0],
+    ...(hasOutfitReference ? { source_latent_b: ['outfit_latent', 0], source_image_b: ['outfit_reference', 0] } : {}),
+    ref_boost: hasOutfitReference ? 0.5 : 2, ref_boost_a: 2, fit_mode: 'fit',
+    ref_position: hasOutfitReference ? 'beside (right of target)' : 'aligned (trained)', ref_position_a: 'aligned (trained)',
+  } };
+  graph.sample = { class_type: 'KSampler', inputs: {
+    model: ['patch', 0], seed, steps: Number(options.museSteps || 16), cfg: 1.5, sampler_name: 'er_sde', scheduler: 'beta',
+    positive: ['positive', 0], negative: ['negative', 0], latent_image: ['latent', 0], denoise: Number(options.outfitDenoise ?? 1),
+  } };
+}
+
+// Every model edits selected panels at their native aspect ratio. SeedVR2 runs in
 // a separate prompt for every view, never on the combined character sheet.
 export function buildOutfitQuadWorkflow(options) {
   const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
@@ -490,14 +795,18 @@ export function buildOutfitQuadWorkflow(options) {
   if (!source) throw new Error('无抠图换装需要连接一张原始四视图。');
   const outfit = options.prompt?.trim();
   if (!outfit) throw new Error('请先选择或输入一套穿搭。');
+  const outfitModel = options.outfitModel || 'qwen21';
+  if (!['qwen21', 'qwen21_turbo', 'muse_v4'].includes(outfitModel)) throw new Error('未知的换装模型版本。');
+  if (outfitModel === 'qwen21_turbo' && Number(options.outfitDenoise ?? 1) !== 1) throw new Error('Qwen 2.1 Turbo 使用官方完整 8 步日程，重绘强度须为 1。');
   const layout = options.outfitLayout || 'legacy';
   const panel = resolveOutfitPanels(options).find((item) => item.id === (options.outfitPanel || options.panelId));
   if (!panel) throw new Error('未知的换装视图。');
+  const useOutfitReference = layout !== 'legacy' && Boolean(outfitReference) && !(panel.role === 'portrait' && panel.preserveOutsideRegion && panel.garmentPrompt);
   const graph = {
     source: { class_type: 'LoadImage', inputs: { image: source.name } },
   };
   if (layout !== 'legacy') {
-    if (outfitReference) graph.outfit_reference = { class_type: 'LoadImage', inputs: { image: outfitReference.name } };
+    if (useOutfitReference) graph.outfit_reference = { class_type: 'LoadImage', inputs: { image: outfitReference.name } };
     graph.size = { class_type: 'GetImageSize', inputs: { image: ['source', 0] } };
     const geometry = addOutfitPanelGeometry(graph, panel, 'panel_');
     graph.crop = { class_type: 'ImageCrop', inputs: { image: ['source', 0], ...geometry } };
@@ -515,12 +824,12 @@ export function buildOutfitQuadWorkflow(options) {
     graph.save = { class_type: 'SaveImage', inputs: { images: [inputNode, 0], filename_prefix: `image/H3_OutfitSingle_${panel.id}` } };
     return graph;
   }
-  const prompt = layout !== 'legacy' ? buildGenericOutfitPrompt(panel, outfit, Boolean(outfitReference)) : realizePortrait
+  const prompt = layout !== 'legacy' ? buildGenericOutfitPrompt(panel, outfit, useOutfitReference) : realizePortrait
     ? 'Edit <image1>: subtly convert this exact front-facing portrait toward realistic photography without redesigning the person. The original facial geometry is immutable: keep exactly the same eye width, eye height, eye spacing, eyebrow shape, nose width and length, lip width and fullness, cheek width, jawline, chin length, face contour and all facial proportions. Do not make the eyes smaller, face narrower, nose thinner or lips smaller. Preserve the original natural makeup colors, blush, eyeliner, lip color and expression. Preserve the long black half-up hairstyle, purple butterfly accessory, forehead ornament, necklace, clothing, pose, tight crop and gray background. Add only subtle photographic eye detail, individual hair strands and authentic skin microtexture with visible pores and fine facial hair. No beauty filter, no skin smoothing, no airbrushed or waxy skin, no face lifting, no contour reshaping, no makeup removal, no aging. Photorealistic studio portrait photography, no text.'
     : panel.id === 'bl'
       ? `Edit <image1>: this is the exact full-body back view. Preserve the source geometry, pose, narrow waist, waist height, torso length, hip width, long slim legs, gray background and very long black hairstyle. Change only the clothing and footwear to ${outfit}. The source bare midriff defines a very narrow waist: even when the new clothing covers it, keep exactly the same narrow waist circumference, silhouette and height. Garments must follow the body closely at the waist; no loose or padded waist, no straight-column cut, no added folds that widen the waist. Do not add a head or face, do not extend or reframe the canvas, do not redesign the body. Remove the original camisole and denim shorts completely. Photorealistic studio photography, no text.`
       : `Edit <image1>: this is the exact neck-down full-body front view. Preserve the source geometry, neck-down crop, pose, narrow waist, waist height, torso length, shoulder and hip width, long slim legs and gray background. Change only the clothing and footwear to ${outfit}. The source bare midriff defines a very narrow waist: even when the new clothing covers it, keep exactly the same narrow waist circumference, silhouette and height. Garments must follow the body closely at the waist; no loose or padded waist, no straight-column cut, no added folds that widen the waist. Do not add a head or face, do not extend or reframe the canvas, do not redesign the body. Remove the original camisole and denim shorts completely. Photorealistic studio photography, no text.`;
-  graph.model = { class_type: 'UNETLoader', inputs: { unet_name: QWEN21_EDIT_MODEL.unet, weight_dtype: 'default' } };
+  graph.model = { class_type: 'UNETLoader', inputs: { unet_name: outfitModel === 'qwen21_turbo' ? VERSIONED_IMAGE_MODELS.qwenTurbo : QWEN21_EDIT_MODEL.unet, weight_dtype: 'default' } };
   if (useRealism) graph.realism = { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: QWEN21_EDIT_MODEL.realismLora, strength_model: Number(options.loraStrength ?? 0.6) } };
   graph.text = { class_type: 'CLIPLoader', inputs: { clip_name: QWEN21_EDIT_MODEL.clip, type: 'qwen_image', device: 'default' } };
   graph.vae = { class_type: 'VAELoader', inputs: { vae_name: QWEN21_EDIT_MODEL.vae } };
@@ -528,7 +837,7 @@ export function buildOutfitQuadWorkflow(options) {
     clip: ['text', 0], prompt, negative_prompt: '',
     resolution: Number(options.qwenRefResolution || (layout === 'legacy' ? 1024 : 1536)),
     'images.image_1': [inputNode, 0],
-    ...(layout !== 'legacy' && outfitReference ? { 'images.image_2': ['outfit_reference', 0] } : {}),
+    ...(useOutfitReference ? { 'images.image_2': ['outfit_reference', 0] } : {}),
     vae: ['vae', 0],
   } };
   graph.sample = { class_type: 'KSampler', inputs: {
@@ -539,8 +848,16 @@ export function buildOutfitQuadWorkflow(options) {
     positive: ['encode', 0], negative: ['encode', 1], latent_image: ['encode', 2],
     denoise: Number(options.outfitDenoise ?? 1),
   } };
+  const seed = layout === 'legacy' ? Number(options.seed) : resolveOutfitPanelSeed(options, panel);
+  if (outfitModel === 'qwen21_turbo') addQwenTurboSampling(graph, [useRealism ? 'realism' : 'model', 0], seed);
+  if (outfitModel === 'muse_v4') {
+    delete graph.encode;
+    delete graph.realism;
+    addMuseOutfitEditing(graph, options, inputNode, prompt, seed, useOutfitReference);
+  }
   graph.decode = { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } };
   graph.save = { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: `image/H3_OutfitSingle_${panel.id}` } };
+  if (panel.preserveOutsideRegion) addOutfitRegionProtection(graph, panel, inputNode, outfitModel === 'muse_v4');
   return graph;
 }
 
@@ -569,8 +886,22 @@ export function buildOutfitStitchWorkflow(singleImages, options = {}) {
     const prefix = `${panel.id}_`;
     graph[`${prefix}load`] = { class_type: 'LoadImage', inputs: { image: singleImages[panel.id] } };
     const geometry = addOutfitPanelGeometry(graph, panel, prefix);
-    graph[`${prefix}resize`] = { class_type: 'ImageScale', inputs: { image: [`${prefix}load`, 0], upscale_method: 'lanczos', width: geometry.width, height: geometry.height, crop: 'disabled' } };
+    let panelImage = [`${prefix}load`, 0];
+    if (panel.preserveOutsideRegion && panel.presentationCrop) {
+      // Restore protected source pixels before reframing. The native mask is
+      // not in the cropped/resized portrait's coordinate space.
+      graph[`${prefix}protected_original`] = { class_type: 'ImageCrop', inputs: { image: ['source', 0], ...geometry } };
+      graph[`${prefix}protected_resize`] = { class_type: 'ImageScale', inputs: { image: panelImage, upscale_method: 'lanczos', width: geometry.width, height: geometry.height, crop: 'disabled' } };
+      const mask = addOutfitRegionMask(graph, panel, geometry.width, geometry.height, `${prefix}edit_`);
+      graph[`${prefix}protected`] = { class_type: 'ImageCompositeMasked', inputs: { destination: [`${prefix}protected_original`, 0], source: [`${prefix}protected_resize`, 0], x: 0, y: 0, resize_source: false, mask } };
+      panelImage = [`${prefix}protected`, 0];
+    }
+    const framed = panel.presentationCrop ? addNormalizedImageCrop(graph, panelImage, panel.presentationCrop, `${prefix}frame_`) : panelImage;
+    graph[`${prefix}resize`] = { class_type: 'ImageScale', inputs: { image: framed, upscale_method: 'lanczos', width: geometry.width, height: geometry.height, crop: panel.presentationCrop ? 'center' : 'disabled' } };
     graph[`${prefix}composite`] = { class_type: 'ImageCompositeMasked', inputs: { destination, source: [`${prefix}resize`, 0], x: geometry.x, y: geometry.y, resize_source: false } };
+    // A framed portrait is already hard-cropped above the chest; applying the
+    // old full-panel mask after the crop would put the mask in the wrong space.
+    if (panel.preserveOutsideRegion && !panel.presentationCrop) graph[`${prefix}composite`].inputs.mask = addOutfitRegionMask(graph, panel, geometry.width, geometry.height, `${prefix}edit_`);
     destination = [`${prefix}composite`, 0];
   }
   graph.save = { class_type: 'SaveImage', inputs: { images: destination, filename_prefix: 'image/H3_OutfitQuad' } };
@@ -581,8 +912,10 @@ export function buildImageHdWorkflow(options) {
   const guide = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
   if (!guide) throw new Error('图片高清需要连接一张本地生成或导入的图片。');
   const multiplier = Number(options.imageScale || 1.5);
+  const upscaleModel = options.upscaleModel || 'seedvr2_3b';
+  if (!['seedvr2_3b', 'seedvr2_7b'].includes(upscaleModel)) throw new Error('未知的 SeedVR2 模型版本。');
   return {
-    model: { class_type: 'UNETLoader', inputs: { unet_name: IMAGE_MODEL.hdUnet, weight_dtype: 'default' } },
+    model: { class_type: 'UNETLoader', inputs: { unet_name: upscaleModel === 'seedvr2_7b' ? VERSIONED_IMAGE_MODELS.seedvr7b : IMAGE_MODEL.hdUnet, weight_dtype: 'default' } },
     vae: { class_type: 'VAELoader', inputs: { vae_name: IMAGE_MODEL.hdVae } },
     source: { class_type: 'LoadImage', inputs: { image: guide.name } },
     alpha: { class_type: 'JoinImageWithAlpha', inputs: { image: ['source', 0], alpha: ['source', 1] } },
@@ -928,7 +1261,7 @@ export function extractVideos(historyEntry) {
 }
 
 export function extractImages(historyEntry) {
-  return extractMedia(historyEntry, 'image').filter((file) => /^H3_(?:Image(?:_HD)?|MOSS_Image|IdentityV2|Qwen21Edit|LocalRealism|OutfitQuad|OutfitSingle|OutfitHD)/i.test(file.filename));
+  return extractMedia(historyEntry, 'image').filter((file) => /^H3_(?:Image(?:_HD)?|MOSS_Image|IdentityV2|Qwen21Edit|CharacterSheet|LocalRealism|OutfitQuad|OutfitSingle|OutfitHD)/i.test(file.filename));
 }
 
 async function waitForOutfitPrompt(promptId) {
@@ -942,13 +1275,56 @@ async function waitForOutfitPrompt(promptId) {
   }
 }
 
-export function shouldUpscaleOutfitImage(width, height) {
+function outfitUpscalePolicy(options) {
+  const policy = options.outfitUpscale || 'auto';
+  if (!['auto', 'off', 'seedvr2_7b'].includes(policy)) throw new Error('未知的换装高清策略。');
+  return policy;
+}
+
+export function shouldUpscaleOutfitImage(width, height, policy = 'auto') {
   const longEdge = Math.max(Number(width), Number(height));
   if (!Number.isFinite(longEdge) || longEdge <= 0) throw new Error('无法读取换装单图尺寸，已停止而不是猜测是否高清。');
+  if (!['auto', 'off', 'seedvr2_7b'].includes(policy)) throw new Error('未知的换装高清策略。');
+  if (policy === 'off') return false;
+  if (policy === 'seedvr2_7b') return true;
   return longEdge < 1000;
 }
 
+function buildOutfitPanelHdWorkflow(options, panel, inputName, panelIndex) {
+  const upscalePolicy = outfitUpscalePolicy(options);
+  const graph = buildImageHdWorkflow({
+    references: [{ kind: 'image', slot: 'guide', name: inputName }],
+    upscaleModel: upscalePolicy === 'seedvr2_7b' ? 'seedvr2_7b' : 'seedvr2_3b',
+    imageScale: Number(options.outfitHdScale || 1.5),
+    seed: Number(options.seed) + panelIndex,
+    outputPrefix: `image/H3_OutfitHD_${panel.id}`,
+  });
+  if (panel.preserveOutsideRegion) {
+    const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
+    graph.original_source = { class_type: 'LoadImage', inputs: { image: source.name } };
+    let geometry;
+    if ((options.outfitLayout || 'legacy') === 'legacy') {
+      // Legacy panel bounds are pixels on the normalized 768×1344 sheet,
+      // then scaled to the same single-panel size used by the edit stage.
+      graph.original_sheet = { class_type: 'ImageScale', inputs: { image: ['original_source', 0], upscale_method: 'lanczos', width: 768, height: 1344, crop: 'disabled' } };
+      graph.original_panel_crop = { class_type: 'ImageCrop', inputs: { image: ['original_sheet', 0], x: panel.x, y: panel.y, width: panel.width, height: panel.height } };
+      graph.original_crop = { class_type: 'ImageScale', inputs: { image: ['original_panel_crop', 0], upscale_method: 'lanczos', width: panel.outputWidth, height: panel.outputHeight, crop: 'disabled' } };
+      geometry = { width: panel.outputWidth, height: panel.outputHeight };
+    } else {
+      graph.size = { class_type: 'GetImageSize', inputs: { image: ['original_source', 0] } };
+      geometry = addOutfitPanelGeometry(graph, panel, 'original_panel_');
+      graph.original_crop = { class_type: 'ImageCrop', inputs: { image: ['original_source', 0], ...geometry } };
+    }
+    const mask = addOutfitRegionMask(graph, panel, geometry.width, geometry.height);
+    graph.edit_hd_resize = { class_type: 'ImageScale', inputs: { image: ['postprocess', 0], upscale_method: 'lanczos', width: geometry.width, height: geometry.height, crop: 'disabled' } };
+    graph.edit_hd_output = { class_type: 'ImageCompositeMasked', inputs: { destination: ['original_crop', 0], source: ['edit_hd_resize', 0], x: 0, y: 0, resize_source: false, mask } };
+    graph.save.inputs.images = ['edit_hd_output', 0];
+  }
+  return graph;
+}
+
 export function buildOutfitQueuePlan(options) {
+  const upscalePolicy = outfitUpscalePolicy(options);
   const selectedPanel = options.outfitPanel || options.panelId || null;
   const availablePanels = resolveOutfitPanels(options);
   const panels = selectedPanel ? availablePanels.filter((panel) => panel.id === selectedPanel) : availablePanels;
@@ -960,21 +1336,17 @@ export function buildOutfitQueuePlan(options) {
     return {
       id: panel.id, label: panel.label, preserve: Boolean(panel.preserve),
       single: buildOutfitQuadWorkflow({ ...options, outfitPanel: panel.id }),
-      hd: buildImageHdWorkflow({
-        references: [{ kind: 'image', slot: 'guide', name: '__H3_OUTFIT_CURRENT__' }],
-        imageScale: Number(options.outfitHdScale || 1.5),
-        seed: Number(options.seed) + panelIndex,
-        outputPrefix: `image/H3_OutfitHD_${panel.id}`,
-      }),
+      hd: upscalePolicy === 'off' ? null : buildOutfitPanelHdWorkflow(options, panel, '__H3_OUTFIT_CURRENT__', panelIndex),
     };
   });
   return {
-    kind: 'outfit', selectedPanel, panels: planPanels,
+    kind: 'outfit', upscalePolicy, selectedPanel, panels: planPanels,
     stitch: selectedPanel ? null : buildOutfitStitchWorkflow(panelImages, options),
   };
 }
 
 export async function runOutfitQuadWorkflow(options, clientId, onProgress = () => {}) {
+  const upscalePolicy = outfitUpscalePolicy(options);
   const hdImages = {};
   const selectedPanel = options.outfitPanel || options.panelId;
   const availablePanels = resolveOutfitPanels(options);
@@ -999,26 +1371,21 @@ export async function runOutfitQuadWorkflow(options, clientId, onProgress = () =
   for (const [index, panel] of panels.entries()) {
     const panelIndex = availablePanels.findIndex((item) => item.id === panel.id);
     const baseProgress = index * 90 / panels.length;
-    onProgress({ status: 'running', stage: `${panel.preserve ? '保留原图' : '千问独立换装'} ${index + 1}/${panels.length} · ${panel.label}`, progress: baseProgress });
+    onProgress({ status: 'running', stage: `${panel.preserve ? '保留原图' : options.outfitModel === 'muse_v4' ? 'Muse V4 独立换装' : '千问独立换装'} ${index + 1}/${panels.length} · ${panel.label}`, progress: baseProgress });
     const singleQueued = await queuePrompt(buildOutfitQuadWorkflow({ ...options, outfitPanel: panel.id }), clientId);
     const singleHistory = await waitForOutfitPrompt(singleQueued.prompt_id);
     const single = await uploadResult(extractImages(singleHistory).find((file) => file.filename.startsWith(`H3_OutfitSingle_${panel.id}_`)), `${panel.label}单图`);
     await freeComfyMemory();
 
-    if (!shouldUpscaleOutfitImage(single.width, single.height)) {
+    if (!shouldUpscaleOutfitImage(single.width, single.height, upscalePolicy)) {
       hdImages[panel.id] = single.name;
       onProgress({ status: 'running', stage: `原生 ${single.width} × ${single.height} · 无需高清 ${index + 1}/${panels.length} · ${panel.label}`, progress: (index + 1) * 90 / panels.length });
       if (selectedPanel) return { prompt_id: singleQueued.prompt_id, history: singleHistory };
       continue;
     }
 
-    onProgress({ status: 'running', stage: `低于 1K · 独立高清 ${index + 1}/${panels.length} · ${panel.label}`, progress: baseProgress + 45 / panels.length });
-    const hdQueued = await queuePrompt(buildImageHdWorkflow({
-      references: [{ kind: 'image', slot: 'guide', name: single.name }],
-      imageScale: Number(options.outfitHdScale || 1.5),
-      seed: Number(options.seed) + panelIndex,
-      outputPrefix: `image/H3_OutfitHD_${panel.id}`,
-    }), clientId);
+    onProgress({ status: 'running', stage: `${upscalePolicy === 'seedvr2_7b' ? 'SeedVR2 7B' : '低于 1K'} · 独立高清 ${index + 1}/${panels.length} · ${panel.label}`, progress: baseProgress + 45 / panels.length });
+    const hdQueued = await queuePrompt(buildOutfitPanelHdWorkflow(options, panel, single.name, panelIndex), clientId);
     const hdHistory = await waitForOutfitPrompt(hdQueued.prompt_id);
     const hdFile = extractImages(hdHistory).find((file) => file.filename.startsWith(`H3_OutfitHD_${panel.id}_`));
     const hd = await uploadResult(hdFile, `${panel.label}高清图`);

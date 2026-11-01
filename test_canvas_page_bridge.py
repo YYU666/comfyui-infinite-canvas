@@ -68,6 +68,41 @@ class CanvasPageBridgeTests(unittest.TestCase):
         self.assert_code("CANVAS_CAPACITY", lambda: self.submit("op_four"))
         self.assertEqual(self.submit()["status"], "expired", 'capacity must not destroy dedup history')
 
+    def test_launcher_can_create_or_open_projects_but_cannot_generate(self):
+        page = {**self.page, "projectId": "launcher"}
+        self.bridge.heartbeat(page)
+        active = self.bridge.current()
+        self.assertEqual(active["projectId"], "launcher")
+        request = {**active, "opId": "create_project", "tool": "canvas_create_project", "args": {"name": "Comparison"}}
+        self.assertEqual(self.bridge.submit(request)["status"], "queued")
+        command = self.bridge.heartbeat(page)["command"]
+        self.assertEqual(command["tool"], "canvas_create_project")
+        self.bridge.complete({**command, "result": {"ok": True, "project": {"id": "prj_new"}}})
+        self.assertEqual(self.bridge.submit(request)["status"], "done")
+        self.assert_code("BAD_REQUEST", lambda: self.bridge.submit({**active, "opId": "not_a_canvas",
+                         "tool": "canvas_generate_node", "args": {"nodeId": "g1", "wait": False}}))
+        self.assert_code("BAD_REQUEST", lambda: self.bridge.heartbeat({**page, "sessionId": "bad_page", "projectId": "other"}))
+
+    def test_open_project_command_stays_bound_to_original_page(self):
+        self.bridge.heartbeat(self.page)
+        request = {**self.bridge.current(), "opId": "open_project", "tool": "canvas_open_project", "args": {"projectId": "prj_two"}}
+        self.bridge.submit(request)
+        command = self.bridge.heartbeat(self.page)["command"]
+        self.assert_code("CANVAS_SESSION_CHANGED", lambda: self.bridge.complete({**command,
+                         "projectId": "prj_two", "result": {"ok": True}}))
+        self.assertEqual(self.bridge.complete({**command, "result": {"ok": True}})["status"], "done")
+
+    def test_inspect_node_dispatches_and_returns_only_confirmed_ack(self):
+        self.bridge.heartbeat(self.page)
+        result = self.submit('inspect', tool='canvas_inspect_node', args={'nodeId': 'g1', 'stage': 'three_quarter_portrait'})
+        self.assertEqual(result['status'], 'queued')
+        command = self.bridge.heartbeat(self.page)['command']
+        self.assertEqual(command['tool'], 'canvas_inspect_node')
+        self.assertEqual(self.bridge.get('inspect')['status'], 'dispatched')
+        result = self.bridge.complete({**command, 'result': {'ok': True, 'opened': True, 'nodeCount': 10, 'linkCount': 12}})
+        self.assertEqual(result['result']['nodeCount'], 10)
+        self.assertIsNone(self.bridge.heartbeat(self.page)['command'])
+
 
 if __name__ == '__main__':
     unittest.main()

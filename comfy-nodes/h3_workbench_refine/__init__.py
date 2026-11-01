@@ -9,6 +9,8 @@ import importlib
 
 import torch
 
+WEB_DIRECTORY = "./web"
+
 
 class H3PortraitSkinMask:
     @classmethod

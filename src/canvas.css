@@ -422,3 +422,19 @@
   .mask-editor-toolbar { flex-wrap: wrap; gap: 6px 12px; }
   .mask-editor-footer > span { max-width: 55%; }
 }
+/* Workflow inspection stays inside the current canvas and never changes its viewport. */
+.workflow-inspector-backdrop { position: fixed; inset: 0; z-index: 10000; background: #08090bd9; padding: 22px; display: flex; }
+.workflow-inspector { display: flex; flex-direction: column; width: 100%; min-height: 0; color: #ececf0; background: #18191d; border: 1px solid #44454e; border-radius: 14px; overflow: hidden; outline: none; box-shadow: 0 16px 80px #0009; }
+.workflow-inspector header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 18px; }
+.workflow-inspector header strong { font-size: 16px; }
+.workflow-inspector p { margin: 6px 18px 12px; font-size: 12px; color: #b5b6c0; }
+.workflow-inspector header p { margin: 5px 0 0; }
+.workflow-inspector button { background: #292a32; border: 1px solid #454752; border-radius: 6px; color: #eeeef4; padding: 7px 12px; cursor: pointer; }
+.workflow-inspector button:hover { background: #383a46; }
+.workflow-inspector nav { display: flex; gap: 7px; padding: 0 18px 10px; flex-wrap: wrap; }
+.workflow-inspector nav button[aria-pressed="true"] { background: #dedee7; color: #16171c; }
+.workflow-inspector-state { display: flex; align-items: center; justify-content: space-between; padding: 0 18px 8px; font-size: 12px; }
+.workflow-inspector iframe { flex: 1; width: 100%; min-height: 200px; border: 0; background: #171719; }
+.workflow-inspector .workflow-inspector-hidden { visibility: hidden; }
+.workflow-inspector p.workflow-inspector-error { color: #ffb7a9; }
+.workflow-inspector-confirmation { font-size: 11px; color: #b5b6c0; padding: 5px 18px; }

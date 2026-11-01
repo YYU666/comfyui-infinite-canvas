@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, resolveCanvasCompletion, takeOutputIdentity } from './src/generation-queue.js';
+import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, resolveCanvasCompletion, shouldReconcileCompletion, takeOutputIdentity } from './src/generation-queue.js';
 
 const node = (data = {}) => ({ id: 'generator-1', type: 'generator', data: { status: 'idle', progress: 0, ...data } });
 const job = (data = {}) => ({ id: 'job-1', projectId: 'project-1', nodeId: 'generator-1', status: 'queued', progress: 0, comfyPromptId: null, ...data });
@@ -10,6 +10,27 @@ const job = (data = {}) => ({ id: 'job-1', projectId: 'project-1', nodeId: 'gene
   assert.equal(queueOwnsCompletion(node({ queueJobId: 'job-video', promptId: 'prompt-video' })), true);
   assert.equal(queueOwnsStage(node({ queueJobId: 'job-video', mode: 'video' })), false);
   assert.equal(queueOwnsStage(node({ queueJobId: 'job-outfit', mode: 'outfitEdit', promptId: 'prompt-stage' })), true);
+  assert.equal(queueOwnsStage(node({ queueJobId: 'job-sheet', mode: 'characterSheet', promptId: 'prompt-stage' })), true);
+  assert.equal(queueOwnsStage(node({ mode: 'characterSheet', promptId: 'prompt-direct' })), false);
+}
+
+{
+  const sheet = node({ mode: 'characterSheet', queueJobId: 'job-1', status: 'running', promptId: 'panel-1' });
+  for (const phase of ['single', 'stitch']) {
+    const action = queueJobAction(sheet, job({ kind: 'characterSheet', status: 'running', progress: phase === 'stitch' ? 94 : 22.5, comfyPromptId: 'panel-2', planState: { phase }, history: { status: { completed: true } } }));
+    assert.equal(action.type, 'patch', 'a completed stage history never delivers an unfinished sheet');
+  }
+  assert.equal(shouldReconcileCompletion(sheet), false, 'history reconciliation cannot complete an intermediate panel');
+  assert.equal(queueJobAction(sheet, job({ kind: 'characterSheet', status: 'done', comfyPromptId: 'stitch-5', history: { status: { completed: true } } })).type, 'complete');
+}
+
+{
+  assert.equal(shouldReconcileCompletion(node()), false, 'idle nodes without a prompt are ignored');
+  assert.equal(shouldReconcileCompletion(node({ promptId: 'prompt-1', status: 'running' })), true);
+  assert.equal(shouldReconcileCompletion(node({ promptId: 'prompt-1', status: 'done' })), false);
+  assert.equal(shouldReconcileCompletion(node({ queueJobId: 'job-1', promptId: 'prompt-1', status: 'running' })), false, 'queue SSE owns normal active completion');
+  assert.equal(shouldReconcileCompletion(node({ queueJobId: 'job-1', promptId: 'prompt-1', status: 'error', stage: '生成失败' })), false, 'real execution failures are not retried');
+  assert.equal(shouldReconcileCompletion(node({ queueJobId: 'job-1', promptId: 'prompt-1', status: 'error', stage: '读取结果失败' })), true, 'queue result-read failures recover from history without generating again');
 }
 
 {

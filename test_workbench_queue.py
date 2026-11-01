@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -263,6 +264,21 @@ class QueueTests(unittest.TestCase):
                 self.assertEqual(calls[0], ("/queue", None))
                 self.assertEqual(calls[1], ("/queue", {"delete": ["target"]}))
                 self.assertEqual(any(path == "/interrupt" for path, _ in calls), expected_interrupt)
+
+    def test_comfy_empty_success_response_is_accepted(self):
+        class EmptyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return b""
+
+        adapter = ComfyQueueAdapter()
+        with patch("urllib.request.urlopen", return_value=EmptyResponse()):
+            self.assertEqual(adapter._request("/queue", {"delete": ["target"]}), {})
 
     def test_comfy_preflight_checks_nodes_and_models_without_submit(self):
         adapter = ComfyQueueAdapter()

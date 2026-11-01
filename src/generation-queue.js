@@ -37,7 +37,16 @@ export function queueOwnsCompletion(node) {
 }
 
 export function queueOwnsStage(node) {
-  return queueOwnsCompletion(node) && node.data.mode === 'outfitEdit';
+  return queueOwnsCompletion(node) && ['outfitEdit', 'characterSheet'].includes(node.data.mode);
+}
+
+/** Completed queue jobs normally arrive by SSE, but read failures must also be retried from history. */
+export function shouldReconcileCompletion(node) {
+  const data = node?.data;
+  if (!data?.promptId) return false;
+  const readFailed = data.status === 'error' && data.stage === '读取结果失败';
+  if (queueOwnsCompletion(node)) return readFailed;
+  return ['queued', 'running', 'finishing'].includes(data.status) || readFailed;
 }
 
 /** Map one persisted backend job onto a generator without regressing newer runtime state. */

@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -26,6 +29,16 @@ TOOLS = [
         "ops": {"type": "array", "items": {"type": "object"}}}}},
     {"name": "wait", "description": "等待任务终态并返回新增 Take，不返回全量。", "inputSchema": {"type": "object", "required": ["projectId", "jobs"], "properties": {
         "projectId": {"type": "string"}, "jobs": {"type": "array", "items": {"type": "string"}, "maxItems": 20}, "timeoutMs": {"type": "integer", "maximum": 600000}}}},
+    {"name": "canvas_current", "description": "读取当前已打开、可操作的画布页面；不会启动浏览器。", "inputSchema": {"type": "object", "properties": {
+        "projectId": {"type": "string", "description": "可选，只匹配这个项目。"}}}},
+    {"name": "canvas_command", "description": "把画布工具命令提交给当前页面；只入队，不等待结果。不会启动浏览器或另开画布。", "inputSchema": {"type": "object", "required": ["projectId", "tool", "args"], "properties": {
+        "projectId": {"type": "string"}, "tool": {"type": "string"}, "args": {"type": "object"},
+        "opId": {"type": "string"}, "epoch": {"type": "string"}, "sessionId": {"type": "string"}}}},
+    {"name": "canvas_call", "description": "在当前已打开画布执行一个工具并等待结果；不启动浏览器、不另开画布。生成类工具必须 wait:false。", "inputSchema": {"type": "object", "required": ["projectId", "tool", "args"], "properties": {
+        "projectId": {"type": "string"}, "tool": {"type": "string"}, "args": {"type": "object"},
+        "opId": {"type": "string"}, "timeoutMs": {"type": "integer", "maximum": 600000}}}},
+    {"name": "canvas_result", "description": "读取当前页面命令的结果；不重放已派发的命令。", "inputSchema": {"type": "object", "required": ["opId"], "properties": {
+        "opId": {"type": "string"}}}},
 ]
 
 
@@ -71,6 +84,45 @@ class WorkbenchClient:
 
     def call_tool(self, name, arguments):
         arguments = dict(arguments or {})
+        if name == "canvas_current":
+            project_id = arguments.get("projectId")
+            query = f"?{urllib.parse.urlencode({'projectId': project_id})}" if project_id else ""
+            return self.request("GET", f"/api/agent/canvas/current{query}")
+        if name == "canvas_result":
+            op_id = str(arguments.get("opId") or "")
+            if not op_id or len(op_id) > 100:
+                raise ValueError("opId 无效。")
+            return self.request("GET", f"/api/agent/canvas/commands/{urllib.parse.quote(op_id)}")
+        if name in {"canvas_command", "canvas_call"}:
+            project_id = str(arguments.pop("projectId") or "")
+            tool = str(arguments.pop("tool") or "")
+            args = arguments.pop("args")
+            if not project_id or not tool or not isinstance(args, dict):
+                raise ValueError("canvas_command 需要 projectId、tool 和 args。")
+            routing = {key: arguments[key] for key in ("epoch", "sessionId") if key in arguments}
+            if len(routing) < 2:
+                current = self.request("GET", f"/api/agent/canvas/current?{urllib.parse.urlencode({'projectId': project_id})}")
+                routing = {**current, **routing}
+            op_id = str(arguments.pop("opId", None) or uuid.uuid4().hex)
+            payload = {
+                "epoch": routing["epoch"], "sessionId": routing["sessionId"], "projectId": project_id,
+                "opId": op_id, "tool": tool, "args": args,
+            }
+            submitted = self.request("POST", "/api/agent/canvas/commands", payload)
+            if name == "canvas_command":
+                return submitted
+            timeout_ms = min(600000, max(1000, int(arguments.get("timeoutMs", 120000))))
+            deadline = time.monotonic() + timeout_ms / 1000
+            while True:
+                result = self.request("GET", f"/api/agent/canvas/commands/{urllib.parse.quote(op_id)}")
+                status = result.get("status")
+                if status == "done":
+                    return {"command": result, "result": result.get("result")}
+                if status in {"expired", "unknown"}:
+                    raise RuntimeError(f"当前画布命令未完成，状态：{status}；不会自动重放。")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"当前画布命令超时：{op_id}；可用 canvas_result 继续查询。")
+                time.sleep(0.5)
         project_id = arguments.pop("projectId")
         base = f"/api/agent/projects/{project_id}"
         if name == "state":
