@@ -100,13 +100,25 @@ try {
  await dialog.waitFor();await dialog.getByRole('button',{name:'关闭添加工作流到画布'}).click();
  await remote.waitForFunction(()=>received.some(message=>message.requestId==='cancel-review'&&message.ok===false));
  await panel.getByRole('button',{name:'关闭节点库'}).click();
+ await panel.waitFor({state:'hidden'});
+ await dialog.waitFor({state:'hidden'});
+ await page.waitForFunction(()=>!document.querySelector('.neo-canvas-wrap').inert);
  // Existing unresolved nodes expose a later dependency check without importing another copy.
- const custom=page.locator('.react-flow__node').filter({has:page.locator('.custom-workflow-node')}).first();
- await custom.getByRole('button',{name:'检查依赖'}).evaluate(button=>button.click());await dialog.waitFor();await dialog.getByRole('button',{name:'关闭添加工作流到画布'}).click();
+ const focusNode=async(nodeId)=>{
+  const result=await page.evaluate(async(id)=>JSON.parse(await window.fixtureTools.get('canvas_focus_node').execute({nodeId:id})),nodeId);
+  assert.equal(result.ok,true,'fixture must focus the existing node through the current canvas bridge');
+ };
+ const customId=project.canvas.nodes.find(node=>node.data.mode==='customWorkflow').id;
+ await focusNode(customId);
+ const custom=page.locator(`.react-flow__node[data-id="${customId}"]`);
+ await custom.getByRole('button',{name:'检查依赖'}).click();
+ await dialog.waitFor();await dialog.getByRole('button',{name:'关闭添加工作流到画布'}).click();
+ await dialog.waitFor({state:'hidden'});
+ await page.waitForFunction(()=>!document.querySelector('.neo-canvas-wrap').inert);
  // Share Qwen from its node footer: local preview first, no remote upload and no image upload.
- await page.evaluate(async()=>{const tool=window.fixtureTools.get('canvas_focus_node');if(tool)await tool.execute({nodeId:'qwen'});});
- await page.locator('[data-id="qwen"]').evaluate(element=>element.dispatchEvent(new MouseEvent('click',{bubbles:true})));
- await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).evaluate(button=>button.click());
+ await focusNode('qwen');
+ await page.locator('.react-flow__node[data-id="qwen"]').click();
+ await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
  const share=page.getByRole('dialog',{name:'上传节点到节点库'});await share.waitFor();
  assert.equal(await share.getByRole('checkbox').isChecked(),false);
  await share.getByRole('button',{name:'整理依赖并预览'}).click();
