@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, buildCharacterSwapWorkflow, buildHdRefineWorkflow,
-  buildImageWorkflow, buildImageHdWorkflow, buildIdentityEditWorkflow, buildQwen21EditWorkflow, buildCharacterSheetQueuePlan, buildLocalRealismWorkflow, buildOutfitQueuePlan, resolveOutfitPanels, OUTFIT_PRESETS, QWEN_OUTFIT_PRESETS, cancelGeneration, createClientId, enqueueGeneration, extractImages, extractVideos,
+  buildImageWorkflow, buildImageHdWorkflow, buildIdentityEditWorkflow, buildQwen21EditWorkflow, buildCharacterSheetQueuePlan, buildLocalRealismWorkflow, buildOutfitQueuePlan, resolveOutfitPanels, OUTFIT_PRESETS, cancelGeneration, createClientId, enqueueGeneration, extractImages, extractVideos,
   freeComfyMemory, getHardwareMetrics, getHistory, getMossDependencyStatus, getSystemStats, importVideoFromUrl, openProgressSocket, openQueueEvents,
   openFileLocation as requestFileLocation, optimizePrompt as requestPromptOptimization,
   resolveDimensions, resolveImageDimensions, uploadMedia,
@@ -26,6 +26,8 @@ import MaskEditor from './MaskEditor';
 import ImageLightbox from './ImageLightbox';
 import { useCanvasMcp, NODE_PRESETS, describeNodeModels } from './canvas-mcp';
 import WorkflowInspector from './WorkflowInspector';
+import ReferenceLibrary, { REFERENCE_LIBRARIES } from './ReferenceLibrary';
+import { flushSync } from 'react-dom';
 import { inspectionQuery, canInspectNode } from './workflow-inspector';
 import CanvasProjectMenu from './CanvasProjectMenu';
 import CreativePanel from './CreativePanel';
@@ -386,7 +388,6 @@ function GeneratorNode({ id, data, selected }) {
           {[['x', 'X'], ['y', 'Y'], ['width', '宽'], ['height', '高']].map(([key, label]) => <label key={key}>{label}<input aria-label={`面板 ${index + 1} ${label} 百分比`} type="number" min="0" max="100" step="0.1" value={Number(((panel[key] || 0) * 100).toFixed(3))} disabled={running} onChange={(event) => updateCustomOutfitPanel(panel.id, key, event.target.value)} /></label>)}
         </div>)}</div>}
       </div>}
-      {mode === 'qwenEdit' && <div className="reference-strip outfit-presets" aria-label="Qwen 穿搭预设">{Object.entries(QWEN_OUTFIT_PRESETS).map(([key, preset]) => <button key={key} className={data.outfitPreset === key ? 'reference-chip active' : 'reference-chip'} disabled={running} onClick={() => updateNode(id, { outfitPreset: key, prompt: preset.prompt })}>{preset.label}</button>)}</div>}
       {mode !== 'imageUpscale' && <PromptEditor
         ref={promptEditorRef}
         value={data.prompt || ''}
@@ -438,6 +439,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const [creativeOpen, setCreativeOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [workflowInspection, setWorkflowInspection] = useState(null);
+  const [referenceLibrary, setReferenceLibrary] = useState(null);
+  const [referenceLibraryTab, setReferenceLibraryTab] = useState(null);
+  const referenceImportBusyRef = useRef(false);
   const revisionRef = useRef(project.revision);
   const projectRef = useRef(project);
   projectRef.current = project;
@@ -585,6 +589,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     catch (error) { setProjectError(error.message); }
   };
   const prepareProjectSwitch = async (id, name, { allowReadOnly = false } = {}) => {
+    if (referenceLibrary) throw new Error('请关闭参考库后再切换项目。');
     if (project.readOnly && !allowReadOnly) throw new Error('当前画布为只读，不能通过 Agent 切换项目。');
     if (switchingRef.current) throw new Error('正在切换项目，请稍后重试。');
     if (hasActiveTask()) throw new Error('任务进行中，请等待完成后再新建或切换项目。');
@@ -685,7 +690,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (node) updateNode(id, { pinned: !node.data.pinned });
   }, [updateNode]);
 
-  const chooseMedia = useCallback((id, file) => {
+  const chooseMedia = useCallback((id, file, sourceGallery = null) => {
     if (switchingRef.current || project.readOnly) return;
     // Keep the previous committed reference until the immutable replacement is
     // fully written. A full disk or failed request must not blank the old media.
@@ -699,19 +704,21 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     mediaWritesRef.current.set(mediaStorageId, pending);
     mediaAttemptsRef.current.set(id, mediaStorageId);
     setSaveState('保存中');
-    pending.then((result) => {
+    return pending.then((result) => {
       revisionRef.current = Math.max(revisionRef.current, result.revision);
       if (mediaAttemptsRef.current.get(id) !== mediaStorageId || !nodesRef.current.some((node) => node.id === id)) return;
       filesRef.current[id] = file;
-      const patch = { url: URL.createObjectURL(file), name: file.name, mediaStorageId, assetPath: result.asset.path, remoteName: null, localFile: true, output: false, resultUrl: null };
+      const patch = { url: URL.createObjectURL(file), name: file.name, mediaStorageId, assetPath: result.asset.path, sourceGallery, remoteName: null, localFile: true, output: false, resultUrl: null };
       fileIdentitiesRef.current[id] = mediaCacheIdentity({ ...nodesRef.current.find((node) => node.id === id)?.data, ...patch });
       const nextNodes = nodesRef.current.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
       nodesRef.current = nextNodes;
       setNodes(nextNodes);
+      return { ok: true, assetPath: result.asset.path };
     }, (error) => {
       if (mediaAttemptsRef.current.get(id) !== mediaStorageId) return;
       setSaveState('保存失败');
       setProjectError(error.message || '素材保存失败，已保留原素材，请释放磁盘空间后重试。');
+      return { ok: false, error };
     }).finally(() => {
       mediaWritesRef.current.delete(mediaStorageId);
       autoSaveRef.current?.observe(nameRef.current, { nodes: nodesRef.current, edges: edgesRef.current, viewport: project.canvas.viewport }, { defer: mediaWritesRef.current.size > 0 || interactionRef.current });
@@ -1120,7 +1127,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
 
   useEffect(() => {
     const onCanvasShortcut = (event) => {
-      if (imagePreview || workflowInspection || switchingRef.current || event.isComposing || event.altKey || !(event.ctrlKey || event.metaKey)) return;
+      if (imagePreview || workflowInspection || referenceLibrary || switchingRef.current || event.isComposing || event.altKey || !(event.ctrlKey || event.metaKey)) return;
       if (event.target instanceof Element && event.target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')) return;
       const key = event.key.toLowerCase();
       if (!['c', 'd', 'z', 'y'].includes(key)) return;
@@ -1131,7 +1138,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     };
     window.addEventListener('keydown', onCanvasShortcut);
     return () => window.removeEventListener('keydown', onCanvasShortcut);
-  }, [applyHistory, copySelectedNodes, pasteClipboard, imagePreview, workflowInspection]);
+  }, [applyHistory, copySelectedNodes, pasteClipboard, imagePreview, workflowInspection, referenceLibrary]);
 
   const addNode = useCallback((type, extra = {}, atPosition = null, shouldFocus = true) => {
     if (switchingRef.current) throw new Error('正在保存并切换项目，请稍后再添加节点。');
@@ -1154,9 +1161,37 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     return id;
   }, [screenToFlowPosition, setNodes, fitView]);
 
+  const openReferenceLibrary = useCallback((library = 'refmuse') => {
+    if (referenceImportBusyRef.current) throw new Error('参考图正在导入，请等待保存完成后再切换参考库。');
+    if (switchingRef.current) throw new Error('正在切换项目，请稍后打开参考库。');
+    if (!Object.hasOwn(REFERENCE_LIBRARIES, library)) throw new Error('未知参考库。');
+    flushSync(() => { setReferenceLibraryTab(library); setReferenceLibrary(library); });
+    return { opened: true, container: 'current-canvas-modal', library, sourceUrl: REFERENCE_LIBRARIES[library].url, remoteContentVerified: false };
+  }, []);
+  const importReference = useCallback(async (file, library, reference = null) => {
+    if (referenceImportBusyRef.current) throw new Error('另一张参考图正在导入。');
+    referenceImportBusyRef.current = true;
+    try {
+    if (project.readOnly || switchingRef.current) throw new Error('当前画布无法导入素材。');
+    if (!Object.hasOwn(REFERENCE_LIBRARIES, library) || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('请选择单张 PNG、JPEG 或 WebP 图片。');
+    // Decode the local selection before making a node; an extension alone is not an image.
+    const bitmap = await createImageBitmap(file); bitmap.close();
+    if (project.readOnly || switchingRef.current) throw new Error('当前画布无法导入素材。');
+    let id;
+    flushSync(() => { id = addNode('image', { title: reference?.title || file.name.replace(/\.[^.]+$/, '') || file.name }, null, false); });
+    const uploaded = await chooseMedia(id, file, { library, homepage: REFERENCE_LIBRARIES[library].url, attribution: 'user-selected-library', ...(reference || {}) });
+    if (!uploaded?.ok || !nodesRef.current.find((node) => node.id === id)?.data.assetPath) {
+      removeNode(id);
+      throw uploaded?.error || new Error('素材未保存，请重试。');
+    }
+    try { await persistProject(); }
+    catch (error) { throw new Error(`素材已上传，但画布尚未保存：${error.message || '请关闭参考库后重试画布保存。'}`); }
+    } finally { referenceImportBusyRef.current = false; }
+  }, [project.readOnly, addNode, chooseMedia, removeNode, persistProject]);
+
   useEffect(() => {
     const onPaste = (event) => {
-      if (imagePreview || workflowInspection || switchingRef.current) return;
+      if (imagePreview || workflowInspection || referenceLibrary || switchingRef.current) return;
       if (event.target instanceof Element && event.target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')) return;
       const images = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith('image/'));
       if (images.length) {
@@ -1174,7 +1209,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [addNode, chooseMedia, imagePreview, workflowInspection, pasteClipboard, screenToFlowPosition]);
+  }, [addNode, chooseMedia, imagePreview, workflowInspection, referenceLibrary, pasteClipboard, screenToFlowPosition]);
 
   const attachFilesToGenerator = useCallback((generatorId, files) => {
     const generator = nodesRef.current.find((node) => node.id === generatorId);
@@ -1365,7 +1400,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }), [project.id]);
   useCanvasMcp({
     nodesRef, edgesRef, projectName, projectId: project.id, readOnly: project.readOnly, server,
-    actions: { addNode, updateNode, removeNode, onConnect, generateNode, tidyCanvas, focusNode, inspectNode, persistProject,
+    actions: { addNode, updateNode, removeNode, onConnect, generateNode, tidyCanvas, focusNode, inspectNode, openReferenceLibrary, persistProject,
       prepareProjectSwitch, commitProjectSwitch, abandonProjectSwitch,
       importAsset: async (nodeId, assetPath, name, sourceProjectId) => {
         if (switchingRef.current || project.readOnly) throw new Error('当前项目无法导入素材。');
@@ -1383,7 +1418,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const cpuPercent = Number.isFinite(metrics.cpuPercent) ? Math.min(100, Math.max(0, metrics.cpuPercent)) : 0;
   return <NodeContext.Provider value={context}>
     <div className="neo-app">
-      <header className="neo-header">
+      <header className="neo-header" inert={referenceLibrary ? true : undefined}>
         {onLauncher && <button className="launcher-return" disabled={projectBusy || hasActiveTask()} onClick={async () => {
           if (switchingRef.current) return;
           switchingRef.current = true; setProjectBusy(true);
@@ -1410,6 +1445,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
             </div>
           </div>
           <div className="neo-header-actions">
+            <button onClick={() => openReferenceLibrary(referenceLibraryTab || 'refmuse')}><Library size={15} /><span>Refmuse参考库</span></button>
             <button className={creativeOpen ? 'active' : ''} onClick={() => setCreativeOpen(!creativeOpen)} title="角色、镜头与审片"><Film size={15} /><span>创作</span></button>
             <button className={handoffOpen ? 'active' : ''} disabled={project.readOnly} onClick={() => setHandoffOpen(true)} title="保存目标、验收结论并切换 Agent"><Link2 size={15} /><span>接力{project.settings?.handoff?.status === 'paused' ? ' · 已暂停' : ''}</span></button>
             <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={clearMemory} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
@@ -1421,7 +1457,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       </header>
       {projectBusy && <div className="project-switching" role="status"><LoaderCircle className="spin" size={18} />正在保存并打开画布…</div>}
       {project.readOnly && <div className="project-switching readonly" role="status">此项目正在另一个窗口中编辑，当前以只读方式打开。</div>}
-      <main className={`neo-canvas-wrap canvas-view-${viewTier}`} inert={projectBusy ? true : undefined}
+      <main className={`neo-canvas-wrap canvas-view-${viewTier}`} inert={projectBusy || referenceLibrary ? true : undefined}
         onDragOver={(e) => e.preventDefault()}
         onPointerDownCapture={(event) => { if (event.button === 0 && !event.target.closest('.add-node-menu,.node-context-menu')) { setAddMenu(null); setNodeMenu(null); } }}
         onContextMenuCapture={openContextMenu}
@@ -1442,7 +1478,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
             if (changes.some((change) => change.dragging === false || change.resizing === false)) interactionRef.current = false;
             onNodesChange(changes);
           }} onEdgesChange={onEdgesChange} onConnect={onConnect}
-          deleteKeyCode={project.readOnly || workflowInspection ? null : ['Backspace', 'Delete']}
+          deleteKeyCode={project.readOnly || workflowInspection || referenceLibrary ? null : ['Backspace', 'Delete']}
           defaultViewport={saved.viewport} fitView={!saved.viewport}
           fitViewOptions={{ padding: 0.16, maxZoom: 0.85 }}
           minZoom={0.12} maxZoom={1.8} zoomOnScroll zoomOnPinch zoomOnDoubleClick={false}
@@ -1554,19 +1590,24 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       </aside>}
       {imagePreview && <ImageLightbox preview={imagePreview} onClose={() => setImagePreview(null)} closeRef={previewCloseRef} />}
       {workflowInspection && <WorkflowInspector key={workflowInspection.nonce} request={workflowInspection} onClose={() => setWorkflowInspection(null)} />}
+      {referenceLibraryTab && <ReferenceLibrary library={referenceLibraryTab} open={Boolean(referenceLibrary)} onLibraryChange={openReferenceLibrary} readOnly={project.readOnly} onImport={importReference} onClose={() => setReferenceLibrary(null)} />}
     </div>
   </NodeContext.Provider>;
 }
 
-export default function CanvasWorkbench({ initialProject = null, ...props }) {
+export default function CanvasWorkbench({ initialProject = null, onActiveProjectChange, ...props }) {
   const [project, setProject] = useState(initialProject);
   const [reloadKey, setReloadKey] = useState(0);
   const [error, setError] = useState('');
+  const acceptProject = useCallback((next) => {
+    setProject(next);
+    onActiveProjectChange?.(next);
+  }, [onActiveProjectChange]);
   const load = useCallback(() => {
     setError('');
-    initializeProjects(initialCanvas).then(setProject).catch((reason) => setError(reason.message || '项目存储无法打开。'));
-  }, []);
+    initializeProjects(initialCanvas).then(acceptProject).catch((reason) => setError(reason.message || '项目存储无法打开。'));
+  }, [acceptProject]);
   useEffect(() => { if (!initialProject) load(); }, [initialProject, load]);
   if (!project) return <div className="neo-app project-loading"><FolderOpen size={26} /><strong>{error ? '项目暂时无法打开' : '正在打开本地项目'}</strong><p role={error ? 'alert' : 'status'}>{error || '正在读取已保存的画布…'}</p>{error && <button onClick={load}>重试</button>}</div>;
-  return <ReactFlowProvider key={`${project.id}:${reloadKey}`}><CanvasInner {...props} project={project} onProjectChange={setProject} onReload={(next) => { setProject(next); setReloadKey((value) => value + 1); }} /></ReactFlowProvider>;
+  return <ReactFlowProvider key={`${project.id}:${reloadKey}`}><CanvasInner {...props} project={project} onProjectChange={acceptProject} onReload={(next) => { acceptProject(next); setReloadKey((value) => value + 1); }} /></ReactFlowProvider>;
 }

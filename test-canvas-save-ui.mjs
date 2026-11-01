@@ -183,7 +183,8 @@ try {
   project.canvas.nodes.find((node) => node.id === 'gen').data = { ...project.canvas.nodes.find((node) => node.id === 'gen').data,
     shotId: 'shot-fixture', pinResultToCanvas: false, status: 'running' };
   page.once('dialog', (dialog) => dialog.accept());
-  await page.reload(); await page.locator('.project-open').click();
+  await page.reload(); await page.getByLabel('画布项目名称').waitFor();
+  assert.equal(await page.getByLabel('画布项目名称').inputValue(), '保存测试', 'reload restores the current canvas directly');
   await page.waitForFunction(() => Boolean(window.fixtureCanvasTools.canvas_focus_node));
   await page.evaluate(async () => window.fixtureCanvasTools.canvas_focus_node.execute({ nodeId: 'note' }));
   await page.waitForTimeout(500);

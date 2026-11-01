@@ -440,7 +440,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "; ".join([
             "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data: blob:", "media-src 'self' data: blob:", "font-src 'self' data:",
-            "frame-src http://127.0.0.1:8188 http://localhost:8188",
+            "frame-src http://127.0.0.1:8188 http://localhost:8188 https://ai-costume-gallery.pages.dev https://ai-pose-gallery.pages.dev https://refmuse.cn https://www.refmuse.cn",
             f"connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port} wss://127.0.0.1:{port} wss://localhost:{port}",
             "worker-src 'self' blob:", "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'",
         ]))

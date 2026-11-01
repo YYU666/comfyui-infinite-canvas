@@ -24,6 +24,7 @@
 | --- | --- | --- |
 | `canvas_get_state` | 读取当前项目、真实节点、连线和状态 | 可选 `nodeId`、`includePrompt` |
 | `canvas_inspect_node` | 在当前页内打开节点对应的 ComfyUI 工作流查看器；不提交生成 | 必填 `nodeId`；可选 `stage`（四视图支持单张阶段及 `stitch`） |
+| `canvas_open_reference_library` | 在当前画布内打开外部参考库；只打开界面，不下载、不生成 | 可选 `library`：`refmuse`（默认）、`costume`（衣装）或 `pose`（姿势） |
 | `canvas_import_asset` | 在当前页复用本项目已保存素材 | 必填 `nodeId`、`assetPath`；可选 `name` |
 | `canvas_create_node` | 在当前画布创建节点 | 必填 `preset`；可选 `title`、`prompt`、`text`、`x`、`y`、`focus` |
 | `canvas_update_node` | 更新标题、提示词、备注或白名单参数 | 必填 `nodeId`；可选 `title`、`prompt`、`text`、`settings` |
@@ -96,3 +97,13 @@
 生成结果按自身的任务／prompt 记录定位，不能用生成节点的最新任务替代历史结果。分阶段四视图可选 `front_portrait`、`three_quarter_portrait`、`back_body`、`front_body`、`stitch`；旧单图工作流通常为 `workflow`。界面区分实际执行图、持久化计划还原和尚未执行；无记录的节点不能预览草稿。
 
 查看器载入 ComfyUI 临时工作流副本，修改不自动写回 H3。用户仍可手动操作 ComfyUI，包括运行；打开与切换本身不生成。关闭查看器回到同一画布。ComfyUI 临时标签可能保存在其本地工作区。
+
+## 9. 外部参考库
+
+顶部「参考库」提供衣装库和姿势库的原站浏览。用户逐张下载后，可用「导入已下载的图片」选择本地 PNG/JPEG/WebP；成功需素材上传与画布保存都完成。图片节点保存所选图库首页作为来源分类，不声称已核实该文件的原图URL。普通替换素材会清除旧图库来源。
+
+`canvas_open_reference_library` 仅确认当前页弹层已打开，`remoteContentVerified: false` 表示不能据此声称跨域网站内容已加载。网站空白或无法下载时可由用户点击「打开原站」。不得批量抓取目录、镜像素材或自动提交姿势/换装生成。
+
+Refmuse 页签使用官网专用嵌入模式：登录搜索后点击「导入当前画布」，经当前页保存素材和节点成功才反馈已导入。最多32 MiB PNG/JPEG/WebP，记录来源与作者；不触发生成。导入期间UI和Agent均不得切换参考库。只有握手后显示已连接；工具打开回执仍不代表外站内容已确认。
+
+2026-11-01 修复：入口名「Refmuse参考库」，Refmuse 第一项和首次默认项。同项目关闭重开保持iframe和搜索；切换项目会销毁旧iframe。隐藏页不能导入。多张图片在网站侧串行下载/发送/等待保存，上限20张排队；仅明确未写入允许用户重试。手动「重新加载」会清空搜索并重置会话，仅用于异常恢复或100次请求额度用尽。
