@@ -34,8 +34,9 @@ assert.equal(canInspectNode({ type: 'generator', data: {} }), true);
 assert.equal(canInspectNode({ type: 'media', data: { sourcePromptId: 'old' } }), true);
 assert.equal(canInspectNode({ type: 'media', data: {} }), false);
 
-// Run the shipped extension against a native-app-shaped fake: no user ComfyUI.
-{
+// Run both checkout line endings against the native-app-shaped fake.
+for (const newline of ["\n", "\r\n"]) {
+  const checkoutBridge = bridge.replace(/\r?\n/g, newline);
   const handlers = {};
   const sent = [];
   const loads = [];
@@ -43,7 +44,7 @@ assert.equal(canInspectNode({ type: 'media', data: {} }), false);
   const app = { isGraphReady: true, extensionManager: { spinner: true }, canvas: {}, graph: { _nodes: [], links: {} },
     registerExtension(extension) { extension.setup(); },
     async loadApiJson(value, name) { loads.push({ value, name }); this.graph = nativeGraph(value); } };
-  vm.runInNewContext(bridge.replace(/^import .*;\n/, ''), { app, URLSearchParams, location: { hash: `#h3-inspector=${nonce}` }, window: { parent, addEventListener: (type, handler) => { handlers[type] = handler; } }, Date, console });
+  vm.runInNewContext(checkoutBridge.replace(/^import .*;\r?\n/, ''), { app, URLSearchParams, location: { hash: `#h3-inspector=${nonce}` }, window: { parent, addEventListener: (type, handler) => { handlers[type] = handler; } }, Date, console });
   const envelope = { channel: 'h3-workflow-inspector', version: 1, nonce, type: 'hello' };
   const message = (data = envelope, overrides = {}) => handlers.message({ source: parent, origin: 'http://127.0.0.1:8799', data, ...overrides });
   message(); assert.equal(sent.length, 0, 'extension setup must not race frontend workflow restoration');
