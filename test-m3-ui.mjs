@@ -13,10 +13,26 @@ const temporary = await mkdtemp(path.join(tmpdir(), 'h3-m3-ui-'));
 const runtime = path.join(temporary, 'runtime');
 const projects = path.join(temporary, 'projects');
 const simulatedPromptId = 'm3-simulated-generation';
+const promptTraffic = { received: 0, complete: 0, responded: 0, aborted: 0 };
 const upstream = createServer((request, response) => {
   const url = new URL(request.url, 'http://127.0.0.1');
   const send = (status, body, type = 'application/json') => { response.writeHead(status, { 'Content-Type': type }); response.end(type === 'application/json' ? JSON.stringify(body) : body); };
-  if (url.pathname === '/prompt') return send(200, { prompt_id: simulatedPromptId });
+  if (url.pathname === '/prompt') {
+    promptTraffic.received += 1;
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('aborted', () => { promptTraffic.aborted += 1; });
+    request.on('end', () => {
+      // Like ComfyUI, consume and parse the POST before acknowledging it. An
+      // early response can close a Windows connection while urllib still sends.
+      const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      assert.equal(payload.prompt.simulated.class_type, 'M3Test');
+      promptTraffic.complete += 1;
+      promptTraffic.responded += 1;
+      send(200, { prompt_id: simulatedPromptId });
+    });
+    return;
+  }
   if (url.pathname === `/history/${simulatedPromptId}`) return send(200, { [simulatedPromptId]: { status: { completed: true, status_str: 'success', messages: [] }, outputs: { save: { images: [{ filename: 'H3_Image_M3_simulated.png', subfolder: '', type: 'output' }] } } } });
   if (url.pathname === '/queue') return send(200, { queue_running: [], queue_pending: [] });
   if (url.pathname === '/view') return send(200, png, 'image/png');
@@ -133,13 +149,15 @@ try {
   }
   assert.equal(doc.canvas.nodes.find((node) => node.id === doc.shots[1].canvasNodeId).data.shotId, 's2');
   const mediaCount = doc.canvas.nodes.filter((node) => node.type === 'media').length;
-  await api('/api/queue', { method: 'POST', body: JSON.stringify({ workflow: { simulated: { class_type: 'M3Test', inputs: {} } }, projectId, nodeId: doc.shots[1].canvasNodeId, clientId: 'm3-isolated-test' }) });
+  const generation = await api('/api/queue', { method: 'POST', body: JSON.stringify({ workflow: { simulated: { class_type: 'M3Test', inputs: {} } }, projectId, nodeId: doc.shots[1].canvasNodeId, clientId: 'm3-isolated-test' }) });
   for (let attempt = 0; attempt < 70; attempt += 1) {
     doc = await document(projectId);
     if (doc.shots[1].takes.length === 1) break;
     await sleep(100);
   }
-  assert.equal(doc.shots[1].takes.length, 1, 'generated result enters the bound shot take stack');
+  const generationState = (await api('/api/queue')).jobs.find((job) => job.id === generation.id);
+  assert.deepEqual(promptTraffic, {received: 1, complete: 1, responded: 1, aborted: 0}, 'one complete synthetic submission');
+  assert.equal(doc.shots[1].takes.length, 1, `generated result enters the bound shot take stack: ${JSON.stringify({status:generationState?.status,error:generationState?.error,promptId:generationState?.comfyPromptId,promptTraffic})}`);
   assert.equal(doc.shots[1].takes[0].recipe.output.filename, 'H3_Image_M3_simulated.png');
   assert.equal(doc.canvas.nodes.filter((node) => node.type === 'media').length, mediaCount, 'bound generation does not add a media node');
   assert.equal(doc.assets.length, 1, 'ComfyUI output is referenced without an early project asset copy');
