@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 from pathlib import Path
@@ -6,11 +7,25 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+from PIL import Image
+
 from extension_sharing import share_extension
 from workflow_extensions import ExtensionError, ExtensionStore
 
 
 class SharingTests(unittest.TestCase):
+    @staticmethod
+    def cover(size=(32, 24), image_format="JPEG", metadata=False):
+        image = Image.new("RGB", size, "blue")
+        buffer = io.BytesIO()
+        options = {}
+        if metadata:
+            exif = Image.Exif()
+            exif[270] = "private image description"
+            options["exif"] = exif
+        image.save(buffer, image_format, **options)
+        return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -41,6 +56,29 @@ class SharingTests(unittest.TestCase):
             self.assertIn("UNETLoader", archive.read("README.md").decode())
         self.assertEqual(result["manifest"]["licenses"]["workflow"], "UNSPECIFIED")
         self.assertEqual(self.workflow["text"]["inputs"]["text"], "private prompt")
+
+    def test_selected_cover_is_pixel_only_and_reshare_without_selection_drops_it(self):
+        result = share_extension(self.store, {**self.payload, "thumbnail": self.cover(metadata=True)}, self.info)
+        preview = result["manifest"]["preview"]
+        raw = base64.b64decode(preview.split(",", 1)[1])
+        self.assertNotIn(b"private image description", raw)
+        with Image.open(io.BytesIO(raw)) as image:
+            self.assertEqual(image.size, (32, 24))
+            self.assertEqual(image.format, "JPEG")
+            self.assertFalse(image.getexif())
+        downloaded = self.store.get(result["digest"])
+        self.assertEqual(downloaded["manifest"]["preview"], preview)
+        copied = share_extension(self.store, {**{k: v for k, v in self.payload.items() if k != "workflow"},
+            "digest": result["digest"], "nodeDefinitionId": "workflow"}, self.info)
+        self.assertNotIn("preview", copied["manifest"])
+
+    def test_invalid_cover_rejected_before_writing(self):
+        for value in (None, "https://example.invalid/image.jpg", "data:image/svg+xml;base64,PHN2Zz4=",
+                      "data:image/jpeg;base64,not-base64!", self.cover((513, 1)), self.cover(image_format="PNG"),
+                      "data:image/jpeg;base64," + "A" * 180000):
+            with self.subTest(valueType=type(value).__name__), self.assertRaises(ExtensionError):
+                share_extension(self.store, {**self.payload, "thumbnail": value}, self.info)
+        self.assertFalse(self.store.root.exists())
 
     def test_explicit_prompt_inclusion_and_custom_current_parameters(self):
         result = share_extension(self.store, {**self.payload, "includePrompts": True}, self.info)

@@ -1,18 +1,48 @@
 """Build reviewable, data-only node shares without media or private defaults."""
 from __future__ import annotations
 
+import base64
+import binascii
 import copy
 import io
 import json
 import re
 import zipfile
 
-from workflow_extensions import comfy_input_fields, convert_api_json, inspect_package, require, scalar, validate_definition
+from PIL import Image, UnidentifiedImageError
+
+from workflow_extensions import ExtensionError, comfy_input_fields, convert_api_json, inspect_package, require, scalar, validate_definition
 
 
 def _text(value, label, maximum=4096):
     require(isinstance(value, str) and value.strip() and len(value) <= maximum, f"{label}不能为空或过长。")
     return value.strip()
+
+
+def _thumbnail(value):
+    """Only an explicitly selected, bounded raster cover may leave the canvas."""
+    prefix = "data:image/jpeg;base64,"
+    limit = 128 * 1024
+    require(isinstance(value, str) and value.startswith(prefix) and len(value) <= len(prefix) + 4 * ((limit + 2) // 3),
+            "封面必须是 128 KiB 以内的 JPEG 缩略图。")
+    try:
+        content = base64.b64decode(value[len(prefix):], validate=True)
+        require(0 < len(content) <= limit, "封面大小超过 128 KiB。")
+        with Image.open(io.BytesIO(content)) as source:
+            require(source.format == "JPEG" and 0 < source.width <= 512 and 0 < source.height <= 512,
+                    "封面必须是长边不超过 512 像素的 JPEG。")
+            source.load()
+            # Copy pixels to a fresh image: discard EXIF/GPS/comments/ICC/trailing bytes.
+            pixels = Image.new("RGB", source.size)
+            pixels.paste(source.convert("RGB"))
+        for quality in (85, 75, 60, 40):
+            output = io.BytesIO()
+            pixels.save(output, format="JPEG", quality=quality, optimize=True)
+            if output.tell() <= limit:
+                return prefix + base64.b64encode(output.getvalue()).decode("ascii")
+    except (binascii.Error, OSError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
+        raise ExtensionError("封面图片损坏，请重新选择或取消封面。") from exc
+    raise ExtensionError("封面压缩后仍超过大小限制，请取消封面后分享。")
 
 
 def _sanitize(workflow, include_prompts, object_info, staged=False):
@@ -61,10 +91,11 @@ def _archive(files):
 def share_extension(store, payload, object_info):
     from extension_dependencies import dependency_report
 
-    allowed = {"workflow", "plan", "digest", "nodeDefinitionId", "parameters", "name", "packageId", "version", "description", "license", "includePrompts"}
+    allowed = {"workflow", "plan", "digest", "nodeDefinitionId", "parameters", "name", "packageId", "version", "description", "license", "includePrompts", "thumbnail"}
     require(isinstance(payload, dict) and set(payload) <= allowed, "分享请求字段无效。")
     require(sum(key in payload for key in ("workflow", "plan", "digest")) == 1, "请选择一个工作流来源。")
     require(type(payload.get("includePrompts", False)) is bool, "提示词分享选项无效。")
+    thumbnail = _thumbnail(payload["thumbnail"]) if "thumbnail" in payload else None
     name = _text(payload.get("name"), "节点名称", 120)
     package_id = _text(payload.get("packageId"), "包身份", 160)
     version = _text(payload.get("version"), "版本", 80)
@@ -131,6 +162,8 @@ def share_extension(store, payload, object_info):
                 "nodes": [{"nodeDefinitionId": definition["nodeDefinitionId"], "definition": "nodes/workflow.json", "workflow": "workflows/workflow.json"}]}
     if staged:
         manifest["compatibility"]["workbenchVersion"] = ">=1.0.2"
+    if thumbnail:
+        manifest["preview"] = thumbnail
     report = dependency_report({"manifest": manifest, "nodes": [{"definition": definition, "workflow": workflow}]},
                                {"nodeDefinitionId": definition["nodeDefinitionId"], "parameters": {}}, object_info)
     manifest["dependencies"]["comfyNodes"] = [{"classType": n["classType"]} for n in report["comfyNodes"]]

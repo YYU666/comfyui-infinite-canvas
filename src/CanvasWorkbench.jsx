@@ -31,7 +31,7 @@ import NodeLibrary from './NodeLibrary';
 import WorkflowLibrary from './WorkflowLibrary';
 import WorkflowDependencies from './WorkflowDependencies';
 import WorkflowShare from './WorkflowShare';
-import { shareSource } from './workflow-sharing';
+import { shareSource, suggestShareMetadata, resolvedLegacyShareError } from './workflow-sharing';
 import { customInput, declaredHistory, extensionMedia, extensionNodeData, getExtension, prepareExtension, importCatalogExtension, extensionDependencies } from './workflow-extensions';
 import { flushSync } from 'react-dom';
 import { inspectionQuery, canInspectNode } from './workflow-inspector';
@@ -312,6 +312,7 @@ function CustomWorkflowNode({ id, data, selected }) {
       return <label key={key} title={field.description}>{field.title || key}{field.enum ? <select aria-label={field.title || key} disabled={running} value={String(value)} onChange={(event) => change(field.enum.find((option) => String(option) === event.target.value))}>{field.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}</select> : field.type === 'boolean' ? <input aria-label={field.title || key} type="checkbox" checked={Boolean(value)} disabled={running} onChange={(event) => change(event.target.checked)} /> : <input aria-label={field.title || key} type={['integer', 'number'].includes(field.type) ? 'number' : 'text'} value={value} min={field.minimum} max={field.maximum} step={field.type === 'integer' ? 1 : 'any'} disabled={running} onChange={(event) => change(['integer', 'number'].includes(field.type) && event.target.value !== '' ? Number(event.target.value) : event.target.value)} />}</label>;
     })}</div>
     {data.error && <p className="custom-workflow-error" role="alert">{data.error}</p>}
+    {data.shareError && <p className="custom-workflow-error" role="alert">节点上传：{data.shareError}</p>}
     {data.dependencyWarning && <p className="custom-workflow-error">{data.dependencyWarning}</p>}
     <div className="custom-workflow-footer"><span>{data.stage || '固定版本 · 本地工作流'}{running ? ` ${data.progress || 0}%` : ''}</span><button className="node-share-button nodrag" disabled={running} onClick={() => checkNodeDependencies(id)}>检查依赖</button><button className="node-share-button nodrag" disabled={running} aria-label="上传此节点" title="上传此节点到节点库" onClick={() => openNodeShare(id)}><Upload size={14} /></button><button className="send-button nodrag" aria-label={running ? '取消工作流' : '运行工作流'} disabled={!running && !serverOnline} onClick={() => running ? cancelNode(id) : generateNode(id)}>{running ? <Square size={16} /> : <ArrowUp size={16} />}</button></div>
     <Handle type="source" position={Position.Right} id="image" className="neo-handle source" /><Handle type="source" position={Position.Right} id="video" style={{ top: '65%' }} className="neo-handle source" />
@@ -377,6 +378,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
     </div>
     <div className="generator-subline"><span>{mode === 'characterSheet' ? `单格 1152 × 2048 · 整图 2304 × 4096 · ${data.qwenSteps || 40} 步` : mode === 'localRealism' ? `原图尺寸 · 局部 ${data.localRealismSize || 768} · 保护未选区域` : mode === 'outfitEdit' ? `${data.outfitPanel ? '单视图' : '四张单图'} · ${models.outfitHdLabel} · ${(data.outfitLayout || 'legacy') === 'legacy' ? '旧版拼接' : '原版面合成'}` : mode === 'qwenEdit' ? `继承原图比例 · 参考精度 ${data.qwenRefResolution || 1024} · ${models.qwenSteps} 步` : ['image', 'identityEdit'].includes(mode) ? `${data.ratio} · ${outputWidth} × ${outputHeight} · ${isMoss ? 25 : 8} 步` : mode === 'imageUpscale' ? `${data.imageScale || 1.5} 倍 · 独立图片高清` : `${data.ratio} · ${resolution}${mode === 'upscale' ? ' · 独立二采' : ` · ${data.duration} 秒`}`}</span><b>{data.status === 'done' ? '已完成' : mode === 'characterSheet' ? 'Qwen 2.1 · 无高清' : mode === 'outfitEdit' ? models.outfitModelLabel : mode === 'qwenEdit' ? models.qwenModelLabel : mode === 'identityEdit' ? 'Identity V2' : mode === 'image' ? `${imageModelLabel} 生图` : mode === 'imageUpscale' ? 'SeedVR2 高清' : mode === 'swap' ? 'H3 换人 v1.5' : mode === 'upscale' ? 'H3 高清二采' : 'H3 INT8'}</b></div>
     {data.error && <div className="generator-error">{data.error}</div>}
+    {data.shareError && <div className="generator-error" role="alert">节点上传：{data.shareError}</div>}
     {mode === 'reference' ? <Handle type="target" position={Position.Left} id="references" className="neo-handle target" /> : mode === 'frames' ? <>
       <Handle type="target" position={Position.Left} id="first" className="neo-handle target frame-first" />
       <Handle type="target" position={Position.Left} id="last" className="neo-handle target frame-last" />
@@ -693,6 +695,14 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       });
     });
   }, [setNodes]);
+
+  useEffect(() => {
+    if (project.readOnly) return;
+    setNodes((items) => {
+      if (!items.some((node) => resolvedLegacyShareError(node.data))) return items;
+      return items.map((node) => resolvedLegacyShareError(node.data) ? { ...node, data: { ...node.data, error: '' } } : node);
+    });
+  }, [project.id, project.readOnly, setNodes]);
 
   const promoteToShot = useCallback(async () => {
     const selected = nodesRef.current.filter((node) => node.selected && node.type === 'generator');
@@ -1312,8 +1322,16 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const node = nodesRef.current.find((item) => item.id === id);
       if (!node) throw new Error('节点不存在。');
       if (['uploading', 'queued', 'running', 'finishing'].includes(node.data.status)) throw new Error('请等待当前节点运行结束后再上传。');
-      setNodeShare({ source: shareSource(node, getReferences(id)), title: node.data.title, staged: node.data.mode === 'characterSheet' || node.data.workflowDefinition?.execution?.kind === 'characterSheet' });
-    } catch (error) { updateNode(id, { error: error.message }); }
+      const references = getReferences(id);
+      const source = shareSource(node, references);
+      updateNode(id, { shareError: '', ...(resolvedLegacyShareError(node.data) ? { error: '' } : {}) });
+      const result = [...nodesRef.current].reverse().find((item) => item.data.kind === 'image' && item.data.sourceGeneratorId === id && item.data.url);
+      const guide = references.find((item) => item.data.kind === 'image' && item.data.slot === 'guide' && item.data.url);
+      const thumbnail = node.data.resultUrl ? { url: node.data.resultUrl, title: '当前生成结果' }
+        : result ? { url: result.data.url, title: '最近生成结果' }
+          : guide ? { url: guide.data.url, title: '输入参考图（尚无生成结果）' } : null;
+      setNodeShare({ source, projectId: projectRef.current.id, nodeId: id, suggestedMetadata: suggestShareMetadata(node, source), thumbnail, title: node.data.title, staged: node.data.mode === 'characterSheet' || node.data.workflowDefinition?.execution?.kind === 'characterSheet' });
+    } catch (error) { updateNode(id, { shareError: error.message }); }
   }, [assertExtensionWritable, getReferences, updateNode]);
   useEffect(() => () => { catalogRequestRef.current?.reject?.(new Error('画布已关闭，导入未完成。')); }, []);
   const importReference = useCallback(async (file, library, reference = null) => {

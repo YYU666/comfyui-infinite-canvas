@@ -18,3 +18,6 @@
 .workflow-dependency-resolution { margin-top: 13px; border: 1px solid #3b3b35; padding: 12px; border-radius: 6px; overflow-wrap: anywhere; }
 .workflow-node-types { overflow-wrap: anywhere; font-family: monospace; font-size: 11px; }
 .workflow-share-preview { max-height: 180px; overflow: auto; padding: 10px; background: #0a0a0a; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.workflow-share-cover { padding: 0 12px; border: 1px solid #373737; border-radius: 8px; }
+.workflow-share-cover img { display: block; max-width: 100%; max-height: 180px; margin: 0 auto; border-radius: 5px; object-fit: contain; }
+.workflow-share-cover p, .workflow-exchange .workflow-license-help { font-size: 12px; line-height: 1.7; }

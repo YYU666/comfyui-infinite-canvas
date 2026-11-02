@@ -1,4 +1,4 @@
-.node-library-backdrop { position: fixed; top: 82px; right: 16px; bottom: 100px; width: min(590px, calc(100vw - 32px)); z-index: 850; }
+.node-library-backdrop { position: fixed; top: 82px; right: 16px; bottom: 100px; width: min(480px, calc(100vw - 32px)); z-index: 850; }
 .node-library-backdrop[hidden] { display: none; }
 .node-library { position: relative; display: flex; flex-direction: column; height: 100%; overflow: hidden; border: 1px solid #323232; border-radius: 12px; color: #ecece8; background: #0b0b0b; box-shadow: 0 20px 60px #0008; font-size: 12px; }
 .node-library-controls { position: absolute; top: 12px; right: 12px; z-index: 2; display: flex; gap: 4px; }

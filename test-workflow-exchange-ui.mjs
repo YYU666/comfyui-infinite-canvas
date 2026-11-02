@@ -2,6 +2,26 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from './test-browser.mjs';
+import { thumbnailSourceSize, prepareShareThumbnail } from './src/workflow-share-preview.js';
+
+const coverPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAE0lEQVR4nGOMqljAAANMcBZeDgBJAgF6RgF2gAAAAABJRU5ErkJggg==','base64');
+assert.deepEqual(thumbnailSourceSize(coverPng),[4,4]);
+assert.deepEqual(thumbnailSourceSize(Uint8Array.from([255,216,255,192,0,8,8,0,20,0,30,1])),[30,20]);
+assert.throws(()=>thumbnailSourceSize(new Uint8Array([1,2,3])),/尺寸/);
+const originalGlobals={location:globalThis.location,fetch:globalThis.fetch,createImageBitmap:globalThis.createImageBitmap};
+try {
+ globalThis.location={origin:'http://127.0.0.1:8799',href:'http://127.0.0.1:8799/'};
+ let decoded=false;
+ const oversized=Buffer.from(coverPng);oversized.writeUInt32BE(30000,16);
+ globalThis.fetch=async(_url,options)=>{assert.equal(options.redirect,'error');return new Response(oversized,{headers:{'content-type':'image/png'}});};
+ globalThis.createImageBitmap=async()=>{decoded=true;throw Error('unexpected decode');};
+ await assert.rejects(prepareShareThumbnail('/api/comfy/view?filename=test.png'),/尺寸过大/);
+ assert.equal(decoded,false,'oversized image headers are rejected before bitmap decode');
+ await assert.rejects(prepareShareThumbnail('https://external.example/image.png'),/本地图片/);
+} finally {
+ Object.assign(globalThis,originalGlobals);
+}
+
 
 const origin = 'http://127.0.0.1:8799';
 const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
@@ -9,7 +29,12 @@ const digest = 'b'.repeat(64);
 const definition = { nodeDefinitionId: 'workflow', name: 'Catalog workflow', inputs: [], parameters: { type: 'object', properties: { model_name: { type: 'string', default: 'required.safetensors' } } }, outputs: [{ id: 'image', type: 'image', nodeId: 'save' }] };
 const bundle = { digest, manifest: { packageId: 'fixture/catalog', name: 'Catalog workflow', version: '0.1.0', description: 'Fixture only' }, nodes: [{ definition, workflow: { model: { class_type: 'UNETLoader', inputs: { unet_name: 'required.safetensors' } }, save: { class_type: 'SaveImage', inputs: { images: ['model', 0], filename_prefix: 'safe' } } } }] };
 let project = { id: 'prj_exchange_fixture', name: 'Exchange fixture', revision: 1, shots: [], canvas: { viewport: { x: 0, y: 0, zoom: .75 }, edges: [], nodes: [{ id: 'qwen', type: 'generator', selected: true, position: { x: 20, y: 50 }, data: { title: 'Qwen分享', mode: 'qwenEdit', prompt: 'PRIVATE CREATIVE PROMPT', seed: 42, ratio: '16:9' } }, { id: 'sheet', type: 'generator', position: { x: 600, y: 50 }, data: { title: '四视图分享', mode: 'characterSheet', prompt: 'REVIEWED CHARACTER BRIEF', seed: 123, qwenSteps: 20 } }] } };
+project.canvas.nodes.push({ id: 'qwen-output', type: 'media', position: { x: 1200, y: 50 }, data: { kind: 'image', title: 'PRIVATE RESULT TITLE', sourceGeneratorId: 'qwen', output: true, url: '/api/comfy/view?filename=cover.png&type=output&subfolder=', name: 'cover.png' } });
+project.canvas.nodes.push({ id: 'bad-cover', type: 'generator', position: { x: 1800, y: 50 }, data: { title: 'Failed cover fixture', mode: 'qwenEdit', prompt: 'test', seed: 42 } }, { id: 'bad-output', type: 'media', position: { x: 2400, y: 50 }, data: { kind: 'image', sourceGeneratorId: 'bad-cover', output: true, url: '/api/comfy/view?filename=missing.png', name: 'missing.png' } });
 let missing = false; let downloaded = false; let longDownload = false; let failSave = false;
+project.canvas.nodes.find(node=>node.id==='sheet').data.error='当前节点是视频或多阶段队列，暂不能完整打包。请在 ComfyUI 中导出单个图片工作流的 API JSON，再从本地节点导入分享。';
+project.canvas.nodes.find(node=>node.id==='qwen').data.error='CUDA out of memory';
+project.canvas.nodes.find(node=>node.id==='qwen').data.shareError='旧的节点上传失败';
 const imported = []; const reports = []; const shares = []; const downloads = []; const writes = []; const unexpected = []; const errors = [];
 const model = (parameters = {}) => ({ id: 'model:unet_name', nodeId: 'model', inputName: 'unet_name', parameterId: 'model_name', category: 'diffusion_models', name: parameters.model_name || 'required.safetensors', status: missing && !downloaded && !parameters.model_name ? 'missing' : 'installed', candidates: [{ name: 'local.safetensors', compatibility: 'loader-option', reason: 'same loader' }], download: { path: 'diffusion_models/required.safetensors', bytes: 1024, sha256: null, url: 'https://example.invalid/trusted-fixture' } });
 const report = (parameters = {}) => ({ models: [model(parameters)], comfyNodes: [{ classType: 'UNETLoader', installed: true }, { classType: 'SaveImage', installed: true }], ready: model(parameters).status === 'installed', summary: {} });
@@ -31,7 +56,7 @@ try {
   if(url.pathname.endsWith('/dependencies')){const payload=req.postDataJSON();reports.push(payload);return json(report(payload.parameters));}
   if(url.pathname.endsWith('/models/download')){downloads.push(req.postDataJSON());return json({jobId:'job_fixture',status:'running',downloadedBytes:1,totalBytes:1024,total:1,completed:0});}
   if(url.pathname==='/api/extensions/download-jobs/job_fixture'){if(longDownload)return json({jobId:'job_fixture',status:'running',downloadedBytes:512,totalBytes:1024,total:1,completed:0});downloaded=true;return json({jobId:'job_fixture',status:'completed',downloadedBytes:1024,totalBytes:1024,total:1,completed:1});}
-  if(url.pathname==='/api/extensions/share'){shares.push(req.postDataJSON());return json({...bundle,dependencyReport:report()});}
+  if(url.pathname==='/api/extensions/share'){const payload=req.postDataJSON();shares.push(payload);return json({...bundle,manifest:{...bundle.manifest,packageId:payload.packageId,...(payload.thumbnail?{preview:payload.thumbnail}:{})},dependencyReport:report()});}
   if(url.pathname.endsWith('/download'))return route.fulfill({contentType:'application/zip',body:Buffer.from('fixture archive')});
   if(url.pathname==='/api/projects')return json({projects:[project]});
   if(url.pathname==='/api/projects/trash')return json({projects:[]});
@@ -40,6 +65,7 @@ try {
   if(url.pathname.startsWith('/api/agent/canvas/'))return json({message:'native fixture only'},503);
   if(url.pathname==='/api/settings')return json({notifications:false,checkUpdatesOnLaunch:false});
   if(url.pathname==='/api/queue'){if(req.method()!=='GET')unexpected.push(url.pathname);return json({jobs:[]});}
+  if(url.pathname==='/api/comfy/view')return url.searchParams.get('filename')==='missing.png'?json({error:'missing'},404):route.fulfill({contentType:'image/png',body:coverPng});
   if(url.pathname==='/api/comfy/system_stats')return json({devices:[]});
   if(url.pathname==='/api/hardware-metrics')return json({});
   if(url.pathname.startsWith('/api/')){if(!['GET','HEAD'].includes(req.method()))unexpected.push(url.pathname);return json({});}
@@ -47,6 +73,11 @@ try {
  });
  const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));
  await page.goto(origin);await page.locator('.project-open').click();
+ await page.waitForFunction(()=>!document.querySelector('.react-flow__node[data-id="sheet"] .generator-error'));
+ const migrationDeadline=Date.now()+5000;
+ while(project.canvas.nodes.find(node=>node.id==='sheet').data.error && Date.now()<migrationDeadline) await page.waitForTimeout(50);
+ assert.equal(project.canvas.nodes.find(node=>node.id==='sheet').data.error,undefined,'resolved legacy upload error is removed and saved through current page');
+ assert.equal(project.canvas.nodes.find(node=>node.id==='qwen').data.error,'CUDA out of memory','real generation failure is preserved');
  await page.getByRole('button',{name:'节点库',exact:true}).click();
  const panel=page.getByRole('complementary',{name:'节点库'});await panel.waitFor();
  const remote=page.frames().find(frame=>frame.url().startsWith('https://refmuse.cn/open'));
@@ -120,16 +151,62 @@ try {
  await page.locator('.react-flow__node[data-id="qwen"]').click();
  await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
  const share=page.getByRole('dialog',{name:'上传节点到节点库'});await share.waitFor();
- assert.equal(await share.getByRole('checkbox').isChecked(),false);
+ assert.equal(await page.locator('.react-flow__node[data-id="qwen"]').getByText('旧的节点上传失败',{exact:false}).count(),0,'successful retry clears only the share failure');
+ assert.equal(await page.locator('.react-flow__node[data-id="qwen"]').getByText('CUDA out of memory',{exact:true}).count(),1);
+ assert.equal(await share.getByLabel('节点名称',{exact:true}).inputValue(),'Qwen 图片编辑');
+ const shareIdentityInput=share.getByLabel('发布标识（自动生成，可修改）',{exact:true});
+ const initialIdentity=await shareIdentityInput.inputValue();
+ assert.match(initialIdentity,/^u-[a-f0-9]{32}\/workflow-[a-f0-9]{32}$/);
+ await share.getByRole('button',{name:'重新生成发布标识'}).click();
+ const qwenIdentity=await shareIdentityInput.inputValue();
+ assert.notEqual(qwenIdentity.split('/')[0],initialIdentity.split('/')[0]);
+ await share.getByRole('button',{name:'关闭上传节点到节点库'}).click();
+ await share.waitFor({state:'hidden'});
+ await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
+ await share.waitFor();
+ assert.equal(await shareIdentityInput.inputValue(),qwenIdentity,'same node keeps its publication identity');
+
+ assert.match(await share.getByLabel('使用说明',{exact:true}).inputValue(),/连接原图/);
+ assert.equal((await share.getByLabel('使用说明',{exact:true}).inputValue()).includes('PRIVATE'),false);
+ assert.equal(await share.getByLabel('工作流许可',{exact:true}).inputValue(),'UNSPECIFIED');
+ await share.getByLabel('工作流许可',{exact:true}).selectOption('MIT');
+ assert.match(await share.locator('#workflow-license-help').innerText(),/保留版权声明/);
+ await share.getByLabel('工作流许可',{exact:true}).selectOption('Apache-2.0');
+ assert.match(await share.locator('#workflow-license-help').innerText(),/专利授权/);
+ await share.getByLabel('工作流许可',{exact:true}).selectOption('UNSPECIFIED');
+ const coverChoice=share.getByRole('checkbox',{name:'使用当前图片作为节点封面'});
+ assert.equal(await coverChoice.isChecked(),true);
+ await share.getByAltText('将公开展示的节点封面').waitFor();
+ await coverChoice.uncheck();
  await share.getByRole('button',{name:'整理依赖并预览'}).click();
- await share.getByRole('button',{name:'确认并前往 Refmuse 提交'}).waitFor();
+ await share.locator('.workflow-share-preview').waitFor();
+ assert.equal(shares.at(-1).thumbnail,undefined,'deselected cover is absent from package request');
+ shares.length=0;
+ await coverChoice.check();
+ assert.equal(await share.getByRole('checkbox',{name:/包含当前提示词/}).isChecked(),false);
+ await share.getByRole('button',{name:'整理依赖并预览'}).click();
+ await share.getByRole('button',{name:'确认上传到节点库'}).waitFor();
  assert.equal(shares.length,1);assert.equal(shares[0].includePrompts,false);
+ assert.match(shares[0].thumbnail,/^data:image\/jpeg;base64,/);
+ assert.ok(Buffer.from(shares[0].thumbnail.split(',')[1],'base64').length<=128*1024);
+ assert.equal(shares[0].name,'Qwen 图片编辑');
+ assert.equal(shares[0].description.includes('PRIVATE'),false);
+ assert.equal(shares[0].license,'UNSPECIFIED');
  assert.equal(shares[0].workflow.source.inputs.image,'input_guide.png');
- await share.getByRole('button',{name:'确认并前往 Refmuse 提交'}).click();
+ await share.getByRole('button',{name:'确认上传到节点库'}).click();
  await remote.waitForFunction(()=>received.some(message=>message.type==='refmuse.nodes.share'));
- const shared=await remote.evaluate(()=>{const message=received.find(item=>item.type==='refmuse.nodes.share');return {summary:message.summary,bytes:message.package.byteLength};});
- assert.ok(shared.bytes>0);assert.deepEqual(Object.keys(shared.summary.models[0]).sort(),['category','name']);
+ const shared=await remote.evaluate(()=>{const message=received.find(item=>item.type==='refmuse.nodes.share');return {summary:message.summary,bytes:message.package.byteLength,autoSubmit:message.autoSubmit};});
+ assert.equal(shared.autoSubmit,true);
+ assert.equal(shared.summary.packageId,qwenIdentity);
+ assert.equal(shares[0].packageId,qwenIdentity,'packaging and submission use identical identity');
+ assert.match(shared.summary.preview,/^data:image\/jpeg;base64,/);assert.ok(shared.bytes>0);assert.deepEqual(Object.keys(shared.summary.models[0]).sort(),['category','name']);
  assert.equal(JSON.stringify(shared.summary).includes('local.safetensors'),false,'local replacement inventory never leaves this machine');
+ await panel.getByRole('status').filter({hasText:'正在提交节点包'}).waitFor();
+ await remote.evaluate(()=>{const message=received.find(item=>item.type==='refmuse.nodes.share');parent.postMessage({type:'refmuse.nodes.share.result',version:1,requestId:message.requestId,ok:'true'},'http://127.0.0.1:8799');});
+ assert.equal(await panel.getByRole('status').filter({hasText:'上传成功'}).count(),0,'malformed result cannot report success');
+ await remote.evaluate(()=>{const message=received.find(item=>item.type==='refmuse.nodes.share');parent.postMessage({type:'refmuse.nodes.share.result',version:1,requestId:message.requestId,ok:true,status:'published'},'http://127.0.0.1:8799');});
+ await panel.getByRole('status').filter({hasText:'上传成功，已发布到节点库'}).waitFor();
+ assert.equal(await panel.getByRole('alert').filter({hasText:'上传成功'}).count(),0,'success is not an error alert');
  assert.equal(await page.locator('.node-library-backdrop').evaluate(element=>element.inert),false,'share dialog cleanup must not leave the newly opened catalog inert');
  // Staged four-view upload needs explicit text consent, and sends the serial plan rather than a combined graph.
  await panel.getByRole('button',{name:'关闭节点库'}).click();
@@ -139,10 +216,14 @@ try {
  await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
  await share.waitFor();
  assert.match(await share.innerText(),/逐张生成、最后拼接/);
- assert.equal(await share.getByRole('checkbox').isChecked(),false);
+ assert.equal(await share.getByLabel('节点名称',{exact:true}).inputValue(),'单图生成角色四视图');
+ assert.notEqual(await shareIdentityInput.inputValue(),qwenIdentity,'different nodes get different package IDs');
+ assert.match(await share.getByLabel('使用说明',{exact:true}).inputValue(),/45°头像/);
+ assert.equal((await share.getByLabel('使用说明',{exact:true}).inputValue()).includes('REVIEWED CHARACTER BRIEF'),false);
+ assert.equal(await share.getByRole('checkbox',{name:/包含当前提示词/}).isChecked(),false);
  assert.equal(await share.getByRole('button',{name:'整理依赖并预览'}).isDisabled(),true);
  assert.equal(shares.length,1,'no plan is shared without prompt consent');
- await share.getByRole('checkbox').check();
+ await share.getByRole('checkbox',{name:/包含当前提示词/}).check();
  await share.getByRole('button',{name:'整理依赖并预览'}).click();
  await page.waitForFunction(()=>document.querySelector('.workflow-share-preview'));
  assert.equal(shares.length,2);assert.equal(shares[1].includePrompts,true);
@@ -154,6 +235,18 @@ try {
  assert.equal(shares[1].plan.panels[1].single.angle_source.inputs.image,'__H3_CHARACTER_SHEET_PANEL_front_portrait__');
  assert.ok(JSON.stringify(shares[1].plan).includes('REVIEWED CHARACTER BRIEF'));
  assert.equal(Object.values(shares[1].plan.stitch).filter(node=>node.class_type==='LoadImage').length,4);
+ await share.getByRole('button',{name:'关闭上传节点到节点库'}).click();
+ await share.waitFor({state:'hidden'});
+ await focusNode('bad-cover');
+ await page.locator('.react-flow__node[data-id="bad-cover"]').click();
+ await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
+ await share.waitFor();
+ await share.getByText(/封面图片读取失败/).waitFor();
+ assert.equal(await share.getByRole('button',{name:'整理依赖并预览'}).isDisabled(),true);
+ await share.getByRole('checkbox',{name:'使用当前图片作为节点封面'}).uncheck();
+ await share.getByRole('button',{name:'整理依赖并预览'}).click();
+ await share.locator('.workflow-share-preview').waitFor();
+ assert.equal(shares.at(-1).thumbnail,undefined,'failed cover can be excluded without blocking workflow sharing');
  await share.getByRole('button',{name:'关闭上传节点到节点库'}).click();
  await share.waitFor({state:'hidden'});
  await page.getByRole('button',{name:'节点库',exact:true}).click();

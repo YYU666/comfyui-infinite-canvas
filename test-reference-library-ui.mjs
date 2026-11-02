@@ -33,7 +33,7 @@ try {
         return route.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset="utf-8"><h2>Refmuse synthetic reference</h2><form id="search"><input name="query"><button>搜索</button></form><button id="import">导入当前画布</button><p id="result"></p><script>
           let channel; window.replies=[]; window.searches=0;document.querySelector('#search').onsubmit=event=>{event.preventDefault();window.searches++};
           window.addEventListener('message',event=>{if(event.origin!=='${origin}'||event.source!==parent)return;
-            if(event.data.type==='refmuse.canvas.init'){channel=event.data.channel;parent.postMessage({type:'refmuse.canvas.ready',version:1,channel},event.origin);}
+            if(event.data.type==='refmuse.canvas.init'){channel=event.data.channel;parent.postMessage({type:'refmuse.canvas.ready',version:1,channel},event.origin);parent.postMessage({type:'refmuse.canvas.theme',version:1,channel,theme:'dark'},event.origin);}
             if(event.data.type==='refmuse.canvas.result'){window.replies.push(event.data);document.querySelector('#result').textContent=event.data.message;}
           });
           document.querySelector('#import').onclick=async()=>{
@@ -100,9 +100,8 @@ try {
     assert.equal(await modal.getByRole('link').getAttribute('rel'), 'noopener noreferrer');
     if (scenario !== 'readonly') {
       await modal.getByRole('button', { name: '关闭参考库' }).focus(); await page.keyboard.press('Shift+Tab');
-      assert.equal(await page.evaluate(() => document.activeElement.textContent), '导入已下载的图片');
-      await page.keyboard.press('Tab');
-      assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), '关闭参考库');
+      assert.equal(await page.evaluate(() => document.activeElement.tagName), 'IFRAME');
+      await modal.getByRole('button', { name: '关闭参考库' }).focus();
     }
     const before = await page.locator('.react-flow__node').count();
     await page.keyboard.press('Control+a'); await page.keyboard.press('Control+c'); await page.keyboard.press('Control+v'); await page.keyboard.press('Delete'); await page.keyboard.press('Control+z');
@@ -120,72 +119,46 @@ try {
     assert.equal(saves.length, 0, 'browsing must not persist a project');
     const invalid = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_open_reference_library').execute({ library: 'https://evil.test' })));
     assert.equal(invalid.ok, false);
-    if (scenario === 'readonly') {
-      assert.equal(await modal.getByRole('button', { name: '导入已下载的图片' }).isDisabled(), true);
-      assert.equal(uploads.length, 0);
-    } else {
-      const input = modal.locator('input[type=file]');
-      assert.equal(await input.getAttribute('multiple'), null);
-      await input.setInputFiles({ name: 'wrong.gif', mimeType: 'image/gif', buffer: pixel });
-      await modal.getByRole('alert').filter({ hasText: '请选择单张' }).waitFor(); assert.equal(uploads.length, 0);
-      await input.setInputFiles({ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('not image') });
-      await modal.getByRole('alert').filter({ hasText: '导入未完成' }).waitFor(); assert.equal(uploads.length, 0);
-      if (scenario === 'success') await page.evaluate(() => {
-        const original = window.createImageBitmap; window.originalFixtureDecode = original;
-        window.createImageBitmap = (...args) => new Promise((resolve, reject) => { window.releaseFixtureDecode = () => original(...args).then(resolve, reject); });
-      });
-      await input.setInputFiles({ name: 'linen-reference.png', mimeType: 'image/png', buffer: pixel });
-      if (scenario === 'success') {
-        await page.waitForFunction(() => typeof window.releaseFixtureDecode === 'function');
-        const beforeOpens = opens.length;
-        const blocked = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_open_project').execute({ projectId: 'prj_other' })));
-        assert.equal(blocked.ok, false); assert.match(blocked.error, /关闭参考库/);
-        assert.equal(opens.length, beforeOpens, 'switching during local decode must not open another project');
-        const blockedLibrary = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_open_reference_library').execute({ library: 'pose' })));
-        assert.equal(blockedLibrary.ok, false); assert.match(blockedLibrary.error, /正在导入/);
-        assert.equal(await modal.locator('iframe').getAttribute('src'), `${galleries[0]}/`);
-        assert.equal(await modal.getByRole('button', { name: '关闭参考库' }).isDisabled(), true);
-        await page.evaluate(() => window.releaseFixtureDecode());
-      }
-      if (scenario === 'success') {
-        await modal.getByRole('status').filter({ hasText: '图片和画布已保存' }).waitFor({ timeout: 5000 }).catch(async (error) => { console.error('IMPORT_DEBUG', await modal.innerText(), failures, uploads, saves); throw error; });
-        assert.equal(uploads.length, 1);
-        const node = project.canvas.nodes.find((item) => item.type === 'media');
-        assert.equal(node.data.title, 'linen-reference');
-        assert.deepEqual(node.data.sourceGallery, { library: 'costume', homepage: `${galleries[0]}/`, attribution: 'user-selected-library' });
-        assert.ok(node.data.assetPath); assert.notDeepEqual(node.position, project.canvas.nodes[0].position);
-        await mkdir(path.join(root, '.cache/reference-library-review'), { recursive: true });
-        await page.evaluate(() => window.getSelection().removeAllRanges());
-        await page.screenshot({ path: path.join(root, '.cache/reference-library-review/isolated-library.png') });
-        await modal.getByRole('button', { name: '关闭参考库' }).click();
-        await page.reload();
-        await page.getByLabel('画布项目名称').waitFor();
-        assert.equal(await page.locator('.project-open').count(), 0, 'reload restores the imported project without the launcher');
-        assert.equal(await page.locator(`.react-flow__node[data-id="${node.id}"] input[aria-label="节点名称"]`).inputValue(), 'linen-reference');
-        assert.deepEqual(project.canvas.nodes.find((item) => item.id === node.id).data.sourceGallery, node.data.sourceGallery);
-        await page.locator(`.react-flow__node[data-id="${node.id}"] input[type=file]`).setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: pixel });
-        await page.waitForFunction((id) => document.querySelector(`.react-flow__node[data-id="${id}"]`)?.textContent.includes('replacement.png'), node.id);
-        const persisted = await page.evaluate(async (nodeId) => JSON.parse(await window.fixtureTools.get('canvas_update_node').execute({ nodeId })), node.id);
-        assert.equal(persisted.ok, true);
-        assert.equal(project.canvas.nodes.find((item) => item.id === node.id).data.sourceGallery, null, 'ordinary replacement clears stale gallery attribution');
-      } else {
-        await modal.getByRole('alert').filter({ hasText: scenario === 'upload-failure' ? 'fixture disk full' : '画布尚未保存' }).waitFor();
-        assert.equal(await modal.getByText('图片和画布已保存', { exact: false }).count(), 0);
-        assert.equal(project.canvas.nodes.some((node) => node.type === 'media'), false, 'no saved phantom import');
-        if (scenario === 'upload-failure') assert.equal(await page.locator('.react-flow__node').count(), before);
-      }
-    }
+    assert.equal(await modal.locator('footer,input[type=file]').count(), 0, 'downloaded-file import row is removed');
+    assert.equal(await modal.getByRole('button', { name: '导入已下载的图片' }).count(), 0);
+    if (scenario === 'readonly') await modal.getByText('只读画布可浏览，无法导入。').waitFor();
     // Real cross-origin window/source handshake and Blob transport into existing save flow.
-    if (scenario === 'success') await page.evaluate(() => { if (window.originalFixtureDecode) window.createImageBitmap = window.originalFixtureDecode; });
     if (!await modal.isVisible()) await toolbar.click();
     await modal.getByRole('button', { name: 'Refmuse', exact: true }).click();
     await modal.getByRole('status').filter({ hasText: 'Refmuse 已连接' }).waitFor();
     const refFrame = page.frames().find((frame) => frame.url().startsWith('https://refmuse.cn/'));
     const previousUploads = uploads.length;
+    await page.waitForFunction(() => document.querySelector('.reference-library').dataset.theme === 'dark');
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('.reference-library')).backgroundColor === 'rgb(10, 10, 10)');
+    assert.equal(await modal.evaluate(element => getComputedStyle(element).borderRadius), '0px');
+    assert.equal(await modal.locator('nav button').first().evaluate(element => getComputedStyle(element).borderRadius), '0px');
+    await refFrame.evaluate(() => parent.postMessage({type:'refmuse.canvas.theme',version:1,channel,theme:'light'}, 'http://127.0.0.1:8799'));
+    await page.waitForFunction(() => document.querySelector('.reference-library').dataset.theme === 'light');
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('.reference-library')).backgroundColor === 'rgb(247, 247, 245)');
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', {source:window,origin:'https://refmuse.cn',data:{type:'refmuse.canvas.theme',version:1,theme:'dark'}})));
+    await refFrame.evaluate(() => { parent.postMessage({type:'refmuse.canvas.theme',version:1,channel,theme:'url(evil)'}, 'http://127.0.0.1:8799'); parent.postMessage({type:'refmuse.canvas.theme',version:1,channel:'wrong',theme:'dark'}, 'http://127.0.0.1:8799'); });
+    assert.equal(await modal.getAttribute('data-theme'), 'light', 'spoofed or non-enum themes ignored');
+    await refFrame.evaluate(() => parent.postMessage({type:'refmuse.canvas.theme',version:1,channel,theme:'dark'}, 'http://127.0.0.1:8799'));
+    await page.waitForFunction(() => document.querySelector('.reference-library').dataset.theme === 'dark');
     assert.match(await modal.locator('iframe').getAttribute('sandbox'), /allow-forms/);
     await refFrame.locator('#search button').click();
     assert.equal(await refFrame.evaluate(() => window.searches), 1, 'embedded login/search forms must dispatch submit');
+    if (scenario === 'success') await page.evaluate(() => {
+      const original = window.createImageBitmap; window.originalFixtureDecode = original;
+      window.createImageBitmap = (...args) => new Promise((resolve, reject) => { window.releaseFixtureDecode = () => original(...args).then(resolve, reject); });
+    });
     await refFrame.locator('#import').click();
+    if (scenario === 'success') {
+      await page.waitForFunction(() => typeof window.releaseFixtureDecode === 'function');
+      const beforeOpens = opens.length;
+      const blocked = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_open_project').execute({projectId:'prj_other'})));
+      assert.equal(blocked.ok, false); assert.match(blocked.error, /关闭参考库/);
+      assert.equal(opens.length, beforeOpens, 'switching during image decode must not open another project');
+      const blockedLibrary = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_open_reference_library').execute({library:'pose'})));
+      assert.equal(blockedLibrary.ok, false); assert.match(blockedLibrary.error, /正在导入/);
+      assert.equal(await modal.getByRole('button', { name:'关闭参考库' }).isDisabled(), true);
+      await page.evaluate(() => { window.releaseFixtureDecode(); window.createImageBitmap = window.originalFixtureDecode; });
+    }
     await refFrame.waitForFunction(() => window.replies.length >= 2);
     const replies = await refFrame.evaluate(() => window.replies);
     if (replies[0].ok !== (scenario === 'success')) console.error('REFMUSE_DEBUG',scenario,replies,await modal.innerText(),failures);
@@ -231,11 +204,22 @@ try {
 
       assert.equal(await modal.locator('nav button').first().getAttribute('aria-pressed'), 'true');
       await page.screenshot({ path: path.join(root, '.cache/refmuse-integration/fixture-integrated.png') });
-    } else if (scenario === 'readonly') assert.equal(uploads.length, previousUploads);
+      await modal.getByRole('button', { name:'关闭参考库' }).click();
+      await page.reload();
+      await page.getByLabel('画布项目名称').waitFor();
+      assert.equal(await page.locator('.project-open').count(), 0, 'reload restores imported project');
+      const persisted = project.canvas.nodes.find(node => node.id === imported.id);
+      assert.ok(persisted.data.assetPath);
+      assert.equal(persisted.data.sourceGallery.author, 'Fixture');
+    } else {
+      assert.equal(project.canvas.nodes.some(node => node.type === 'media'), false, 'no saved phantom import');
+      if (scenario === 'readonly') assert.equal(uploads.length, previousUploads);
+      else await modal.getByRole('alert').filter({hasText:'导入未完成'}).waitFor();
+    }
     assert.equal(prompts.length, 0, 'gallery does not trigger generation');
     assert.ok(remoteRequests.length >= 2);
     await context.close();
   }
   assert.deepEqual(failures, []);
-  console.log('reference library UI: browse, readonly, MCP, local single-file persistence/reopen, upload/save failures, keyboard isolation passed');
+  console.log('reference library UI: authenticated live light/dark themes, square shell, removed footer, browse, readonly, MCP, Refmuse persistence/reopen, upload/save failures and keyboard isolation passed');
 } finally { await browser.close(); }
