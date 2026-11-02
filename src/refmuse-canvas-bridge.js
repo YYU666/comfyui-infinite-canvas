@@ -19,7 +19,7 @@ export function normalizeRefmuseReference(reference = {}) {
 }
 
 // The remote page may deliver bytes, never a command or a URL to fetch locally.
-export function createRefmuseCanvasBridge({ getFrame, channel, onImport, isActive = () => true, isReadOnly, isBusy, onReady, onBusy, onMessage }) {
+export function createRefmuseCanvasBridge({ getFrame, channel, onImport, isActive = () => true, isReadOnly, isBusy, onReady, onTheme, onBusy, onMessage }) {
   const receipts = new Map();
   let stopped = false;
   let importing = false;
@@ -32,7 +32,11 @@ export function createRefmuseCanvasBridge({ getFrame, channel, onImport, isActiv
     const data = event.data;
     if (stopped || !frame || event.source !== frame || !REFMUSE_ORIGINS.includes(event.origin)
       || data?.version !== 1 || data?.channel !== channel) return;
-    if (data.type === 'refmuse.canvas.ready') { onReady?.(); return; }
+    if (data.type === 'refmuse.canvas.ready' || data.type === 'refmuse.canvas.theme') {
+      if (data.theme === 'light' || data.theme === 'dark') onTheme?.(data.theme);
+      if (data.type === 'refmuse.canvas.ready') onReady?.();
+      return;
+    }
     if (data.type !== 'refmuse.canvas.import' || typeof data.requestId !== 'string'
       || !/^[a-zA-Z0-9_-]{1,100}$/.test(data.requestId)) return;
     const reply = (result) => {
