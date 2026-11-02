@@ -43,6 +43,7 @@ _archive/
 
 # Local diagnostics and generation helpers
 /.cache/
+/.local-node-tools/
 /comfy-system-stats.json
 /export-character-sheet-current.mjs
 /h3-generate-node.mjs

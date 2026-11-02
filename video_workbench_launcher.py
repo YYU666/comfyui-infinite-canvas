@@ -261,7 +261,7 @@ def import_video(share_text):
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"web_{time.strftime('%Y%m%d')}_{uuid.uuid4().hex[:12]}"
     command = [
-        str(ROOT / "python_embeded" / "python.exe"), "-m", "yt_dlp",
+        str(ROOT / "python_embeded" / "python.exe"), str(HERE / "video_download_worker.py"),
         "--no-playlist", "--no-warnings", "--socket-timeout", "20", "--retries", "2",
         "--max-filesize", str(MAX_VIDEO_BYTES), "--merge-output-format", "mp4",
         "--ffmpeg-location", imageio_ffmpeg.get_ffmpeg_exe(),

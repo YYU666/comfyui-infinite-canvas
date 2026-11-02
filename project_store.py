@@ -17,6 +17,7 @@ from scripts.validate_project import validate_project
 from workbench_lifecycle import APP_VERSION, atomic_write_json, utc_now
 
 MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
+MAX_PROJECT_MEMBERS = 10000
 ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac"}
 INVALID_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
@@ -126,8 +127,11 @@ def _validated(document):
 
 
 def _migrate(document):
+    if not isinstance(document, dict):
+        raise StoreError("BAD_REQUEST", "project.json 必须是项目对象。")
     if document.get("schemaVersion") == 3:
         from agent_handles import ensure_agent_handles
+        _validated(document)
         changed = ensure_agent_handles(document)
         return _validated(document), changed
     if document.get("schemaVersion") not in (None, 1, 2):
@@ -672,22 +676,37 @@ class ProjectStore:
         return target
 
     def import_zip(self, archive_path):
+        try:
+            return self._import_zip(archive_path)
+        except (zipfile.BadZipFile, RuntimeError, UnicodeError, ValueError, TypeError) as exc:
+            raise StoreError("BAD_REQUEST", "项目包损坏或格式无效，未完成导入。") from exc
+        except OSError as exc:
+            raise StoreError("IMPORT_IO_ERROR", "项目包无法读取或保存，请检查文件及磁盘空间。", 503) from exc
+
+    def _import_zip(self, archive_path):
         archive_path = Path(archive_path).resolve()
         with zipfile.ZipFile(archive_path) as archive:
             members = archive.infolist()
+            if len(members) > MAX_PROJECT_MEMBERS:
+                raise StoreError("BAD_REQUEST", "项目包文件数量超过导入限制。")
             if "project.json" not in archive.namelist():
                 raise StoreError("BAD_REQUEST", "项目包缺少 project.json。")
-            total = 0
+            total, names = 0, set()
             for member in members:
                 pure = PurePosixPath(member.filename)
                 mode = member.external_attr >> 16
-                windows_drive = re.match(r"^[A-Za-z]:", member.filename)
+                parts = member.filename.rstrip("/").split("/")
+                folded = member.filename.rstrip("/").casefold()
                 if (
                     pure.is_absolute() or ".." in pure.parts or not pure.parts
-                    or "\\" in member.filename or member.filename.startswith("/") or windows_drive
-                    or (mode & 0o170000) == 0o120000
+                    or member.orig_filename != member.filename or "\\" in member.filename
+                    or any(not part or part in {".", ".."} or INVALID_NAME.search(part)
+                           or part.endswith((".", " ")) or part.split(".", 1)[0].upper() in RESERVED_NAMES for part in parts)
+                    or folded in names or (mode & 0o170000) not in {0, 0o100000, 0o040000}
+                    or member.flag_bits & 1
                 ):
                     raise StoreError("BAD_REQUEST", "项目包包含不安全路径。")
+                names.add(folded)
                 total += member.file_size
                 if total > MAX_ASSET_BYTES * 4:
                     raise StoreError("BAD_REQUEST", "项目包超过导入大小限制。")
@@ -696,6 +715,15 @@ class ProjectStore:
             target = (self.root / document["name"]).resolve()
             if self.root not in target.parents or target.exists():
                 raise StoreError("BAD_REQUEST", "导入目标无效或同名项目已存在。")
+            # A renamed archive can be imported beside its source project. API
+            # lookup is by id, so retaining that id would open/save the wrong one.
+            try:
+                self._project_path(document["id"])
+            except StoreError as exc:
+                if exc.code != "NOT_FOUND":
+                    raise
+            else:
+                document.update(id=f"prj_{uuid.uuid4().hex}", revision=1, createdAt=utc_now())
             temporary = self.root / f".import-{uuid.uuid4().hex}"
             temporary_root = temporary.resolve()
             try:

@@ -192,7 +192,7 @@ try {
  assert.equal(shares[0].name,'Qwen 图片编辑');
  assert.equal(shares[0].description.includes('PRIVATE'),false);
  assert.equal(shares[0].license,'UNSPECIFIED');
- assert.equal(shares[0].workflow.source.inputs.image,'input_guide.png');
+ assert.equal(shares[0].workflow.source.inputs.image,'input_1.png');
  await share.getByRole('button',{name:'确认上传到节点库'}).click();
  await remote.waitForFunction(()=>received.some(message=>message.type==='refmuse.nodes.share'));
  const shared=await remote.evaluate(()=>{const message=received.find(item=>item.type==='refmuse.nodes.share');return {summary:message.summary,bytes:message.package.byteLength,autoSubmit:message.autoSubmit};});

@@ -1,3 +1,4 @@
+import { orderQwenReferences, compileQwenPrompt, validateQwenReferences } from './qwen-references.js';
 export const COMFY_ORIGIN = '/api/comfy';
 
 export function normalizeMediaUrl(value) {
@@ -309,14 +310,25 @@ export function validateQwenSourceCrop(crop) {
 // Qwen Image 2.1 native editing: its encoder supplies the reference-matched latent.
 export function buildQwen21EditWorkflow(options) {
   const cacheDevice = validateQwenCacheDevice(options.qwenCacheDevice === undefined ? 'auto' : options.qwenCacheDevice);
-  const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
-  const makeup = options.references?.find((ref) => ref.slot === 'identity' && ref.kind === 'image');
-  if (!source) throw new Error('Qwen 2.1 图生图需要连接一张人物或场景母图。');
-  const prompt = options.prompt?.trim();
+  if (options.qwenMaskCrop !== undefined && typeof options.qwenMaskCrop !== 'boolean') {
+    throw new Error('qwenMaskCrop 必须是布尔值。');
+  }
+  const inputs = options.references || [];
+  const masks = inputs.filter((ref) => (ref.data?.slot ?? ref.slot) === 'mask');
+  if (masks.length > 1) throw new Error('局部遮罩修改最多连接一张遮罩图片。');
+  const customMask = masks[0];
+  if (customMask && ((customMask.kind || customMask.data?.kind) !== 'image' || !customMask.name)) {
+    throw new Error('局部遮罩修改需要有效的遮罩图片。');
+  }
+  const references = orderQwenReferences(inputs.filter((ref) => (ref.data?.slot ?? ref.slot) !== 'mask'), options.qwenReferenceOrder);
+  validateQwenReferences(references);
+  const source = references[0], makeup = references[1];
+  const prompt = compileQwenPrompt(options.prompt?.trim() || '', references);
   if (!prompt) throw new Error('请先输入要保留和要修改的画面内容。');
   const instruction = prompt.includes('<image1>') ? prompt : `Edit <image1>: ${prompt}`;
   const useRealism = options.imageLora === 'qwen21Realism';
   const sourceCrop = 'qwenSourceCrop' in options ? validateQwenSourceCrop(options.qwenSourceCrop) : null;
+  if (customMask && sourceCrop) throw new Error('局部遮罩修改暂不支持 qwenSourceCrop；请使用完整图1以保持遮罩对齐。');
   const graph = {
     model: { class_type: 'UNETLoader', inputs: { unet_name: qwenModelName(options), weight_dtype: 'default' } },
     ...(useRealism ? { realism: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: QWEN21_EDIT_MODEL.realismLora, strength_model: Number(options.loraStrength ?? 0.6) } } } : {}),
@@ -336,12 +348,82 @@ export function buildQwen21EditWorkflow(options) {
     decode: { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } },
     save: { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'image/H3_Qwen21Edit' } },
   };
+  references.slice(2).forEach((reference, offset) => {
+    const index = offset + 3;
+    graph[`reference_${index}`] = { class_type: 'LoadImage', inputs: { image: reference.name } };
+    graph.encode.inputs[`images.image_${index}`] = [`reference_${index}`, 0];
+  });
   if (options.qwenModel === 'turbo') addQwenTurboSampling(graph, [useRealism ? 'realism' : 'model', 0], Number(options.seed));
   if (cacheDevice === 'cpu') {
     const cachedModel = addQwenCpuReferenceCache(graph, [useRealism ? 'realism' : 'model', 0]);
     if (options.qwenModel !== 'turbo') graph.sample.inputs.model = cachedModel;
   }
+  if (customMask) addQwenEditMask(graph, customMask, options.qwenMaskCrop === true);
   return graph;
+}
+
+function addQwenEditMask(graph, customMask, cropToMask = false) {
+  graph.mask_image = { class_type: 'LoadImage', inputs: { image: customMask.name } };
+  graph.mask_source_size = { class_type: 'GetImageSize', inputs: { image: ['source', 0] } };
+  const width = ['mask_source_size', 0], height = ['mask_source_size', 1];
+  // Align the mask to the full original first. Nearest-neighbour resizing keeps
+  // black pixels black; neither alpha inversion nor skin/feather defaults apply.
+  graph.mask_original_image = { class_type: 'ImageScale', inputs: {
+    image: ['mask_image', 0], upscale_method: 'nearest-exact', width, height, crop: 'disabled',
+  } };
+  graph.mask_original = { class_type: 'ImageToMask', inputs: { image: ['mask_original_image', 0], channel: 'red' } };
+  if (cropToMask) {
+    const targetSize = graph.encode.inputs.resolution;
+    graph.mask_crop = { class_type: 'InpaintCropImproved', inputs: {
+      image: ['source', 0], mask: ['mask_original', 0], downscale_algorithm: 'bilinear', upscale_algorithm: 'bicubic',
+      preresize: false, preresize_mode: 'ensure minimum resolution', preresize_min_width: 1024, preresize_min_height: 1024,
+      preresize_max_width: 16384, preresize_max_height: 16384,
+      mask_fill_holes: false, mask_expand_pixels: 0, mask_invert: false, mask_blend_pixels: 0, mask_hipass_filter: 0,
+      extend_for_outpainting: false, extend_up_factor: 1, extend_down_factor: 1, extend_left_factor: 1, extend_right_factor: 1,
+      context_from_mask_extend_factor: 1.3, output_resize_to_target_size: true,
+      output_target_width: targetSize, output_target_height: targetSize, output_padding: '32', device_mode: 'cpu (compatible)',
+    } };
+    // Only image1 becomes the enlarged local context; other reference images
+    // retain their numbering and complete contents.
+    graph.encode.inputs['images.image_1'] = ['mask_crop', 1];
+    graph.mask_crop_image = { class_type: 'MaskToImage', inputs: { mask: ['mask_crop', 2] } };
+  }
+  // The native Qwen 2.1 encoder returns an EMPTY latent, compressed by 16.
+  // Use its actual dimensions so image1's aspect/rounding and sampling agree.
+  graph.mask_latent_size = { class_type: 'GetLatentSize', inputs: { latent: ['encode', 2] } };
+  for (const [axis, index] of [['width', 0], ['height', 1]]) {
+    graph[`mask_sample_${axis}`] = { class_type: 'SimpleMath+', inputs: { a: ['mask_latent_size', index], value: 'a * 16' } };
+  }
+  const sampleWidth = ['mask_sample_width', 0], sampleHeight = ['mask_sample_height', 0];
+  graph.mask_sample_source = { class_type: 'ImageScale', inputs: {
+    image: cropToMask ? ['mask_crop', 1] : ['source', 0], upscale_method: 'lanczos', width: sampleWidth, height: sampleHeight, crop: 'disabled',
+  } };
+  graph.mask_sample_image = { class_type: 'ImageScale', inputs: {
+    image: [cropToMask ? 'mask_crop_image' : 'mask_original_image', 0], upscale_method: 'nearest-exact', width: sampleWidth, height: sampleHeight, crop: 'disabled',
+  } };
+  graph.mask_sample = { class_type: 'ImageToMask', inputs: { image: ['mask_sample_image', 0], channel: 'red' } };
+  graph.mask_source_latent = { class_type: 'VAEEncode', inputs: { pixels: ['mask_sample_source', 0], vae: ['vae', 0] } };
+  graph.mask_latent = { class_type: 'SetLatentNoiseMask', inputs: { samples: ['mask_source_latent', 0], mask: ['mask_sample', 0] } };
+  // Run after Turbo replaces the sampler, so both variants receive noise_mask.
+  graph.sample.inputs.latent_image = ['mask_latent', 0];
+  if (cropToMask) {
+    // The encoder may round crop dimensions to a multiple of 32. Restore the
+    // exact crop dimensions before the stitcher maps pixels into the original.
+    graph.mask_crop_size = { class_type: 'GetImageSize', inputs: { image: ['mask_crop', 1] } };
+    graph.mask_crop_decode_resize = { class_type: 'ImageScale', inputs: {
+      image: ['decode', 0], upscale_method: 'lanczos', width: ['mask_crop_size', 0], height: ['mask_crop_size', 1], crop: 'disabled',
+    } };
+    graph.mask_stitch = { class_type: 'InpaintStitchImproved', inputs: {
+      stitcher: ['mask_crop', 0], inpainted_image: ['mask_crop_decode_resize', 0],
+    } };
+  }
+  graph.mask_output_resize = { class_type: 'ImageScale', inputs: {
+    image: [cropToMask ? 'mask_stitch' : 'decode', 0], upscale_method: 'lanczos', width, height, crop: 'disabled',
+  } };
+  graph.mask_output = { class_type: 'ImageCompositeMasked', inputs: {
+    destination: ['source', 0], source: ['mask_output_resize', 0], x: 0, y: 0, resize_source: false, mask: ['mask_original', 0],
+  } };
+  graph.save.inputs.images = ['mask_output', 0];
 }
 
 export const CHARACTER_SHEET_PANEL = Object.freeze({ width: 1152, height: 2048 });
