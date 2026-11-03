@@ -1,6 +1,8 @@
 import { normalizeMediaUrl } from './workbench-api';
 
 const API_ROOT = '/api/projects';
+// Paths explicitly opened by this page only; never serialize them into project.json.
+const openedProjectPaths = new Map();
 
 function normalizeLegacyMedia(document) {
   if (!document || typeof document !== 'object') return document;
@@ -67,12 +69,27 @@ export async function openProject(id, { readOnly = false, fallbackToReadOnly = t
   }
 }
 
-export async function openProjectPath(path, { readOnly = false } = {}) {
+export async function openProjectPath(path, { readOnly = false, fallbackToReadOnly = true, signal } = {}) {
   try {
-    return editable(await request('/open', json('POST', { path, readOnly })), readOnly);
+    const document = editable(await request('/open', { ...json('POST', { path, readOnly }), signal }), readOnly);
+    openedProjectPaths.set(document.id, path);
+    return document;
   } catch (error) {
-    if (error.status === 423 && !readOnly) return openProjectPath(path, { readOnly: true });
+    if (error.status === 423 && !readOnly && fallbackToReadOnly) return openProjectPath(path, { readOnly: true, fallbackToReadOnly: false, signal });
     throw error;
+  }
+}
+
+export async function restoreProjectAccess(project, { isCurrent = () => true, signal } = {}) {
+  try { await request(`/${project.id}`, { signal }); }
+  catch (error) {
+    if (error.status !== 404 || !isCurrent()) throw error;
+    const path = openedProjectPaths.get(project.id);
+    if (!path) throw new Error('当前项目暂时无法访问。本页修改已保留，请检查项目文件夹；可先下载画布 JSON 快照。');
+    // Re-register an external folder forgotten by the restarted backend from
+    // this mounted page. Retain its unsaved canvas and original CAS revision.
+    const reopened = await openProjectPath(path, { readOnly: project.readOnly, fallbackToReadOnly: false, signal });
+    if (reopened.id !== project.id) throw new Error('项目文件夹中的项目已改变。本页修改已保留，请下载画布 JSON 快照后核对。');
   }
 }
 

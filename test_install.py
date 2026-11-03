@@ -213,6 +213,9 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(commands[0][1:3], ["-m", "pip"])
             self.assertIn("--require-hashes", commands[0])
             self.assertEqual(Path(commands[0][-1]).name, "requirements.lock")
+            if os.name == "nt":
+                self.assertEqual(Path(commands[-1][3]).name, "workbench_start.py")
+                self.assertEqual(commands[-1][-3:], ["--comfy-root", str(root.resolve()), "register"])
 
     def test_models_source_defaults_to_core_and_explicit_full_is_forwarded(self):
         for extra, expected in (([], "core-h3"), (["--profile", "full"], "full")):
@@ -229,7 +232,7 @@ class InstallTests(unittest.TestCase):
                 with mock.patch.object(install, "run", side_effect=lambda command, cwd=None: commands.append(command)), \
                      mock.patch.object(sys, "argv", argv):
                     self.assertEqual(install.main(), 0)
-                self.assertEqual(len(commands), 1)
+                self.assertEqual(len(commands), 2 if os.name == "nt" else 1)
                 command = commands[0]
                 self.assertEqual(Path(command[1]).name, "install_models.py")
                 self.assertEqual(command[command.index("--profile") + 1], expected)

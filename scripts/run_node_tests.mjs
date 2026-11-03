@@ -40,6 +40,7 @@ const suites = {
     'test-update-check-scheduler.mjs',
   ],
   browser: [
+    'test-local-reconnect-ui.mjs',
     'test-canvas-current-page-ui.mjs',
     'test-official-nodes-ui.mjs',
     'test-video-download-ui.mjs',

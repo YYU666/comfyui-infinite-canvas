@@ -1,4 +1,5 @@
 import { orderQwenReferences, compileQwenPrompt, validateQwenReferences } from './qwen-references.js';
+import { LOCAL_RECONNECTED } from './local-connection.js';
 export const COMFY_ORIGIN = '/api/comfy';
 
 export function normalizeMediaUrl(value) {
@@ -1288,17 +1289,22 @@ export async function cancelGeneration(node) {
 
 const QUEUE_EVENTS = ['job.queued', 'job.started', 'job.submitted', 'job.progress', 'job.running', 'job.finishing', 'job.done', 'job.error', 'job.cancelled', 'job.retry', 'job.priority', 'queue.cleared'];
 export function openQueueEvents(handlers = {}) {
-  const source = new EventSource('/api/queue/events');
-  const onSnapshot = (event) => handlers.onSnapshot?.(JSON.parse(event.data));
-  source.addEventListener('queue.snapshot', onSnapshot);
-  for (const type of QUEUE_EVENTS) {
-    source.addEventListener(type, (event) => {
-      const payload = JSON.parse(event.data);
-      handlers.onJobEvent?.(payload.job, type);
-    });
-  }
-  source.onerror = () => handlers.onError?.(new Error('队列事件连接暂时中断，浏览器会自动重连。'));
-  return source;
+  let source;
+  const connect = () => {
+    source?.close();
+    source = new EventSource('/api/queue/events');
+    source.addEventListener('queue.snapshot', (event) => handlers.onSnapshot?.(JSON.parse(event.data)));
+    for (const type of QUEUE_EVENTS) {
+      source.addEventListener(type, (event) => {
+        const payload = JSON.parse(event.data);
+        handlers.onJobEvent?.(payload.job, type);
+      });
+    }
+    source.onerror = () => handlers.onError?.(new Error('队列事件连接暂时中断，浏览器会自动重连。'));
+  };
+  connect();
+  window.addEventListener(LOCAL_RECONNECTED, connect);
+  return { close() { window.removeEventListener(LOCAL_RECONNECTED, connect); source.close(); } };
 }
 
 export async function cancelPrompt(promptId) {

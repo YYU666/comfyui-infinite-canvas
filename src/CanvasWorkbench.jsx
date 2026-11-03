@@ -14,7 +14,7 @@ import {
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, buildCharacterSwapWorkflow, buildHdRefineWorkflow,
   buildImageWorkflow, buildImageHdWorkflow, buildIdentityEditWorkflow, buildQwen21EditWorkflow, buildCharacterSheetQueuePlan, buildLocalRealismWorkflow, buildOutfitQueuePlan, resolveOutfitPanels, OUTFIT_PRESETS, cancelGeneration, createClientId, enqueueGeneration, extractImages, extractVideos,
-  freeComfyMemory, getHardwareMetrics, getHistory, getMossDependencyStatus, getSystemStats, importVideoFromUrl, openProgressSocket, openQueueEvents,
+  freeComfyMemory, getHistory, getMossDependencyStatus, importVideoFromUrl, openProgressSocket, openQueueEvents,
   openFileLocation as requestFileLocation, optimizePrompt as requestPromptOptimization,
   resolveDimensions, resolveImageDimensions, uploadMedia,
 } from './workbench-api';
@@ -43,7 +43,7 @@ import { inspectionQuery, canInspectNode } from './workflow-inspector';
 import CanvasProjectMenu from './CanvasProjectMenu';
 import CreativePanel from './CreativePanel';
 import HandoffDialog from './HandoffDialog';
-import { initializeProjects, listProjects, createProject, openProject, closeProject, saveProject, projectSummary, saveProjectFile, readProjectFile, createDomainEntity, createTake, updateProjectHandoff } from './project-store-http';
+import { initializeProjects, listProjects, createProject, openProject, closeProject, saveProject, projectSummary, saveProjectFile, readProjectFile, createDomainEntity, createTake, updateProjectHandoff, restoreProjectAccess } from './project-store-http';
 import { AutoSaveController, persistentCanvas } from './auto-save';
 import { readViewport, saveViewport } from './canvas-viewport';
 import { selectCharacterSwapVideo } from './canvas-output-selection';
@@ -54,6 +54,7 @@ import { ObjectUrlLru } from './object-url-lru';
 import { assertMediaCacheIdentity, mediaCacheIdentity, reconcileMediaCache } from './canvas-media-cache';
 import { GenerationAttempts } from './generation-attempts';
 import { flushProjectAfterMedia } from './project-save-barrier';
+import { useLocalConnection } from './use-local-connection';
 
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
@@ -580,8 +581,21 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const viewportRef = useRef(saved.viewport);
   const interactionRef = useRef(false);
   const [saveState, setSaveState] = useState(project.readOnly ? '只读' : '已保存');
-  const [server, setServer] = useState({ online: false, label: '正在连接' });
-  const [metrics, setMetrics] = useState({ vramUsed: null, vramTotal: null, cpuPercent: null, ramUsed: null, ramTotal: null });
+  const restoreCurrentProjectAccess = useCallback(async ({ signal } = {}) => {
+    const current = projectRef.current;
+    try {
+      await restoreProjectAccess(current, { signal, isCurrent: () => projectRef.current.id === current.id });
+      if (projectRef.current.id === current.id && !autoSaveRef.current?.failure) {
+        setProjectError((existing) => existing.startsWith('项目连接尚未恢复：') ? '' : existing);
+      }
+    }
+    catch (error) {
+      if (projectRef.current.id === current.id) setProjectError((existing) => autoSaveRef.current?.conflict ? existing
+        : `项目连接尚未恢复：${error.message} 本页修改已保留，请检查项目文件夹或锁定状态后重试保存。`);
+      throw error;
+    }
+  }, []);
+  const { server, metrics, checkServer, onStatusClick, starting, notice: localConnectionNotice, dismissNotice, connectionEpoch } = useLocalConnection({ onReconnect: restoreCurrentProjectAccess });
   const [memoryCleanup, setMemoryCleanup] = useState('idle');
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
@@ -1078,7 +1092,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       },
     });
     return () => socket.close();
-  }, [clientId, completeGeneration, updateNode]);
+  }, [clientId, completeGeneration, updateNode, connectionEpoch]);
 
   useEffect(() => {
     let checking = false;
@@ -1104,24 +1118,6 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     return () => clearInterval(interval);
   }, [completeGeneration, updateNode]);
 
-  const checkServer = useCallback(async () => {
-    try {
-      const [stats, hardware] = await Promise.all([getSystemStats(), getHardwareMetrics().catch(() => null)]);
-      const device = stats?.devices?.[0];
-      const gpu = device?.name?.replace(/^cuda:\d+\s*/, '').replace(/\s*:\s*cudaMallocAsync$/, '') || '本地 GPU';
-      setServer({ online: true, label: gpu });
-      setMetrics({
-        vramUsed: device ? device.vram_total - device.vram_free : null,
-        vramTotal: device?.vram_total ?? null,
-        cpuPercent: hardware?.cpuPercent ?? null,
-        ramUsed: hardware?.ramUsed ?? null,
-        ramTotal: hardware?.ramTotal ?? null,
-      });
-    } catch {
-      setServer({ online: false, label: 'ComfyUI 未连接' });
-      setMetrics({ vramUsed: null, vramTotal: null, cpuPercent: null, ramUsed: null, ramTotal: null });
-    }
-  }, []);
   const clearMemory = useCallback(async () => {
     if (memoryCleanup === 'busy') return;
     setMemoryCleanup('busy');
@@ -1136,11 +1132,6 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       window.setTimeout(() => setMemoryCleanup('idle'), 3000);
     }
   }, [checkServer, memoryCleanup]);
-  useEffect(() => {
-    checkServer();
-    const interval = setInterval(checkServer, 3000);
-    return () => clearInterval(interval);
-  }, [checkServer]);
 
   const refreshLibrary = useCallback(async () => {
     try {
@@ -1816,7 +1807,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         }} title="返回项目启动器"><FolderOpen size={15} /><span>项目</span></button>}
         <CanvasProjectMenu current={project} projects={projects} name={projectName} onNameChange={setProjectName}
           saveState={saveState} error={projectError} busy={projectBusy || project.readOnly} locked={hasActiveTask()}
-          onRetry={() => persistProject(true).catch(() => {})} onSnapshot={downloadLocalSnapshot} onReload={reloadProject}
+          onRetry={() => restoreCurrentProjectAccess().then(() => persistProject(true)).catch(() => {})} onSnapshot={downloadLocalSnapshot} onReload={reloadProject}
           conflicted={Boolean(autoSaveRef.current?.conflict)}
           onRefresh={refreshProjects} onOpen={(id) => changeProject(id)} onCreate={(name) => changeProject(null, name)} />
         <div className="neo-header-right">
@@ -1829,12 +1820,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
             }}><Layers3 size={15} /><span>节点库</span></button>
             <button className={creativeOpen ? 'active' : ''} onClick={() => setCreativeOpen(!creativeOpen)} title="角色、镜头与审片"><Film size={15} /><span>创作</span></button>
             <button className={handoffOpen ? 'active' : ''} disabled={project.readOnly} onClick={() => setHandoffOpen(true)} title="保存目标、验收结论并切换 Agent"><Link2 size={15} /><span>接力{project.settings?.handoff?.status === 'paused' ? ' · 已暂停' : ''}</span></button>
-            <button className={`server-status ${server.online ? 'online' : ''}`} onClick={checkServer} title={server.label}><i />{server.online ? '本地已连接' : '本地未连接'}</button>
+            <button className={`server-status ${server.online ? 'online' : ''}`} onClick={onStatusClick} title={server.label} aria-busy={starting}><i />{server.online ? '本地已连接' : starting ? '正在启动…' : '本地未连接'}</button>
             <button onClick={async () => { if (!switchingRef.current && !hasActiveTask()) { try { await persistProject(); onSimpleMode(); } catch { /* Keep the unsaved canvas open. */ } } }} title="切换简易模式"><MousePointer2 size={15} /></button>
             <button onClick={() => window.open('http://127.0.0.1:8188','_blank')} title="打开 ComfyUI 高级节点"><MoreHorizontal size={17} /></button>
           </div>
         </div>
       </header>
+      {localConnectionNotice && <div className="local-connection-notice" role="status"><span>{localConnectionNotice}</span><button onClick={dismissNotice} aria-label="关闭连接提示"><X size={14} /></button></div>}
       {projectBusy && <div className="project-switching" role="status"><LoaderCircle className="spin" size={18} />正在保存并打开画布…</div>}
       {project.readOnly && <div className="project-switching readonly" role="status">此项目正在另一个窗口中编辑，当前以只读方式打开。</div>}
       <main className={`neo-canvas-wrap canvas-view-${viewTier}${connecting ? ' canvas-connecting' : ''}`} style={{ '--canvas-handle-size': `${Math.min(72, Math.max(24, 24 / (zoom / 100)))}px` }} inert={projectBusy || libraryModalOpen ? true : undefined}

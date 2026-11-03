@@ -68,6 +68,8 @@
 .project-loading button { padding: 10px 24px; border: 1px solid #444; border-radius: 8px; background: #29292d; cursor: pointer; }
 .project-switching { position: absolute; inset: 0; z-index: 39; display: flex; align-items: center; justify-content: center; gap: 10px; background: rgba(17,17,19,.5); color: #d4d4da; font-size: 13px; cursor: wait; }
 .project-switching.readonly { inset: 64px auto auto 50%; transform: translateX(-50%); padding: 9px 14px; border: 1px solid #504834; border-radius: 8px; background: rgba(43,39,27,.94); color: #d2c8a7; font-size: 11px; cursor: default; pointer-events: none; }
+.local-connection-notice { position: absolute; top: 64px; right: 18px; z-index: 39; max-width: min(560px, calc(100% - 36px)); display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid #44444b; border-radius: 10px; background: #232326; color: #d4d4da; font-size: 12px; line-height: 1.6; }
+.local-connection-notice button { flex-shrink: 0; display: flex; padding: 4px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
 .neo-header-right { display: flex; align-items: center; gap: 8px; }
 .canvas-bottom-right { position: absolute; z-index: 20; right: 16px; bottom: 15px; display: flex; align-items: center; gap: 12px; max-width: calc(100% - 32px); overflow-x: auto; }
 .hardware-monitor { flex-shrink: 0; height: 46px; display: flex; align-items: center; gap: 13px; padding: 6px 11px; border: 1px solid rgba(255,255,255,.07); border-radius: 12px; background: rgba(25,25,28,.88); box-shadow: 0 5px 24px rgba(0,0,0,.2); backdrop-filter: blur(16px); pointer-events: auto; }

@@ -66,11 +66,21 @@
    ```
 
    `--models-only` 只校验和复制模型，不重复安装程序依赖或构建前端。若开始时模型已经整理好，可直接运行一次 `install.bat --models-source "<MODEL_STAGE>" --profile core-h3` 完成程序与模型安装，跳过前面的单独安装。也可用 `scripts/install_models.py` 或外部模型目录配置。
-5. 双击 `启动.vbs`，浏览器打开 `http://127.0.0.1:8790/`；`start.bat` 仅用于调试，`停止.bat` 用于优雅停止。
+5. 双击桌面 **Refmuse 画布** 快捷方式（或 `启动.vbs`），启动服务并在浏览器打开画布，默认地址为 `http://127.0.0.1:8790/`；已有服务会直接复用。`start.bat` 仅用于调试，`停止.bat` 用于优雅停止。
 
 安装器使用 `requirements.lock` 的 SHA256 校验 Python 依赖，并按 `install.py` 中的仓库＋commit 安装第三方节点。已有节点提交不一致时会保留原目录并停止，不会自动更新或覆盖；工作台自己的 `h3_workbench_refine` 节点会同步到 ComfyUI。便携版 Python 缺失时安装直接失败，不回退系统 Python。
 
 仓库默认放在便携版根目录；其他位置需在启动前设置 `H3_COMFY_ROOT` 为便携版根目录。仓库路径包含空格或中文时使用同样的相对定位规则。
+
+Windows 完整安装会创建桌面快捷方式，并在当前用户下注册固定唤醒地址 `refmuse-canvas://start`，无需管理员权限。网页断线时可通过该地址唤醒画布服务；浏览器首次可能要求确认打开本地应用。协议入口不会打开额外浏览器页面，也不会停止或重启已有健康服务。若仅 ComfyUI 断线、画布服务仍在运行，请检查 ComfyUI 状态与日志；此入口不会强制重启 ComfyUI。
+
+已有安装或工作台源码位于便携版之外时，在**实际运行的工作台目录**执行以下命令补建/更新快捷方式与协议（移动程序目录后也需重跑）：
+
+```bat
+"<ComfyUI便携版>\python_embeded\python.exe" -X utf8 workbench_start.py --comfy-root "<ComfyUI便携版>" register
+```
+
+快捷方式记录运行目录和便携版 `pythonw.exe` 的绝对路径；启动时继续读取原有工作台设置。`--models-only` 不修改桌面快捷方式或协议。
 
 让 Agent 打开本地画布时，先在仓库根目录执行 `<ComfyUI便携版>\python_embeded\python.exe agent_cli.py start --timeout 120`。命令会启动服务或复用已有实例，确认画布与 ComfyUI 均就绪后返回实际网页地址，Agent 再在当前侧面页打开该地址。仅打开 `http://127.0.0.1:8790/` 不会启动服务器；失败时命令会明确返回错误和日志位置。
 
