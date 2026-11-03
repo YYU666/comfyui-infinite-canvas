@@ -30,6 +30,7 @@ from agent_api import AgentAPI
 from extension_api import ExtensionAPI
 from workflow_extensions import ExtensionStore
 from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_websocket
+from thumbnail_cache import ThumbnailCache
 from project_api import ProjectAPI
 from project_store import ProjectStore
 from queue_api import QueueAPI
@@ -490,6 +491,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request():
             return
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/thumbnails":
+            self.server.thumbnail_cache.handle_get(self)
+            return
         if is_comfy_path(path):
             if is_websocket_request(self):
                 proxy_websocket(self)
@@ -796,6 +800,7 @@ def main():
             logging.getLogger().setLevel(server.settings.data["logLevel"])
             server.project_store = ProjectStore(server.settings.data["projectsRoot"], defaults=server.settings.data["defaults"])
             server.project_api = ProjectAPI(server.project_store)
+            server.thumbnail_cache = ThumbnailCache(runtime_dir() / "thumbnails", server.project_store, COMFY_URL)
             server.doctor = WorkbenchDoctor(
                 HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
                 model_roots=server.settings.data["modelRoots"] or None,
