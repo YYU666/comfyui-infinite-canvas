@@ -37,7 +37,7 @@ export const NODE_PRESETS = {
 const EDITABLE_SETTINGS = new Set([
   'workflowParameters', 'ratio', 'resolution', 'duration', 'turbo', 'seed', 'randomSeed', 'refImageSize', 'characterSheetAngleSeed',
   'qwenSteps', 'qwenRefResolution', 'localRealismSteps', 'localRealismSize', 'localRealismDenoise', 'localMaskMode', 'localMaskExpand', 'localMaskBlend', 'imageModel', 'imageLora', 'loraStrength', 'imageScale',
-  'qwenModel', 'qwenCacheDevice', 'qwenSourceCrop', 'qwenMaskCrop', 'outfitModel', 'upscaleModel', 'outfitUpscale', 'outfitHdScale', 'museSteps',
+  'qwenModel', 'qwenCacheDevice', 'qwenSourceCrop', 'qwenMaskCrop', 'outfitModel', 'upscaleModel', 'outfitUpscale', 'outfitHdScale', 'museSteps', 'flux3Resolution',
   'outfitPreset', 'outfitPanel', 'outfitLayout', 'outfitPanels', 'outfitDenoise', 'targetQuery', 'targetDescription', 'targetSelection', 'targetIndex',
 ]);
 
@@ -48,8 +48,8 @@ export function describeNodeModels(data = {}) {
   return {
     outfitModelLabel, outfitHdLabel,
     outfitSteps: outfitModel === 'muse_v4' ? Number(data.museSteps || 16) : outfitModel === 'qwen21_turbo' ? 8 : Number(data.qwenSteps || 40),
-    qwenModelLabel: data.qwenModel === 'turbo' ? 'Qwen 2.1 Turbo INT8' : 'Qwen 2.1 标准版 INT8',
-    qwenSteps: data.qwenModel === 'turbo' ? 8 : Number(data.qwenSteps || 40),
+    qwenModelLabel: data.qwenModel === 'flux3_klein' ? 'FLUX 3 Image Klein INT8' : data.qwenModel === 'turbo' ? 'Qwen 2.1 Turbo INT8' : 'Qwen 2.1 标准版 INT8',
+    qwenSteps: data.qwenModel === 'flux3_klein' ? 16 : data.qwenModel === 'turbo' ? 8 : Number(data.qwenSteps || 40),
     upscaleModelLabel: data.upscaleModel === 'seedvr2_7b' ? 'SeedVR2 7B INT8' : 'SeedVR2 3B INT8',
   };
 }
@@ -62,7 +62,7 @@ export function validateModelSettings(settings, mode) {
   }
   if ('characterSheetAngleSeed' in settings) validateCharacterSheetAngleSeed(settings.characterSheetAngleSeed);
   if ('qwenSourceCrop' in settings) validateQwenSourceCrop(settings.qwenSourceCrop);
-  const values = { qwenModel: ['standard', 'turbo'], outfitModel: ['qwen21', 'qwen21_turbo', 'muse_v4'], upscaleModel: ['seedvr2_3b', 'seedvr2_7b'], outfitUpscale: ['auto', 'off', 'seedvr2_7b'] };
+  const values = { qwenModel: ['standard', 'turbo', 'flux3_klein'], flux3Resolution: ['1MP', '2K', '4K'], outfitModel: ['qwen21', 'qwen21_turbo', 'muse_v4'], upscaleModel: ['seedvr2_3b', 'seedvr2_7b'], outfitUpscale: ['auto', 'off', 'seedvr2_7b'] };
   for (const [key, allowed] of Object.entries(values)) {
     if (key in settings && !allowed.includes(settings[key])) throw new Error(`不支持的 ${key}：${settings[key]}`);
   }
@@ -88,7 +88,7 @@ function nodeSummary(node, includeContent = true) {
     ...(includeContent ? { prompt: node.data.prompt, text: node.data.text } : {}),
     ...(node.data.mode === 'outfitEdit' ? { outfitLayout: node.data.outfitLayout || 'legacy', outfitPanel: node.data.outfitPanel || node.data.panelId || null, outfitPanels: node.data.outfitPanels || null } : {}),
     ...(['outfitEdit', 'qwenEdit', 'characterSheet', 'imageUpscale'].includes(node.data.mode) ? {
-      qwenModel: node.data.qwenModel || 'standard', outfitModel: node.data.outfitModel || 'qwen21',
+      qwenModel: node.data.qwenModel || 'standard', ...(node.data.qwenModel === 'flux3_klein' ? { flux3Resolution: node.data.flux3Resolution || '1MP' } : {}), outfitModel: node.data.outfitModel || 'qwen21',
       outfitUpscale: node.data.outfitUpscale || 'auto', upscaleModel: node.data.upscaleModel || 'seedvr2_3b',
       models: describeNodeModels(node.data),
     } : {}),
@@ -289,7 +289,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
           title: { type: 'string' },
           prompt: { type: 'string' },
           text: { type: 'string' },
-          settings: { type: 'object', description: '自定义工作流使用 workflowParameters 对象，键来自 workflowDefinition.parameters.properties；仅支持声明的标量参数。内置节点可选参数包含 qwenModel（standard/turbo）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。' },
+          settings: { type: 'object', description: '自定义工作流使用 workflowParameters 对象，键来自 workflowDefinition.parameters.properties；仅支持声明的标量参数。内置节点可选参数包含 qwenModel（standard/turbo/flux3_klein）、flux3Resolution（1MP/2K/4K，仅 FLUX 3）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。' },
         }, ['nodeId']),
         execute: respond(async ({ nodeId, title, prompt, text, settings = {} }) => {
           const current = getNode(nodeId);

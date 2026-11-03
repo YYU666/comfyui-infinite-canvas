@@ -12,10 +12,10 @@ export function suggestShareMetadata(node, source = {}) {
   const data = node?.data || {};
   const staged = data.mode === 'characterSheet' || data.workflowDefinition?.execution?.kind === 'characterSheet' || source.plan?.kind === 'characterSheet';
   const recipes = {
-    image: [data.imageModel === 'moss' ? 'MOSS 文生图' : 'Krea2 文生图', '根据文字描述生成图片。', '填写画面描述，按需连接参考图片，调整尺寸和种子后运行。'],
+    image: [data.imageModel === 'flux3_klein' ? 'FLUX 3 Klein 文生图' : data.imageModel === 'moss' ? 'MOSS 文生图' : 'Krea2 文生图', '根据文字描述生成图片。', '填写画面描述，按需连接参考图片，调整尺寸和种子后运行。'],
     imageUpscale: ['图片放大与清晰度增强', '对输入图片进行放大处理。', '连接待放大的图片，检查放大模型与输出参数后运行。'],
     identityEdit: ['人物参考图编辑', '以人物参考图为基础进行图片编辑。', '连接人物参考图，填写需要修改的内容，再运行并检查人物特征与画面效果。'],
-    qwenEdit: ['Qwen 图片编辑', '结合参考图片与文字指令生成编辑后的图片。', '连接原图和需要的参考图，描述修改目标，调整采样参数后运行。'],
+    qwenEdit: [data.qwenModel === 'flux3_klein' ? 'FLUX 3 Klein 图片编辑' : 'Qwen 图片编辑', '结合参考图片与文字指令生成编辑后的图片。', '连接原图和需要的参考图，描述修改目标，调整采样参数后运行。'],
     localRealism: ['人像局部肤质修复', '对人像皮肤区域进行局部写实处理。', '连接正面人像，按需提供遮罩，检查修复区域与强度后运行。'],
   };
   let recipe = staged ? ['单图生成角色四视图', '从一张人物参考图依次生成正面头像、45°头像、背面全身和正面全身，最后拼成四视图。', '连接一张单人角色参考图，检查角色描述、尺寸与采样参数后运行。45°头像使用已生成的正面头像作为参考，其余视角使用原始参考图。'] : recipes[data.mode];
