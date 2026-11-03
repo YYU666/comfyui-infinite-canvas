@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import sys
 import tempfile
@@ -6,6 +7,7 @@ import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -216,17 +218,38 @@ class QueueTests(unittest.TestCase):
 
     def test_stalled_job_times_out_and_can_be_retried(self):
         self.manager.stop()
-        self.manager = QueueManager(self.path, self.adapter, poll_interval=0.01, job_timeout=0.05)
-        job = self.manager.enqueue(payload())
-        self.manager.start()
-        wait_for(lambda: self.manager.get(job["id"])["status"] == "error")
-        failed = self.manager.get(job["id"])
-        self.assertEqual(failed["error"]["code"], "COMFY_TIMEOUT")
-        self.assertEqual(failed["stage"], "生成超时")
-        self.assertEqual(self.adapter.cancelled, ["prompt-1"])
-        self.adapter.done = True
-        self.assertEqual(self.manager.retry(job["id"])["status"], "queued")
-        wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
+
+        class Clock(dt.datetime):
+            current = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+
+            @classmethod
+            def now(cls, tz=None):
+                return cls.current.astimezone(tz)
+
+        # Advance only the queue's wall clock, not wait_for's real deadline.
+        # A 50 ms real timeout could expire again during retry persistence on CI.
+        with patch("workbench_queue.dt", SimpleNamespace(datetime=Clock, timezone=dt.timezone)), \
+                patch("workbench_queue.utc_now", side_effect=lambda: Clock.current.isoformat()):
+            self.manager = QueueManager(self.path, self.adapter, poll_interval=0.01, job_timeout=60)
+            job = self.manager.enqueue(payload())
+            self.manager.start()
+            try:
+                wait_for(lambda: self.manager.get(job["id"])["progress"] == 40)
+                self.assertEqual(self.manager.get(job["id"])["status"], "running")
+                Clock.current += dt.timedelta(seconds=60)
+                wait_for(lambda: self.manager.get(job["id"])["status"] == "error")
+                failed = self.manager.get(job["id"])
+                self.assertEqual(failed["error"]["code"], "COMFY_TIMEOUT")
+                self.assertEqual(failed["stage"], "生成超时")
+                self.assertEqual(self.adapter.cancelled, ["prompt-1"])
+                self.adapter.done = True
+                self.assertEqual(self.manager.retry(job["id"])["status"], "queued")
+                wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
+                self.assertEqual(self.manager.get(job["id"])["attempts"], 2)
+                self.assertEqual(len(self.adapter.submitted), 2)
+                self.assertEqual(self.adapter.submitted[0]["workflow"], self.adapter.submitted[1]["workflow"])
+            finally:
+                self.manager.stop()
 
     def test_immediate_retry_during_submit_cancels_old_prompt_and_submits_new_attempt(self):
         entered = threading.Event()
