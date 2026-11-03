@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -242,6 +243,10 @@ def main() -> int:
                 run([npm, "ci"], HERE)
             with reporter.stage("前端构建"):
                 run([npm, "run", "build"], HERE)
+        if os.name == "nt" and not args.models_only:
+            with reporter.stage("桌面快捷方式与当前用户启动协议"):
+                run([str(python), "-X", "utf8", str(HERE / "workbench_start.py"),
+                     "--comfy-root", str(root), "register"], HERE)
         print(f"本次请求的步骤已完成（含前置检查 {reporter.completed} 阶段，{time.monotonic() - reporter.started:.1f}s）。")
         print("尚未运行工作台离线/在线验收；请运行 scripts/verify_workbench.py，并在服务就绪后加 --online。")
         if not args.models_source:

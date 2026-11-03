@@ -75,7 +75,7 @@ try {
   const id = created.projectId;
   assert.notEqual(id, source.id);
   await activePage(id);
-  for (const [index, preset] of ['outfit_qwen21_turbo', 'outfit_qwen21_turbo_7b', 'outfit_muse_v4'].entries()) {
+  for (const [index, preset] of ['qwen_edit', 'qwen_turbo_edit', 'image_upscale_7b'].entries()) {
     await invoke(id, 'canvas_create_node', { preset, x: 150 + index * 600, y: 100 });
   }
   const media = await invoke(id, 'canvas_create_node', { preset: 'image_asset', x: 150, y: 700 });
@@ -87,8 +87,9 @@ try {
   const copy = await fetch(`${base}/api/projects/${id}/${imported.data.assetPath}`, { headers: { 'X-H3-Token': token } });
   assert.deepEqual(Buffer.from(await copy.arrayBuffer()), bytes);
   const generators = saved.canvas.nodes.filter((node) => node.type === 'generator');
-  assert.deepEqual(generators.map((node) => node.data.outfitUpscale), ['off', 'seedvr2_7b', 'off']);
-  assert.equal(generators[2].data.outfitModel, 'muse_v4');
+  assert.deepEqual(generators.map((node) => node.data.mode), ['qwenEdit', 'qwenEdit', 'imageUpscale']);
+  assert.equal(generators[1].data.qwenModel, 'turbo');
+  assert.equal(generators[2].data.upscaleModel, 'seedvr2_7b');
   assert.equal((await request(`/api/projects/${source.id}`)).revision, asset.revision, 'source remains untouched');
   await invoke(id, 'canvas_open_project', { projectId: source.id });
   await activePage(source.id);

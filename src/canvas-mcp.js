@@ -2,21 +2,25 @@ import { useEffect, useRef } from 'react';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
 import { validateCharacterSheetAngleSeed, validateQwenCacheDevice, validateQwenSourceCrop } from './workbench-api.js';
+import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-references.js';
+import { availableNodePresets } from './local-node-tools.js';
 
 export const NODE_PRESETS = {
   image_asset: ['image', {}],
+  local_mask: ['image', { mediaRole: 'mask', title: '局部遮罩修改' }],
   video_asset: ['video', {}],
+  video_download: ['note', { title: '视频链接下载', noteRole: 'videoDownload' }],
   audio_asset: ['audio', {}],
   note: ['note', {}],
   prompt_optimizer: ['prompt', {}],
-  reference_video: ['generator', { mode: 'reference', title: '全能参考' }],
+  reference_video: ['generator', { mode: 'reference', title: '视频生成' }],
   character_swap: ['generator', { mode: 'swap', title: '精准角色替换' }],
   text_video: ['generator', { mode: 'text', title: '文生视频' }],
-  frames_video: ['generator', { mode: 'frames', title: '首尾帧生成视频' }],
-  krea_image: ['generator', { mode: 'image', title: 'Krea2 生图', imageModel: 'krea2' }],
-  moss_image: ['generator', { mode: 'image', title: 'MOSS 生图', imageModel: 'moss' }],
+  frames_video: ['generator', { mode: 'frames', title: '视频生成' }],
+  krea_image: ['generator', { mode: 'image', title: '文生图', imageModel: 'krea2' }],
+  moss_image: ['generator', { mode: 'image', title: '文生图', imageModel: 'moss' }],
   identity_edit: ['generator', { mode: 'identityEdit', title: '母图编辑 V2', ratio: '16:9', refBoost: 4, groundingPx: 1024, refPosition: 'beside (right of target)' }],
-  qwen_edit: ['generator', { mode: 'qwenEdit', title: 'Qwen 2.1 图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }],
+  qwen_edit: ['generator', { mode: 'qwenEdit', title: '图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }],
   qwen_turbo_edit: ['generator', { mode: 'qwenEdit', title: 'Qwen 2.1 Turbo INT8 · 图生图', qwenModel: 'turbo', randomSeed: false, seed: 281306, qwenRefResolution: 1024 }],
   realism_edit: ['generator', { mode: 'qwenEdit', title: '真人化 · 漫转真', prompt: '将图中的风格化人物转换为真实摄影中的真人，保留人物身份特征、发型发色、姿势、景别和构图；真实自然的皮肤纹理、五官结构与摄影光影，不要 CG、3D 渲染、插画或塑料皮肤。', imageLora: 'qwen21Realism', loraStrength: 0.8, randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }],
   character_sheet: ['generator', { mode: 'characterSheet', title: '角色四视图生成', randomSeed: false, seed: 281306, qwenSteps: 40, qwenRefResolution: 1536 }],
@@ -33,7 +37,7 @@ export const NODE_PRESETS = {
 const EDITABLE_SETTINGS = new Set([
   'workflowParameters', 'ratio', 'resolution', 'duration', 'turbo', 'seed', 'randomSeed', 'refImageSize', 'characterSheetAngleSeed',
   'qwenSteps', 'qwenRefResolution', 'localRealismSteps', 'localRealismSize', 'localRealismDenoise', 'localMaskMode', 'localMaskExpand', 'localMaskBlend', 'imageModel', 'imageLora', 'loraStrength', 'imageScale',
-  'qwenModel', 'qwenCacheDevice', 'qwenSourceCrop', 'outfitModel', 'upscaleModel', 'outfitUpscale', 'outfitHdScale', 'museSteps',
+  'qwenModel', 'qwenCacheDevice', 'qwenSourceCrop', 'qwenMaskCrop', 'outfitModel', 'upscaleModel', 'outfitUpscale', 'outfitHdScale', 'museSteps',
   'outfitPreset', 'outfitPanel', 'outfitLayout', 'outfitPanels', 'outfitDenoise', 'targetQuery', 'targetDescription', 'targetSelection', 'targetIndex',
 ]);
 
@@ -51,6 +55,7 @@ export function describeNodeModels(data = {}) {
 }
 
 export function validateModelSettings(settings, mode) {
+  if ('qwenMaskCrop' in settings && (typeof settings.qwenMaskCrop !== 'boolean' || (mode !== undefined && mode !== 'qwenEdit'))) throw new Error('局部放大重绘仅支持图生图的布尔开关。');
   if ('qwenCacheDevice' in settings) {
     validateQwenCacheDevice(settings.qwenCacheDevice);
     if (mode !== undefined && !['qwenEdit', 'characterSheet'].includes(mode)) throw new Error('qwenCacheDevice 仅适用于 Qwen 图生图或角色四视图。');
@@ -72,6 +77,7 @@ function nodeSummary(node, includeContent = true) {
     type: node.type,
     title: node.data.title || '',
     kind: node.data.kind,
+    ...(node.data.mediaRole === 'mask' ? { mediaRole: 'mask', maskSourceId: node.data.maskSourceId } : {}),
     mode: node.data.mode,
     ...(node.data.mode === 'customWorkflow' ? { extensionDigest: node.data.extensionDigest, nodeDefinitionId: node.data.nodeDefinitionId, workflowDefinition: node.data.workflowDefinition, workflowParameters: node.data.workflowParameters } : {}),
     status: node.data.status,
@@ -106,8 +112,10 @@ function edgeSummary(edge) {
 
 function defaultTargetHandle(target, source) {
   if (source?.type === 'prompt') return 'prompt';
+  if (target?.data.mediaRole === 'mask') return 'guide';
+  if (source?.data.mediaRole === 'mask' && target?.data.mode === 'qwenEdit') return 'mask';
   const mode = target?.data.mode || 'reference';
-  if (mode === 'reference') return 'references';
+  if (['reference', 'qwenEdit'].includes(mode)) return 'references';
   if (mode === 'frames') return source?.data.slot === 'last' ? 'last' : 'first';
   if (['swap', 'upscale'].includes(mode)) return source?.data.kind === 'video' ? 'guide' : 'identity';
   if (['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode)) return 'guide';
@@ -210,7 +218,13 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
             projectName: latest.current.projectName,
             server: latest.current.server,
             nodeCount: latest.current.nodesRef.current.length,
-            nodes: nodes.map((node) => nodeSummary(node, includePrompt)),
+            nodes: nodes.map((node) => {
+              const summary = nodeSummary(node, includePrompt);
+              if (node.data.mode !== 'qwenEdit') return summary;
+              const references = qwenCanvasReferences(node, latest.current.nodesRef.current, latest.current.edgesRef.current);
+              return { ...summary, maskNodeId: latest.current.edgesRef.current.find((edge) => edge.target === node.id && edge.targetHandle === 'mask')?.source || null, referenceNodeIds: references.map((ref) => ref.id), referenceCount: references.length,
+                ...(includePrompt ? { prompt: displayQwenPrompt(node.data.prompt, references) } : {}) };
+            }),
             edges: latest.current.edgesRef.current.filter((edge) => !nodeId || ids.has(edge.source) || ids.has(edge.target)).map(edgeSummary),
           };
         }),
@@ -245,7 +259,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
         name: 'canvas_create_node',
         description: '在当前可见画布创建一个真实节点，使用与用户界面相同的节点和持久化逻辑。可用于准备图生图、视频、素材或备注测试。',
         inputSchema: schema({
-          preset: { type: 'string', enum: Object.keys(NODE_PRESETS), description: '节点预设。图生图用 qwen_edit 或 identity_edit，素材用 image_asset。' },
+          preset: { type: 'string', enum: Object.keys(availableNodePresets(NODE_PRESETS)), description: '当前已启用的节点预设。图生图用 qwen_edit，素材用 image_asset；本机实验工具仅在本机注册后可用。' },
           title: { type: 'string', description: '可选节点标题。' },
           prompt: { type: 'string', description: '可选初始提示词。' },
           text: { type: 'string', description: '备注节点的可选正文。' },
@@ -254,7 +268,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
           focus: { type: 'boolean', description: '是否移动视口到新节点，默认 false。' },
         }, ['preset']),
         execute: respond(async ({ preset, title, prompt, text, x, y, focus = false }) => {
-          const definition = NODE_PRESETS[preset];
+          const definition = availableNodePresets(NODE_PRESETS)[preset];
           if (!definition) throw new Error(`未知节点预设：${preset}`);
           const [type, defaults] = definition;
           const extra = { ...defaults };
@@ -286,7 +300,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
           const patch = { ...settings };
           if ('workflowParameters' in settings) patch.workflowParameters = validateWorkflowParameters(current.data, settings.workflowParameters);
           if (title !== undefined) patch.title = title;
-          if (prompt !== undefined) { patch.prompt = prompt; patch.outfitPreset = null; }
+          if (prompt !== undefined) { patch.prompt = current.data.mode === 'qwenEdit' ? bindQwenPrompt(prompt, qwenCanvasReferences(current, latest.current.nodesRef.current, latest.current.edgesRef.current)) : prompt; patch.outfitPreset = null; }
           if (text !== undefined) patch.text = text;
           latest.current.actions.updateNode(nodeId, patch);
           const node = await waitFor(() => {
@@ -298,7 +312,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
       },
       {
         name: 'canvas_connect_nodes',
-        description: '在当前画布连接两个真实节点。素材到图生图默认使用 guide，到全能参考默认使用 references，提示词节点默认使用 prompt；无效类型会被现有画布规则拒绝。',
+        description: '在当前画布连接两个真实节点。素材到千问图生图默认使用 references（最多10张），其他单图编辑使用 guide，到全能参考默认使用 references，提示词节点默认使用 prompt；无效类型会被现有画布规则拒绝。',
         inputSchema: schema({
           sourceId: nodeIdProperty,
           targetId: nodeIdProperty,
@@ -307,12 +321,11 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
         execute: respond(async ({ sourceId, targetId, targetHandle }) => {
           const source = getNode(sourceId);
           const target = getNode(targetId);
-          const handle = targetHandle || defaultTargetHandle(target, source);
-          const previousEdgeId = latest.current.edgesRef.current.find((item) => item.source === sourceId && item.target === targetId && item.targetHandle === handle)?.id;
-          latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'prompt' ? 'prompt' : 'ref', targetHandle: handle });
+          const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || defaultTargetHandle(target, source);
+          const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
+          if (connected?.error) throw new Error(connected.error);
           const edge = await waitFor(() => {
-            const current = latest.current.edgesRef.current.find((item) => item.source === sourceId && item.target === targetId && item.targetHandle === handle);
-            return current && current.id !== previousEdgeId ? current : null;
+            return latest.current.edgesRef.current.find((item) => connected?.edgeId ? item.id === connected.edgeId : item.source === sourceId && item.target === targetId && item.targetHandle === handle) || null;
           }, 2500);
           return { edge: edgeSummary(edge) };
         }),

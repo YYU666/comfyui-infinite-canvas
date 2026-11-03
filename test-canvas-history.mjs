@@ -60,3 +60,18 @@ const edge = (source, target) => ({ id: `${source}-${target}`, source, target })
   assert.equal(history.future.length, 0, 'new edit clears redo branch');
   console.log('CANVAS_HISTORY_RUNTIME_OK silent=true runtimePreserved=true');
 }
+
+{
+  const nodes = [node('a'), node('b')], wire = edge('a', 'b');
+  const history = new CanvasHistory(nodes, [wire]);
+  history.observe(nodes, [{ ...wire, selected: true }]);
+  assert.equal(history.past.length, 0, 'edge selection is not an edit');
+  history.observe(nodes, []);
+  const restored = history.undo();
+  assert.equal(restored.edges.length, 1, 'one undo restores disconnected edge');
+  assert.equal(restored.edges[0].selected, undefined);
+  history.observe(nodes, [{ ...wire, selected: true }]);
+  assert.equal(history.future.length, 1, 'selecting restored edge preserves redo');
+  assert.equal(history.redo().edges.length, 0);
+  console.log('CANVAS_HISTORY_EDGE_SELECTION_OK selection preserves undo/redo');
+}

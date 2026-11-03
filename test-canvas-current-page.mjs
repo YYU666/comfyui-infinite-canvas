@@ -52,3 +52,43 @@ try {
 } finally { stop(); }
 assert.equal(released, true);
 console.log('CURRENT_CANVAS_TRANSPORT_OK dedup=true resultRetryOnly=true hiddenBlocked=true');
+
+// Backend restart invalidates old receipts, never the page's execution dedup.
+let restartEpoch = 'old'; let restartExecutions = 0; let abandoned = 0; let replayObserved = false;
+let oldDelivery = false; let newResult = false;
+const stopRestart = startCurrentCanvasPage({
+  intervalMs: 5,
+  getPage: () => ({ projectId: 'prj_restart', visible: true }),
+  tools: [{ name: 'canvas_generate_node', inputSchema: schema,
+    execute: async () => { restartExecutions++; return JSON.stringify({ ok: true }); },
+    onResultDeliveryAbandoned: () => { abandoned++; },
+  }],
+  fetchImpl: async (url, options) => {
+    const payload = JSON.parse(options.body);
+    if (url.endsWith('/result')) {
+      if (payload.epoch === 'old') { oldDelivery = true; throw new Error('backend stopped before receipt'); }
+      newResult = true;
+      return { ok: true, json: async () => ({}) };
+    }
+    if (url.endsWith('/release')) return { ok: true, json: async () => ({}) };
+    let opId = 'same-generation';
+    if (restartEpoch === 'new' && replayObserved) opId = 'new-generation';
+    if (restartEpoch === 'new') replayObserved = true;
+    return { ok: true, json: async () => ({ epoch: restartEpoch, command: {
+      epoch: restartEpoch, sessionId: payload.sessionId, projectId: payload.projectId,
+      opId, tool: 'canvas_generate_node', args: { nodeId: 'g1', wait: false },
+    } }) };
+  },
+});
+const waitRestart = async (read) => {
+  for (let i = 0; i < 200 && !read(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(read(), 'restart bridge timed out');
+};
+try {
+  await waitRestart(() => oldDelivery);
+  restartEpoch = 'new';
+  await waitRestart(() => newResult);
+  assert.equal(abandoned, 1, 'old pending receipt abandoned on backend epoch change');
+  assert.equal(restartExecutions, 2, 'old op not rerun; only the new op executes after restart');
+} finally { stopRestart(); }
+console.log('CURRENT_CANVAS_RESTART_OK oldReceiptAbandoned=true duplicateGenerationBlocked=true newCommandAccepted=true');

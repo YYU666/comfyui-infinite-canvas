@@ -1,3 +1,4 @@
+import { remapQwenReferences } from './qwen-references.js';
 import { allocateReferenceTag, replaceReferenceTags } from './reference-tags.js';
 
 const NODE_SIZES = {
@@ -106,7 +107,8 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
   }
   const offset = findGroupPosition(clipboard.nodes, existingNodes);
   const nodes = clipboard.nodes.map((source) => {
-    const data = cloneData(source.data);
+    const data = remapQwenReferences(cloneData(source.data), idMap);
+    if (data.maskSourceId) data.maskSourceId = idMap.get(data.maskSourceId) || data.maskSourceId;
     if (data.title) data.title = `${data.title} · 副本`;
     if (pastedRefTags.has(source.id)) data.refTag = pastedRefTags.get(source.id);
     TEXT_FIELDS.forEach((field) => { if (field in data) data[field] = replaceReferenceTags(replaceMentions(data[field]), tagMap); });

@@ -60,6 +60,7 @@ try {
     }
     if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'native fixture only' }, 503);
     if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
+    if (url.pathname === '/api/health') return json({ ok: true });
     if (url.pathname === '/api/queue') { if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: stagedRun ? 'job_sheet' : 'job_fixture' }); } return json({ jobs: [] }); }
     if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
     if (url.pathname === '/api/comfy/view') return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=', 'base64') });

@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -198,6 +199,51 @@ class ProjectStoreTests(unittest.TestCase):
                 self.store.import_zip(archive)
             self.assertEqual(sentinel.read_bytes(), b"keep")
         self.assertFalse((self.root / "escape.txt").exists())
+
+    def test_import_rejects_windows_aliases_and_duplicate_members_before_extracting(self):
+        document = dict(self.document, name="安全导入测试")
+        attacks = ["assets/a.png:secret", "assets/NUL.png", "assets/a.png.", "assets/a.png ",
+                   "assets//a.png", "assets/./a.png", "assets/A.png", "project.json"]
+        for index, member in enumerate(attacks):
+            archive = self.root / f"alias-{index}.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("project.json", json.dumps(document))
+                output.writestr("assets/a.png", b"original")
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    output.writestr(member, b"unexpected")
+            with self.subTest(member=member), self.assertRaises(StoreError):
+                self.store.import_zip(archive)
+            self.assertFalse((self.root / document["name"]).exists())
+            self.assertFalse(list(self.root.glob(".import-*")))
+
+    def test_import_existing_identity_creates_independent_project(self):
+        archive = self.root / "renamed.zip"
+        document = copy.deepcopy(self.document)
+        document["name"] = "导入副本"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("project.json", json.dumps(document))
+        imported = self.store.import_zip(archive)
+        self.assertNotEqual(imported["id"], self.document["id"])
+        self.assertEqual(self.store.get(imported["id"])["name"], "导入副本")
+        imported["canvas"]["nodes"].append({"id": "import-only", "type": "note"})
+        self.store.save(imported["id"], imported, imported["revision"])
+        self.assertEqual(self.store.get(self.document["id"])["canvas"]["nodes"], [])
+
+    def test_corrupt_import_returns_a_structured_error_and_leaves_no_project(self):
+        archive = self.root / "broken.zip"
+        archive.write_bytes(b"not a zip")
+        with self.assertRaises(StoreError) as caught:
+            self.store.import_zip(archive)
+        self.assertEqual(caught.exception.status, 400)
+        for document in (b"{", b"[]", b'"text"'):
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("project.json", document)
+            with self.assertRaises(StoreError) as caught:
+                self.store.import_zip(archive)
+            self.assertEqual(caught.exception.status, 400)
+        self.assertEqual(len(self.store.list()), 1)
+        self.assertFalse(list(self.root.glob(".import-*")))
 
     def test_18_v2_migration_keeps_canvas_and_backup(self):
         legacy = {"schemaVersion": 2, "id": self.document["id"], "name": "旧项目", "revision": 0, "createdAt": 1, "updatedAt": 2, "canvas": {"nodes": [{"id": "n1"}], "edges": []}}

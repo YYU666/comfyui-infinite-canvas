@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -33,7 +34,9 @@ def safe_path(root, relative):
     if not isinstance(relative, str) or not relative or "\\" in relative or "\x00" in relative:
         raise RuntimeError("更新清单包含无效路径。")
     pure = PurePosixPath(relative)
-    if pure.is_absolute() or ":" in relative or any(part in {"", ".", ".."} for part in relative.split("/")):
+    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+    if pure.is_absolute() or any(part in {"", ".", ".."} or re.search(r'[<>:"|?*\x00-\x1f]', part)
+                                or part.endswith((".", " ")) or part.split(".", 1)[0].upper() in reserved for part in relative.split("/")):
         raise RuntimeError("更新清单包含越界路径。")
     root = Path(root).resolve()
     target = root.joinpath(*pure.parts)
@@ -59,7 +62,7 @@ def manifest_paths(path, installation_root=None):
             raise ValueError("manifest belongs to another installation")
         files = value["files"]
         paths = [item["path"] for item in files]
-        if not paths or len(paths) != len(set(paths)):
+        if not paths or not all(isinstance(item, str) for item in paths) or len(paths) != len({item.casefold() for item in paths}):
             raise ValueError("empty or duplicate")
         return paths
     except (OSError, UnicodeError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
