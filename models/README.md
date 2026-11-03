@@ -1,6 +1,6 @@
 # 模型包目录
 
-`manifest.json` 是工作台当前实际引用的模型清单。GitHub 仓库不包含模型权重。
+`manifest.json` 是工作台安装器管理的模型清单。GitHub 仓库不包含模型权重。新增可选的 [FLUX 3 Image Klein 接入](FLUX3_KLEIN.md)使用独立来源与校验资料，尚未加入安装器 profile。
 
 **下载前必须阅读 [`LICENSES.md`](LICENSES.md)。** `manifest.json` 管文件完整性，[`licenses.json`](licenses.json) 管逐文件作者、许可证、商用和再分发状态；文件可下载不代表可商用或可再分发，网盘镜像不授予额外权利。
 

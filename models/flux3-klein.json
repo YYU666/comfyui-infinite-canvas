@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "flux3-klein",
+  "optional": true,
+  "description": "Optional FLUX 3 Image Klein INT8 reference metadata; not an install.py profile.",
+  "repository": "black-forest-labs/flux-3-image-klein-comfy",
+  "revision": "9d36114cf7a2e03a45c28f5cc4987d20ebfdb6c1",
+  "license": {
+    "name": "FLUX Kommunity License",
+    "url": "https://huggingface.co/black-forest-labs/flux-3-image-klein-comfy/blob/9d36114cf7a2e03a45c28f5cc4987d20ebfdb6c1/LICENSE.md"
+  },
+  "files": [
+    {
+      "path": "diffusion_models/flux3-image-klein-int8-convrot.safetensors",
+      "bytes": 5827874779,
+      "sha256": "847d8933548afd93df4af2cac2498e70891bf28d9dae06d695f536992e168fe2"
+    },
+    {
+      "path": "text_encoders/qwen3vl_4b_int8_convrot.safetensors",
+      "bytes": 4858559240,
+      "sha256": "32de113cbf8282b02cbff0794b637b9d6676da09314a1db5a30bcea9bf4ee01c"
+    },
+    {
+      "path": "text_encoders/qwen3.5_9b_flux3_prompt_upsampler_int8_convrot.safetensors",
+      "bytes": 9748113996,
+      "sha256": "cb8cb9b9dcd2569509de755dca54d96fd93a16a7aabfd2f4051f0a144230620f"
+    },
+    {
+      "path": "vae/flux2-vae.safetensors",
+      "bytes": 336211292,
+      "sha256": "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3"
+    }
+  ]
+}

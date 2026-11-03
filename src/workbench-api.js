@@ -1,4 +1,5 @@
 import { orderQwenReferences, compileQwenPrompt, validateQwenReferences } from './qwen-references.js';
+import { buildFlux3KleinWorkflow, scaleFlux3Dimensions } from './flux3-klein.js';
 import { LOCAL_RECONNECTED } from './local-connection.js';
 export const COMFY_ORIGIN = '/api/comfy';
 
@@ -53,8 +54,9 @@ export const IMAGE_LORAS = {
   retroAnime: 'Krea2-风格\\krea2_紫调复古旧动漫retroanime.safetensors',
 };
 
-export function resolveImageDimensions(ratio = '16:9') {
-  return IMAGE_RATIOS[ratio] || IMAGE_RATIOS['16:9'];
+export function resolveImageDimensions(ratio = '16:9', flux3Resolution) {
+  const dimensions = IMAGE_RATIOS[ratio] || IMAGE_RATIOS['16:9'];
+  return flux3Resolution ? scaleFlux3Dimensions(dimensions, flux3Resolution) : dimensions;
 }
 
 export function resolveDimensions(ratio = '16:9', resolution = '480P') {
@@ -178,6 +180,7 @@ export const MOSS_IMAGE_MODEL = {
 
 export function buildImageWorkflow(options) {
   const [width, height] = resolveImageDimensions(options.ratio);
+  if (options.imageModel === 'flux3_klein') return buildFlux3KleinWorkflow(options, [width, height]);
   if (options.imageModel === 'moss') {
     return {
       model: { class_type: 'UNETLoader', inputs: { unet_name: MOSS_IMAGE_MODEL.unet, weight_dtype: 'default' } },
@@ -310,6 +313,7 @@ export function validateQwenSourceCrop(crop) {
 
 // Qwen Image 2.1 native editing: its encoder supplies the reference-matched latent.
 export function buildQwen21EditWorkflow(options) {
+  if (options.qwenModel === 'flux3_klein') return buildFlux3KleinWorkflow({ ...options, mode: 'qwenEdit' });
   const cacheDevice = validateQwenCacheDevice(options.qwenCacheDevice === undefined ? 'auto' : options.qwenCacheDevice);
   if (options.qwenMaskCrop !== undefined && typeof options.qwenMaskCrop !== 'boolean') {
     throw new Error('qwenMaskCrop 必须是布尔值。');

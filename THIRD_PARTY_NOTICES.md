@@ -1,5 +1,16 @@
 # 第三方节点声明
 
+## BFL 提示词扩写指令
+
+`src/flux3-klein-prompts.js` 摘录 Black Forest Labs 的 `t2i` / `i2i` PUP 指令，进行了 JavaScript 模块包装与换行转义适配。
+
+- Copyright 2026 Black Forest Labs, Inc.
+- 来源：[flux-3-image-klein / src/flux3/pup_prompts.json](https://github.com/black-forest-labs/flux-3-image-klein/blob/bfc8889a4497f846416f253a3972a1941ac698b9/src/flux3/pup_prompts.json)。
+- 代码许可：[Apache License 2.0](https://github.com/black-forest-labs/flux-3-image-klein/blob/bfc8889a4497f846416f253a3972a1941ac698b9/LICENSE)，本仓库 [LICENSE](LICENSE) 包含协议全文。
+- 上述声明仅涉及提示词源码，不授予 FLUX Kommunity 模型权重的使用或再分发许可。
+
+## 安装器管理的第三方节点
+
 工作台安装器从下表仓库的指定 commit 独立克隆节点；这些节点不随本仓库源码捆绑。节点许可证独立于工作台 Apache-2.0，也独立于模型许可证。机器可读清单见 [`third_party/nodes.json`](third_party/nodes.json)，一致性由 `test_license_inventory.py` 校验。
 
 | 节点目录 | 上游作者／仓库 | 锁定 commit | 许可证 |
