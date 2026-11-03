@@ -50,7 +50,8 @@ import { selectCharacterSwapVideo } from './canvas-output-selection';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
 import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, resolveCanvasCompletion, shouldReconcileCompletion, takeOutputIdentity } from './generation-queue';
 import { ensureReferenceTags, nextReferenceTag, referenceDescriptors } from './reference-tags';
-import { ObjectUrlLru } from './object-url-lru';
+import CanvasImage, { clearCanvasThumbnails } from './CanvasImage';
+import { hydrateProjectMedia } from './canvas-thumbnails';
 import { assertMediaCacheIdentity, mediaCacheIdentity, reconcileMediaCache } from './canvas-media-cache';
 import { GenerationAttempts } from './generation-attempts';
 import { getFlux3KleinDependencyStatus } from './flux3-klein.js';
@@ -261,45 +262,6 @@ function MediaDragSurface({ videoRef, video = false, onActivate }) {
     onPointerDown={(event) => { pressOrigin.current = { x: event.clientX, y: event.clientY }; }}
     onKeyDown={(event) => { if (onActivate && ['Enter', ' '].includes(event.key)) { event.preventDefault(); onActivate(); } }}
     onClick={activate} />;
-}
-
-const thumbnailCache = new ObjectUrlLru(64);
-const EMPTY_IMAGE = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
-let thumbnailQueue = Promise.resolve();
-async function imageThumbnail(source) {
-  const cached = thumbnailCache.get(source);
-  if (cached) return cached.pending;
-  const create = async () => {
-    const response = await fetch(source);
-    if (!response.ok) throw new Error('缩略图读取失败');
-    const blob = await response.blob();
-    const bitmap = await createImageBitmap(blob);
-    const scale = Math.min(1, 640 / Math.max(bitmap.width, bitmap.height));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    canvas.getContext('2d', { alpha: false }).drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    bitmap.close();
-    const thumbnail = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', 0.84));
-    if (!thumbnail) throw new Error('缩略图编码失败');
-    return URL.createObjectURL(thumbnail);
-  };
-  // Decode one original at a time; simultaneous 4K bitmaps can exhaust the renderer.
-  const pending = thumbnailQueue.then(create, create);
-  thumbnailQueue = pending.catch(() => {});
-  thumbnailCache.set(source, pending);
-  return pending;
-}
-
-function CanvasImage({ source, alt = '', ...props }) {
-  const [displaySource, setDisplaySource] = useState(EMPTY_IMAGE);
-  useEffect(() => {
-    let active = true;
-    setDisplaySource(EMPTY_IMAGE);
-    if (source) imageThumbnail(source).then((thumbnail) => { if (active) setDisplaySource(thumbnail); }).catch(() => { if (active) setDisplaySource(source); });
-    return () => { active = false; };
-  }, [source]);
-  return <img src={displaySource} alt={alt} draggable={false} loading="lazy" decoding="async" {...props} />;
 }
 
 function MediaNode({ id, data, selected }) {
@@ -541,7 +503,10 @@ function BuiltinGeneratorNode({ id, data, selected }) {
 const nodeTypes = { note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode) };
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
-  const saved = useMemo(() => ({ ...migrateCanvas(project.canvas), viewport: readViewport(project.id, project.canvas.viewport) }), [project.id]);
+  const saved = useMemo(() => {
+    const canvas = migrateCanvas(project.canvas);
+    return { ...canvas, nodes: hydrateProjectMedia(canvas.nodes, project.id), viewport: readViewport(project.id, project.canvas.viewport) };
+  }, [project.id]);
   const [nodes, setNodes, onNodesChange] = useNodesState(saved.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(saved.edges || []);
   const [projectName, setProjectName] = useState(project.name);
@@ -755,24 +720,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     try { await commitProjectSwitch(await prepareProjectSwitch(id, name, { allowReadOnly: true })); return true; }
     catch (error) { setProjectError(error.message || '切换失败，当前画布已保留。'); return false; }
   };
-  useEffect(() => {
-    let alive = true;
-    nodes.forEach(async (node) => {
-      if (node.type !== 'media' || !node.data.localFile || filesRef.current[node.id]) return;
-      try {
-        const file = await readProjectFile(project, node.data.mediaStorageId || node.id, node.data.assetPath);
-        if (!alive || !file) return;
-        filesRef.current[node.id] = file;
-        fileIdentitiesRef.current[node.id] = mediaCacheIdentity(node.data);
-        // Local project assets must render from the project asset path even when
-        // the node also carries a ComfyUI remoteName (generated/imported assets).
-        // remoteName only describes the upstream copy; it must not suppress the
-        // local preview URL.
-        if (!node.data.output) updateNode(node.id, { url: URL.createObjectURL(file) });
-      } catch { /* The user can replace an unavailable local file. */ }
-    });
-    return () => { alive = false; thumbnailCache.clear(); };
-  }, []);
+  useEffect(() => () => clearCanvasThumbnails(), []);
 
   const updateNode = useCallback((id, patch) => {
     if (switchingRef.current || project.readOnly) return;
@@ -884,7 +832,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       revisionRef.current = Math.max(revisionRef.current, result.revision);
       if (mediaAttemptsRef.current.get(id) !== mediaStorageId || !nodesRef.current.some((node) => node.id === id)) return;
       filesRef.current[id] = file;
-      const patch = { ...extraData, url: URL.createObjectURL(file), name: file.name, mediaStorageId, assetPath: result.asset.path, sourceGallery, remoteName: null, localFile: true, output: false, resultUrl: null };
+      const patch = hydrateProjectMedia([{ type: 'media', data: { ...extraData, name: file.name, mediaStorageId, assetPath: result.asset.path, sourceGallery, remoteName: null, localFile: true, output: false, resultUrl: null } }], project.id)[0].data;
       fileIdentitiesRef.current[id] = mediaCacheIdentity({ ...nodesRef.current.find((node) => node.id === id)?.data, ...patch });
       const nextNodes = nodesRef.current.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
       nodesRef.current = nextNodes;

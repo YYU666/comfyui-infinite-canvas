@@ -101,7 +101,10 @@ try {
   await page.locator('.neo-app').waitFor();
   await sleep(700);
   assert.equal(await page.locator('.media-shell img').count(), 1, 'uploaded image restored from disk');
-  assert((await page.locator('.media-shell img').getAttribute('src')).startsWith('blob:'));
+  await page.waitForFunction(() => {
+    const image = document.querySelector('.media-shell img');
+    return image?.complete && image.naturalWidth > 0 && !image.src.startsWith('data:');
+  });
   const reopenedDocument = await api(`/${projectId}`);
   assert.deepEqual(reopenedDocument.canvas, document.canvas, 'reopening must not alter canvas content');
   assert.equal(reopenedDocument.revision, committedRevision, 'reopening an unchanged project must not increment revision');
