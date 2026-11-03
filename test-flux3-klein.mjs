@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { buildImageWorkflow, buildQwen21EditWorkflow, resolveImageDimensions } from './src/workbench-api.js';
+import { buildImageWorkflow, buildQwen21EditWorkflow, extractImages, resolveImageDimensions } from './src/workbench-api.js';
 import { FLUX3_KLEIN_MODEL, getFlux3KleinDependencyStatus } from './src/flux3-klein.js';
 
 const base = { seed: 42, prompt: 'A red ceramic cup on a wooden table.', imageLora: 'none' };
+// SaveImage history shape observed after a successful 4K Klein edit.
+for (const filename of ['H3_Flux3Klein_Edit_00001_.png', 'H3_Flux3Klein_00001_.png']) {
+  const output = { filename, subfolder: 'image', type: 'output', metadata: { kind: 'image', width: 4096, height: 2144 }, id: 'result-image' };
+  const images = extractImages({ status: { status_str: 'success', completed: true }, outputs: { save: { images: [output] }, preview: { images: [{ ...output, filename: 'ComfyUI_temp_preview.png', type: 'temp' }] } } });
+  assert.equal(images.length, 1, 'Klein output must survive result filtering without including unrelated previews');
+  assert.deepEqual(images[0], { ...output, url: `/api/comfy/view?filename=${filename}&subfolder=image&type=output` });
+}
 for (const resolution of ['1MP', '2K', '4K']) {
   const graph = buildImageWorkflow({ ...base, imageModel: 'flux3_klein', ratio: '9:16', flux3Resolution: resolution });
   assert.deepEqual([graph.latent.inputs.width, graph.latent.inputs.height], resolveImageDimensions('9:16', resolution));
