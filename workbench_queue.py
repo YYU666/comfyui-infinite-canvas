@@ -167,7 +167,15 @@ class QueueManager:
             self.concurrency = self._concurrency(data.get("concurrency", self.concurrency))
             for job in self.jobs:
                 if job.get("status") in ACTIVE and not job.get("comfyPromptId"):
-                    job["status"] = "queued"
+                    if job.get("submissionPending") is False:
+                        job["status"] = "queued"
+                    else:
+                        # ComfyUI may have accepted a request immediately before
+                        # the process died. Missing acknowledgement is not proof
+                        # of rejection, including queues written by older builds.
+                        job.update(status="error", finishedAt=utc_now(), stage="提交结果待核对",
+                                   error=_error("COMFY_SUBMISSION_UNKNOWN", "服务中断时提交结果尚未保存，已停止自动重试以避免重复生成。",
+                                                "先核对 ComfyUI 队列和历史；确认没有已提交任务后再手动重试。"))
         except FileNotFoundError:
             self.jobs = []
         except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -223,6 +231,7 @@ class QueueManager:
             "startedAt": None,
             "finishedAt": None,
             "comfyPromptId": None,
+            "submissionPending": False,
             "cancelRequested": False,
             "error": None,
             "outputs": None,
@@ -351,10 +360,15 @@ class QueueManager:
             # this point must still be registered and compensated by the worker.
             job["cancelRequested"] = True
             prompt_id = job.get("comfyPromptId")
+            cancel_attempt = job.get("attempts", 0)
             self._changed_locked("job.cancel_requested", job)
         if prompt_id:
             self.adapter.cancel(prompt_id)
         with self._lock:
+            # The old prompt may finish while its cancellation call is in flight,
+            # allowing retry() to start a new attempt. Never cancel that retry.
+            if job.get("attempts", 0) != cancel_attempt:
+                return _public(job)
             job["status"] = "cancelled"
             job["finishedAt"] = utc_now()
             job["error"] = None
@@ -367,7 +381,7 @@ class QueueManager:
             if job["status"] not in TERMINAL:
                 raise ValueError("任务尚未结束，不能重试。")
             job.update({"status": "queued", "stage": "后台队列等待中", "progress": 0, "eta": None, "startedAt": None, "finishedAt": None,
-                        "comfyPromptId": None, "cancelRequested": False, "error": None, "outputs": None, "history": None,
+                        "comfyPromptId": None, "submissionPending": False, "cancelRequested": False, "error": None, "outputs": None, "history": None,
                         "attempts": job.get("attempts", 0) + 1,
                         "planState": initial_state() if job.get("plan") else None})
             self._changed_locked("job.retry", job)
@@ -449,12 +463,18 @@ class QueueManager:
                             if job.get("cancelRequested") or job["status"] in TERMINAL:
                                 continue
                     workflow = stage_workflow(job) if job.get("plan") else job["workflow"]
+                    with self._lock:
+                        if job.get("cancelRequested") or job["status"] in TERMINAL or job["attempts"] != submit_attempt:
+                            continue
+                        job["submissionPending"] = True
+                        self._changed_locked("job.submitting", job)
                     prompt_id = self.adapter.submit(workflow, job["clientId"])
                     with self._lock:
                         same_attempt = job["attempts"] == submit_attempt
                         needs_cancel = bool(job.get("cancelRequested") or job["status"] in TERMINAL or not same_attempt)
                         if same_attempt:
                             job["comfyPromptId"] = prompt_id
+                            job["submissionPending"] = False
                         else:
                             job.setdefault("cancelledPromptIds", []).append(prompt_id)
                         if same_attempt and job.get("plan"):

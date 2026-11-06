@@ -179,7 +179,7 @@ try {
   assert.equal(toolResult.ok, true); assert.equal(toolResult.opened, true); assert.equal(toolResult.nodeCount, 2); assert.equal(toolResult.linkCount, 1);
   await page.getByRole('button', { name: '关闭工作流查看' }).click();
   await page.mouse.dblclick(1680, 920);
-  assert.equal(await page.getByRole('menu', { name: '添加节点' }).count(), 1, 'blank canvas double-click keeps add menu');
+  assert.equal(await page.getByRole('menu', { name: '添加节点' }).count(), 0, 'read-only blank canvas cannot open a mutation menu');
   assert.equal(await page.locator('.workflow-inspector').count(), 0);
   assert.deepEqual(promptPosts, []); assert.deepEqual(writes, [], 'read-only inspection never persists the project');
   assert.equal(context.pages().length, 1); assert.deepEqual(errors, []);

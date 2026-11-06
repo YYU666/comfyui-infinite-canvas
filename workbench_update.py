@@ -81,7 +81,10 @@ def _safe_relative_path(value):
     if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
         raise UpdateError("更新包包含无效路径。", code="UNSAFE_PACKAGE")
     path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts) or re.match(r"^[A-Za-z]:", value):
+    parts = value.rstrip("/").split("/")
+    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+    if path.is_absolute() or any(part in {"", ".", ".."} or re.search(r'[<>:"|?*\x00-\x1f]', part)
+                                or part.endswith((".", " ")) or part.split(".", 1)[0].upper() in reserved for part in parts):
         raise UpdateError("更新包包含越界路径，已停止升级。", code="UNSAFE_PACKAGE")
     return path
 
@@ -230,9 +233,13 @@ class WorkbenchUpdateManager:
                 infos = package.infolist()
                 if len(infos) > MAX_PACKAGE_FILES:
                     raise UpdateError("升级包文件数量异常。", code="UNSAFE_PACKAGE")
-                total = 0
+                total, names = 0, set()
                 for info in infos:
                     _safe_relative_path(info.filename)
+                    folded = info.filename.rstrip("/").casefold()
+                    if info.orig_filename != info.filename or folded in names:
+                        raise UpdateError("升级包包含重复或隐式转换的路径。", code="UNSAFE_PACKAGE")
+                    names.add(folded)
                     if info.is_dir():
                         continue
                     if ((info.external_attr >> 16) & 0o170000) == 0o120000:
@@ -283,9 +290,9 @@ class WorkbenchUpdateManager:
             if not isinstance(item, dict):
                 raise UpdateError("升级包文件清单无效。", code="PACKAGE_INVALID")
             path = str(_safe_relative_path(item.get("path")))
-            if path in seen or not re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", "")):
+            if path.casefold() in seen or not re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", "")):
                 raise UpdateError("升级包文件清单包含重复路径或无效哈希。", code="PACKAGE_INVALID")
-            seen.add(path)
+            seen.add(path.casefold())
         required = {"video_workbench_launcher.py", "workbench_update.py", "workbench_update_helper.py", "workbench_lifecycle.py", "package.json", "package-lock.json", "requirements.lock"}
         if not required.issubset(seen):
             raise UpdateError("升级包缺少工作台必需程序文件。", code="PACKAGE_INVALID")

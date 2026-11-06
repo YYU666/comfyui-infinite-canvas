@@ -1,5 +1,7 @@
 # 模型与 LoRA 授权矩阵
 
+可选 FLUX 3 Image Klein 权重适用 FLUX Kommunity License，来源与授权链接见 [FLUX3_KLEIN.md](FLUX3_KLEIN.md)。这组可选依赖独立于下面的 33 项记录，不继承工作台的 Apache-2.0 许可。
+
 本文件解释 [`licenses.json`](licenses.json) 的 33 项逐文件记录。模型清单只说明工作台需要哪些权重，**不表示这些权重都是开源、可商用或可由本项目再分发**。GitHub 仓库不包含模型权重。
 
 核查日期：2026-10-29。许可证可能更新，商用或公开分发前应打开作者官方页复核最新文本。夸克等网盘仅作下载镜像，**镜像不授予额外权利**；授权判断优先依据作者官方 Hugging Face／Civitai 页面。

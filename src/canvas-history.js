@@ -11,11 +11,15 @@ function cleanNodes(nodes, editing) {
 }
 
 function snapshot(nodes, edges) {
-  return { nodes: cleanNodes(nodes, false), edges: structuredClone(edges || []) };
+  return { nodes: cleanNodes(nodes, false), edges: structuredClone(cleanEdges(edges)) };
+}
+
+function cleanEdges(edges) {
+  return (edges || []).map(({ selected, ...edge }) => edge);
 }
 
 function editingSignature(nodes, edges) {
-  return JSON.stringify({ nodes: cleanNodes(nodes, true), edges: edges || [] });
+  return JSON.stringify({ nodes: cleanNodes(nodes, true), edges: cleanEdges(edges) });
 }
 
 export function restoreHistoryNodes(targetNodes, currentNodes) {

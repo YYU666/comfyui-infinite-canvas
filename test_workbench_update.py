@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import warnings
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -285,6 +286,17 @@ class PackageSecurityTests(UpdateTestCase):
         with mock.patch("workbench_update.MAX_UNPACKED_BYTES", 10):
             with self.assertRaises(UpdateError) as caught: self.verify(self.archive)
         self.assertEqual(caught.exception.code, "UNSAFE_PACKAGE")
+
+    def test_windows_aliases_and_duplicate_archive_members_are_rejected(self):
+        for name in ("src/App.jsx:payload", "src/NUL.txt", "src/App.jsx.", "src/App.jsx ", "src//App.jsx", "src/./App.jsx", "SRC/app.jsx", "src/App.jsx"):
+            archive = io.BytesIO(self.archive)
+            with zipfile.ZipFile(archive, "a") as package:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    package.writestr(name, b"unexpected")
+            with self.subTest(name=name), self.assertRaises(UpdateError) as caught:
+                self.verify(archive.getvalue())
+            self.assertEqual(caught.exception.code, "UNSAFE_PACKAGE")
 
 
 if __name__ == "__main__": unittest.main()

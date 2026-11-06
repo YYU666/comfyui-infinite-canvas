@@ -15,6 +15,12 @@ sys.path.insert(0, str(ROOT))
 from workbench_update import asset_name, parse_version
 
 
+def assert_public_path(relative):
+    parts = relative.replace('\\', '/').casefold().split('/')
+    if any(part in {'.local-node-tools', '.cache', 'node_modules', 'dist'} for part in parts) or parts[-1].endswith('.h3pack'):
+        raise RuntimeError(f"本机工具、工作流包和构建缓存不得随开源更新发布：{relative}")
+
+
 def tracked_files():
     result = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, timeout=30, check=False)
     if result.returncode:
@@ -39,6 +45,7 @@ def build(tag, output):
     files = []
     contents = {}
     for relative in tracked_files():
+        assert_public_path(relative)
         path = ROOT.joinpath(*relative.split("/"))
         if path.is_symlink() or not path.is_file():
             raise RuntimeError(f"更新包不允许符号链接或非普通文件：{relative}")

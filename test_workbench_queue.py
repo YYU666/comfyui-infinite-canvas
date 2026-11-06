@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import sys
 import tempfile
@@ -6,6 +7,7 @@ import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -96,6 +98,43 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(recovered.get("job_recover")["comfyPromptId"], "already-submitted")
         recovered.stop()
 
+    def test_unacknowledged_submission_is_not_resubmitted_after_restart(self):
+        self.manager.stop()
+        job = self.manager.enqueue(payload())
+        for marker in (True, None):
+            stored = json.loads(self.path.read_text(encoding="utf-8"))
+            stored["jobs"][0].update(status="running", startedAt=utc_now(), comfyPromptId=None)
+            if marker is None:
+                stored["jobs"][0].pop("submissionPending", None)
+            else:
+                stored["jobs"][0]["submissionPending"] = marker
+            atomic_write_json(self.path, stored)
+            recovered = QueueManager(self.path, self.adapter, poll_interval=0.01)
+            try:
+                recovered.start()
+                time.sleep(0.05)
+                state = recovered.get(job["id"])
+                self.assertEqual(state["status"], "error")
+                self.assertEqual(state["error"]["code"], "COMFY_SUBMISSION_UNKNOWN")
+                self.assertEqual(self.adapter.submitted, [])
+            finally:
+                recovered.stop()
+
+    def test_known_pre_submission_state_can_resume_after_restart(self):
+        self.manager.stop()
+        job = self.manager.enqueue(payload())
+        stored = json.loads(self.path.read_text(encoding="utf-8"))
+        stored["jobs"][0].update(status="running", startedAt=utc_now(), comfyPromptId=None, submissionPending=False)
+        atomic_write_json(self.path, stored)
+        recovered = QueueManager(self.path, self.adapter, poll_interval=0.01)
+        self.adapter.done = True
+        try:
+            recovered.start()
+            wait_for(lambda: recovered.get(job["id"])["status"] == "done")
+            self.assertEqual(len(self.adapter.submitted), 1)
+        finally:
+            recovered.stop()
+
     def test_cancel_retry_same_recipe_and_clear(self):
         job = self.manager.enqueue(payload())
         listener = self.manager.subscribe()
@@ -115,6 +154,41 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.manager.snapshot()["jobs"], [])
         self.assertFalse(listener.empty())
         self.manager.unsubscribe(listener)
+
+    def test_slow_cancel_cannot_cancel_a_retry_after_old_prompt_finishes(self):
+        entered, release = threading.Event(), threading.Event()
+        outcomes = []
+        job = self.manager.enqueue(payload())
+        original_cancel = self.adapter.cancel
+
+        def delayed_cancel(prompt_id):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("cancel barrier")
+            original_cancel(prompt_id)
+
+        self.adapter.cancel = delayed_cancel
+        self.manager.start()
+        wait_for(lambda: self.manager.get(job["id"])["comfyPromptId"] is not None)
+        thread = threading.Thread(target=lambda: outcomes.append(self.manager.cancel(job["id"])))
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(3))
+            self.adapter.done = True
+            wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
+            self.manager.pause(True)
+            retried = self.manager.retry(job["id"])
+            release.set()
+            thread.join(3)
+            self.assertFalse(thread.is_alive())
+            current = self.manager.get(job["id"])
+            self.assertEqual(current["status"], "queued")
+            self.assertEqual(current["attempts"], retried["attempts"])
+            self.assertFalse(current["cancelRequested"])
+            self.assertEqual(outcomes[0]["status"], "queued")
+        finally:
+            release.set()
+            thread.join(5)
 
     def test_concurrency_limit_and_validation(self):
         self.manager.set_concurrency(2)
@@ -144,17 +218,38 @@ class QueueTests(unittest.TestCase):
 
     def test_stalled_job_times_out_and_can_be_retried(self):
         self.manager.stop()
-        self.manager = QueueManager(self.path, self.adapter, poll_interval=0.01, job_timeout=0.05)
-        job = self.manager.enqueue(payload())
-        self.manager.start()
-        wait_for(lambda: self.manager.get(job["id"])["status"] == "error")
-        failed = self.manager.get(job["id"])
-        self.assertEqual(failed["error"]["code"], "COMFY_TIMEOUT")
-        self.assertEqual(failed["stage"], "生成超时")
-        self.assertEqual(self.adapter.cancelled, ["prompt-1"])
-        self.adapter.done = True
-        self.assertEqual(self.manager.retry(job["id"])["status"], "queued")
-        wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
+
+        class Clock(dt.datetime):
+            current = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+
+            @classmethod
+            def now(cls, tz=None):
+                return cls.current.astimezone(tz)
+
+        # Advance only the queue's wall clock, not wait_for's real deadline.
+        # A 50 ms real timeout could expire again during retry persistence on CI.
+        with patch("workbench_queue.dt", SimpleNamespace(datetime=Clock, timezone=dt.timezone)), \
+                patch("workbench_queue.utc_now", side_effect=lambda: Clock.current.isoformat()):
+            self.manager = QueueManager(self.path, self.adapter, poll_interval=0.01, job_timeout=60)
+            job = self.manager.enqueue(payload())
+            self.manager.start()
+            try:
+                wait_for(lambda: self.manager.get(job["id"])["progress"] == 40)
+                self.assertEqual(self.manager.get(job["id"])["status"], "running")
+                Clock.current += dt.timedelta(seconds=60)
+                wait_for(lambda: self.manager.get(job["id"])["status"] == "error")
+                failed = self.manager.get(job["id"])
+                self.assertEqual(failed["error"]["code"], "COMFY_TIMEOUT")
+                self.assertEqual(failed["stage"], "生成超时")
+                self.assertEqual(self.adapter.cancelled, ["prompt-1"])
+                self.adapter.done = True
+                self.assertEqual(self.manager.retry(job["id"])["status"], "queued")
+                wait_for(lambda: self.manager.get(job["id"])["status"] == "done")
+                self.assertEqual(self.manager.get(job["id"])["attempts"], 2)
+                self.assertEqual(len(self.adapter.submitted), 2)
+                self.assertEqual(self.adapter.submitted[0]["workflow"], self.adapter.submitted[1]["workflow"])
+            finally:
+                self.manager.stop()
 
     def test_immediate_retry_during_submit_cancels_old_prompt_and_submits_new_attempt(self):
         entered = threading.Event()

@@ -321,7 +321,12 @@ try {
   await node('adjust').getByLabel('输入黑场数值').waitFor();
   const duplicateOutput = node(output.id).locator('img').first();
   await duplicateOutput.waitFor();
+  // Persistent thumbnails deliberately avoid original downloads on open. Request
+  // the actual original through the visible preview before checking its project.
+  await node(output.id).locator('.media-preview').dblclick();
   await until(async () => assetRequests.some((url) => url.includes(`/api/projects/${duplicate.id}/${output.data.assetPath}`)));
+  await page.locator('.image-lightbox img').waitFor();
+  await page.keyboard.press('Escape');
   assert.equal((await call('qa-save-duplicate', 'canvas_update_node', { nodeId: 'blend', title: '混合副本' }, duplicate.id)).ok, true);
   const duplicateSaved = await until(async () => { const doc = await api(`/api/projects/${duplicate.id}`); return doc.canvas.nodes.find((n) => n.id === output.id).data.url?.includes(`/api/projects/${duplicate.id}/`) ? doc : null; });
   assert.ok(duplicateSaved.canvas.nodes.find((n) => n.id === output.id).data.url.includes(`/api/projects/${duplicate.id}/`));

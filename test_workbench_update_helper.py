@@ -108,7 +108,7 @@ class HelperTests(unittest.TestCase):
         self.assert_user_data_untouched()
 
     def test_manifest_paths_cannot_escape_install_root(self):
-        for value in ("../outside", "/absolute", "C:/outside", "folder\\outside", ".", "folder/../outside", "file:stream"):
+        for value in ("../outside", "/absolute", "C:/outside", "folder\\outside", ".", "folder/../outside", "file:stream", "src/NUL.py", "src/file.py.", "src/file.py ", "src//file.py"):
             with self.subTest(value=value), self.assertRaises(RuntimeError): safe_path(self.root, value)
 
     def test_parent_directory_link_cannot_write_outside_installation(self):

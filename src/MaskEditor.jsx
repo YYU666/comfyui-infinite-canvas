@@ -16,6 +16,7 @@ export default function MaskEditor({ guideUrl, guideTitle, maskUrl, onSave, onCl
   const viewRef = useRef(null);
   const maskRef = useRef(null);
   const stageRef = useRef(null);
+  const dialogRef = useRef(null);
   const historyRef = useRef([]);
   const drawingRef = useRef(false);
   const lastPointRef = useRef(null);
@@ -88,10 +89,25 @@ export default function MaskEditor({ guideUrl, guideTitle, maskUrl, onSave, onCl
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
+    const previousFocus = document.activeElement;
     document.body.style.overflow = 'hidden';
+    dialogRef.current?.focus();
     const onKeyDown = (event) => {
-      if (event.key === 'Escape') onClose();
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+      // ReactFlow and canvas history listen outside this portal. Intercept at
+      // capture phase so editing a mask cannot also delete/undo canvas nodes.
+      event.stopPropagation();
+      if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
+      if (event.key === 'Tab') {
+        const controls = [...(dialogRef.current?.querySelectorAll('button:not(:disabled),input:not(:disabled),[tabindex="0"]') || [])].filter((element) => element.getClientRects().length);
+        const first = controls[0], last = controls.at(-1);
+        if (!first) { event.preventDefault(); dialogRef.current?.focus(); }
+        else if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        return;
+      }
+      if (['Delete', 'Backspace'].includes(event.key)) event.preventDefault();
+      if ((event.ctrlKey || event.metaKey) && ['z', 'y', 'd', 'c', 'v'].includes(event.key.toLowerCase())) event.preventDefault();
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z') {
         event.preventDefault();
         const mask = maskRef.current;
         const previous = historyRef.current.pop();
@@ -101,10 +117,14 @@ export default function MaskEditor({ guideUrl, guideTitle, maskUrl, onSave, onCl
         }
       }
     };
-    document.addEventListener('keydown', onKeyDown);
+    const onKeyUp = (event) => event.stopPropagation();
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keyup', onKeyUp, true);
     return () => {
       document.body.style.overflow = previousOverflow;
-      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('keyup', onKeyUp, true);
+      previousFocus?.focus?.();
     };
   }, [onClose, renderMask]);
 
@@ -223,7 +243,7 @@ export default function MaskEditor({ guideUrl, guideTitle, maskUrl, onSave, onCl
   };
 
   return createPortal(
-    <div className="mask-editor-backdrop" role="dialog" aria-modal="true" aria-label="母图遮罩绘制" onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+    <div ref={dialogRef} tabIndex={-1} className="mask-editor-backdrop" role="dialog" aria-modal="true" aria-label="母图遮罩绘制" onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
       <section className="mask-editor-panel">
         <header className="mask-editor-header">
           <div><Brush size={16} /><strong>在原始母图上绘制遮罩</strong><span>{guideTitle}</span></div>
@@ -251,7 +271,7 @@ export default function MaskEditor({ guideUrl, guideTitle, maskUrl, onSave, onCl
           {error && <div className="mask-editor-error">{error}</div>}
         </div>
         <footer className="mask-editor-footer">
-          <span><i />红色区域会被重绘，未涂红区域保持原图。可放大后精修脚部边缘。</span>
+          <span><i />红色区域会被重绘，未涂红区域保持原图。可放大后精修区域边缘。</span>
           <div><button onClick={onClose}>取消</button><button className="mask-save" disabled={!ready || saving} onClick={save}><Check size={15} />{saving ? '正在保存……' : '保存到遮罩节点'}</button></div>
         </footer>
       </section>

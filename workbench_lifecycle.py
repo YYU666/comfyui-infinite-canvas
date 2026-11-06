@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.5"
 
 
 def runtime_dir() -> Path:
@@ -72,7 +72,9 @@ def read_instance() -> dict | None:
         return None
 
 
-def probe_health(instance: dict, timeout: float = 0.6) -> dict | None:
+def probe_health(instance: dict, timeout: float = 3) -> dict | None:
+    # /api/health may spend up to two seconds checking an unavailable ComfyUI.
+    # A shorter default can mistake a healthy workbench for a dead instance.
     try:
         port = int(instance["port"])
         if not 1 <= port <= 65535:
@@ -84,6 +86,39 @@ def probe_health(instance: dict, timeout: float = 0.6) -> dict | None:
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, urllib.error.URLError):
         pass
     return None
+
+
+def workbench_ports(instance: dict | None) -> list[int]:
+    """Keep a disconnected page's origin when its previous port is available."""
+    ports = list(range(8790, 8800))
+    preferred = instance.get("port") if isinstance(instance, dict) else None
+    if type(preferred) is not int or preferred not in ports:
+        try:
+            saved = json.loads((runtime_dir() / "workbench-port.json").read_text(encoding="utf-8"))
+            preferred = saved.get("port") if isinstance(saved, dict) else None
+        except (OSError, ValueError):
+            preferred = None
+    if type(preferred) is int and preferred in ports:
+        ports.remove(preferred)
+        ports.insert(0, preferred)
+    return ports
+
+
+def instance_process_alive(instance: dict | None) -> bool:
+    """Do not spawn a second backend while the recorded owner is unresponsive."""
+    if not isinstance(instance, dict) or type(instance.get("pid")) is not int or instance["pid"] <= 0:
+        return False
+    import psutil
+    try:
+        process = psutil.Process(instance["pid"])
+        created = instance.get("pidCreatedAt")
+        if isinstance(created, (int, float)) and abs(process.create_time() - created) > 0.01:
+            return False  # The OS has reused an exited backend's PID.
+        return process.is_running()
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.AccessDenied:
+        return True  # Cannot prove it exited; fail closed.
 
 
 def ensure_workbench(timeout: float = 120) -> dict:
@@ -152,10 +187,6 @@ def startup_guard():
         if os.name == "nt":
             import msvcrt
 
-            handle.seek(0)
-            if handle.read(1) == b"":
-                handle.write(b"0")
-                handle.flush()
             deadline = time.monotonic() + 8
             while True:
                 try:
@@ -167,6 +198,12 @@ def startup_guard():
                         raise RuntimeError("另一个启动操作超时，请查看后台日志后重试。")
                     time.sleep(0.1)
             try:
+                # Windows permits locking beyond EOF. Acquire first: reading
+                # a byte held by another startup raises PermissionError.
+                handle.seek(0)
+                if handle.read(1) == b"":
+                    handle.write(b"0")
+                    handle.flush()
                 yield
             finally:
                 handle.seek(0)

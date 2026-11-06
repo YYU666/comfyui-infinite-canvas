@@ -30,6 +30,7 @@ from agent_api import AgentAPI
 from extension_api import ExtensionAPI
 from workflow_extensions import ExtensionStore
 from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_websocket
+from thumbnail_cache import ThumbnailCache
 from project_api import ProjectAPI
 from project_store import ProjectStore
 from queue_api import QueueAPI
@@ -41,11 +42,13 @@ from workbench_lifecycle import (
     APP_VERSION,
     atomic_write_json,
     instance_path,
+    instance_process_alive,
     probe_health,
     read_instance,
     remove_instance,
     runtime_dir,
     startup_guard,
+    workbench_ports,
     utc_now,
 )
 from workbench_logging import cleanup_legacy_comfy_logs, configure_application_logging
@@ -261,7 +264,7 @@ def import_video(share_text):
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"web_{time.strftime('%Y%m%d')}_{uuid.uuid4().hex[:12]}"
     command = [
-        str(ROOT / "python_embeded" / "python.exe"), "-m", "yt_dlp",
+        str(ROOT / "python_embeded" / "python.exe"), str(HERE / "video_download_worker.py"),
         "--no-playlist", "--no-warnings", "--socket-timeout", "20", "--retries", "2",
         "--max-filesize", str(MAX_VIDEO_BYTES), "--merge-output-format", "mp4",
         "--ffmpeg-location", imageio_ffmpeg.get_ffmpeg_exe(),
@@ -488,6 +491,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request():
             return
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/thumbnails":
+            self.server.thumbnail_cache.handle_get(self)
+            return
         if is_comfy_path(path):
             if is_websocket_request(self):
                 proxy_websocket(self)
@@ -763,6 +769,8 @@ def main():
                     if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
                         webbrowser.open(url)
                     return 0
+                if instance_process_alive(instance):
+                    raise RuntimeError("已有画布进程仍在运行，但健康检查未响应。请稍后重试或查看日志；未启动第二个服务。")
 
             cleanup_legacy_comfy_logs(log_dir)
             dist_dir = Path(os.environ.get("H3_WORKBENCH_DIST_DIR", HERE / "dist")).resolve()
@@ -771,7 +779,7 @@ def main():
             (INPUT_DIR / "workbench").mkdir(parents=True, exist_ok=True)
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             handler = functools.partial(WorkbenchHandler, directory=str(dist_dir))
-            for port in range(8790, 8800):
+            for port in workbench_ports(instance):
                 try:
                     server = WorkbenchServer(("127.0.0.1", port), handler)
                     break
@@ -780,6 +788,7 @@ def main():
             if server is None:
                 raise RuntimeError("8790–8799 端口均被占用，请查看诊断日志。")
             WEB_URL = f"http://127.0.0.1:{server.server_port}"
+            atomic_write_json(runtime_dir() / "workbench-port.json", {"port": server.server_port})
             server.token = secrets.token_urlsafe(32)
             server.started_at = utc_now()
             server.comfy_owned = False
@@ -791,6 +800,7 @@ def main():
             logging.getLogger().setLevel(server.settings.data["logLevel"])
             server.project_store = ProjectStore(server.settings.data["projectsRoot"], defaults=server.settings.data["defaults"])
             server.project_api = ProjectAPI(server.project_store)
+            server.thumbnail_cache = ThumbnailCache(runtime_dir() / "thumbnails", server.project_store, COMFY_URL)
             server.doctor = WorkbenchDoctor(
                 HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
                 model_roots=server.settings.data["modelRoots"] or None,

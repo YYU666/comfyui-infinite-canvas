@@ -6,6 +6,8 @@ import { DEFAULT_ADJUSTMENTS, BLEND_MODES, HSL_CHANNELS, LEVEL_CHANNELS } from '
 import { isImageProcess, imageProcessSettings } from './image-process-graph.js';
 import { PHOTO_ADJUSTMENTS, DEFAULT_PHOTO_SETTINGS, normalizePhotoAdjustment } from './photo-adjustments.js';
 import { CHANNEL_KEYS, normalizeChannelPackSettings } from './channel-packing.js';
+import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-references.js';
+import { availableNodePresets } from './local-node-tools.js';
 
 export const NODE_PRESETS = {
   color_adjust: ['imageProcess', { ...DEFAULT_ADJUSTMENTS, mode: 'colorAdjust', title: '颜色调整' }],
@@ -15,18 +17,20 @@ export const NODE_PRESETS = {
   image_blend: ['imageProcess', { mode: 'imageBlend', title: '图像混合', blendMode: 'normal', opacity: 100, fit: 'cover' }],
   rgba_pack: ['imageProcess', { mode: 'channelPack', title: 'RGBA 通道合并', packPreview: 'rgb' }],
   image_asset: ['image', {}],
+  local_mask: ['image', { mediaRole: 'mask', title: '局部遮罩修改' }],
   video_asset: ['video', {}],
+  video_download: ['note', { title: '视频链接下载', noteRole: 'videoDownload' }],
   audio_asset: ['audio', {}],
   note: ['note', {}],
   prompt_optimizer: ['prompt', {}],
-  reference_video: ['generator', { mode: 'reference', title: '全能参考' }],
+  reference_video: ['generator', { mode: 'reference', title: '视频生成' }],
   character_swap: ['generator', { mode: 'swap', title: '精准角色替换' }],
   text_video: ['generator', { mode: 'text', title: '文生视频' }],
-  frames_video: ['generator', { mode: 'frames', title: '首尾帧生成视频' }],
-  krea_image: ['generator', { mode: 'image', title: 'Krea2 生图', imageModel: 'krea2' }],
-  moss_image: ['generator', { mode: 'image', title: 'MOSS 生图', imageModel: 'moss' }],
+  frames_video: ['generator', { mode: 'frames', title: '视频生成' }],
+  krea_image: ['generator', { mode: 'image', title: '文生图', imageModel: 'krea2' }],
+  moss_image: ['generator', { mode: 'image', title: '文生图', imageModel: 'moss' }],
   identity_edit: ['generator', { mode: 'identityEdit', title: '母图编辑 V2', ratio: '16:9', refBoost: 4, groundingPx: 1024, refPosition: 'beside (right of target)' }],
-  qwen_edit: ['generator', { mode: 'qwenEdit', title: 'Qwen 2.1 图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }],
+  qwen_edit: ['generator', { mode: 'qwenEdit', title: '图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }],
   qwen_turbo_edit: ['generator', { mode: 'qwenEdit', title: 'Qwen 2.1 Turbo INT8 · 图生图', qwenModel: 'turbo', randomSeed: false, seed: 281306, qwenRefResolution: 1024 }],
   realism_edit: ['generator', { mode: 'qwenEdit', title: '真人化 · 漫转真', prompt: '将图中的风格化人物转换为真实摄影中的真人，保留人物身份特征、发型发色、姿势、景别和构图；真实自然的皮肤纹理、五官结构与摄影光影，不要 CG、3D 渲染、插画或塑料皮肤。', imageLora: 'qwen21Realism', loraStrength: 0.8, randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }],
   character_sheet: ['generator', { mode: 'characterSheet', title: '角色四视图生成', randomSeed: false, seed: 281306, qwenSteps: 40, qwenRefResolution: 1536 }],
@@ -47,7 +51,7 @@ const EDITABLE_SETTINGS = new Set([
   'brightness', 'contrast', 'saturation', 'hue', 'gamma', 'temperature', 'blendMode', 'opacity', 'fit',
   'workflowParameters', 'ratio', 'resolution', 'duration', 'turbo', 'seed', 'randomSeed', 'refImageSize', 'characterSheetAngleSeed',
   'qwenSteps', 'qwenRefResolution', 'localRealismSteps', 'localRealismSize', 'localRealismDenoise', 'localMaskMode', 'localMaskExpand', 'localMaskBlend', 'imageModel', 'imageLora', 'loraStrength', 'imageScale',
-  'qwenModel', 'qwenCacheDevice', 'qwenSourceCrop', 'outfitModel', 'upscaleModel', 'outfitUpscale', 'outfitHdScale', 'museSteps',
+  'qwenModel', 'qwenCacheDevice', 'qwenSourceCrop', 'qwenMaskCrop', 'outfitModel', 'upscaleModel', 'outfitUpscale', 'outfitHdScale', 'museSteps', 'flux3Resolution',
   'outfitPreset', 'outfitPanel', 'outfitLayout', 'outfitPanels', 'outfitDenoise', 'targetQuery', 'targetDescription', 'targetSelection', 'targetIndex',
 ]);
 
@@ -58,8 +62,8 @@ export function describeNodeModels(data = {}) {
   return {
     outfitModelLabel, outfitHdLabel,
     outfitSteps: outfitModel === 'muse_v4' ? Number(data.museSteps || 16) : outfitModel === 'qwen21_turbo' ? 8 : Number(data.qwenSteps || 40),
-    qwenModelLabel: data.qwenModel === 'turbo' ? 'Qwen 2.1 Turbo INT8' : 'Qwen 2.1 标准版 INT8',
-    qwenSteps: data.qwenModel === 'turbo' ? 8 : Number(data.qwenSteps || 40),
+    qwenModelLabel: data.qwenModel === 'flux3_klein' ? 'FLUX 3 Image Klein INT8' : data.qwenModel === 'turbo' ? 'Qwen 2.1 Turbo INT8' : 'Qwen 2.1 标准版 INT8',
+    qwenSteps: data.qwenModel === 'flux3_klein' ? 16 : data.qwenModel === 'turbo' ? 8 : Number(data.qwenSteps || 40),
     upscaleModelLabel: data.upscaleModel === 'seedvr2_7b' ? 'SeedVR2 7B INT8' : 'SeedVR2 3B INT8',
   };
 }
@@ -107,13 +111,14 @@ export function validateModelSettings(settings, mode) {
   for (const [key, [min, max]] of Object.entries(imageRanges)) if (key in settings && (!Number.isFinite(settings[key]) || settings[key] < min || settings[key] > max)) throw new Error(`${key} 必须在 ${min}–${max} 之间。`);
   if ('blendMode' in settings && !BLEND_MODES.some((item) => item.value === settings.blendMode)) throw new Error('不支持的混合模式。');
   if ('fit' in settings && !['cover', 'contain', 'stretch'].includes(settings.fit)) throw new Error('不支持的图片适配方式。');
+  if ('qwenMaskCrop' in settings && (typeof settings.qwenMaskCrop !== 'boolean' || (mode !== undefined && mode !== 'qwenEdit'))) throw new Error('局部放大重绘仅支持图生图的布尔开关。');
   if ('qwenCacheDevice' in settings) {
     validateQwenCacheDevice(settings.qwenCacheDevice);
     if (mode !== undefined && !['qwenEdit', 'characterSheet'].includes(mode)) throw new Error('qwenCacheDevice 仅适用于 Qwen 图生图或角色四视图。');
   }
   if ('characterSheetAngleSeed' in settings) validateCharacterSheetAngleSeed(settings.characterSheetAngleSeed);
   if ('qwenSourceCrop' in settings) validateQwenSourceCrop(settings.qwenSourceCrop);
-  const values = { qwenModel: ['standard', 'turbo'], outfitModel: ['qwen21', 'qwen21_turbo', 'muse_v4'], upscaleModel: ['seedvr2_3b', 'seedvr2_7b'], outfitUpscale: ['auto', 'off', 'seedvr2_7b'] };
+  const values = { qwenModel: ['standard', 'turbo', 'flux3_klein'], flux3Resolution: ['1MP', '2K', '4K'], outfitModel: ['qwen21', 'qwen21_turbo', 'muse_v4'], upscaleModel: ['seedvr2_3b', 'seedvr2_7b'], outfitUpscale: ['auto', 'off', 'seedvr2_7b'] };
   for (const [key, allowed] of Object.entries(values)) {
     if (key in settings && !allowed.includes(settings[key])) throw new Error(`不支持的 ${key}：${settings[key]}`);
   }
@@ -128,6 +133,7 @@ function nodeSummary(node, includeContent = true) {
     type: node.type,
     title: node.data.title || '',
     kind: node.data.kind,
+    ...(node.data.mediaRole === 'mask' ? { mediaRole: 'mask', maskSourceId: node.data.maskSourceId } : {}),
     mode: node.data.mode,
     ...(isImageProcess(node) ? { processingSettings: imageProcessSettings(node.data), processedAssetPath: node.data.processedAssetPath, processedTgaAssetPath: node.data.processedTgaAssetPath, processedResultId: node.data.processedResultId } : {}),
     ...(node.data.mode === 'customWorkflow' ? { extensionDigest: node.data.extensionDigest, nodeDefinitionId: node.data.nodeDefinitionId, workflowDefinition: node.data.workflowDefinition, workflowParameters: node.data.workflowParameters } : {}),
@@ -139,7 +145,7 @@ function nodeSummary(node, includeContent = true) {
     ...(includeContent ? { prompt: node.data.prompt, text: node.data.text } : {}),
     ...(node.data.mode === 'outfitEdit' ? { outfitLayout: node.data.outfitLayout || 'legacy', outfitPanel: node.data.outfitPanel || node.data.panelId || null, outfitPanels: node.data.outfitPanels || null } : {}),
     ...(['outfitEdit', 'qwenEdit', 'characterSheet', 'imageUpscale'].includes(node.data.mode) ? {
-      qwenModel: node.data.qwenModel || 'standard', outfitModel: node.data.outfitModel || 'qwen21',
+      qwenModel: node.data.qwenModel || 'standard', ...(node.data.qwenModel === 'flux3_klein' ? { flux3Resolution: node.data.flux3Resolution || '1MP' } : {}), outfitModel: node.data.outfitModel || 'qwen21',
       outfitUpscale: node.data.outfitUpscale || 'auto', upscaleModel: node.data.upscaleModel || 'seedvr2_3b',
       models: describeNodeModels(node.data),
     } : {}),
@@ -164,8 +170,10 @@ function edgeSummary(edge) {
 function defaultTargetHandle(target, source) {
   if (isImageProcess(target)) return target.data.mode === 'channelPack' ? 'red' : target.data.mode === 'imageBlend' ? 'base' : 'guide';
   if (source?.type === 'prompt') return 'prompt';
+  if (target?.data.mediaRole === 'mask') return 'guide';
+  if (source?.data.mediaRole === 'mask' && target?.data.mode === 'qwenEdit') return 'mask';
   const mode = target?.data.mode || 'reference';
-  if (mode === 'reference') return 'references';
+  if (['reference', 'qwenEdit'].includes(mode)) return 'references';
   if (mode === 'frames') return source?.data.slot === 'last' ? 'last' : 'first';
   if (['swap', 'upscale'].includes(mode)) return source?.data.kind === 'video' ? 'guide' : 'identity';
   if (['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode)) return 'guide';
@@ -277,7 +285,13 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
             projectName: latest.current.projectName,
             server: latest.current.server,
             nodeCount: latest.current.nodesRef.current.length,
-            nodes: nodes.map((node) => nodeSummary(node, includePrompt)),
+            nodes: nodes.map((node) => {
+              const summary = nodeSummary(node, includePrompt);
+              if (node.data.mode !== 'qwenEdit') return summary;
+              const references = qwenCanvasReferences(node, latest.current.nodesRef.current, latest.current.edgesRef.current);
+              return { ...summary, maskNodeId: latest.current.edgesRef.current.find((edge) => edge.target === node.id && edge.targetHandle === 'mask')?.source || null, referenceNodeIds: references.map((ref) => ref.id), referenceCount: references.length,
+                ...(includePrompt ? { prompt: displayQwenPrompt(node.data.prompt, references) } : {}) };
+            }),
             edges: latest.current.edgesRef.current.filter((edge) => !nodeId || ids.has(edge.source) || ids.has(edge.target)).map(edgeSummary),
           };
         }),
@@ -312,7 +326,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
         name: 'canvas_create_node',
         description: '在当前可见画布创建一个真实节点，使用与用户界面相同的节点和持久化逻辑。可用于准备图生图、视频、素材或备注测试。',
         inputSchema: schema({
-          preset: { type: 'string', enum: Object.keys(NODE_PRESETS), description: '节点预设。图生图用 qwen_edit 或 identity_edit，素材用 image_asset。' },
+          preset: { type: 'string', enum: Object.keys(availableNodePresets(NODE_PRESETS)), description: '当前已启用的节点预设。图生图用 qwen_edit，素材用 image_asset；本机实验工具仅在本机注册后可用。' },
           title: { type: 'string', description: '可选节点标题。' },
           prompt: { type: 'string', description: '可选初始提示词。' },
           text: { type: 'string', description: '备注节点的可选正文。' },
@@ -321,7 +335,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
           focus: { type: 'boolean', description: '是否移动视口到新节点，默认 false。' },
         }, ['preset']),
         execute: respond(async ({ preset, title, prompt, text, x, y, focus = false }) => {
-          const definition = NODE_PRESETS[preset];
+          const definition = availableNodePresets(NODE_PRESETS)[preset];
           if (!definition) throw new Error(`未知节点预设：${preset}`);
           const [type, defaults] = definition;
           const extra = { ...defaults };
@@ -342,7 +356,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
           title: { type: 'string' },
           prompt: { type: 'string' },
           text: { type: 'string' },
-          settings: { type: 'object', description: '自定义工作流使用 workflowParameters 对象，键来自 workflowDefinition.parameters.properties；仅支持声明的标量参数。内置节点可选参数包含 qwenModel（standard/turbo）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。' },
+          settings: { type: 'object', description: '自定义工作流使用 workflowParameters 对象，键来自 workflowDefinition.parameters.properties；仅支持声明的标量参数。内置节点可选参数包含 qwenModel（standard/turbo/flux3_klein）、flux3Resolution（1MP/2K/4K，仅 FLUX 3）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。' },
         }, ['nodeId']),
         execute: respond(async ({ nodeId, title, prompt, text, settings = {} }) => {
           const current = getNode(nodeId);
@@ -353,7 +367,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
           const patch = { ...settings };
           if ('workflowParameters' in settings) patch.workflowParameters = validateWorkflowParameters(current.data, settings.workflowParameters);
           if (title !== undefined) patch.title = title;
-          if (prompt !== undefined) { patch.prompt = prompt; patch.outfitPreset = null; }
+          if (prompt !== undefined) { patch.prompt = current.data.mode === 'qwenEdit' ? bindQwenPrompt(prompt, qwenCanvasReferences(current, latest.current.nodesRef.current, latest.current.edgesRef.current)) : prompt; patch.outfitPreset = null; }
           if (text !== undefined) patch.text = text;
           latest.current.actions.updateNode(nodeId, patch);
           const node = await waitFor(() => {
@@ -365,7 +379,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
       },
       {
         name: 'canvas_connect_nodes',
-        description: '在当前画布连接两个真实节点。素材到图生图默认使用 guide，到全能参考默认使用 references，提示词节点默认使用 prompt；无效类型会被现有画布规则拒绝。',
+        description: '在当前画布连接两个真实节点。素材到千问图生图默认使用 references（最多10张），其他单图编辑使用 guide，到全能参考默认使用 references，提示词节点默认使用 prompt；无效类型会被现有画布规则拒绝。',
         inputSchema: schema({
           sourceId: nodeIdProperty,
           targetId: nodeIdProperty,
@@ -374,12 +388,11 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
         execute: respond(async ({ sourceId, targetId, targetHandle }) => {
           const source = getNode(sourceId);
           const target = getNode(targetId);
-          const handle = targetHandle || defaultTargetHandle(target, source);
-          const previousEdgeId = latest.current.edgesRef.current.find((item) => item.source === sourceId && item.target === targetId && item.targetHandle === handle)?.id;
-          latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'prompt' ? 'prompt' : 'ref', targetHandle: handle });
+          const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || defaultTargetHandle(target, source);
+          const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
+          if (connected?.error) throw new Error(connected.error);
           const edge = await waitFor(() => {
-            const current = latest.current.edgesRef.current.find((item) => item.source === sourceId && item.target === targetId && item.targetHandle === handle);
-            return current && current.id !== previousEdgeId ? current : null;
+            return latest.current.edgesRef.current.find((item) => connected?.edgeId ? item.id === connected.edgeId : item.source === sourceId && item.target === targetId && item.targetHandle === handle) || null;
           }, 2500);
           return { edge: edgeSummary(edge) };
         }),
