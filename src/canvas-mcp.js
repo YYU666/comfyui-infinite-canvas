@@ -2,8 +2,18 @@ import { useEffect, useRef } from 'react';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
 import { validateCharacterSheetAngleSeed, validateQwenCacheDevice, validateQwenSourceCrop } from './workbench-api.js';
+import { DEFAULT_ADJUSTMENTS, BLEND_MODES, HSL_CHANNELS, LEVEL_CHANNELS } from './image-compositing.js';
+import { isImageProcess, imageProcessSettings } from './image-process-graph.js';
+import { PHOTO_ADJUSTMENTS, DEFAULT_PHOTO_SETTINGS, normalizePhotoAdjustment } from './photo-adjustments.js';
+import { CHANNEL_KEYS, normalizeChannelPackSettings } from './channel-packing.js';
 
 export const NODE_PRESETS = {
+  color_adjust: ['imageProcess', { ...DEFAULT_ADJUSTMENTS, mode: 'colorAdjust', title: '颜色调整' }],
+  color_hsl: ['imageProcess', { mode: 'colorAdjust', adjustmentType: 'hsl', title: 'HSL 分色调整' }],
+  color_levels: ['imageProcess', { mode: 'colorAdjust', adjustmentType: 'levels', title: '色阶 Levels' }],
+  color_curves: ['imageProcess', { mode: 'colorAdjust', adjustmentType: 'curves', title: '曲线 Curves' }],
+  image_blend: ['imageProcess', { mode: 'imageBlend', title: '图像混合', blendMode: 'normal', opacity: 100, fit: 'cover' }],
+  rgba_pack: ['imageProcess', { mode: 'channelPack', title: 'RGBA 通道合并', packPreview: 'rgb' }],
   image_asset: ['image', {}],
   video_asset: ['video', {}],
   audio_asset: ['audio', {}],
@@ -31,6 +41,10 @@ export const NODE_PRESETS = {
 };
 
 const EDITABLE_SETTINGS = new Set([
+  'packChannels', 'packPreview',
+  ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
+  'adjustmentType', 'hsl', 'hslChannel', 'levels', 'levelsChannel', 'maskChannel', 'maskInvert',
+  'brightness', 'contrast', 'saturation', 'hue', 'gamma', 'temperature', 'blendMode', 'opacity', 'fit',
   'workflowParameters', 'ratio', 'resolution', 'duration', 'turbo', 'seed', 'randomSeed', 'refImageSize', 'characterSheetAngleSeed',
   'qwenSteps', 'qwenRefResolution', 'localRealismSteps', 'localRealismSize', 'localRealismDenoise', 'localMaskMode', 'localMaskExpand', 'localMaskBlend', 'imageModel', 'imageLora', 'loraStrength', 'imageScale',
   'qwenModel', 'qwenCacheDevice', 'qwenSourceCrop', 'outfitModel', 'upscaleModel', 'outfitUpscale', 'outfitHdScale', 'museSteps',
@@ -51,6 +65,48 @@ export function describeNodeModels(data = {}) {
 }
 
 export function validateModelSettings(settings, mode) {
+  const choices = { adjustmentType: PHOTO_ADJUSTMENTS.map((item) => item.value), maskChannel: ['luminance', 'red', 'green', 'blue', 'alpha'], hslChannel: HSL_CHANNELS.map((item) => item.value), levelsChannel: LEVEL_CHANNELS.map((item) => item.value), curvesChannel: LEVEL_CHANNELS.map((item) => item.value), colorBalanceRange: ['shadows', 'midtones', 'highlights'], selectiveColorRange: ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'whites', 'neutrals', 'blacks'], channelMixerChannel: ['red', 'green', 'blue'] };
+  for (const [key, allowed] of Object.entries(choices)) if (key in settings && !allowed.includes(settings[key])) throw new Error(`不支持的 ${key}。`);
+  if ('packPreview' in settings && !['rgb', 'rgba', ...CHANNEL_KEYS].includes(settings.packPreview)) throw new Error('不支持的通道预览。');
+  const check = (supplied, normalized, path) => {
+    if (Array.isArray(supplied)) {
+      if (!Array.isArray(normalized) || supplied.length !== normalized.length) throw new Error(`无效的 ${path}。`);
+      supplied.forEach((value, index) => check(value, normalized[index], `${path}[${index}]`));
+    } else if (supplied && typeof supplied === 'object') {
+      if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) throw new Error(`无效的 ${path}。`);
+      for (const [key, value] of Object.entries(supplied)) {
+        if (!Object.hasOwn(normalized, key)) throw new Error(`不支持的 ${path}.${key}。`);
+        check(value, normalized[key], `${path}.${key}`);
+      }
+    } else if (supplied !== normalized && !(typeof supplied === 'string' && /^#[0-9a-f]{6}$/i.test(supplied) && supplied.toLowerCase() === normalized)) throw new Error(`无效的 ${path}。`);
+  };
+  for (const key of Object.keys(DEFAULT_PHOTO_SETTINGS)) if (key in settings) {
+    if (!settings[key] || typeof settings[key] !== 'object' || Array.isArray(settings[key])) throw new Error(`${key} 必须为参数对象。`);
+    check(settings[key], normalizePhotoAdjustment({ adjustmentType: key, [key]: settings[key] })[key] || {}, key);
+  }
+  if ('packChannels' in settings) {
+    if (!settings.packChannels || typeof settings.packChannels !== 'object' || Array.isArray(settings.packChannels)) throw new Error('packChannels 必须为通道参数对象。');
+    check(settings.packChannels, normalizeChannelPackSettings(settings).channels, 'packChannels');
+  }
+  if ('maskInvert' in settings && typeof settings.maskInvert !== 'boolean') throw new Error('maskInvert 必须为布尔值。');
+  for (const key of ['hsl', 'levels']) if (key in settings) {
+    const channels = key === 'hsl' ? choices.hslChannel : choices.levelsChannel;
+    const ranges = key === 'hsl' ? { hue: [-180, 180], saturation: [-100, 100], lightness: [-100, 100] } : { inputBlack: [0, 254], inputWhite: [1, 255], gamma: [0.1, 3], outputBlack: [0, 255], outputWhite: [0, 255] };
+    const map = settings[key];
+    if (!map || typeof map !== 'object' || Array.isArray(map)) throw new Error(`${key} 必须为通道参数对象。`);
+    for (const [channel, values] of Object.entries(map)) {
+      if (!channels.includes(channel) || !values || typeof values !== 'object' || Array.isArray(values)) throw new Error(`不支持的 ${key} 通道。`);
+      for (const [parameter, value] of Object.entries(values)) {
+        const range = ranges[parameter];
+        if (!range || !Number.isFinite(value) || value < range[0] || value > range[1]) throw new Error(`无效的 ${key}.${channel}.${parameter}。`);
+      }
+      if (key === 'levels' && ((values.inputBlack ?? 0) + 1 > (values.inputWhite ?? 255) || (values.outputBlack ?? 0) > (values.outputWhite ?? 255))) throw new Error('色阶黑场必须小于输入白场，且不能大于输出白场。');
+    }
+  }
+  const imageRanges = { brightness: [-100, 100], contrast: [-100, 100], saturation: [-100, 100], hue: [-180, 180], gamma: [0.1, 3], temperature: [-100, 100], opacity: [0, 100] };
+  for (const [key, [min, max]] of Object.entries(imageRanges)) if (key in settings && (!Number.isFinite(settings[key]) || settings[key] < min || settings[key] > max)) throw new Error(`${key} 必须在 ${min}–${max} 之间。`);
+  if ('blendMode' in settings && !BLEND_MODES.some((item) => item.value === settings.blendMode)) throw new Error('不支持的混合模式。');
+  if ('fit' in settings && !['cover', 'contain', 'stretch'].includes(settings.fit)) throw new Error('不支持的图片适配方式。');
   if ('qwenCacheDevice' in settings) {
     validateQwenCacheDevice(settings.qwenCacheDevice);
     if (mode !== undefined && !['qwenEdit', 'characterSheet'].includes(mode)) throw new Error('qwenCacheDevice 仅适用于 Qwen 图生图或角色四视图。');
@@ -73,6 +129,7 @@ function nodeSummary(node, includeContent = true) {
     title: node.data.title || '',
     kind: node.data.kind,
     mode: node.data.mode,
+    ...(isImageProcess(node) ? { processingSettings: imageProcessSettings(node.data), processedAssetPath: node.data.processedAssetPath, processedTgaAssetPath: node.data.processedTgaAssetPath, processedResultId: node.data.processedResultId } : {}),
     ...(node.data.mode === 'customWorkflow' ? { extensionDigest: node.data.extensionDigest, nodeDefinitionId: node.data.nodeDefinitionId, workflowDefinition: node.data.workflowDefinition, workflowParameters: node.data.workflowParameters } : {}),
     status: node.data.status,
     stage: node.data.stage,
@@ -90,7 +147,7 @@ function nodeSummary(node, includeContent = true) {
     position: node.position,
     selected: Boolean(node.selected),
     pinned: Boolean(node.data.pinned),
-    hasMedia: Boolean(node.data.url || node.data.resultUrl),
+    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath),
   };
 }
 
@@ -105,6 +162,7 @@ function edgeSummary(edge) {
 }
 
 function defaultTargetHandle(target, source) {
+  if (isImageProcess(target)) return target.data.mode === 'channelPack' ? 'red' : target.data.mode === 'imageBlend' ? 'base' : 'guide';
   if (source?.type === 'prompt') return 'prompt';
   const mode = target?.data.mode || 'reference';
   if (mode === 'reference') return 'references';
@@ -139,6 +197,15 @@ function mcpNode(latest, id) {
 export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
   if (['uploading', 'queued', 'running', 'finishing'].includes(initial.data.status)) throw new Error('节点已经在生成，请使用 canvas_wait_for_node 等待，避免重复提交。');
+  if (isImageProcess(initial)) {
+    const result = await latest.current.actions.generateNode(nodeId);
+    if (!result?.ok) throw new Error(result?.error || '图片输出失败。');
+    const finished = await waitImpl(() => {
+      const node = mcpNode(latest, nodeId);
+      return node.data.status === 'done' && node.data.processedResultId === result.resultId ? node : null;
+    });
+    return { node: nodeSummary(finished), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
+  }
   const before = initial.data.queueJobId;
   await latest.current.actions.generateNode(nodeId);
   const submitted = await waitImpl(() => {

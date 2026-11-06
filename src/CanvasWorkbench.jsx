@@ -49,6 +49,11 @@ import { ObjectUrlLru } from './object-url-lru';
 import { assertMediaCacheIdentity, mediaCacheIdentity, reconcileMediaCache } from './canvas-media-cache';
 import { GenerationAttempts } from './generation-attempts';
 import { flushProjectAfterMedia } from './project-save-barrier';
+import ImageProcessNode from './ImageProcessNode';
+import { DEFAULT_ADJUSTMENTS } from './image-compositing';
+import { isImageProcess, imageProcessPorts, imageProcessSnapshot, acceptsImageProcessConnection } from './image-process-graph';
+import { renderImageProcess } from './image-process-runtime';
+import { assetUrl } from './project-store-http';
 
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
@@ -75,7 +80,7 @@ function initialCanvas() {
   };
 }
 
-function migrateCanvas(value) {
+function migrateCanvas(value, projectId) {
   if (!Array.isArray(value?.nodes)) return initialCanvas();
   const nodes = value.nodes.map((node) => {
     if (node.type === 'generator' || node.type === 'h3') {
@@ -85,10 +90,11 @@ function migrateCanvas(value) {
     }
     if (node.type === 'media' || node.type === 'image') {
       const kind = node.data.kind || 'image';
-      return { ...node, type: 'media', data: { ...node.data, kind, title: node.data.title === '首帧素材' ? '角色参考' : node.data.title } };
+      return { ...node, type: 'media', data: { ...node.data, kind, title: node.data.title === '首帧素材' ? '角色参考' : node.data.title, ...(node.data.sourceProcessId && node.data.assetPath ? { url: assetUrl(projectId, node.data.assetPath) } : {}) } };
     }
     if (node.type === 'video') return { ...node, type: 'media', data: { ...node.data, kind: 'video', output: true } };
     if (node.type === 'prompt') return { ...node, data: { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...node.data } };
+    if (node.type === 'imageProcess') return { ...node, data: { ...node.data, status: ['running', 'uploading', 'finishing'].includes(node.data.status) ? 'idle' : node.data.status } };
     if (node.type === 'note') return { ...node, data: node.data.title === '从这里开始' ? { ...node.data, text: '① 上传图片、视频或音频素材\n② 选中全能参考，用 + 添加或连线素材\n③ 输入 @ 名称引用角色、动作或声音\n④ 点击右下角箭头，本地生成视频\n\n首尾帧已收进次要模式。' } : node.data };
     return null;
   }).filter(Boolean);
@@ -99,7 +105,7 @@ function migrateCanvas(value) {
       ...edge,
       type: 'default',
       sourceHandle: nodes.find((node) => node.id === edge.source)?.type === 'media' && ['image', 'video'].includes(edge.sourceHandle) ? 'ref' : edge.sourceHandle,
-      targetHandle: target?.data.mode === 'customWorkflow' ? edge.targetHandle : isReference && ['first', 'last'].includes(edge.targetHandle) ? 'references' : ['first', 'last', 'preview', 'prompt', 'guide', 'identity'].includes(edge.targetHandle) ? edge.targetHandle : 'references',
+      targetHandle: isImageProcess(target) || target?.data.mode === 'customWorkflow' ? edge.targetHandle : isReference && ['first', 'last'].includes(edge.targetHandle) ? 'references' : ['first', 'last', 'preview', 'prompt', 'guide', 'identity'].includes(edge.targetHandle) ? edge.targetHandle : 'references',
     };
   }).filter((edge) => nodes.some((n) => n.id === edge.source) && nodes.some((n) => n.id === edge.target));
   return { ...value, nodes: ensureReferenceTags(nodes), edges };
@@ -460,10 +466,14 @@ function BuiltinGeneratorNode({ id, data, selected }) {
   </div>;
 }
 
-const nodeTypes = { note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode) };
+function ImageProcessCanvasNode(props) {
+  const actions = useContext(NodeContext);
+  return <ImageProcessNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
+}
+const nodeTypes = { note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode) };
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
-  const saved = useMemo(() => ({ ...migrateCanvas(project.canvas), viewport: readViewport(project.id, project.canvas.viewport) }), [project.id]);
+  const saved = useMemo(() => ({ ...migrateCanvas(project.canvas, project.id), viewport: readViewport(project.id, project.canvas.viewport) }), [project.id]);
   const [nodes, setNodes, onNodesChange] = useNodesState(saved.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(saved.edges || []);
   const [projectName, setProjectName] = useState(project.name);
@@ -527,6 +537,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const filesRef = useRef({});
   const fileIdentitiesRef = useRef({});
   const generationAttemptsRef = useRef(new GenerationAttempts());
+  const localImageJobsRef = useRef(new Map());
+  useEffect(() => () => { localImageJobsRef.current.forEach((controller) => controller.abort()); }, []);
   const clipboardRef = useRef(null);
   const clientId = useMemo(createClientId, []);
   const { screenToFlowPosition, fitView, setCenter, zoomIn, zoomOut, zoomTo } = useReactFlow();
@@ -670,12 +682,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         const file = await readProjectFile(project, node.data.mediaStorageId || node.id, node.data.assetPath);
         if (!alive || !file) return;
         filesRef.current[node.id] = file;
-        fileIdentitiesRef.current[node.id] = mediaCacheIdentity(node.data);
+        const localOutputUrl = node.data.sourceProcessId ? assetUrl(project.id, node.data.assetPath) : null;
+        fileIdentitiesRef.current[node.id] = mediaCacheIdentity(localOutputUrl ? { ...node.data, url: localOutputUrl } : node.data);
         // Local project assets must render from the project asset path even when
         // the node also carries a ComfyUI remoteName (generated/imported assets).
         // remoteName only describes the upstream copy; it must not suppress the
         // local preview URL.
-        if (!node.data.output) updateNode(node.id, { url: URL.createObjectURL(file) });
+        if (!node.data.output || localOutputUrl) updateNode(node.id, { url: localOutputUrl || URL.createObjectURL(file) });
       } catch { /* The user can replace an unavailable local file. */ }
     });
     return () => { alive = false; thumbnailCache.clear(); };
@@ -726,6 +739,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const removeNode = useCallback((id) => {
     if (switchingRef.current || project.readOnly) return;
     const node = nodesRef.current.find((item) => item.id === id);
+    localImageJobsRef.current.get(id)?.abort();
     if ((node?.data.queueJobId || node?.data.promptId) && ['uploading', 'queued', 'running', 'finishing'].includes(node.data.status)) cancelGeneration(node.data).catch(() => {});
     setNodes((items) => items.filter((item) => item.id !== id));
     setEdges((items) => items.filter((edge) => edge.source !== id && edge.target !== id));
@@ -743,7 +757,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (node) updateNode(id, { pinned: !node.data.pinned });
   }, [updateNode]);
 
-  const chooseMedia = useCallback((id, file, sourceGallery = null) => {
+  const saveCanvasAsset = useCallback((file, onSaved, nodeId = null) => {
     if (switchingRef.current || project.readOnly) return;
     // Keep the previous committed reference until the immutable replacement is
     // fully written. A full disk or failed request must not blank the old media.
@@ -755,20 +769,14 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     const pending = Promise.all([idle, mediaUploadTailRef.current]).then(() => saveProjectFile(project.id, mediaStorageId, file, revisionRef.current));
     mediaUploadTailRef.current = pending.catch(() => {});
     mediaWritesRef.current.set(mediaStorageId, pending);
-    mediaAttemptsRef.current.set(id, mediaStorageId);
+    if (nodeId) mediaAttemptsRef.current.set(nodeId, mediaStorageId);
     setSaveState('保存中');
     return pending.then((result) => {
       revisionRef.current = Math.max(revisionRef.current, result.revision);
-      if (mediaAttemptsRef.current.get(id) !== mediaStorageId || !nodesRef.current.some((node) => node.id === id)) return;
-      filesRef.current[id] = file;
-      const patch = { url: URL.createObjectURL(file), name: file.name, mediaStorageId, assetPath: result.asset.path, sourceGallery, remoteName: null, localFile: true, output: false, resultUrl: null };
-      fileIdentitiesRef.current[id] = mediaCacheIdentity({ ...nodesRef.current.find((node) => node.id === id)?.data, ...patch });
-      const nextNodes = nodesRef.current.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
-      nodesRef.current = nextNodes;
-      setNodes(nextNodes);
-      return { ok: true, assetPath: result.asset.path };
+      if (nodeId && (mediaAttemptsRef.current.get(nodeId) !== mediaStorageId || !nodesRef.current.some((node) => node.id === nodeId))) return;
+      return onSaved(result, mediaStorageId);
     }, (error) => {
-      if (mediaAttemptsRef.current.get(id) !== mediaStorageId) return;
+      if (nodeId && mediaAttemptsRef.current.get(nodeId) !== mediaStorageId) return;
       setSaveState('保存失败');
       setProjectError(error.message || '素材保存失败，已保留原素材，请释放磁盘空间后重试。');
       return { ok: false, error };
@@ -777,6 +785,15 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       autoSaveRef.current?.observe(nameRef.current, { nodes: nodesRef.current, edges: edgesRef.current, viewport: project.canvas.viewport }, { defer: mediaWritesRef.current.size > 0 || interactionRef.current });
     });
   }, [setNodes, project.id, project.readOnly]);
+
+  const chooseMedia = useCallback((id, file, sourceGallery = null) => saveCanvasAsset(file, (result, mediaStorageId) => {
+    filesRef.current[id] = file;
+    const patch = { url: assetUrl(project.id, result.asset.path), name: file.name, mediaStorageId, assetPath: result.asset.path, sourceGallery, remoteName: null, localFile: true, output: false, resultUrl: null, tgaAssetPath: null };
+    fileIdentitiesRef.current[id] = mediaCacheIdentity({ ...nodesRef.current.find((node) => node.id === id)?.data, ...patch });
+    const nextNodes = nodesRef.current.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
+    nodesRef.current = nextNodes; setNodes(nextNodes);
+    return { ok: true, assetPath: result.asset.path };
+  }, id), [saveCanvasAsset, setNodes, project.id]);
 
   const getReferences = useCallback((id) => {
     const node = nodesRef.current.find((item) => item.id === id);
@@ -1046,11 +1063,88 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }, []);
   useEffect(() => { if (libraryOpen) refreshLibrary(); }, [libraryOpen, refreshLibrary]);
 
+  const getImageProcessState = useCallback((id) => {
+    try {
+      const snapshot = imageProcessSnapshot(id, nodesRef.current, edgesRef.current);
+      snapshot.refs = snapshot.refs.map((ref) => ({ ...ref, data: { ...ref.data, url: ref.data.assetPath ? assetUrl(project.id, ref.data.assetPath) : ref.data.url, rawUrl: ref.data.rawAssetPath ? assetUrl(project.id, ref.data.rawAssetPath) : null } }));
+      snapshot.tgaUrl = snapshot.node.data.processedTgaAssetPath ? assetUrl(project.id, snapshot.node.data.processedTgaAssetPath) : null;
+      return snapshot;
+    } catch (error) { return { error: error.message }; }
+  }, [project.id]);
+
+  const getImageProcessMask = useCallback((id) => {
+    const edge = edgesRef.current.find((item) => item.target === id && item.targetHandle === 'mask');
+    const source = nodesRef.current.find((item) => item.id === edge?.source);
+    if (!source) return null;
+    const path = isImageProcess(source) ? source.data.processedAssetPath : source.data.assetPath;
+    return { ...source, data: { ...source.data, url: path ? assetUrl(project.id, path) : source.data.url } };
+  }, [project.id]);
+
+  const runImageProcess = useCallback(async (id, { tga = false, download = false } = {}) => {
+    if (switchingRef.current || project.readOnly || localImageJobsRef.current.has(id)) return;
+    if (autoSaveRef.current?.failure) { updateNode(id, { status: 'error', error: '请先处理当前项目的保存错误。' }); return; }
+    const controller = new AbortController();
+    localImageJobsRef.current.set(id, controller);
+    let outputId;
+    let snapshot;
+    const assertCurrent = () => {
+      controller.signal.throwIfAborted();
+      if (projectRef.current.id !== project.id || imageProcessSnapshot(id, nodesRef.current, edgesRef.current).signature !== snapshot.signature) throw new Error('输入或参数已改变，已停止本次输出，请重新运行。');
+    };
+    try {
+      updateNode(id, { status: 'running', stage: '正在处理原始尺寸', error: null });
+      await Promise.all([...mediaWritesRef.current.values()]);
+      snapshot = getImageProcessState(id);
+      if (snapshot.error) throw new Error(snapshot.error);
+      const result = await renderImageProcess(snapshot.node.data.mode, snapshot.refs, snapshot.settings, { signal: controller.signal, tga });
+      assertCurrent();
+      outputId = uid('processed');
+      const output = { id: outputId, type: 'media', position: findFreePosition(nodesRef.current, { x: snapshot.node.position.x + 470, y: snapshot.node.position.y }, 'media'),
+        data: { kind: 'image', title: `${snapshot.node.data.title} · 输出`, url: '', name: '', sourceProcessId: id, processSignature: snapshot.signature } };
+      flushSync(() => {
+        const next = [...nodesRef.current, output]; nodesRef.current = next; setNodes(next);
+        const nextEdges = [...edgesRef.current, { id: `edge-${id}-${outputId}`, source: id, target: outputId, sourceHandle: 'ref', targetHandle: 'preview' }]; edgesRef.current = nextEdges; setEdges(nextEdges);
+        updateNode(id, { stage: '正在保存 PNG', status: 'finishing' });
+      });
+      const file = new File([result.blob], `${snapshot.node.data.title || 'processed'}.png`, { type: 'image/png' });
+      const uploaded = await chooseMedia(outputId, file);
+      if (!uploaded?.ok) throw new Error(uploaded?.error?.message || 'PNG 保存失败。');
+      assertCurrent();
+      let tgaPath = null;
+      if (result.tgaBlob) {
+        updateNode(id, { stage: '正在保存 TGA' });
+        const attachment = await saveCanvasAsset(new File([result.tgaBlob], `${snapshot.node.data.title || 'processed'}.tga`, { type: 'image/x-tga' }), (saved) => ({ ok: true, assetPath: saved.asset.path }));
+        if (!attachment?.ok) throw new Error(attachment?.error?.message || 'TGA 保存失败。');
+        tgaPath = attachment.assetPath;
+        assertCurrent();
+      }
+      const url = assetUrl(project.id, uploaded.assetPath);
+      flushSync(() => {
+        updateNode(outputId, { output: true, url, width: result.width, height: result.height, tgaAssetPath: tgaPath });
+        updateNode(id, { processedAssetPath: uploaded.assetPath, processedUrl: url, processedSignature: snapshot.signature, processedResultId: outputId, processedTgaAssetPath: tgaPath, status: 'done', stage: tgaPath ? 'PNG + TGA 已输出' : 'PNG 已输出', error: null });
+      });
+      fileIdentitiesRef.current[outputId] = mediaCacheIdentity(nodesRef.current.find((node) => node.id === outputId).data);
+      await persistProject();
+      if (download && tgaPath) {
+        const link = document.createElement('a'); link.href = assetUrl(project.id, tgaPath); link.download = `${snapshot.node.data.title || 'processed'}.tga`; link.click();
+      }
+      return { ok: true, resultId: outputId, tgaAssetPath: tgaPath };
+    } catch (error) {
+      if (outputId && !nodesRef.current.find((node) => node.id === outputId)?.data.assetPath) {
+        setNodes((items) => items.filter((node) => node.id !== outputId));
+        setEdges((items) => items.filter((edge) => edge.target !== outputId));
+      }
+      if (nodesRef.current.some((node) => node.id === id)) updateNode(id, { status: 'error', stage: '输出失败', error: error.message });
+      return { ok: false, error: error.message };
+    } finally { if (localImageJobsRef.current.get(id) === controller) localImageJobsRef.current.delete(id); }
+  }, [project.id, project.readOnly, getImageProcessState, chooseMedia, saveCanvasAsset, updateNode, setNodes, setEdges, persistProject]);
+
   const generateNode = useCallback(async (id) => {
     if (switchingRef.current || project.readOnly) return;
     const attempt = generationAttemptsRef.current.begin(id);
     const assertCurrent = () => generationAttemptsRef.current.assert(id, attempt);
     let node = nodesRef.current.find((item) => item.id === id);
+    if (isImageProcess(node)) return runImageProcess(id);
     if (!['customWorkflow', 'swap', 'upscale', 'imageUpscale'].includes(node?.data.mode) && !node?.data.prompt?.trim()) { updateNode(id, { status: 'error', error: '请先输入画面描述。' }); return; }
     if (mediaWritesRef.current.size) {
       updateNode(id, { status: 'uploading', stage: '正在等待素材写入磁盘', progress: 0, error: null });
@@ -1136,7 +1230,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     } catch (error) {
       if (generationAttemptsRef.current.isCurrent(id, attempt) && error.code !== 'GENERATION_CANCELLED') updateNode(id, { status: 'error', error: error.message, stage: '提交失败' });
     }
-  }, [clientId, getReferences, project.id, updateNode]);
+  }, [clientId, getReferences, project.id, updateNode, runImageProcess]);
 
   const cancelNode = useCallback(async (id) => {
     const node = nodesRef.current.find((item) => item.id === id);
@@ -1217,6 +1311,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     const id = uid(type);
     let data;
     if (type === 'generator') data = { ...DEFAULT_GENERATOR, ...extra };
+    else if (type === 'imageProcess') data = { ...DEFAULT_ADJUSTMENTS, adjustmentType: 'basic', mode: 'colorAdjust', title: '颜色调整', status: 'idle', blendMode: 'normal', opacity: 100, fit: 'cover', maskChannel: 'luminance', maskInvert: false, ...extra };
     else if (type === 'prompt') data = { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...extra };
     else if (type === 'note') data = { title: '创作备注', text: '', ...extra };
     else {
@@ -1415,6 +1510,11 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (switchingRef.current || project.readOnly) return;
     const source = nodesRef.current.find((node) => node.id === connection.source);
     const target = nodesRef.current.find((node) => node.id === connection.target);
+    if (isImageProcess(target)) {
+      if (localImageJobsRef.current.has(target.id) || !acceptsImageProcessConnection(connection, nodesRef.current, edgesRef.current)) return;
+      setEdges((items) => addEdge({ ...connection, sourceHandle: 'ref', id: `edge-${connection.source}-${connection.target}-${connection.targetHandle}-${Date.now()}` }, items.filter((edge) => !(edge.target === target.id && edge.targetHandle === connection.targetHandle))));
+      return;
+    }
     if (source?.type === 'prompt' && target?.type === 'generator' && target.data.mode !== 'customWorkflow' && connection.targetHandle === 'prompt') {
       setEdges((items) => addEdge({ ...connection, sourceHandle: 'prompt', id: `edge-${connection.source}-${connection.target}-prompt-${Date.now()}` }, items.filter((edge) => !(edge.target === connection.target && edge.targetHandle === 'prompt') && !(edge.source === connection.source && edge.sourceHandle === 'prompt'))));
       return;
@@ -1438,6 +1538,39 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     } else return;
     setEdges((items) => addEdge({ ...connection, sourceHandle: 'ref', id: `edge-${connection.source}-${connection.target}-${connection.targetHandle}-${Date.now()}` }, items.filter((edge) => mode === 'reference' ? !(edge.source === connection.source && edge.target === connection.target && edge.targetHandle === connection.targetHandle) : !(edge.target === connection.target && edge.targetHandle === connection.targetHandle))));
   }, [setEdges]);
+
+  const attachImageProcessInput = useCallback(async (id, slot, file) => {
+    assertExtensionWritable();
+    if (referenceImportBusyRef.current || localImageJobsRef.current.has(id)) throw new Error('请等待当前处理完成。');
+    const target = nodesRef.current.find((node) => node.id === id);
+    if (!isImageProcess(target) || !imageProcessPorts(target.data.mode).includes(slot)) throw new Error('输入节点或通道已不存在。');
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('请选择 PNG、JPEG 或 WebP 图片。');
+    referenceImportBusyRef.current = true;
+    let sourceId;
+    try {
+      flushSync(() => { sourceId = addNode('image', { title: slot === 'mask' ? '混合遮罩' : `${{ red: 'R', green: 'G', blue: 'B', alpha: 'A' }[slot] || slot} 通道贴图` }, { x: target.position.x - 420, y: target.position.y + 400 }, false); });
+      const uploaded = await chooseMedia(sourceId, file);
+      if (!uploaded?.ok) throw new Error(uploaded?.error?.message || '贴图保存失败。');
+      assertExtensionWritable();
+      if (!nodesRef.current.some((node) => node.id === id)) throw new Error('处理节点已不存在，贴图已保留为素材。');
+      flushSync(() => { onConnect({ source: sourceId, target: id, targetHandle: slot }); });
+      if (!edgesRef.current.some((edge) => edge.source === sourceId && edge.target === id && edge.targetHandle === slot)) throw new Error('贴图未连接，素材已保留。');
+      await persistProject();
+      return { ok: true, nodeId: sourceId };
+    } catch (error) {
+      if (sourceId && !nodesRef.current.find((node) => node.id === sourceId)?.data.assetPath) removeNode(sourceId);
+      throw error;
+    } finally { referenceImportBusyRef.current = false; }
+  }, [assertExtensionWritable, addNode, chooseMedia, onConnect, persistProject, removeNode]);
+
+  const disconnectImageProcessInput = useCallback((id, slot) => {
+    assertExtensionWritable();
+    if (localImageJobsRef.current.has(id) || referenceImportBusyRef.current) return;
+    setEdges((items) => items.filter((edge) => !(edge.target === id && edge.targetHandle === slot)));
+  }, [assertExtensionWritable, setEdges]);
+
+  const attachImageProcessMask = useCallback((id, file) => attachImageProcessInput(id, 'mask', file), [attachImageProcessInput]);
+  const disconnectImageProcessMask = useCallback((id) => disconnectImageProcessInput(id, 'mask'), [disconnectImageProcessInput]);
 
   useEffect(() => {
     if (!addMenu && !nodeMenu) return;
@@ -1473,7 +1606,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       if (!columns.has(depth)) columns.set(depth, []);
       columns.get(depth).push(node);
     });
-    const heightOf = (node) => node.type === 'generator' ? 360 : node.type === 'prompt' ? 390 : node.type === 'note' ? 250 : 260;
+    const heightOf = (node) => node.type === 'imageProcess' ? 1000 : node.type === 'generator' ? 360 : node.type === 'prompt' ? 390 : node.type === 'note' ? 250 : 260;
     const layouts = new Map();
     const maxHeight = Math.max(...[...columns.values()].map((items) => items.reduce((sum, node) => sum + heightOf(node) + 80, -80)));
     [...columns.entries()].sort(([a], [b]) => a - b).forEach(([depth, items]) => {
@@ -1557,7 +1690,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   // Refmuse-style progressive detail: only cross render tiers, not on every zoom frame.
   const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
-  const context = useMemo(() => ({ updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, viewTier }), [updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, viewTier, edges]);
+  const context = useMemo(() => ({ updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, viewTier, runImageProcess, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, viewTier, edges, nodes, runImageProcess, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -1714,6 +1847,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>
           <button onClick={() => addNode('generator', {}, addMenu.flow)}><i><WandSparkles size={17} /></i><span>全能参考<small>图、文、音、视频多元素生成</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'swap', title: '精准角色替换' }, addMenu.flow)}><i><Crosshair size={17} /></i><span>角色替换<small>仅运行一采，逐帧引导、SAM3.1 锁人、原音轨</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('imageProcess', { mode: 'colorAdjust', title: '颜色调整' }, addMenu.flow)}><i><Settings2 size={17} /></i><span>照片调色<small>曲线 · 波峰色阶 · 曝光 · HSL · 色彩平衡等</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('imageProcess', { mode: 'imageBlend', title: '图像混合' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>图像混合<small>底图 + 叠加图 · 14 种混合模式 · 可选遮罩</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('imageProcess', { mode: 'channelPack', title: 'RGBA 通道合并', packPreview: 'rgb' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>RGBA 通道合并<small>四张灰度贴图 → RGBA · 32 位 TGA 导出</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'image', title: '本地生图' }, addMenu.flow)}><i><ImageIcon size={17} /></i><span>本地生图<small>Krea2 / MOSS · 新人物与场景 · 约 1MP</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'identityEdit', title: '母图编辑 V2', ratio: '16:9', refBoost: 4, groundingPx: 1024, refPosition: 'beside (right of target)' }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>母图编辑 V2<small>保持身份 · 换装换姿态 · 四视图 · 8 步</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'qwenEdit', title: 'Qwen 2.1 图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>Qwen 2.1 图生图<small>原生整图编辑 · 原图比例 · 40 步 · 研究许可</small></span><Plus size={13} /></button>

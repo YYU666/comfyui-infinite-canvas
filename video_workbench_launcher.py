@@ -448,7 +448,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         ]))
         path = urllib.parse.urlparse(self.path).path
         if self.command == "GET" and path in {"/", "/index.html"}:
-            self.send_header("Set-Cookie", session_cookie(self.server.token))
+            self.send_header("Set-Cookie", session_cookie(self.server.token, self.server.server_port))
         super().end_headers()
 
     def log_message(self, format, *args):
@@ -472,7 +472,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not valid_origin(self.headers.get("Origin"), self.server.server_port):
             self.send_json(403, {"code": "ORIGIN_FORBIDDEN", "message": "Origin 不在本地白名单内。"})
             return False
-        if path.startswith("/api/") and path != "/api/health" and not valid_token(self.headers, self.server.token):
+        if path.startswith("/api/") and path != "/api/health" and not valid_token(self.headers, self.server.token, self.server.server_port):
             self.send_json(401, {"code": "UNAUTHORIZED", "message": "本地访问令牌无效或缺失。"})
             return False
         if write and path.startswith("/api/") and not valid_content_type(self.command, path, self.headers):

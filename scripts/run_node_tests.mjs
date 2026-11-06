@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const suites = {
   node: [
+    'test-image-compositing.mjs',
+    'test-photo-adjustments.mjs',
+    'test-channel-packing.mjs',
+    'test-image-process-graph.mjs',
+    'test-image-process-runtime.mjs',
     'test-api.mjs',
     'test-auto-save.mjs',
     'test-canvas-clipboard.mjs',
@@ -34,6 +39,7 @@ const suites = {
     'test-update-check-scheduler.mjs',
   ],
   browser: [
+    'test-image-process-ui.mjs',
     'test-canvas-current-page-ui.mjs',
     'test-versioned-canvas-ui.mjs',
     'test-workflow-inspector-ui.mjs',
