@@ -94,6 +94,15 @@ try {
   const saveBarrier = async (id) => {
     assert.equal((await call(`qa-save-barrier-${++operation}`, 'canvas_update_node', { nodeId: id, settings: {} })).ok, true);
   };
+  const focusVisible = async (id, projectId = fixture.id) => {
+    assert.equal((await call(`qa-focus-visible-${++operation}`, 'canvas_focus_node', { nodeId: id }, projectId)).ok, true);
+    await node(id).locator('.neo-node-title').click({ position: { x: 8, y: 8 } });
+    await page.getByTitle('适应画布', { exact: true }).click();
+    await until(async () => {
+      const box = await node(id).boundingBox();
+      return box && box.y >= 0 && box.y + box.height <= 1250;
+    });
+  };
   const reloadSaved = async (id) => {
     await saveBarrier(id);
     const previousPage = await api(`/api/agent/canvas/current?projectId=${fixture.id}`);
@@ -106,13 +115,7 @@ try {
     });
     // ReactFlow virtualizes offscreen nodes, and output-button scrolling can
     // leave the stored viewport elsewhere. Focus through the current page bridge.
-    assert.equal((await call(`qa-focus-reloaded-${++operation}`, 'canvas_focus_node', { nodeId: id })).ok, true);
-    await node(id).locator('.neo-node-title').click({ position: { x: 8, y: 8 } });
-    await page.getByTitle('适应画布', { exact: true }).click();
-    await until(async () => {
-      const box = await node(id).boundingBox();
-      return box && box.y >= 0 && box.y + box.height <= 1250;
-    });
+    await focusVisible(id);
   };
   const generator = await call('qa-create-upscale', 'canvas_create_node', { preset: 'image_upscale', focus: false });
   assert.equal(generator.ok, true);
@@ -201,6 +204,7 @@ try {
   await until(() => node('adjust').locator('.image-process-output').isEnabled());
   await node('adjust').getByLabel('亮度数值').fill('23');
   assert.deepEqual(await pixelAt((await exportNode('adjust')).data.url), [159, 209, 255, 255]);
+  console.log('OUTPUT_SAVE_BARRIER_OK committedDone=true controlsLocked=true projectSwitchBlocked=true nextOutputPixel=159,209,255,255');
   await node('adjust').getByLabel('亮度数值').fill('20');
   await node('base').locator('input[type=file]').setInputFiles({ name: 'red.png', mimeType: 'image/png', buffer: await png('red') });
   await node('adjust').getByLabel('调整类型').selectOption('hsl');
@@ -381,11 +385,13 @@ try {
   assert.deepEqual([...(await tgaBytes(chainData.processedTgaAssetPath)).subarray(18, 22)], [0, 0, 64, 255]);
   // Replacing an output media node must clear its raw attachment before downstream reads.
   assert.equal((await call('qa-connect-replaced-output', 'canvas_connect_nodes', { sourceId: zeroOutput.id, targetId: chained.node.id, targetHandle: 'red' })).ok, true);
+  await focusVisible(zeroOutput.id);
   await node(zeroOutput.id).locator('input[type=file]').setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: await png('rgb(99,99,99)') });
   await until(async () => { const data = (await read()).canvas.nodes.find((n) => n.id === zeroOutput.id).data; return data.name === 'replacement.png' && !data.tgaAssetPath; });
   assert.equal((await call('qa-output-replaced-input', 'canvas_generate_node', { nodeId: chained.node.id, wait: false })).ok, true);
   const replacedData = (await read()).canvas.nodes.find((n) => n.id === chained.node.id).data;
   assert.deepEqual([...(await tgaBytes(replacedData.processedTgaAssetPath)).subarray(18, 22)], [0, 0, 99, 255]);
+  await focusVisible(packId);
   const selectPackView = async (view) => {
     const previous = await node(packId).locator('.image-process-preview img').getAttribute('src');
     await node(packId).getByLabel('通道预览').selectOption(view);
@@ -416,7 +422,9 @@ try {
   const duplicate = await api(`/api/projects/${fixture.id}/duplicate`, {});
   const opened = await call('qa-open-duplicate', 'canvas_open_project', { projectId: duplicate.id });
   assert.equal(opened.ok, true);
+  await focusVisible('adjust', duplicate.id);
   await node('adjust').getByLabel('输入黑场数值').waitFor();
+  await focusVisible(output.id, duplicate.id);
   const duplicateOutput = node(output.id).locator('img').first();
   await duplicateOutput.waitFor();
   // Persistent thumbnails deliberately avoid original downloads on open. Request
@@ -428,12 +436,14 @@ try {
   assert.equal((await call('qa-save-duplicate', 'canvas_update_node', { nodeId: 'blend', title: '混合副本' }, duplicate.id)).ok, true);
   const duplicateSaved = await until(async () => { const doc = await api(`/api/projects/${duplicate.id}`); return doc.canvas.nodes.find((n) => n.id === output.id).data.url?.includes(`/api/projects/${duplicate.id}/`) ? doc : null; });
   assert.ok(duplicateSaved.canvas.nodes.find((n) => n.id === output.id).data.url.includes(`/api/projects/${duplicate.id}/`));
-  // The copied project opens at its saved viewport; include the packed node in
-  // view before querying its UI because ReactFlow virtualizes offscreen nodes.
-  await page.getByTitle('适应画布', { exact: true }).click();
+  // Focus each logical target: with many generated outputs, fitting the entire
+  // graph can lower the rendering tier and hide the UI being verified.
+  await focusVisible(packId, duplicate.id);
   assert.ok((await node(packId).getByRole('link', { name: '下载 TGA' }).getAttribute('href')).startsWith(`/api/projects/${duplicate.id}/`));
   assert.deepEqual(await tgaBytes(packData.processedTgaAssetPath, duplicate.id), packedBytes);
+  await focusVisible(output.id, duplicate.id);
   await until(async () => duplicateOutput.evaluate((image) => image.complete && image.naturalWidth === 64));
+  await focusVisible('adjust', duplicate.id);
   await node('adjust').locator('.image-process-preview img').waitFor();
   await mkdir(path.join(root, '.cache', 'feature-dev', 'qa'), { recursive: true });
   await page.screenshot({ path: path.join(root, '.cache', 'feature-dev', 'qa', 'image-processing-ui.png') });
