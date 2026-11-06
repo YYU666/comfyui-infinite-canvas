@@ -84,7 +84,7 @@ try {
    }
    return result;
  });
- for (const name of ['照片调色', '图像混合', 'RGBA 通道合并']) assert.ok(groups['官方节点'].includes(name), `${name} belongs to official nodes`);
+ for (const name of ['图片调色', '图像混合', 'RGBA 通道合并']) assert.ok(groups['官方节点'].includes(name), `${name} belongs to official nodes`);
  assert.deepEqual(groups['第三方工具'], [...expectedLocalTools.map(tool => tool.label), '已安装的节点工具']);
  for (const tool of expectedLocalTools) assert.ok(!groups['官方节点'].includes(tool.label), `${tool.label} stays in third-party tools`);
  if (!expectedLocalTools.length) {
