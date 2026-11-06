@@ -596,6 +596,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const fileIdentitiesRef = useRef({});
   const generationAttemptsRef = useRef(new GenerationAttempts());
   const localImageJobsRef = useRef(new Map());
+  const [localImageJobsVersion, setLocalImageJobsVersion] = useState(0);
+  const isImageProcessBusy = useCallback((id) => localImageJobsRef.current.has(id), []);
   useEffect(() => () => { localImageJobsRef.current.forEach((controller) => controller.abort()); }, []);
   const clipboardRef = useRef(null);
   const clientId = useMemo(createClientId, []);
@@ -686,7 +688,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     catch (error) { setProjectError(error.message || '项目列表读取失败。'); }
   }, []);
   useEffect(() => { refreshProjects(); }, [refreshProjects]);
-  const hasActiveTask = () => Boolean(videoImportBusyRef.current) || nodesRef.current.some((node) => ['uploading', 'queued', 'running', 'finishing', 'optimizing'].includes(node.data.status));
+  const hasActiveTask = () => Boolean(videoImportBusyRef.current) || localImageJobsRef.current.size > 0 || nodesRef.current.some((node) => ['uploading', 'queued', 'running', 'finishing', 'optimizing'].includes(node.data.status));
   const downloadLocalSnapshot = () => {
     const snapshot = { ...projectRef.current, revision: revisionRef.current, name: nameRef.current,
       canvas: canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current) };
@@ -1136,6 +1138,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (autoSaveRef.current?.failure) { updateNode(id, { status: 'error', error: '请先处理当前项目的保存错误。' }); return; }
     const controller = new AbortController();
     localImageJobsRef.current.set(id, controller);
+    setLocalImageJobsVersion((version) => version + 1);
     let outputId;
     let snapshot;
     const assertCurrent = () => {
@@ -1187,7 +1190,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       }
       if (nodesRef.current.some((node) => node.id === id)) updateNode(id, { status: 'error', stage: '输出失败', error: error.message });
       return { ok: false, error: error.message };
-    } finally { if (localImageJobsRef.current.get(id) === controller) localImageJobsRef.current.delete(id); }
+    } finally {
+      if (localImageJobsRef.current.get(id) === controller) {
+        localImageJobsRef.current.delete(id);
+        setLocalImageJobsVersion((version) => version + 1);
+      }
+    }
   }, [project.id, project.readOnly, getImageProcessState, chooseMedia, saveCanvasAsset, updateNode, setNodes, setEdges, persistProject]);
 
   const generateNode = useCallback(async (id) => {
@@ -1850,7 +1858,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   // Refmuse-style progressive detail: only cross render tiers, not on every zoom frame.
   const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
-  const context = useMemo(() => ({ updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const context = useMemo(() => ({ updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }

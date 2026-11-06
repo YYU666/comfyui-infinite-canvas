@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, samePath } from './test-browser.mjs';
 import { PHOTO_ADJUSTMENTS } from './src/photo-adjustments.js';
+import { imageProcessSnapshot } from './src/image-process-graph.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const python = process.env.H3_TEST_PYTHON || 'python';
@@ -89,6 +90,30 @@ try {
     await api('/api/agent/canvas/commands', { ...current, opId, tool, args });
     return until(async () => { const status = await api(`/api/agent/canvas/commands/${opId}`); return status.status === 'done' ? status.result : null; });
   };
+  let operation = 0;
+  const saveBarrier = async (id) => {
+    assert.equal((await call(`qa-save-barrier-${++operation}`, 'canvas_update_node', { nodeId: id, settings: {} })).ok, true);
+  };
+  const reloadSaved = async (id) => {
+    await saveBarrier(id);
+    const previousPage = await api(`/api/agent/canvas/current?projectId=${fixture.id}`);
+    await page.reload();
+    // A reload unloads the old session asynchronously. Do not queue a command
+    // against its still-live lease before the replacement page registers.
+    await until(async () => {
+      try { return (await api(`/api/agent/canvas/current?projectId=${fixture.id}`)).sessionId !== previousPage.sessionId; }
+      catch (error) { if (/AMBIGUOUS_CANVAS|NO_VISIBLE_CANVAS/.test(error.message)) return false; throw error; }
+    });
+    // ReactFlow virtualizes offscreen nodes, and output-button scrolling can
+    // leave the stored viewport elsewhere. Focus through the current page bridge.
+    assert.equal((await call(`qa-focus-reloaded-${++operation}`, 'canvas_focus_node', { nodeId: id })).ok, true);
+    await node(id).locator('.neo-node-title').click({ position: { x: 8, y: 8 } });
+    await page.getByTitle('适应画布', { exact: true }).click();
+    await until(async () => {
+      const box = await node(id).boundingBox();
+      return box && box.y >= 0 && box.y + box.height <= 1250;
+    });
+  };
   const generator = await call('qa-create-upscale', 'canvas_create_node', { preset: 'image_upscale', focus: false });
   assert.equal(generator.ok, true);
   assert.equal((await call('qa-connect-output', 'canvas_connect_nodes', { sourceId: output.id, targetId: generator.node.id })).ok, true);
@@ -98,7 +123,7 @@ try {
   await node('adjust').getByLabel('亮度数值').fill('20');
   await until(async () => !(await node('blend').getByRole('button', { name: '输出 PNG' }).isEnabled()));
   await until(async () => { const doc = await read(); return doc.canvas.nodes.find((n) => n.id === 'adjust').data.brightness === 20; });
-  await page.reload();
+  await reloadSaved('adjust');
   await node('adjust').getByLabel('亮度数值').waitFor();
   assert.equal(await node('adjust').getByLabel('亮度数值').inputValue(), '20');
   assert.equal(await node('blend').getByLabel('混合模式').inputValue(), 'multiply');
@@ -113,10 +138,70 @@ try {
     return Array.from(ctx.getImageData(x, 0, 1, 1).data);
   }, { url, x });
   const exportNode = async (id) => {
-    const prior = (await read()).canvas.nodes.find((n) => n.id === id).data.processedResultId;
+    await saveBarrier(id);
+    const before = await read();
+    const prior = before.canvas.nodes.find((n) => n.id === id).data.processedResultId;
+    const expected = imageProcessSnapshot(id, before.canvas.nodes, before.canvas.edges).signature;
     await node(id).getByRole('button', { name: /^输出 PNG/ }).click();
-    return until(async () => { const doc = await read(); const data = doc.canvas.nodes.find((n) => n.id === id).data; return data.status === 'done' && data.processedResultId !== prior ? doc.canvas.nodes.find((n) => n.id === data.processedResultId) : null; });
+    let observed;
+    let result;
+    try {
+      result = await until(async () => {
+        const doc = await read(); const data = doc.canvas.nodes.find((n) => n.id === id).data;
+        observed = { status: data.status, stage: data.stage, error: data.error, resultId: data.processedResultId, signature: data.processedSignature };
+        if (data.status === 'error') throw new Error(`Output ${id} failed: ${data.error}`);
+        const output = doc.canvas.nodes.find((n) => n.id === data.processedResultId);
+        return data.status === 'done' && data.processedResultId !== prior && data.processedSignature === expected && output?.data.processSignature === expected && doc.assets.some((asset) => asset.path === output.data.assetPath) ? output : null;
+      });
+    } catch (error) { throw new Error(`Output ${id}: ${error.message}; observed=${JSON.stringify(observed)}; expectedSignature=${expected}`); }
+    // A committed server document can precede the browser's save response.
+    await until(() => node(id).locator('.image-process-output').isEnabled());
+    await saveBarrier(id);
+    return result;
   };
+  // Hold the committed output's save response: server-done must not release
+  // controls or project switching while the browser still owns the local job.
+  await node('adjust').getByLabel('亮度数值').fill('22');
+  await saveBarrier('adjust');
+  const priorHeldResult = (await read()).canvas.nodes.find((n) => n.id === 'adjust').data.processedResultId;
+  let releaseSave; let committedSave; let interceptFailure;
+  const saveGate = new Promise((resolve) => { releaseSave = resolve; });
+  const serverCommitted = new Promise((resolve, reject) => { committedSave = resolve; interceptFailure = reject; });
+  let held = false;
+  const saveRoute = async (route) => {
+    const request = route.request();
+    if (request.method() !== 'PUT') return route.continue();
+    const data = request.postDataJSON()?.canvas?.nodes?.find((n) => n.id === 'adjust')?.data;
+    if (held || data?.status !== 'done' || !data.processedResultId || data.processedResultId === priorHeldResult) return route.continue();
+    held = true;
+    try {
+      const response = await route.fetch();
+      assert.equal(response.ok(), true);
+      committedSave();
+      await saveGate;
+      await route.fulfill({ response });
+    } catch (error) { interceptFailure(error); throw error; }
+  };
+  await page.route(`**/api/projects/${fixture.id}`, saveRoute);
+  try {
+    await node('adjust').locator('.image-process-output').click();
+    await Promise.race([serverCommitted, pause(20000).then(() => { throw new Error('Delayed output save did not commit'); })]);
+    const committed = (await read()).canvas.nodes.find((n) => n.id === 'adjust').data;
+    assert.equal(committed.status, 'done'); assert.notEqual(committed.processedResultId, priorHeldResult);
+    assert.equal(await node('adjust').locator('.image-process-output').isDisabled(), true, 'output stays disabled until its browser save completes');
+    assert.equal(await adjustmentSelect.isDisabled(), true, 'adjustment dispatch stays disabled while saving');
+    assert.equal(await node('adjust').getByLabel('亮度数值').isDisabled(), true, 'settings stay disabled while saving');
+    assert.equal(await page.locator('.launcher-return').isDisabled(), true);
+    const blockedSwitch = await call('qa-switch-during-output-save', 'canvas_open_project', { projectId: fixture.id });
+    assert.equal(blockedSwitch.ok, false); assert.match(blockedSwitch.error, /任务进行中/);
+  } finally {
+    releaseSave();
+    await page.unroute(`**/api/projects/${fixture.id}`, saveRoute);
+  }
+  await until(() => node('adjust').locator('.image-process-output').isEnabled());
+  await node('adjust').getByLabel('亮度数值').fill('23');
+  assert.deepEqual(await pixelAt((await exportNode('adjust')).data.url), [159, 209, 255, 255]);
+  await node('adjust').getByLabel('亮度数值').fill('20');
   await node('base').locator('input[type=file]').setInputFiles({ name: 'red.png', mimeType: 'image/png', buffer: await png('red') });
   await node('adjust').getByLabel('调整类型').selectOption('hsl');
   await node('adjust').getByLabel('HSL 色相数值').fill('120');
@@ -161,7 +246,7 @@ try {
   const inverseOutput = await exportNode('blend');
   assert.deepEqual(await pixelAt(inverseOutput.data.url, 0), [128, 128, 128, 255]);
   assert.deepEqual(await pixelAt(inverseOutput.data.url, 63), [100, 128, 128, 255]);
-  await page.reload();
+  await reloadSaved('adjust');
   await node('adjust').getByLabel('调整类型').waitFor();
   assert.equal(await node('adjust').getByLabel('调整类型').inputValue(), 'levels');
   assert.equal(await node('adjust').getByLabel('色阶通道').inputValue(), 'red');
@@ -247,7 +332,7 @@ try {
   assert.equal(await node('adjust').getByLabel('输入黑场数值').inputValue(), retainedBlack, 'selector switching retains level settings');
   await adjustmentSelect.selectOption('curves');
   assert.equal(await graph.getByRole('slider').count(), 3, 'selector switching retains curve points');
-  await page.reload(); await node('adjust').getByLabel('曲线通道').waitFor();
+  await reloadSaved('adjust'); await node('adjust').getByLabel('曲线通道').waitFor();
   assert.equal(await node('adjust').getByLabel('调整类型').inputValue(), 'curves');
   assert.equal(await node('adjust').getByRole('group', { name: '曲线编辑图' }).getByRole('slider').count(), 3);
   await node('adjust').locator('.image-process-preview img').waitFor();
@@ -325,7 +410,7 @@ try {
   await node(packId).screenshot({ path: path.join(root, '.cache', 'feature-dev', 'qa', 'rgba-v4-ui.png') });
   // Reopen verifies saved TGA path and download, with no extra backend/generation write.
   await until(async () => (await read()).canvas.nodes.find((n) => n.id === packId).data.packPreview === 'rgb');
-  await page.reload(); await node(packId).getByRole('link', { name: '下载 TGA' }).waitFor();
+  await reloadSaved(packId); await node(packId).getByRole('link', { name: '下载 TGA' }).waitFor();
   assert.ok((await node(packId).getByRole('link', { name: '下载 TGA' }).getAttribute('href')).includes(packData.processedTgaAssetPath));
   // Opening a duplicate must never keep URLs pointing at the original project.
   const duplicate = await api(`/api/projects/${fixture.id}/duplicate`, {});

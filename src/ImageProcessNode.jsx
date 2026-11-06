@@ -25,7 +25,7 @@ export default function ImageProcessNode({ id, data, actions, title, toolbar }) 
   const maskInput = useRef(null);
   const [maskBusy, setMaskBusy] = useState(false);
   const state = actions.getImageProcessState(id);
-  const running = ['running', 'uploading', 'finishing'].includes(data.status);
+  const running = ['running', 'uploading', 'finishing'].includes(data.status) || actions.isImageProcessBusy?.(id);
   const [preview, setPreview] = useState(null);
   const [previewError, setPreviewError] = useState('');
   const [previewBusy, setPreviewBusy] = useState(false);
