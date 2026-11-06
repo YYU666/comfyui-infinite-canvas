@@ -33,4 +33,13 @@ assert.match(plan(conn('renderer','qwen','references','image'),[...nodes,rendere
 assert.equal(resolveConnectionSource(renderer,'image',[renderer,current],[]).source.id,'current');
 const same={id:'already',source:'image',target:'frames',sourceHandle:'ref',targetHandle:'first'};
 assert.equal(plan(conn('image','frames','first'),nodes,[same]).existing.id,'already');
+const pack={id:'pack',type:'imageProcess',data:{mode:'channelPack',status:'idle'}};
+const adjust={id:'adjust',type:'imageProcess',data:{mode:'colorAdjust',status:'idle'}};
+const processNodes=[...nodes,pack,adjust];
+assert.equal(plan(conn('image','pack','red'),processNodes).connection.targetHandle,'red');
+assert.equal(plan(conn('image','adjust','guide'),processNodes).error,undefined);
+assert.ok(plan(conn('video','pack','red'),processNodes).error);
+assert.ok(plan(conn('image','pack','guide'),processNodes).error);
+assert.ok(plan(conn('adjust','pack','red'),processNodes,[{source:'pack',target:'adjust',targetHandle:'guide'}]).error);
+assert.match(plan(conn('image','pack','alpha'),[...nodes,{...pack,data:{...pack.data,status:'finishing'}}]).error,/正在生成/);
 console.log('PASS canvas connection rules: types, busy/readonly, masks, limits, current saved result, ambiguity and reconnect');

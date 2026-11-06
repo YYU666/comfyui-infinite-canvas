@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 
 
 def runtime_dir() -> Path:
@@ -59,7 +59,16 @@ def atomic_write_json(path: Path, payload: dict) -> None:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    for attempt in range(50):
+        try:
+            os.replace(temporary, path)
+            break
+        except OSError as exc:
+            # Windows readers/AV can briefly deny replacement. Retry only the
+            # same atomic rename; never rewrite content or bypass permissions.
+            if os.name != "nt" or getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 49:
+                raise
+            time.sleep(0.01)
     if path == instance_path():
         restrict_private_file(path)
 

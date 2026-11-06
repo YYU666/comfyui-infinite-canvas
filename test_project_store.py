@@ -142,6 +142,16 @@ class ProjectStoreTests(unittest.TestCase):
             self.store.put_asset(self.document["id"], "bad.exe", io.BytesIO(b"x"))
         self.assertEqual(caught.exception.status, 415)
 
+    def test_tga_export_asset_is_saved_and_referenced(self):
+        data = bytes([0, 0, 2] + [0] * 9 + [1, 0, 1, 0, 32, 40, 30, 20, 10, 0])
+        result = self.store.put_asset(self.document["id"], "packed.tga", io.BytesIO(data), "image/x-tga", expected_revision=self.document["revision"])
+        self.assertTrue(result["asset"]["path"].endswith(".tga"))
+        self.assertEqual(self.store.asset_file(self.document["id"], result["asset"]["path"]).read_bytes(), data)
+        self.assertEqual(result["asset"]["mime"], "image/x-tga")
+        document = self.store.get(self.document["id"])
+        document["canvas"]["nodes"] = [{"id": "packed", "type": "imageProcess", "position": {"x": 0, "y": 0}, "data": {"processedTgaAssetPath": result["asset"]["path"]}}]
+        self.assertIn(result["asset"]["path"], self.store._asset_references(document))
+
     def test_13_asset_range_full_partial_and_suffix(self):
         result = self.store.put_asset(self.document["id"], "a.mp4", io.BytesIO(b"0123456789"), "video/mp4")
         path = self.store.asset_file(self.document["id"], result["asset"]["path"])

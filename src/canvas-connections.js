@@ -1,5 +1,6 @@
 import { isMaskNode } from './canvas-mask.js';
 import { qwenCanvasReferences } from './qwen-references.js';
+import { isImageProcess, acceptsImageProcessConnection } from './image-process-graph.js';
 
 const busy = (node) => ['uploading', 'queued', 'running', 'finishing'].includes(node?.data?.status);
 const fail = (error) => ({ error });
@@ -30,6 +31,12 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   const source = resolved.source;
   if (source.id === target.id) return fail('不能连接当前成品自身。');
   if (busy(target)) return fail('目标节点正在生成，请完成后再修改连接。');
+  if (isImageProcess(target)) {
+    const normalized = { source: source.id, sourceHandle: 'ref', target: target.id, targetHandle: connection.targetHandle };
+    if (!acceptsImageProcessConnection(normalized, nodes, edges)) return fail('图片处理只接受图片输入和对应通道，且连线不能形成循环。');
+    const existing = edges.find((edge) => Object.entries(normalized).every(([key, value]) => edge[key] === value));
+    return { connection: normalized, source, target, multiple: false, existing, resolvedFrom: resolved.resolvedFrom };
+  }
   let targetHandle = connection.targetHandle;
   let sourceHandle = isMaskNode(source) ? 'mask' : source.type === 'prompt' ? 'prompt' : 'ref';
   let multiple = false;

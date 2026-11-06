@@ -18,7 +18,7 @@ from workbench_lifecycle import APP_VERSION, atomic_write_json, utc_now
 
 MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PROJECT_MEMBERS = 10000
-ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac"}
+ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".tga", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac"}
 INVALID_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 

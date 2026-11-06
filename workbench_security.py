@@ -48,7 +48,7 @@ def valid_content_type(method, path, headers):
     return content_type == "application/json"
 
 
-def valid_token(headers, expected):
+def valid_token(headers, expected, port=None):
     supplied = headers.get("X-H3-Token", "")
     if supplied and hmac.compare_digest(supplied, expected):
         return True
@@ -57,9 +57,10 @@ def valid_token(headers, expected):
         cookie.load(headers.get("Cookie", ""))
     except Exception:
         return False
-    morsel = cookie.get("h3_session")
+    morsel = cookie.get(f"h3_session_{int(port)}" if port is not None else "h3_session")
     return bool(morsel and hmac.compare_digest(morsel.value, expected))
 
 
-def session_cookie(token):
-    return f"h3_session={token}; Path=/; HttpOnly; SameSite=Strict"
+def session_cookie(token, port=None):
+    name = f"h3_session_{int(port)}" if port is not None else "h3_session"
+    return f"{name}={token}; Path=/; HttpOnly; SameSite=Strict"
