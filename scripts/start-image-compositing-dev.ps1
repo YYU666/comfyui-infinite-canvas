@@ -7,8 +7,9 @@ $developmentRoot = Split-Path -Parent $PSScriptRoot
 if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
     throw "找不到项目 Python，请通过 -PythonPath 指定已安装工作台依赖的 Python。"
 }
-if (-not (Test-Path -LiteralPath (Join-Path $developmentRoot 'dist\index.html'))) {
-    throw '请先在开发工作区运行 npm ci 和 npm run build。'
+$developmentUiRoot = Join-Path $developmentRoot '.cache\feature-dev\ui'
+if (-not (Test-Path -LiteralPath (Join-Path $developmentUiRoot 'index.html'))) {
+    throw '请先配置本机工具清单，再运行 npm run build:canvas-dev。'
 }
 
 # These paths are intentionally separate from the production runtime and projects.
@@ -16,6 +17,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $developmentRoot 'dist\index.html'))
 $env:H3_WORKBENCH_RUNTIME_DIR = Join-Path $developmentRoot '.cache\feature-dev\runtime'
 $env:H3_WORKBENCH_DATA_DIR = Join-Path $developmentRoot '.cache\feature-dev\data'
 $env:H3_PROJECTS_ROOT = Join-Path $developmentRoot '.cache\feature-dev\projects'
+$env:H3_WORKBENCH_DIST_DIR = $developmentUiRoot
 $env:H3_COMFY_URL = 'http://127.0.0.1:8199'
 $env:H3_WORKBENCH_TEST_MODE = '1'
 $env:H3_WORKBENCH_NO_BROWSER = '1'

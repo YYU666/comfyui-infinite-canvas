@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, samePath } from './test-browser.mjs';
+import { PHOTO_ADJUSTMENTS } from './src/photo-adjustments.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const python = process.env.H3_TEST_PYTHON || 'python';
@@ -48,6 +49,15 @@ try {
   assert.equal(cookies.find((cookie) => cookie.name === 'h3_session').value, 'synthetic-production-session', 'development does not overwrite the production cookie');
   assert.equal(cookies.find((cookie) => cookie.name === `h3_session_${instance.port}`).value, token);
   const node = (id) => page.locator(`.react-flow__node[data-id="${id}"]`);
+  const palette = node('adjust').getByRole('group', { name: '照片调色工具', exact: true });
+  await palette.waitFor();
+  assert.equal(await palette.getByRole('button').count(), 17);
+  for (const { value, label } of PHOTO_ADJUSTMENTS) {
+    const tool = palette.getByRole('button', { name: label, exact: true });
+    assert.equal(await tool.isVisible(), true, `${label} is discoverable without opening a selector`);
+    assert.equal(await tool.getAttribute('aria-pressed'), String(value === 'basic'));
+  }
+  assert.equal(await node('adjust').getByLabel('调整类型').inputValue(), 'basic', 'missing adjustmentType retains the existing basic default');
   const png = async (color) => Buffer.from(await page.evaluate((color) => {
     const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 48;
     const ctx = canvas.getContext('2d'); ctx.fillStyle = color; ctx.fillRect(0, 0, 64, 48);
@@ -122,7 +132,9 @@ try {
   assert.equal(await node('adjust').getByLabel('HSL 饱和度数值').inputValue(), '0');
   await node('adjust').getByLabel('HSL 颜色范围').selectOption('red');
   assert.equal(await node('adjust').getByLabel('HSL 饱和度数值').inputValue(), '-30');
-  await node('adjust').getByLabel('调整类型').selectOption('levels');
+  await palette.getByRole('button', { name: '色阶', exact: true }).click();
+  assert.equal(await node('adjust').getByLabel('调整类型').inputValue(), 'levels');
+  assert.equal(await palette.getByRole('button', { name: '色阶', exact: true }).getAttribute('aria-pressed'), 'true');
   await node('adjust').locator('.photo-histogram .tone-histogram-fill').waitFor();
   await node('base').locator('input[type=file]').setInputFiles({ name: 'gray.png', mimeType: 'image/png', buffer: await png('rgb(150,150,150)') });
   await node('adjust').getByLabel('输入黑场数值').fill('100');
@@ -216,7 +228,10 @@ try {
   await mkdir(path.join(root, '.cache', 'feature-dev', 'qa'), { recursive: true });
   await node('adjust').locator('.image-process-preview img').waitFor();
   await node('adjust').screenshot({ path: path.join(root, '.cache', 'feature-dev', 'qa', 'levels-v3-ui.png') });
-  await node('adjust').getByLabel('调整类型').selectOption('curves');
+  const retainedBlack = await node('adjust').getByLabel('输入黑场数值').inputValue();
+  await palette.getByRole('button', { name: '曲线', exact: true }).click();
+  assert.equal(await node('adjust').getByLabel('调整类型').inputValue(), 'curves');
+  assert.equal(await palette.getByRole('button', { name: '曲线', exact: true }).getAttribute('aria-pressed'), 'true');
   const graph = node('adjust').getByRole('group', { name: '曲线编辑图' });
   await graph.waitFor(); const curveBox = await graph.boundingBox();
   const graphPoint = (x, y) => ({ x: curveBox.x + (x + 8) / 271 * curveBox.width, y: curveBox.y + (263 - y) / 271 * curveBox.height });
@@ -234,6 +249,10 @@ try {
   await node('adjust').getByRole('button', { name: '提亮', exact: true }).click();
   await node('adjust').getByLabel('曲线通道').selectOption('rgb');
   assert.equal(await graph.getByRole('slider').count(), 3);
+  await palette.getByRole('button', { name: '色阶', exact: true }).click();
+  assert.equal(await node('adjust').getByLabel('输入黑场数值').inputValue(), retainedBlack, 'palette switching retains level settings');
+  await palette.getByRole('button', { name: '曲线', exact: true }).click();
+  assert.equal(await graph.getByRole('slider').count(), 3, 'palette switching retains curve points');
   await page.reload(); await node('adjust').getByLabel('曲线通道').waitFor();
   assert.equal(await node('adjust').getByLabel('调整类型').inputValue(), 'curves');
   assert.equal(await node('adjust').getByRole('group', { name: '曲线编辑图' }).getByRole('slider').count(), 3);

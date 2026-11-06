@@ -7,6 +7,9 @@ import { chromium } from './test-browser.mjs';
 const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 const origin = 'http://127.0.0.1:8799';
 const expectedLocalTool = process.env.H3_EXPECT_LOCAL_TOOL || '';
+const expectedLocalTools = process.env.H3_EXPECT_LOCAL_TOOLS
+  ? JSON.parse(process.env.H3_EXPECT_LOCAL_TOOLS)
+  : expectedLocalTool ? [{ preset: 'identity_edit', label: expectedLocalTool }] : [];
 const browser = await chromium.launch({ headless: true });
 const failures = [], queued = [];
 const makeProject = (readOnly = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen references fixture', revision: 1, readOnly, shots: [], canvas: {
@@ -66,8 +69,11 @@ try {
  const menu = page.getByRole('menu', { name: '添加节点' }); await menu.waitFor();
  assert.equal(await menu.getByRole('button', { name: /^视频生成/ }).count(), 1);
  assert.equal(await menu.getByRole('button', { name: /^文生图/ }).count(), 1);
- assert.doesNotMatch(await menu.innerText(), /提示词优化|本地生图|四视图/);
- assert.equal(await menu.getByRole('button',{name:/^母图编辑|^角色替换|^角色四视图/}).count(),0);
+ assert.doesNotMatch(await menu.innerText(), /提示词优化|本地生图/);
+ if (!expectedLocalTools.length) {
+   assert.doesNotMatch(await menu.innerText(), /四视图/);
+   assert.equal(await menu.getByRole('button',{name:/^母图编辑|^角色替换|^角色四视图/}).count(),0);
+ }
  assert.ok((await menu.innerText()).includes('第三方工具'));
  assert.equal(await menu.getByRole('button',{name:/^已安装的节点工具/}).count(),1);
  const groups = await menu.evaluate((element) => {
@@ -79,8 +85,9 @@ try {
    return result;
  });
  for (const name of ['照片调色', '图像混合', 'RGBA 通道合并']) assert.ok(groups['官方节点'].includes(name), `${name} belongs to official nodes`);
- assert.deepEqual(groups['第三方工具'], [...(expectedLocalTool ? [expectedLocalTool] : []), '已安装的节点工具']);
- if (!expectedLocalTool) {
+ assert.deepEqual(groups['第三方工具'], [...expectedLocalTools.map(tool => tool.label), '已安装的节点工具']);
+ for (const tool of expectedLocalTools) assert.ok(!groups['官方节点'].includes(tool.label), `${tool.label} stays in third-party tools`);
+ if (!expectedLocalTools.length) {
    const qa = path.resolve('.cache/feature-dev/qa'); await mkdir(qa, {recursive:true});
    await menu.screenshot({path:path.join(qa,'node-classification-official.png')});
    await menu.evaluate((element) => { element.scrollTop = element.scrollHeight; });
@@ -118,12 +125,12 @@ try {
  }
  for (const preset of ['identity_edit','character_swap','character_sheet','local_realism','outfit_edit','outfit_qwen21_turbo','outfit_qwen21_turbo_7b','outfit_muse_v4']) {
    const created = await call('canvas_create_node', {preset,x:7000,y:0,focus:false});
-   assert.equal(created.ok,Boolean(expectedLocalTool && preset === 'identity_edit'),`only explicitly registered local tools can create ${preset}`);
+   assert.equal(created.ok,expectedLocalTools.some(tool => tool.preset === preset),`only explicitly registered local tools can create ${preset}`);
  }
  await call('canvas_update_node', {nodeId:dn.id,title:'视频链接下载'});
  await page.reload(); await page.waitForFunction(() => window.fixtureTools.has('canvas_get_state'));
  state=await call('canvas_get_state'); assert.ok(state.nodes.some(n=>n.title==='下载测试视频'));
  assert.ok(state.nodes.some(n=>n.title==='视频链接下载'));
  assert.deepEqual(failures, []); await context.close();
- console.log(`OFFICIAL_NODES_OK official photo/blend/RGBA grouping, public/local isolation, video modes, download import persisted, no generation local=${Boolean(expectedLocalTool)}`);
+ console.log(`OFFICIAL_NODES_OK official photo/blend/RGBA grouping, public/local isolation, video modes, download import persisted, no generation localTools=${expectedLocalTools.length}`);
 } finally {await browser.close();}

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 8790",
     "build": "vite build",
+    "build:canvas-dev": "vite build --mode local-tools --outDir .cache/feature-dev/ui",
     "preview": "vite preview --host 127.0.0.1 --port 8790",
     "test": "npm run test:node && npm run test:browser",
     "test:all": "npm run test:python && npm test",

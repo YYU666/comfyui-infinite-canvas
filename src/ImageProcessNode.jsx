@@ -14,6 +14,9 @@ const CONTROLS = [
   ['saturation', '饱和度', -100, 100, 1], ['hue', '色相', -180, 180, 1],
   ['gamma', 'Gamma', 0.1, 3, 0.05], ['temperature', '色温', -100, 100, 1],
 ];
+const ADJUSTMENT_GROUPS = [...new Set(PHOTO_ADJUSTMENTS.map((item) => item.group))].map((label) => ({
+  label, items: PHOTO_ADJUSTMENTS.filter((item) => item.group === label),
+}));
 
 export default function ImageProcessNode({ id, data, actions, title, toolbar }) {
   const blend = data.mode === 'imageBlend';
@@ -81,7 +84,13 @@ export default function ImageProcessNode({ id, data, actions, title, toolbar }) 
         </div>
         <p>以底图尺寸输出，遮罩缩放至底图尺寸。</p>
       </> : <>
-        <label className="image-process-select">调整类型<select aria-label="调整类型" value={adjustmentType} disabled={disabled} onChange={(e) => patch({ adjustmentType: e.target.value })}>{[...new Set(PHOTO_ADJUSTMENTS.map((item) => item.group))].map((group) => <optgroup key={group} label={group}>{PHOTO_ADJUSTMENTS.filter((item) => item.group === group).map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</optgroup>)}</select></label>
+        <div className="photo-adjustment-palette" role="group" aria-label="照片调色工具">
+          {ADJUSTMENT_GROUPS.map((group) => <div className="photo-adjustment-tool-group" role="group" aria-label={group.label} key={group.label}>
+            <span className="photo-adjustment-tool-heading">{group.label}</span>
+            <div className="photo-adjustment-tool-buttons">{group.items.map(({ value, label }) => <button type="button" key={value} aria-pressed={adjustmentType === value} disabled={disabled} onClick={() => patch({ adjustmentType: value })}>{label}</button>)}</div>
+          </div>)}
+        </div>
+        <label className="image-process-select">调整类型<select aria-label="调整类型" value={adjustmentType} disabled={disabled} onChange={(e) => patch({ adjustmentType: e.target.value })}>{ADJUSTMENT_GROUPS.map((group) => <optgroup key={group.label} label={group.label}>{group.items.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</optgroup>)}</select></label>
         {adjustmentType === 'basic' ? CONTROLS.map(([key, label, min, max, step]) => <label className="image-process-range" key={key}><span>{label}<input type="number" aria-label={`${label}数值`} min={min} max={max} step={step} value={data[key] ?? DEFAULT_ADJUSTMENTS[key]} disabled={disabled} onChange={(e) => { if (e.target.value !== '') patch({ [key]: Math.max(min, Math.min(max, Number(e.target.value))) }); }} /></span><input aria-label={label} type="range" min={min} max={max} step={step} value={data[key] ?? DEFAULT_ADJUSTMENTS[key]} disabled={disabled} onChange={(e) => patch({ [key]: Number(e.target.value) })} /></label>) : <PhotoAdjustmentControls data={data} patch={patch} disabled={disabled} baseUrl={base?.data.url} />}
         <p>每个节点应用一种调整，可串联多个节点叠加效果；切换类型会保留各自参数。</p>
       </>}
