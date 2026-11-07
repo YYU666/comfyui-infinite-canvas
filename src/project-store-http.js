@@ -1,4 +1,4 @@
-import { normalizeMediaUrl } from './workbench-api';
+import { normalizeMediaUrl } from './workbench-api.js';
 
 const API_ROOT = '/api/projects';
 // Paths explicitly opened by this page only; never serialize them into project.json.
@@ -83,7 +83,7 @@ export async function openProjectPath(path, { readOnly = false, fallbackToReadOn
 export async function restoreProjectAccess(project, { isCurrent = () => true, signal } = {}) {
   try { await request(`/${project.id}`, { signal }); }
   catch (error) {
-    if (error.status !== 404 || !isCurrent()) throw error;
+    if (signal?.aborted || error.status !== 404 || !isCurrent()) throw error;
     const path = openedProjectPaths.get(project.id);
     if (!path) throw new Error('当前项目暂时无法访问。本页修改已保留，请检查项目文件夹；可先下载画布 JSON 快照。');
     // Re-register an external folder forgotten by the restarted backend from

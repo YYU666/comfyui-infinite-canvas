@@ -10,7 +10,7 @@ import uuid
 
 from project_store import StoreError
 
-TOOLS = frozenset({"canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
+TOOLS = frozenset({"canvas_move_nodes", "canvas_retry_save", "canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
                    "canvas_generate_node", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset",
                    "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
                    "canvas_create_extension"})

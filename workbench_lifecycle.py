@@ -8,11 +8,12 @@ import os
 import socket
 import subprocess
 import time
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 
 
 def runtime_dir() -> Path:
@@ -53,22 +54,26 @@ def restrict_private_file(path: Path) -> None:
 
 def atomic_write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-    with temporary.open("wb") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
-    for attempt in range(50):
-        try:
-            os.replace(temporary, path)
-            break
-        except OSError as exc:
-            # Windows readers/AV can briefly deny replacement. Retry only the
-            # same atomic rename; never rewrite content or bypass permissions.
-            if os.name != "nt" or getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 49:
-                raise
-            time.sleep(0.01)
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(50):
+            try:
+                os.replace(temporary, path)
+                break
+            except OSError as exc:
+                # Windows readers/AV can briefly deny replacement. Retry only the
+                # same atomic rename; never rewrite content or bypass permissions.
+                if os.name != "nt" or getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 49:
+                    raise
+                time.sleep(0.01)
+    finally:
+        with contextlib.suppress(OSError):
+            temporary.unlink(missing_ok=True)
     if path == instance_path():
         restrict_private_file(path)
 

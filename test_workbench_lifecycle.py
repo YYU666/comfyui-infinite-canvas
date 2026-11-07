@@ -42,7 +42,6 @@ class LifecycleTests(unittest.TestCase):
 
     def test_atomic_replace_retries_transient_windows_errors_without_rewriting(self):
         path = instance_path()
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         original_replace = os.replace
         original_fsync = os.fsync
         for winerror, error_type in ((5, PermissionError), (32, PermissionError), (33, PermissionError),
@@ -56,7 +55,7 @@ class LifecycleTests(unittest.TestCase):
                 def replace(source, destination):
                     attempts.append((source, destination))
                     self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"state": "old"})
-                    self.assertEqual(json.loads(temporary.read_text(encoding="utf-8")), {"state": "new"})
+                    self.assertEqual(json.loads(Path(source).read_text(encoding="utf-8")), {"state": "new"})
                     if len(attempts) < 3:
                         raise error
                     original_replace(source, destination)
@@ -73,6 +72,8 @@ class LifecycleTests(unittest.TestCase):
                      patch("workbench_lifecycle.restrict_private_file", side_effect=restrict) as permissions:
                     atomic_write_json(path, {"state": "new"})
                 self.assertEqual(replacement.call_count, 3)
+                temporary = attempts[0][0]
+                self.assertTrue(temporary.name.startswith(f".{path.name}.{os.getpid()}."))
                 self.assertEqual(attempts, [(temporary, path)] * 3)
                 self.assertEqual(sleep.call_args_list, [unittest.mock.call(0.01)] * 2)
                 fsync.assert_called_once()
@@ -81,7 +82,6 @@ class LifecycleTests(unittest.TestCase):
 
     def test_atomic_replace_exhaustion_keeps_old_destination_and_surfaces_error(self):
         path = instance_path()
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         path.write_text(json.dumps({"state": "old"}), encoding="utf-8")
         error = PermissionError(13, "persistent replacement denial")
         error.winerror = 5
@@ -94,10 +94,11 @@ class LifecycleTests(unittest.TestCase):
                 atomic_write_json(path, {"state": "new"})
         self.assertIs(failure.exception, error)
         self.assertEqual(replacement.call_count, 50)
+        temporary = replacement.call_args_list[0].args[0]
         self.assertTrue(all(call.args == (temporary, path) for call in replacement.call_args_list))
         self.assertEqual(sleep.call_args_list, [unittest.mock.call(0.01)] * 49)
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"state": "old"})
-        self.assertEqual(json.loads(temporary.read_text(encoding="utf-8")), {"state": "new"})
+        self.assertFalse(temporary.exists())
         permissions.assert_not_called()
 
     def test_atomic_replace_does_not_retry_other_permission_or_os_errors(self):

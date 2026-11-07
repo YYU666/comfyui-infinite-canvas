@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import urllib.parse
@@ -10,6 +11,9 @@ from pathlib import Path
 from delivery_export import export_delivery
 from project_domain import ProjectDomain
 from project_store import ProjectStore, StoreError, default_projects_root, update_handoff
+
+
+logger = logging.getLogger(__name__)
 
 
 class LimitedStream:
@@ -238,6 +242,7 @@ class ProjectAPI:
     def handle_put(self, handler, path):
         if not path.startswith("/api/projects"):
             return False
+        operation = "project_put"
         try:
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)", path)
             if match:
@@ -270,6 +275,7 @@ class ProjectAPI:
                 return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/assets/(.+)", path)
             if match:
+                operation = "asset_put"
                 length = int(handler.headers.get("Content-Length", "0"))
                 if length <= 0 or length > 2 * 1024 * 1024 * 1024:
                     raise StoreError("BAD_REQUEST", "素材为空或超过 2 GB。")
@@ -279,6 +285,20 @@ class ProjectAPI:
                 handler.send_json(201, result)
                 return True
             handler.send_json(404, {"code": "NOT_FOUND", "message": "项目接口不存在。", "details": {}})
+            return True
+        except OSError as error:
+            incident = uuid.uuid4().hex
+            # Exception messages/filenames can contain local paths or user data.
+            # Keep only diagnostic types/codes and source locations in the log.
+            frames = []
+            trace = error.__traceback__
+            while trace:
+                frames.append(f"{Path(trace.tb_frame.f_code.co_filename).name}:{trace.tb_lineno}:{trace.tb_frame.f_code.co_name}")
+                trace = trace.tb_next
+            logger.error("Project PUT IO failure incident=%s operation=%s type=%s errno=%s winerror=%s frames=%s",
+                         incident, operation, type(error).__name__, error.errno, getattr(error, "winerror", None), " > ".join(frames))
+            handler.send_json(503, {"code": "PROJECT_IO_ERROR", "message": "项目写入遇到文件系统错误，尚未确认保存成功；请保留本页修改。",
+                                    "details": {"incidentId": incident, "operation": operation}})
             return True
         except (ValueError, StoreError) as error:
             if isinstance(error, StoreError):

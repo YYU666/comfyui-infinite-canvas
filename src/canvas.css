@@ -22,8 +22,7 @@
 .launcher-return { height: 42px; display: flex; align-items: center; gap: 7px; margin-right: 8px; padding: 0 13px; border: 1px solid rgba(255,255,255,.07); border-radius: 21px; background: rgba(29,29,31,.88); color: #aaaab2; font-size: 11px; backdrop-filter: blur(16px); }
 .launcher-return:hover { background: #29292d; color: #fff; }
 .neo-project-pill { height: 42px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 7px; border: 1px solid rgba(255,255,255,.07); border-radius: 22px; background: rgba(29,29,31,.88); box-shadow: 0 5px 24px rgba(0,0,0,.25); backdrop-filter: blur(16px); }
-.neo-logo { width: 29px; height: 29px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #efeff0; color: #171719; font-size: 12px; font-weight: 800; letter-spacing: -1px; }
-.neo-logo b { font-size: 8px; align-self: flex-start; margin-top: 7px; }
+.neo-logo { width: 29px; height: 29px; display: block; flex-shrink: 0; border-radius: 4px; }
 .neo-project-pill > svg { color: #77777c; }
 .neo-project-pill > i { width: 1px; height: 17px; margin: 0 3px; background: rgba(255,255,255,.1); }
 .neo-project-pill input { width: 132px; border: 0; outline: 0; background: transparent; color: #ededee; font-size: 12px; font-weight: 550; }

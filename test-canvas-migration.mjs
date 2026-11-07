@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {migrateCanvas} from './src/canvas-migration.js';
+import {persistentCanvas} from './src/auto-save.js';
+const node=(id,type,data={})=>({id,type,position:{x:0,y:0},data});
+const saved={nodes:[node('a','extensionWidget',{opaque:{version:7},status:'running'}),node('b','futureWidget',{value:42})],edges:[{id:'ab',source:'a',target:'b',sourceHandle:'payload',targetHandle:'private',type:'default'}],viewport:{x:0,y:0,zoom:1}};
+const reopen=c=>migrateCanvas(JSON.parse(JSON.stringify(persistentCanvas(c))));
+assert.deepEqual(reopen(saved),saved);assert.deepEqual(reopen(reopen(saved)),saved);
+const image=migrateCanvas({nodes:[node('p','imageProcess',{status:'finishing'}),node('out','media',{kind:'image',sourceProcessId:'p',assetPath:`assets/${'a'.repeat(64)}.png`})],edges:[{id:'e',source:'p',target:'out',sourceHandle:'ref',targetHandle:'preview'}]},'prj_destination');
+assert.equal(image.nodes[0].data.status,'idle');assert.match(image.nodes[1].data.url,/prj_destination/);assert.equal(image.edges[0].targetHandle,'preview');
+const legacy=migrateCanvas({nodes:[node('i','image'),node('g','h3',{mode:'reference'})],edges:[{id:'e',source:'i',target:'g',sourceHandle:'image',targetHandle:'first'}]});assert.equal(legacy.nodes[0].type,'media');assert.equal(legacy.nodes[1].type,'generator');assert.equal(legacy.edges[0].targetHandle,'references');
+console.log('GENERIC_MIGRATION_OK extension payload/handles, legacy and interrupted image processing preserved');

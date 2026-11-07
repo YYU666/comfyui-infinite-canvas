@@ -12,21 +12,23 @@ export function useLocalConnection({ onReconnect } = {}) {
   const deadline = useRef(0);
   const lastLaunch = useRef(-Infinity);
   const mounted = useRef(true);
+  const recoveryNeeded = useRef(false);
   const reconnect = useRef(onReconnect);
   reconnect.current = onReconnect;
 
   const checkServer = useCallback(() => {
     if (pending.current) return pending.current.promise;
     const abort = new AbortController();
-    const timeout = setTimeout(() => abort.abort(), 8000);
+    const timeout = setTimeout(() => abort.abort(new DOMException('连接检查超时', 'TimeoutError')), 8000);
     const promise = probeLocalConnection({ signal: abort.signal }).then(async (next) => {
-      if (!mounted.current) return next;
+      if (!mounted.current || abort.signal.aborted) return next;
       const previous = current.current;
       current.current = next;
       setServer(next); setMetrics(next.metrics);
-      if (next.sessionRefreshed || (next.online && !previous.online)) {
-        await reconnect.current?.({ signal: abort.signal }).catch(() => {});
-        if (!mounted.current) return next;
+      if (next.sessionRefreshed || (next.online && !previous.online) || (next.backendOnline && recoveryNeeded.current)) {
+        recoveryNeeded.current = true;
+        try { await reconnect.current?.({ signal: abort.signal }); recoveryNeeded.current = false; } catch { /* Retry only the read-only access check on the next healthy probe. */ }
+        if (!mounted.current || abort.signal.aborted) return next;
         // Preserve the bridge session and its op-id dedup set; only reopen
         // progress transports, including EventSource closed permanently by 401.
         setConnectionEpoch((value) => value + 1);
@@ -40,7 +42,7 @@ export function useLocalConnection({ onReconnect } = {}) {
         setNotice(next.backendOnline ? next.label : '尚未连接。请允许浏览器打开 Refmuse；若未安装启动入口，请运行安装目录中的“启动.vbs”，本页会继续检查。');
       }
       return next;
-    }).finally(() => { clearTimeout(timeout); pending.current = null; });
+    }).finally(() => { clearTimeout(timeout); if (pending.current?.abort === abort) pending.current = null; });
     pending.current = { promise, abort };
     return promise;
   }, []);
@@ -63,7 +65,7 @@ export function useLocalConnection({ onReconnect } = {}) {
     void checkServer();
     const interval = setInterval(checkServer, 3000);
     window.addEventListener('focus', checkServer);
-    return () => { mounted.current = false; clearInterval(interval); window.removeEventListener('focus', checkServer); pending.current?.abort.abort(); };
+    return () => { mounted.current = false; clearInterval(interval); window.removeEventListener('focus', checkServer); pending.current?.abort.abort(); pending.current = null; };
   }, [checkServer]);
   return { server, metrics, checkServer, onStatusClick, starting, notice, dismissNotice: () => setNotice(''), connectionEpoch };
 }
