@@ -36,6 +36,7 @@ from project_store import ProjectStore
 from queue_api import QueueAPI
 from workbench_doctor import WorkbenchDoctor
 from workbench_queue import ComfyQueueAdapter, QueueManager
+from hardware_metrics import hardware_metrics
 from workbench_security import session_cookie, valid_content_type, valid_host, valid_origin, valid_token
 from workbench_settings import SettingsError, WorkbenchSettings, read_deepseek_key
 from workbench_lifecycle import (
@@ -546,17 +547,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if path != "/api/hardware-metrics":
             super().do_GET()
             return
-        try:
-            memory = psutil.virtual_memory()
-            self.send_json(200, {
-                "cpuPercent": round(psutil.cpu_percent(interval=None), 1),
-                "ramTotal": memory.total,
-                "ramUsed": memory.total - memory.available,
-                "timestamp": int(time.time() * 1000),
-            })
-        except Exception as exc:
-            LOGGER.exception("硬件状态读取失败：%s", exc)
-            self.send_json(500, {"error": "暂时无法读取 CPU 使用率。"})
+        self.send_json(200, hardware_metrics())
 
     def comfy_is_running(self):
         try:

@@ -204,7 +204,7 @@ def _read_project_json(path):
 def _safe_project_file(path):
     path = path.resolve()
     for temporary in path.parent.glob(f".{path.name}.*.tmp"):
-        match = re.fullmatch(rf"\.{re.escape(path.name)}\.(\d+)\.tmp", temporary.name)
+        match = re.fullmatch(rf"\.{re.escape(path.name)}\.(\d+)(?:\.[0-9a-f]{{32}})?\.tmp", temporary.name)
         if match and not _writer_running(int(match.group(1))):
             # A killed writer cannot finish os.replace; its committed JSON and
             # backups remain intact, so only the abandoned temporary is removed.
@@ -423,9 +423,10 @@ class ProjectStore:
         while not self._heartbeat_stop.wait(10):
             for lock_path, owner in list(self._held):
                 try:
-                    lock = json.loads(lock_path.read_text(encoding="utf-8"))
-                    if lock.get("owner") == owner:
-                        atomic_write_json(lock_path, {**lock, "heartbeat": time.time()})
+                    with self._guard(lock_path.parent / "project.json"):
+                        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+                        if lock.get("owner") == owner:
+                            atomic_write_json(lock_path, {**lock, "heartbeat": time.time()})
                 except (OSError, UnicodeError, json.JSONDecodeError):
                     continue
 

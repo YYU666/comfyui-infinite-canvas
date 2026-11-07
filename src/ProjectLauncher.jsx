@@ -195,7 +195,7 @@ export default function ProjectLauncher({ onOpen }) {
 
   return <div className="launcher-shell">
     <aside className="launcher-sidebar">
-      <div className="launcher-brand"><span>R</span><div><strong>Refmuse</strong><small>本地工作台</small></div></div>
+      <div className="launcher-brand"><span><img src="/favicon.svg?v=refmuse" alt="" width="34" height="34" /></span><div><strong>Refmuse</strong><small>本地工作台</small></div></div>
       <button className="launcher-new" onClick={() => setDialog({ type: 'new', template: 'blank' })}><Plus size={17} />新建项目</button>
       <nav aria-label="项目导航">{SECTIONS.map(([id, label, Icon]) => <button key={id} className={section === id ? 'active' : ''} onClick={() => { setSection(id); setSelectedId(null); }}><Icon size={16} /><span>{label}</span>{id === 'all' && <small>{projects.length}</small>}{id === 'trash' && <small>{trash.length}</small>}</button>)}</nav>
       <div className="launcher-sidebar-bottom">

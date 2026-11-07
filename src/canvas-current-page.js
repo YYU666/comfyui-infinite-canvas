@@ -2,12 +2,19 @@
 export function validateCanvasArgs(value, schema, path = 'args') {
   const type = schema.type;
   const valid = type === 'object' ? value !== null && typeof value === 'object' && !Array.isArray(value)
+    : type === 'array' ? Array.isArray(value)
     : type === 'integer' ? Number.isInteger(value)
       : type === 'number' ? Number.isFinite(value) : typeof value === type;
   if (type && !valid) throw new Error(`${path}: expected ${type}`);
   if (schema.enum && !schema.enum.includes(value)) throw new Error(`${path}: unsupported value`);
   if (schema.minimum !== undefined && value < schema.minimum) throw new Error(`${path}: below minimum`);
   if (schema.maximum !== undefined && value > schema.maximum) throw new Error(`${path}: above maximum`);
+  if (type === 'array') {
+    if (schema.minItems !== undefined && value.length < schema.minItems) throw new Error(`${path}: below minItems`);
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) throw new Error(`${path}: above maxItems`);
+    if (schema.uniqueItems && new Set(value.map(item => JSON.stringify(item))).size !== value.length) throw new Error(`${path}: duplicate items`);
+    if (schema.items) value.forEach((item, index) => validateCanvasArgs(item, schema.items, `${path}[${index}]`));
+  }
   if (type === 'object') {
     for (const key of schema.required || []) if (!(key in value)) throw new Error(`${path}.${key}: required`);
     for (const [key, item] of Object.entries(value)) {
@@ -49,7 +56,7 @@ export function createProjectPageTools({ prepare, commit, abandon }) {
   });
 }
 
-export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, intervalMs = 1500 }) {
+export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, intervalMs = 1500, requestTimeoutMs = 5000 }) {
   const sessionId = globalThis.crypto?.randomUUID?.() || `page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const toolMap = new Map(tools.map((tool) => [tool.name, tool]));
   const initial = getPage();
@@ -59,27 +66,50 @@ export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, inte
   let polling = false;
   let executing = false;
   let delivery = null;
+  let deliveryFlight = null;
   const seen = new Set();
   const request = async (action, payload, options = {}) => {
-    const response = await fetchImpl(`/api/agent/canvas/${action}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-      ...options,
+    const controller = new AbortController();
+    const parent = options.signal;
+    let cancel;
+    const cancelled = new Promise((_, reject) => {
+      cancel = () => { controller.abort(parent?.reason); reject(parent?.reason || new DOMException('Canvas channel stopped', 'AbortError')); };
+      parent?.addEventListener('abort', cancel, { once: true });
+      if (parent?.aborted) cancel();
     });
-    if (!response.ok) {
-      const error = new Error(`Current canvas channel: ${response.status}`);
-      error.status = response.status;
-      throw error;
-    }
-    return response.json();
+    let timeout;
+    const expired = new Promise((_, reject) => {
+      timeout = setTimeout(() => {
+        const error = new DOMException('Current canvas channel timed out', 'TimeoutError');
+        controller.abort(error); reject(error);
+      }, requestTimeoutMs);
+    });
+    try {
+      // Bound both headers and body. Racing also isolates late responses from
+      // transports that fail to settle promptly after abort.
+      return await Promise.race([cancelled, expired, (async () => {
+        if (controller.signal.aborted) throw controller.signal.reason;
+        const response = await fetchImpl(`/api/agent/canvas/${action}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          ...options, signal: controller.signal,
+        });
+        if (!response.ok) throw Object.assign(new Error(`Current canvas channel: ${response.status}`), { status: response.status });
+        return response.json();
+      })()]);
+    } finally { clearTimeout(timeout); parent?.removeEventListener('abort', cancel); }
   };
-  const deliver = async () => {
-    if (!delivery || stopped) return;
+  const deliver = () => {
+    if (deliveryFlight) return deliveryFlight;
+    if (!delivery || stopped) return Promise.resolve();
     const sent = delivery;
-    await request('result', sent.payload, { signal: abort.signal });
-    if (delivery === sent) {
-      delivery = null;
-      await sent.afterResultDelivered?.();
-    }
+    deliveryFlight = (async () => {
+      await request('result', sent.payload, { signal: abort.signal });
+      if (!stopped && delivery === sent) {
+        delivery = null;
+        await sent.afterResultDelivered?.();
+      }
+    })().finally(() => { deliveryFlight = null; });
+    return deliveryFlight;
   };
   const execute = async (command, epoch) => {
     executing = true;
@@ -114,12 +144,14 @@ export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, inte
       // the bridge ambiguous and is rejected instead of stealing the lease.
       const reply = await request('heartbeat', { sessionId, projectId: initial.projectId,
         visible: !page.readOnly && Boolean(initial.projectId) && page.projectId === initial.projectId,
-        busy: executing || Boolean(delivery),
+        busy: executing || Boolean(delivery) || Boolean(deliveryFlight),
       }, { signal: abort.signal });
       if (stopped) return;
       if (delivery && delivery.payload.epoch !== reply.epoch) { delivery.abandon?.(); delivery = null; }
-      if (delivery) await deliver();
-      if (reply.command && !executing && !seen.has(reply.command.opId)) {
+      // A pending result receipt must not block lease renewal. Only retry that
+      // same receipt; a lost dispatch response is never replaced/re-executed.
+      if (delivery) void deliver().catch(() => {});
+      if (reply.command && !executing && !delivery && !deliveryFlight && !seen.has(reply.command.opId)) {
         seen.add(reply.command.opId);
         void execute(reply.command, reply.epoch);
       }

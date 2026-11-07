@@ -253,8 +253,11 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
   const latest = useRef(null);
   latest.current = { nodesRef, edgesRef, projectName, projectId, readOnly, server, actions };
 
-  useEffect(() => {
-    const context = document.modelContext;
+  useEffect(() => registerCanvasMcp(latest), [projectId, readOnly]);
+}
+
+// Registration is shared by the mounted page and isolated protocol tests.
+export function registerCanvasMcp(latest, { context = document.modelContext, startPage = startCurrentCanvasPage } = {}) {
     const controller = new AbortController();
     const getNode = (id) => {
       const node = latest.current.nodesRef.current.find((item) => item.id === id);
@@ -270,6 +273,11 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
       }
     };
     const tools = [
+      {
+        name:'canvas_move_nodes',description:'仅移动指定的1至30个当前节点，保留其余节点位置。',
+        inputSchema:schema({nodes:{type:'array',minItems:1,maxItems:30,items:schema({nodeId:nodeIdProperty,x:{type:'number'},y:{type:'number'}},['nodeId','x','y'])}},['nodes']),
+        execute:respond(async ({nodes})=>({nodes:(await latest.current.actions.moveNodes(nodes)).map(nodeSummary)})),
+      },
       {
         name: 'canvas_get_state',
         description: '读取当前 H3 画布的真实节点 ID、连线和生成状态。默认省略长提示词以避免大画布占用过多上下文；需要提示词时设 includePrompt 为 true，也可用 nodeId 只读取一个节点。',
@@ -448,6 +456,15 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
         }),
       },
     ];
+    tools.push({
+      name: 'canvas_retry_save',
+      description: '显式重试当前页面保存，保留未保存修改及版本冲突保护；不会重新生成或刷新页面。',
+      inputSchema: schema(),
+      execute: async () => {
+        try { return JSON.stringify({ ok: true, ...await latest.current.actions.retryProjectSave() }); }
+        catch (error) { return JSON.stringify({ ok: false, error: error.message, code: error.code, status: error.status, localChangesRetained: true }); }
+      },
+    });
     tools.push(...createProjectPageTools({
       prepare: (id, name) => latest.current.actions.prepareProjectSwitch(id, name),
       commit: (target) => latest.current.actions.commitProjectSwitch(target),
@@ -471,7 +488,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
         const mutation = !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
         const result = JSON.parse(await original(args, executionOptions));
-        if (mutation && result.ok && !['canvas_create_project', 'canvas_open_project'].includes(tool.name)) {
+        if (mutation && result.ok && !['canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
           try { await latest.current.actions.persistProject?.(); }
           catch (error) { return JSON.stringify({ ...result, ok: false, error: error.message, localChangesRetained: true }); }
         }
@@ -484,8 +501,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
     // A backgrounded tab is still the user's current canvas. Visibility is
     // handled by the single-page bridge lease, not by document.visibilityState:
     // the user may switch to another app while this same canvas keeps running.
-    const stop = startCurrentCanvasPage({ tools, getPage: () => ({ projectId: latest.current.projectId,
+    const stop = startPage({ tools, getPage: () => ({ projectId: latest.current.projectId,
       readOnly: latest.current.readOnly, visible: !latest.current.readOnly }) });
     return () => { stop(); controller.abort(); };
-  }, [projectId, readOnly]);
 }

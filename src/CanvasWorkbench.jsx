@@ -1,3 +1,6 @@
+import {DEFAULT_GENERATOR, initialCanvas, migrateCanvas} from './canvas-migration.js';
+import {createProjectAccessRecovery, retryCurrentProjectSave} from './project-save-recovery.js';
+import {moveSpecifiedNodes} from './canvas-move.js';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Background, BackgroundVariant, MiniMap, NodeToolbar,
@@ -66,65 +69,11 @@ import { useLocalConnection } from './use-local-connection';
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
 const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-const DEFAULT_GENERATOR = {
-  title: '视频生成', mode: 'reference', prompt: '', ratio: '16:9', resolution: '480P', duration: 5,
-  turbo: false, refImageSize: 'max', referenceSettingsVersion: 3, seed: 42, randomSeed: true,
-  preserveBackground: true, targetQuery: 'person', targetIndex: 0, targetDescription: '', precision: 1,
-  imageModel: 'krea2', imageLora: 'none', loraStrength: 0.8, imageScale: 1.5,
-  status: 'idle', progress: 0, stage: '', pinned: false, runs: [],
-};
 const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' };
+
 const KIND_ICON = { image: ImageIcon, video: Video, audio: Music2 };
+
 const formatGb = (bytes) => Number.isFinite(bytes) ? (bytes / 1024 ** 3).toFixed(1) : '--';
-
-function initialCanvas() {
-  return {
-    nodes: [
-      { id: 'reference-image', type: 'media', position: { x: 60, y: 180 }, data: { kind: 'image', title: '角色参考', url: '', name: '', pinned: false } },
-      { id: 'main-generator', type: 'generator', position: { x: 430, y: 120 }, data: { ...DEFAULT_GENERATOR } },
-    ],
-    edges: [{ id: 'edge-reference-image-main-generator', source: 'reference-image', target: 'main-generator', sourceHandle: 'ref', targetHandle: 'references' }],
-    viewport: { x: 0, y: 0, zoom: 0.9 },
-  };
-}
-
-function migrateCanvas(value, projectId) {
-  if (!Array.isArray(value?.nodes)) return initialCanvas();
-  const nodes = value.nodes.map((node) => {
-    if (node.type === 'generator' || node.type === 'h3') {
-      const mode = node.data.mode || 'reference';
-      const title = ['reference', 'frames', 'text'].includes(mode) && ['全能参考', 'H3 视频生成', '首尾帧生成视频', '文生视频'].includes(node.data.title) ? '视频生成' : mode === 'image' && node.data.title === '本地生图' ? '文生图' : node.data.title;
-      const data = { ...DEFAULT_GENERATOR, ...node.data, title: title || DEFAULT_GENERATOR.title, mode };
-      if (data.mode === 'reference' && node.data.referenceSettingsVersion !== 3) Object.assign(data, { turbo: false, refImageSize: 'max', referenceSettingsVersion: 3 });
-      return { ...node, type: 'generator', data };
-    }
-    if (node.type === 'media' || node.type === 'image') {
-      const kind = node.data.kind || 'image';
-      return { ...node, type: 'media', data: { ...node.data, kind, title: node.data.title === '首帧素材' ? '角色参考' : node.data.title, ...(node.data.sourceProcessId && node.data.assetPath ? { url: assetUrl(projectId, node.data.assetPath) } : {}) } };
-    }
-    if (node.type === 'video') return { ...node, type: 'media', data: { ...node.data, kind: 'video', output: true } };
-    if (node.type === 'prompt') return { ...node, data: { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...node.data } };
-    if (node.type === 'imageProcess') return { ...node, data: { ...node.data, status: ['running', 'uploading', 'finishing'].includes(node.data.status) ? 'idle' : node.data.status } };
-    if (node.type === 'note') return { ...node, data: node.data.title === '从这里开始' ? { ...node.data, text: '① 上传图片、视频或音频素材\n② 选中视频生成，用 + 添加或连线素材\n③ 输入 @ 名称引用角色、动作或声音\n④ 点击右下角箭头，本地生成视频\n\n视频生成支持全能参考和首尾帧两种模式。' } : node.data };
-    return null;
-  }).filter(Boolean);
-  const edges = (value.edges || []).map((edge) => {
-    const target = nodes.find((node) => node.id === edge.target);
-    const isReference = target?.type === 'generator' && (target.data.mode || 'reference') === 'reference';
-    return {
-      ...edge,
-      type: 'default',
-      sourceHandle: nodes.find((node) => node.id === edge.source)?.type === 'media' && ['image', 'video'].includes(edge.sourceHandle) ? 'ref' : edge.sourceHandle,
-      targetHandle: isImageProcess(target) || target?.data.mode === 'customWorkflow' ? edge.targetHandle : isReference && ['first', 'last'].includes(edge.targetHandle) ? 'references' : ['first', 'last', 'preview', 'prompt', 'guide', 'identity', 'mask'].includes(edge.targetHandle) ? edge.targetHandle : 'references',
-    };
-  }).filter((edge) => nodes.some((n) => n.id === edge.source) && nodes.some((n) => n.id === edge.target));
-  const migrated = nodes.map((node) => {
-    if (node.data.mode !== 'qwenEdit') return node;
-    const refs = qwenCanvasReferences(node, nodes, edges);
-    return { ...node, data: { ...node.data, qwenReferenceOrder: node.data.qwenReferenceOrder || refs.map((ref) => ref.id), prompt: bindQwenPrompt(node.data.prompt || '', refs) } };
-  });
-  return { ...value, nodes: ensureReferenceTags(migrated), edges: edges.map((edge) => migrated.some((node) => node.id === edge.target && node.data.mode === 'qwenEdit') && ['guide', 'identity'].includes(edge.targetHandle) ? { ...edge, targetHandle: 'references' } : edge) };
-}
 
 function canvasSnapshot(nodes, edges, viewport) {
   return persistentCanvas({ nodes, edges, viewport });
@@ -523,6 +472,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const [projects, setProjects] = useState(() => [projectSummary(project)]);
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectError, setProjectError] = useState('');
+  const [projectConnectionError, setProjectConnectionError] = useState('');
   const [creativeOpen, setCreativeOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [workflowInspection, setWorkflowInspection] = useState(null);
@@ -560,20 +510,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const viewportRef = useRef(saved.viewport);
   const interactionRef = useRef(false);
   const [saveState, setSaveState] = useState(project.readOnly ? '只读' : '已保存');
-  const restoreCurrentProjectAccess = useCallback(async ({ signal } = {}) => {
-    const current = projectRef.current;
-    try {
-      await restoreProjectAccess(current, { signal, isCurrent: () => projectRef.current.id === current.id });
-      if (projectRef.current.id === current.id && !autoSaveRef.current?.failure) {
-        setProjectError((existing) => existing.startsWith('项目连接尚未恢复：') ? '' : existing);
-      }
-    }
-    catch (error) {
-      if (projectRef.current.id === current.id) setProjectError((existing) => autoSaveRef.current?.conflict ? existing
-        : `项目连接尚未恢复：${error.message} 本页修改已保留，请检查项目文件夹或锁定状态后重试保存。`);
-      throw error;
-    }
-  }, []);
+  const accessRecoveryRef = useRef(null);
+  if (!accessRecoveryRef.current) accessRecoveryRef.current = createProjectAccessRecovery({
+    restore: restoreProjectAccess, getCurrent: () => projectRef.current, onError: setProjectConnectionError,
+  });
+  const restoreCurrentProjectAccess = useCallback((options) => accessRecoveryRef.current(options), []);
+  useEffect(() => { setProjectConnectionError(''); }, [project.id]);
   const { server, metrics, checkServer, onStatusClick, starting, notice: localConnectionNotice, dismissNotice, connectionEpoch } = useLocalConnection({ onReconnect: restoreCurrentProjectAccess });
   const [memoryCleanup, setMemoryCleanup] = useState('idle');
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -666,6 +608,11 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       },
     });
   }, [project.readOnly]);
+  const retryProjectSave = useCallback(() => retryCurrentProjectSave({
+    getContext: () => ({ projectId: projectRef.current.id, readOnly: projectRef.current.readOnly,
+      switching: switchingRef.current, controller: autoSaveRef.current, revision: revisionRef.current }),
+    restore: restoreCurrentProjectAccess, persist: persistProject,
+  }), [restoreCurrentProjectAccess, persistProject]);
   const saveHandoff = useCallback(async (data) => {
     await persistProject();
     const current = { ...projectRef.current, revision: revisionRef.current };
@@ -1867,14 +1814,21 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     catch (error) { request.error = error.message; }
     setWorkflowInspection(request);
   }), [project.id]);
+  const moveNodes = (moves) => {
+    if (project.readOnly || switchingRef.current) throw new Error('当前画布不可编辑。');
+    const next=moveSpecifiedNodes(nodesRef.current,moves);
+    historyRef.current.observe(nodesRef.current,edgesRef.current);
+    nodesRef.current=next;setNodes(next);historyRef.current.observe(next,edgesRef.current);
+    return moves.map(({nodeId})=>next.find(n=>n.id===nodeId));
+  };
   useCanvasMcp({
     nodesRef, edgesRef, projectName, projectId: project.id, readOnly: project.readOnly, server,
-    actions: { addNode, createExtensionNode: async (digest, nodeDefinitionId, position, focus) => {
+    actions: { moveNodes, addNode, createExtensionNode: async (digest, nodeDefinitionId, position, focus) => {
       if (workflowLibraryOpen || switchingRef.current || project.readOnly) throw new Error('请关闭本地工作流窗口，并确认当前画布可写后再添加节点。');
       const bundle = await getExtension(digest);
       if (switchingRef.current || project.readOnly) throw new Error('当前画布不可写。');
       return addNode('generator', extensionNodeData(bundle, nodeDefinitionId), position, focus);
-    }, updateNode, removeNode, onConnect, generateNode, tidyCanvas, focusNode, inspectNode, openReferenceLibrary, persistProject,
+    }, updateNode, removeNode, onConnect, generateNode, tidyCanvas, focusNode, inspectNode, openReferenceLibrary, persistProject, retryProjectSave,
       prepareProjectSwitch, commitProjectSwitch, abandonProjectSwitch,
       importAsset: async (nodeId, assetPath, name, sourceProjectId) => {
         if (switchingRef.current || project.readOnly) throw new Error('当前项目无法导入素材。');
@@ -1902,8 +1856,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           finally { switchingRef.current = false; setProjectBusy(false); }
         }} title="返回项目启动器"><FolderOpen size={15} /><span>项目</span></button>}
         <CanvasProjectMenu current={project} projects={projects} name={projectName} onNameChange={setProjectName}
-          saveState={saveState} error={projectError} busy={projectBusy || project.readOnly} locked={hasActiveTask()}
-          onRetry={() => restoreCurrentProjectAccess().then(() => persistProject(true)).catch(() => {})} onSnapshot={downloadLocalSnapshot} onReload={reloadProject}
+          saveState={saveState} error={[projectError, projectConnectionError].filter(Boolean).join('\n')} busy={projectBusy || project.readOnly} locked={hasActiveTask()}
+          onRetry={() => retryProjectSave().catch(() => {})} onSnapshot={downloadLocalSnapshot} onReload={reloadProject}
           conflicted={Boolean(autoSaveRef.current?.conflict)}
           onRefresh={refreshProjects} onOpen={(id) => changeProject(id)} onCreate={(name) => changeProject(null, name)} />
         <div className="neo-header-right">
@@ -2003,8 +1957,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         </div>
           <div className="hardware-monitor" aria-label="硬件状态" title={`${server.label} · 系统内存 ${formatGb(metrics.ramUsed)} / ${formatGb(metrics.ramTotal)} GB · 每 3 秒刷新`}>
             <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={clearMemory} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
-            <div className="hardware-metric">
-              <span><MemoryStick size={12} />GPU 显存</span>
+            <div className="hardware-metric" title={`${metrics.gpuName || 'GPU'}${metrics.gpuIndex != null ? `（设备 ${metrics.gpuIndex}）` : ''} · 整卡显存占用与计算利用率，包含其他程序`}>
+              <span><MemoryStick size={12} />GPU{Number.isFinite(metrics.gpuPercent) ? ` ${Math.round(metrics.gpuPercent)}%` : ' 显存'}</span>
               <strong>{formatGb(metrics.vramUsed)} <small>/ {formatGb(metrics.vramTotal)} GB</small></strong>
               <div className="hardware-bar"><i style={{ width: `${vramPercent}%` }} /></div>
             </div>
