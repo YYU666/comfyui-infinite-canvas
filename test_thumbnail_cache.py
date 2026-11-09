@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import http.client
 import os
+import struct
 import sys
 import tempfile
 import threading
@@ -16,12 +17,20 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from project_store import ProjectStore, StoreError
-from thumbnail_cache import ThumbnailCache
+from thumbnail_cache import ThumbnailCache, _key
 
 
 def png(color="red", size=(1600, 900)):
     stream = io.BytesIO()
     Image.new("RGB", size, color).save(stream, "PNG")
+    return stream.getvalue()
+
+
+def grayscale_16_png(values, height=64):
+    stream = io.BytesIO()
+    row = struct.pack("<" + "H" * len(values), *values)
+    with Image.frombytes("I;16", (len(values), height), row * height) as image:
+        image.save(stream, "PNG")
     return stream.getvalue()
 
 
@@ -106,6 +115,63 @@ class ThumbnailTests(unittest.TestCase):
         self.server.image = png("green")
         self.assertNotEqual(fresh_process.get(query), first)
         self.assertEqual(self.server.gets, 2)
+
+    def test_unsigned_16_png_absolute_intensity_and_original_preserved(self):
+        for label, low, high in (
+            ("gradient", 0, 65535), ("midgray", 32768, 32768),
+            ("narrow_range", 30000, 35000), ("black", 0, 0),
+            ("white", 65535, 65535),
+        ):
+            with self.subTest(label=label):
+                values = [round(low + (high - low) * x / 1279) for x in range(1280)]
+                original = grayscale_16_png(values)
+                # Verify the fixture really is 16-bit grayscale PNG, not RGB.
+                self.assertEqual(original[24:26], bytes((16, 0)))
+                self.asset.write_bytes(original)
+                target = self.cache.get(self.query)
+                with Image.open(target) as preview:
+                    self.assertEqual(preview.size, (640, 32))
+                    self.assertEqual(preview.format, "WEBP")
+                    for x in (0, 160, 320, 480, 639):
+                        expected = (low + (high - low) * x / 639) / 257
+                        for channel in preview.convert("RGB").getpixel((x, 16)):
+                            self.assertAlmostEqual(channel, expected, delta=4)
+                self.assertEqual(self.asset.read_bytes(), original)
+
+    def test_legacy_pillow_png_integer_mode_uses_unsigned_16_mapping(self):
+        self.asset.write_bytes(grayscale_16_png([32768] * 1280))
+        original_open = Image.open
+
+        def legacy_png_open(source):
+            with original_open(source) as image:
+                decoded = image.convert("I")
+            decoded.format = "PNG"
+            return decoded
+
+        with mock.patch("thumbnail_cache.Image.open", side_effect=legacy_png_open):
+            target = self.cache.get(self.query)
+        with Image.open(target) as preview:
+            self.assertAlmostEqual(preview.convert("L").getpixel((320, 16)), 128, delta=2)
+
+    def test_other_integer_and_float_images_keep_existing_intensity(self):
+        for mode in ("I", "F"):
+            with self.subTest(mode=mode):
+                with Image.new(mode, (1280, 64), 128) as image:
+                    image.save(self.asset, "TIFF")
+                target = self.cache.get(self.query)
+                with Image.open(target) as preview:
+                    self.assertAlmostEqual(preview.convert("L").getpixel((320, 16)), 128, delta=2)
+
+    def test_encoding_version_does_not_reuse_old_thumbnail(self):
+        identity = ["same-source"]
+        self.cache.root.mkdir()
+        with mock.patch("thumbnail_cache.VERSION", "webp-640-v1"):
+            old = self.cache.root / f"{_key(identity)}.webp"
+        old.write_bytes(b"obsolete preview")
+        target = self.cache._encode(self.asset, identity)
+        self.assertNotEqual(target, old)
+        with Image.open(target) as preview:
+            self.assertEqual(preview.size, (640, 360))
 
     def test_reject_paths_and_arbitrary_sources_before_network_or_decode(self):
         for query in [
