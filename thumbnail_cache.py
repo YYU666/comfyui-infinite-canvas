@@ -10,13 +10,14 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from contextlib import ExitStack
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from project_store import StoreError
 
-VERSION = "webp-640-v1"
+VERSION = "webp-640-v2"
 MAX_BYTES = 128 * 1024 * 1024
 MAX_PIXELS = 64 * 1024 * 1024
 MAX_CACHE_BYTES = 512 * 1024 * 1024
@@ -56,12 +57,24 @@ class ThumbnailCache:
         self.root.mkdir(parents=True, exist_ok=True)
         temporary = None
         try:
-            with Image.open(source) as image:
+            with Image.open(source) as image, ExitStack() as converted:
                 if image.width * image.height > MAX_PIXELS:
                     raise StoreError("IMAGE_TOO_LARGE", "图片超过缩略图解码限制，请直接预览原图。", 413)
+                # Older Pillow decodes 16-bit grayscale PNG as I. Do not infer
+                # the range of arbitrary signed integer or floating-point images.
+                unsigned_16 = image.mode in {"I;16", "I;16L", "I;16B", "I;16N"} or (
+                    image.format == "PNG" and image.mode == "I"
+                )
+                if unsigned_16 and image.mode != "I":
+                    # LANCZOS cannot resize I;16. Integer mode preserves depth
+                    # without allocating a full-resolution float image/array.
+                    image = converted.enter_context(image.convert("I"))
                 # draft reduces JPEG decoding memory; thumbnail preserves aspect ratio.
                 image.draft("RGB", (640, 640))
                 image.thumbnail((640, 640), Image.Resampling.LANCZOS)
+                if unsigned_16:
+                    # Absolute 0..65535 -> 0..255, never per-image contrast stretch.
+                    image = converted.enter_context(image.point(lambda value: value / 257, "L"))
                 preview = ImageOps.exif_transpose(image).convert("RGBA")
                 with tempfile.NamedTemporaryFile(dir=self.root, suffix=".tmp", delete=False) as output:
                     temporary = Path(output.name)
