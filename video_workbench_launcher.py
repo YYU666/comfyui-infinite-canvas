@@ -33,6 +33,7 @@ from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_w
 from thumbnail_cache import ThumbnailCache
 from project_api import ProjectAPI
 from art_director import ArtDirectorAPI
+from pureref_sessions import PureRefSessions
 from project_store import ProjectStore
 from queue_api import QueueAPI
 from workbench_doctor import WorkbenchDoctor
@@ -510,6 +511,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request():
             return
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "GET", path):
+            return
         if path == "/api/thumbnails":
             self.server.thumbnail_cache.handle_get(self)
             return
@@ -584,6 +587,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "POST", path):
+            return
         if is_comfy_path(path):
             proxy_http(self)
             return
@@ -682,6 +687,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "PUT", path):
+            return
         if is_comfy_path(path):
             proxy_http(self)
             return
@@ -712,6 +719,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "DELETE", path):
+            return
         if is_comfy_path(path):
             proxy_http(self)
             return
@@ -755,6 +764,8 @@ def apply_server_settings(server):
         replacement = ProjectStore(projects_root, previous.owner_id, defaults)
         server.project_store = replacement
         server.project_api.store = replacement
+        if getattr(server, 'pureref_sessions', None):
+            server.pureref_sessions.store = replacement
         if getattr(server, "art_director_api", None):
             server.art_director_api.store = replacement
         server.project_api.domain.store = replacement
@@ -829,6 +840,7 @@ def main():
             logging.getLogger().setLevel(server.settings.data["logLevel"])
             server.project_store = ProjectStore(server.settings.data["projectsRoot"], defaults=server.settings.data["defaults"])
             server.project_api = ProjectAPI(server.project_store)
+            server.pureref_sessions = PureRefSessions(server.project_store)
             server.art_director_api = ArtDirectorAPI(server.project_store)
             server.thumbnail_cache = ThumbnailCache(runtime_dir() / "thumbnails", server.project_store, COMFY_URL)
             server.doctor = WorkbenchDoctor(
@@ -892,6 +904,8 @@ def main():
             comfy_logger_process = server.comfy_lifecycle.logger
         if server and hasattr(server, "queue_manager"):
             server.queue_manager.stop()
+        if server and hasattr(server, "pureref_sessions"):
+            server.pureref_sessions.close()
         if server and hasattr(server, "project_store"):
             server.project_store.close()
         if server:

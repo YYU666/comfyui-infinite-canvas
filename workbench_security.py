@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import re
 import urllib.parse
 from http.cookies import SimpleCookie
 
@@ -39,6 +40,8 @@ def valid_content_type(method, path, headers):
     content_type = headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
     if method == "POST" and path.startswith("/api/comfy/upload/"):
         return content_type == "multipart/form-data"
+    if method == "PUT" and re.fullmatch(r"/api/pureref/sessions/[0-9a-f]{32}/upload", path):
+        return content_type == "application/octet-stream"
     if method == "POST" and path == "/api/extensions/import":
         return content_type in ARCHIVE_TYPES | {"application/vnd.h3pack", "application/json"}
     if method == "PUT" and "/assets/" in path:
