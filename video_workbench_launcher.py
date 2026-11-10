@@ -33,6 +33,7 @@ from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_w
 from thumbnail_cache import ThumbnailCache
 from project_api import ProjectAPI
 from art_director import ArtDirectorAPI
+from pureref_import import handle_pureref_post
 from project_store import ProjectStore
 from queue_api import QueueAPI
 from workbench_doctor import WorkbenchDoctor
@@ -566,6 +567,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if is_comfy_path(path):
             proxy_http(self)
+            return
+        if handle_pureref_post(self, path):
             return
         if path in {"/api/doctor", "/api/doctor/log-bundle"}:
             try:

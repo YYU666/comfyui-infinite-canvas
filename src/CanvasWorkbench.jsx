@@ -62,6 +62,8 @@ import { flushProjectAfterMedia } from './project-save-barrier';
 import ImageProcessNode from './ImageProcessNode';
 import ArtDirectorNode from './ArtDirectorNode.jsx';
 import { useArtDirector } from './art-director-canvas.js';
+import PureRefImport from './PureRefImport.jsx';
+import { pureRefImageNodes } from './pureref-import.js';
 import { DEFAULT_ADJUSTMENTS } from './image-compositing';
 import { isImageProcess, imageProcessPorts, imageProcessSnapshot } from './image-process-graph';
 import { renderImageProcess } from './image-process-runtime';
@@ -488,13 +490,16 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const [nodeLibraryOpen, setNodeLibraryOpen] = useState(false);
   const [nodeLibraryMounted, setNodeLibraryMounted] = useState(false);
   const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false);
+  const [pureRefSelection, setPureRefSelection] = useState(null);
+  const pureRefFileRef = useRef(null);
+  const pureRefBusyRef = useRef(false);
   const [dependencyRequest, setDependencyRequest] = useState(null);
   const [nodeShare, setNodeShare] = useState(null);
   const [sharePacket, setSharePacket] = useState(null);
   const catalogBusyRef = useRef(false);
   const catalogRequestRef = useRef(null);
   const catalogSaveRetriesRef = useRef(new Map());
-  const libraryModalOpen = Boolean(referenceLibrary || workflowLibraryOpen || dependencyRequest || nodeShare);
+  const libraryModalOpen = Boolean(pureRefSelection || referenceLibrary || workflowLibraryOpen || dependencyRequest || nodeShare);
   const referenceImportBusyRef = useRef(false);
   const videoImportBusyRef = useRef(null);
   useEffect(() => () => { videoImportBusyRef.current = null; }, []);
@@ -642,7 +647,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     catch (error) { setProjectError(error.message || '项目列表读取失败。'); }
   }, []);
   useEffect(() => { refreshProjects(); }, [refreshProjects]);
-  const hasActiveTask = () => Boolean(videoImportBusyRef.current) || localImageJobsRef.current.size > 0 || nodesRef.current.some((node) => ['uploading', 'queued', 'running', 'finishing', 'optimizing'].includes(node.data.status));
+  const hasActiveTask = () => pureRefBusyRef.current || Boolean(videoImportBusyRef.current) || localImageJobsRef.current.size > 0 || nodesRef.current.some((node) => ['uploading', 'queued', 'running', 'finishing', 'optimizing'].includes(node.data.status));
   const downloadLocalSnapshot = () => {
     const snapshot = { ...projectRef.current, revision: revisionRef.current, name: nameRef.current,
       canvas: canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current) };
@@ -823,6 +828,15 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       return { ok: true, assetPath: result.asset.path };
     }, id);
   }, [saveCanvasAsset, setNodes, project.id, project.readOnly]);
+
+  const openPureRefImport = (file, position = null) => {
+    if (project.readOnly || switchingRef.current || libraryModalOpen || pureRefBusyRef.current || autoSaveRef.current?.failure) {
+      setProjectError('请先处理当前窗口或画布保存状态，再导入 PureRef。'); return;
+    }
+    pureRefBusyRef.current = true;
+    setPureRefSelection({ file, origin: position || screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) });
+    setAddMenu(null);
+  };
 
   const getReferences = useCallback((id) => {
     const node = nodesRef.current.find((item) => item.id === id);
@@ -1855,6 +1869,18 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       },
     },
   });
+  const dropCanvasFiles = (e) => {
+    e.preventDefault();
+    if (project.readOnly || switchingRef.current) return;
+    const dropped = [...(e.dataTransfer.files || [])];
+    if (dropped.filter(file => /\.pur$/i.test(file.name)).length > 1) { setProjectError('请每次导入一个 PureRef 文件。'); return; }
+    dropped.forEach((file, index) => {
+      const position = screenToFlowPosition({ x: e.clientX + index * 25, y: e.clientY + index * 25 });
+      if (/\.pur$/i.test(file.name)) { openPureRefImport(file, position); return; }
+      const kind = file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'image';
+      const id = addNode(kind, { title: file.name.replace(/\.[^.]+$/, '') }, position); chooseMedia(id, file);
+    });
+  };
   const pinnedNodes = nodes.filter((node) => node.data.pinned);
   const vramPercent = metrics.vramTotal ? Math.min(100, Math.max(0, metrics.vramUsed / metrics.vramTotal * 100)) : 0;
   const cpuPercent = Number.isFinite(metrics.cpuPercent) ? Math.min(100, Math.max(0, metrics.cpuPercent)) : 0;
@@ -1896,15 +1922,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         onDragOver={(e) => e.preventDefault()}
         onPointerDownCapture={(event) => { if (event.button === 0 && !event.target.closest('.add-node-menu,.node-context-menu')) { setAddMenu(null); setNodeMenu(null); } }}
         onContextMenuCapture={openContextMenu}
-        onDrop={(e) => {
-          e.preventDefault();
-          if (project.readOnly || switchingRef.current) return;
-          [...(e.dataTransfer.files || [])].forEach((file, index) => {
-            const kind = file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'image';
-            const position = screenToFlowPosition({ x: e.clientX + index * 25, y: e.clientY + index * 25 });
-            const id = addNode(kind, { title: file.name.replace(/\.[^.]+$/, '') }, position); chooseMedia(id, file);
-          });
-        }}
+        onDropCapture={event => { if ([...(event.dataTransfer.files || [])].some(file => /\.pur$/i.test(file.name))) { event.stopPropagation(); dropCanvasFiles(event); } }}
+        onDrop={dropCanvasFiles}
         onDoubleClickCapture={openAddMenu}>
         <ReactFlow
           nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onlyRenderVisibleElements
@@ -1995,6 +2014,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={() => addNode('generator', { mode: 'qwenEdit', title: '图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>图生图<small>千问 2.1 · 多图参考 · 标准 / Turbo</small></span><Plus size={13} /></button>
           <button onClick={() => addNode(...NODE_PRESETS.local_mask, addMenu.flow)}><i><Crosshair size={17} /></i><span>局部遮罩修改<small>绘制修改范围 · 连接图生图遮罩输入</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'imageUpscale', title: '图片高清', imageScale: 1.5, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>图片高清<small>可选 SeedVR2 3B / 7B · 调整放大倍率</small></span><Plus size={13} /></button>
+          <button disabled={project.readOnly} onClick={() => pureRefFileRef.current?.click()}><i><Upload size={17} /></i><span>导入 PureRef 图片<small>.pur 内嵌图片 → 普通图片节点 · 网格排列</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>作品 + 可选参考 → 可编辑辅助线与详细解析 PNG</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'colorAdjust', title: '颜色调整' }, addMenu.flow)}><i><Settings2 size={17} /></i><span>图片调色<small>曲线 · 波峰色阶 · 曝光 · HSL · 色彩平衡等</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'imageBlend', title: '图像混合' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>图像混合<small>底图 + 叠加图 · 14 种混合模式 · 可选遮罩</small></span><Plus size={13} /></button>
@@ -2051,6 +2071,23 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         {pinnedNodes.map((node) => <button key={node.id} onClick={() => focusNode(node.id)}><Crosshair size={13} /><span>{node.data.title}</span><small>{node.type === 'generator' ? '生成' : KIND_LABEL[node.data.kind] || '备注'}</small></button>)}
         {!pinnedNodes.length && <div className="library-empty"><Pin size={22} /><span>选中节点后点击 Pin 标记</span></div>}
       </aside>}
+      <input ref={pureRefFileRef} hidden type="file" accept=".pur" aria-label="选择 PureRef 文件" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) openPureRefImport(file, addMenu?.flow); }} />
+      {pureRefSelection && <PureRefImport file={pureRefSelection.file}
+        getContext={() => ({ projectId: projectRef.current.id, owner: autoSaveRef.current, readOnly: projectRef.current.readOnly, switching: switchingRef.current, conflict: Boolean(autoSaveRef.current?.failure) })}
+        upload={file => saveCanvasAsset(file, (saved, mediaStorageId) => ({ ok: true, assetPath: saved.asset.path, mediaStorageId }))}
+        beginBatch={() => {
+          const key = uid('pur-import'); let finish;
+          const pending = new Promise(resolve => { finish = resolve; });
+          autoSaveRef.current?.suspend(); mediaWritesRef.current.set(key, pending);
+          return () => { mediaWritesRef.current.delete(key); finish(); autoSaveRef.current?.observe(nameRef.current, { nodes: nodesRef.current, edges: edgesRef.current, viewport: viewportRef.current }, { defer: mediaWritesRef.current.size > 0 }); };
+        }}
+        publish={images => {
+          const added = pureRefImageNodes(images, { existing: nodesRef.current, origin: pureRefSelection.origin, uid, assetUrl: relative => assetUrl(project.id, relative) });
+          flushSync(() => { const next = [...nodesRef.current, ...added]; nodesRef.current = next; setNodes(next); });
+          setTimeout(() => fitView({ nodes: added.map(({ id }) => ({ id })), duration: 300, padding: .2, maxZoom: 1 }), 50);
+          return added.map(node => node.id);
+        }} persist={persistProject}
+        onClose={() => { pureRefBusyRef.current = false; setPureRefSelection(null); }} />}
       {imagePreview && <ImageLightbox preview={imagePreview} onClose={() => setImagePreview(null)} closeRef={previewCloseRef} />}
       {workflowInspection && <WorkflowInspector key={workflowInspection.nonce} request={workflowInspection} onClose={() => setWorkflowInspection(null)} />}
       {workflowLibraryOpen && <WorkflowLibrary onClose={() => setWorkflowLibraryOpen(false)} onAdd={async (bundle, definitionId) => { if (project.readOnly || switchingRef.current) throw new Error('当前画布不可写。'); flushSync(() => addNode('generator', extensionNodeData(bundle, definitionId))); await persistProject(); }} />}
