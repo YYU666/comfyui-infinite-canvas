@@ -63,7 +63,7 @@ import ImageProcessNode from './ImageProcessNode';
 import ArtDirectorNode from './ArtDirectorNode.jsx';
 import { useArtDirector } from './art-director-canvas.js';
 import PureRefImport from './PureRefImport.jsx';
-import { pureRefImageNodes } from './pureref-import.js';
+import { copyPureRefResource, pureRefImageNodes } from './pureref-import.js';
 import { DEFAULT_ADJUSTMENTS } from './image-compositing';
 import { isImageProcess, imageProcessPorts, imageProcessSnapshot } from './image-process-graph';
 import { renderImageProcess } from './image-process-runtime';
@@ -780,7 +780,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (node) updateNode(id, { pinned: !node.data.pinned });
   }, [updateNode]);
 
-  const saveCanvasAsset = useCallback((file, onSaved, nodeId = null) => {
+  const saveCanvasMedia = useCallback((write, onSaved, nodeId = null) => {
     if (switchingRef.current || project.readOnly) return;
     // Keep the previous committed reference until the immutable replacement is
     // fully written. A full disk or failed request must not blank the old media.
@@ -789,7 +789,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     // Asset uploads also advance project revision: finish the content PUT first,
     // then serialize this page's uploads and observe once the whole batch settles.
     const idle = autoSaveRef.current?.waitForIdle() || Promise.resolve();
-    const pending = Promise.all([idle, mediaUploadTailRef.current]).then(() => saveProjectFile(project.id, mediaStorageId, file, revisionRef.current));
+    const pending = Promise.all([idle, mediaUploadTailRef.current]).then(() => write(revisionRef.current, mediaStorageId));
     mediaUploadTailRef.current = pending.catch(() => {});
     mediaWritesRef.current.set(mediaStorageId, pending);
     if (nodeId) mediaAttemptsRef.current.set(nodeId, mediaStorageId);
@@ -808,6 +808,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       autoSaveRef.current?.observe(nameRef.current, { nodes: nodesRef.current, edges: edgesRef.current, viewport: project.canvas.viewport }, { defer: mediaWritesRef.current.size > 0 || interactionRef.current });
     });
   }, [setNodes, project.id, project.readOnly]);
+
+  const saveCanvasAsset = useCallback((file, onSaved, nodeId = null) => saveCanvasMedia((revision, mediaStorageId) => saveProjectFile(project.id, mediaStorageId, file, revision), onSaved, nodeId), [saveCanvasMedia, project.id]);
 
   const chooseMedia = useCallback((id, file, sourceGallery = null, extraData = {}) => {
     if (switchingRef.current || project.readOnly) return;
@@ -2073,8 +2075,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       </aside>}
       <input ref={pureRefFileRef} hidden type="file" accept=".pur" aria-label="选择 PureRef 文件" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) openPureRefImport(file, addMenu?.flow); }} />
       {pureRefSelection && <PureRefImport file={pureRefSelection.file}
-        getContext={() => ({ projectId: projectRef.current.id, owner: autoSaveRef.current, readOnly: projectRef.current.readOnly, switching: switchingRef.current, conflict: Boolean(autoSaveRef.current?.failure) })}
-        upload={file => saveCanvasAsset(file, (saved, mediaStorageId) => ({ ok: true, assetPath: saved.asset.path, mediaStorageId }))}
+        getContext={() => ({ projectId: projectRef.current.id, owner: autoSaveRef.current, readOnly: projectRef.current.readOnly, switching: switchingRef.current, conflict: Boolean(autoSaveRef.current?.failure), nodeCount: nodesRef.current.length })}
+        upload={(image, session, signal) => saveCanvasMedia(revision => copyPureRefResource(session, image, project.id, revision, signal), (saved, mediaStorageId) => ({ ok: true, assetPath: saved.asset.path, mediaStorageId }))}
         beginBatch={() => {
           const key = uid('pur-import'); let finish;
           const pending = new Promise(resolve => { finish = resolve; });
@@ -2084,7 +2086,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         publish={images => {
           const added = pureRefImageNodes(images, { existing: nodesRef.current, origin: pureRefSelection.origin, uid, assetUrl: relative => assetUrl(project.id, relative) });
           flushSync(() => { const next = [...nodesRef.current, ...added]; nodesRef.current = next; setNodes(next); });
-          setTimeout(() => fitView({ nodes: added.map(({ id }) => ({ id })), duration: 300, padding: .2, maxZoom: 1 }), 50);
+          setTimeout(() => fitView({ nodes: added.slice(0, 6).map(({ id }) => ({ id })), duration: 300, padding: .2, maxZoom: 1 }), 50);
           return added.map(node => node.id);
         }} persist={persistProject}
         onClose={() => { pureRefBusyRef.current = false; setPureRefSelection(null); }} />}

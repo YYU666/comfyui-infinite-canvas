@@ -157,26 +157,11 @@ class PureRefTests(unittest.TestCase):
         for action, first, second in [(sqlite3.SQLITE_ATTACH, 'private', None), (sqlite3.SQLITE_FUNCTION, None, 'load_extension'), (sqlite3.SQLITE_UPDATE, 'images', 'data'), (sqlite3.SQLITE_READ, 'images', 'source'), (sqlite3.SQLITE_READ, 'items', 'comment')]:
             self.assertEqual(authorize(action, first, second, 'main', None), sqlite3.SQLITE_DENY)
 
-    def test_api_and_type_guard(self):
-        class Handler:
-            def __init__(self, raw):
-                self.headers = {'Content-Length': str(len(raw))}
-                self.rfile = io.BytesIO(raw)
-            def send_json(self, status, result):
-                self.status, self.result = status, result
-        handler = Handler(fixture())
-        self.assertFalse(pur.handle_pureref_post(handler, '/other'))
-        self.assertTrue(pur.handle_pureref_post(handler, '/api/pureref/inspect'))
-        self.assertEqual(handler.status, 200)
-        self.assertEqual(base64.b64decode(handler.result['images'][0]['base64']), raster())
-        self.assertNotIn('PRIVATE-PATH', json.dumps(handler.result))
-        self.assertNotIn('data', handler.result['images'][0])
-        handler = Handler(b'invalid'); pur.handle_pureref_post(handler, '/api/pureref/inspect'); self.assertEqual(handler.status, 400)
-        handler.headers['Content-Length'] = str(pur.MAX_FILE_BYTES + 1); pur.handle_pureref_post(handler, '/api/pureref/inspect'); self.assertEqual(handler.result['code'], 'PUREREF_LIMIT')
-        self.assertTrue(valid_content_type('POST', '/api/pureref/inspect', {'Content-Length': '5', 'Content-Type': 'application/octet-stream'}))
-        self.assertFalse(valid_content_type('POST', '/api/pureref/inspect', {'Content-Length': '5', 'Content-Type': 'text/plain'}))
-        with pur._BUSY:
-            handler = Handler(fixture()); pur.handle_pureref_post(handler, '/api/pureref/inspect'); self.assertEqual(handler.status, 409)
+    def test_chunk_type_guard(self):
+        route = '/api/pureref/sessions/' + 'a'*32 + '/upload'
+        self.assertTrue(valid_content_type('PUT', route, {'Content-Length':'5','Content-Type':'application/octet-stream'}))
+        self.assertFalse(valid_content_type('PUT', route, {'Content-Length':'5','Content-Type':'text/plain'}))
+        self.assertFalse(valid_content_type('POST', '/api/pureref/inspect', {'Content-Length':'5','Content-Type':'application/octet-stream'}))
 
     @unittest.skipUnless(os.environ.get('PUREREF_NATIVE_FIXTURES'), 'native fixtures are private local evidence')
     def test_native_203_original_bytes(self):

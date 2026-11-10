@@ -1,16 +1,16 @@
-"""Independent, bounded reader for PureRef envelope 2.1/schema 200101.
+"""Legacy small-fixture compatibility reader (not an HTTP/runtime endpoint).
+
+Independent, bounded reader for PureRef envelope 2.1/schema 200101.
 
 Only embedded original raster resources are read. Paths, URLs, notes, transforms,
 and thumbnails are never exported or followed. MD5 detects corruption, not trust.
 Format facts: docs/pureref-import.md. No third-party parser code is used.
 """
-import base64
 import hashlib
 import io
 import re
 import sqlite3
 import struct
-import threading
 import time
 import warnings
 
@@ -25,7 +25,6 @@ MAX_PIXELS = 24_000_000
 MAX_TOTAL_PIXELS = 96_000_000
 MAX_DIMENSION = 16384
 FORMATS = {'PNG': ('png', 'image/png'), 'JPEG': ('jpg', 'image/jpeg'), 'WEBP': ('webp', 'image/webp')}
-_BUSY = threading.BoundedSemaphore(1)
 
 
 class PureRefError(Exception):
@@ -230,37 +229,3 @@ def parse_pureref(raw):
         reject('PureRef SQLite 数据损坏、查询受限或超过解析预算。')
     finally:
         connection.close()
-
-
-def handle_pureref_post(handler, path):
-    if path != '/api/pureref/inspect':
-        return False
-    acquired = False
-    socket = getattr(handler, 'connection', None)
-    old_timeout = socket.gettimeout() if socket else None
-    try:
-        length = int(handler.headers.get('Content-Length', '0'))
-        if not 0 < length <= MAX_FILE_BYTES:
-            limit('请选择不超过 64 MiB 的 PureRef 文件。')
-        acquired = _BUSY.acquire(False)
-        if not acquired:
-            raise PureRefError('PUREREF_BUSY', '另一个 PureRef 文件正在解析，请稍后重试。', 409)
-        if socket:
-            socket.settimeout(15)
-        raw = handler.rfile.read(length)
-        if len(raw) != length:
-            reject()
-        result = parse_pureref(raw)
-        for image in result['images']:
-            image['base64'] = base64.b64encode(image.pop('data')).decode('ascii')
-        handler.send_json(200, result)
-    except PureRefError as error:
-        handler.send_json(error.status, {'code': error.code, 'message': str(error)})
-    except (ValueError, OSError):
-        handler.send_json(400, {'code': 'INVALID_PUREREF', 'message': 'PureRef 文件读取失败。'})
-    finally:
-        if socket:
-            socket.settimeout(old_timeout)
-        if acquired:
-            _BUSY.release()
-    return True
