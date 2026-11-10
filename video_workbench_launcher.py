@@ -36,6 +36,7 @@ from art_director import ArtDirectorAPI
 from project_store import ProjectStore
 from queue_api import QueueAPI
 from workbench_doctor import WorkbenchDoctor
+from workbench_comfy_lifecycle import ComfyLifecycle
 from workbench_queue import ComfyQueueAdapter, QueueManager
 from hardware_metrics import hardware_metrics
 from workbench_security import session_cookie, valid_content_type, valid_host, valid_origin, valid_token
@@ -52,6 +53,7 @@ from workbench_lifecycle import (
     startup_guard,
     workbench_ports,
     utc_now,
+    request_comfy_start,
 )
 from workbench_logging import cleanup_legacy_comfy_logs, configure_application_logging
 from workbench_update import UpdateError, WorkbenchUpdateManager, validate_update_request
@@ -126,6 +128,21 @@ LOGGER = logging.getLogger("h3-workbench")
 def api_status():
     with urllib.request.urlopen(COMFY_URL + "/system_stats", timeout=2) as response:
         return response.headers.get("Access-Control-Allow-Origin"), json.load(response)
+
+
+def sync_comfy_ownership(server, status):
+    """Keep advisory instance metadata consistent when an external service replaces our child."""
+    process = server.comfy_lifecycle.process
+    owned = status["owned"]
+    if server.comfy_owned == owned and server.comfy_process is process:
+        return
+    server.comfy_owned, server.comfy_process = owned, process
+    record = read_instance()
+    if record and record.get("pid") == os.getpid():
+        try:
+            atomic_write_json(instance_path(), {**record, "comfyOwned": owned, "comfyPid": process.pid if process else None})
+        except Exception:
+            LOGGER.warning("ComfyUI 归属状态已变化，实例元数据暂未更新。")
 
 
 def queue_summary():
@@ -503,8 +520,11 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 proxy_http(self)
             return
         if path == "/api/health":
-            comfy_process = getattr(self.server, "comfy_process", None)
-            comfy_running = comfy_process.poll() is None if comfy_process else self.comfy_is_running()
+            manager = getattr(self.server, "comfy_lifecycle", None)
+            comfy = manager.status(refresh=True) if manager else {"running": self.comfy_is_running(),
+                "owned": bool(getattr(self.server, "comfy_owned", False))}
+            if manager:
+                sync_comfy_ownership(self.server, comfy)
             queue_state = self.server.queue_manager.snapshot()
             health = {
                 "ok": True,
@@ -512,7 +532,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 "port": self.server.server_port,
                 "pid": os.getpid(),
                 "startedAt": self.server.started_at,
-                "comfy": {"running": comfy_running, "owned": bool(self.server.comfy_owned)},
+                "comfy": comfy,
                 "queue": {
                     "running": sum(job["status"] in {"running", "finishing"} for job in queue_state["jobs"]),
                     "pending": sum(job["status"] == "queued" for job in queue_state["jobs"]),
@@ -566,6 +586,13 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if is_comfy_path(path):
             proxy_http(self)
+            return
+        if path == "/api/local-comfy/start":
+            manager = getattr(self.server, "comfy_lifecycle", None)
+            if not manager:
+                self.send_json(503, {"code": "START_UNAVAILABLE", "message": "当前实例未启用 ComfyUI 启动管理。"})
+            else:
+                self.send_json(202, manager.request_start())
             return
         if path in {"/api/doctor", "/api/doctor/log-bundle"}:
             try:
@@ -767,6 +794,7 @@ def main():
                 if health:
                     url = f"http://127.0.0.1:{health['port']}/"
                     LOGGER.info("工作台已在运行：%s", url)
+                    request_comfy_start(instance, health)
                     if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
                         webbrowser.open(url)
                     return 0
@@ -816,24 +844,25 @@ def main():
             server.update_manager = WorkbenchUpdateManager(HERE, lambda: validate_update_ready(server))
             server.queue_manager.start()
 
-            try:
-                api_status()
-                LOGGER.info("检测到运行中的 ComfyUI，直接连接；停止工作台不会关闭它。")
-            except (urllib.error.URLError, TimeoutError, ConnectionError):
-                if os.environ.get("H3_WORKBENCH_TEST_MODE") == "1":
-                    LOGGER.info("隔离测试模式：不启动或依赖真实 ComfyUI。")
-                else:
-                    command = [
-                        str(ROOT / "python_embeded" / "python.exe"), "-s", str(ROOT / "ComfyUI" / "main.py"),
-                        "--windows-standalone-build", "--output-directory", str(OUTPUT_DIR), "--input-directory", str(INPUT_DIR),
-                        "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch",
-                        "--enable-cors-header", WEB_URL,
-                    ]
-                    comfy_process, comfy_logger_process = start_owned_comfy(command, ROOT, log_dir / "comfyui.log")
-                    server.comfy_owned = True
-                    server.comfy_process = comfy_process
-                    LOGGER.info("已隐藏启动 ComfyUI，PID=%s", comfy_process.pid)
-
+            command = [
+                str(ROOT / "python_embeded" / "python.exe"), "-s", str(ROOT / "ComfyUI" / "main.py"),
+                "--windows-standalone-build", "--output-directory", str(OUTPUT_DIR), "--input-directory", str(INPUT_DIR),
+                "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch", "--enable-cors-header", WEB_URL,
+            ]
+            def spawn_comfy(command, root, log):
+                cleanup_legacy_comfy_logs(log_dir)
+                process, logger = start_owned_comfy(command, root, log)
+                server.comfy_owned, server.comfy_process = True, process
+                record = read_instance()
+                if record and record.get("pid") == os.getpid():
+                    try:
+                        atomic_write_json(instance_path(), {**record, "comfyOwned": True, "comfyPid": process.pid})
+                    except Exception:
+                        LOGGER.warning("ComfyUI 已启动，实例元数据暂未更新。")
+                return process, logger
+            server.comfy_lifecycle = ComfyLifecycle(url=COMFY_URL, root=ROOT, log_dir=log_dir,
+                command=command, spawn=spawn_comfy,
+                allow_start=os.environ.get("H3_WORKBENCH_TEST_MODE") != "1")
             atomic_write_json(instance_path(), {
                 "port": server.server_port,
                 "token": server.token,
@@ -843,6 +872,7 @@ def main():
                 "comfyOwned": server.comfy_owned,
                 "comfyPid": comfy_process.pid if comfy_process else None,
             })
+            server.comfy_lifecycle.request_start()
             LOGGER.info("视频工作台已就绪：%s", WEB_URL)
             if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
                 webbrowser.open(WEB_URL + "/")
@@ -856,6 +886,10 @@ def main():
             print(f"\n{exc}\n", file=sys.stderr)
         return 1
     finally:
+        if server and hasattr(server, "comfy_lifecycle"):
+            server.comfy_lifecycle.close()
+            comfy_process = server.comfy_lifecycle.process
+            comfy_logger_process = server.comfy_lifecycle.logger
         if server and hasattr(server, "queue_manager"):
             server.queue_manager.stop()
         if server and hasattr(server, "project_store"):

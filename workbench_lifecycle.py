@@ -135,6 +135,24 @@ def instance_process_alive(instance: dict | None) -> bool:
         return True  # Cannot prove it exited; fail closed.
 
 
+def request_comfy_start(instance, health, timeout=3):
+    """One authenticated hint for managed backends; old backends stay compatible."""
+    comfy = health.get("comfy", {})
+    if comfy.get("enabled") is False or comfy.get("state") in {None, "starting", "disabled"}:
+        return False
+    if comfy.get("state") in {"unresponsive", "timeout"} and comfy.get("owned") and comfy.get("running"):
+        return False
+    # A cached ready snapshot can outlive an external service. The manager
+    # rechecks HTTP/owned processes before spawning, so explicit reuse may hint once.
+    request = urllib.request.Request(f"http://127.0.0.1:{int(instance['port'])}/api/local-comfy/start",
+        data=b"{}", headers={"X-H3-Token": instance.get("token", ""), "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status == 202
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
+
+
 def ensure_workbench(timeout: float = 120) -> dict:
     """Start the local service if needed and return only after both APIs respond."""
     if not math.isfinite(timeout) or not 0 < timeout <= 600:
@@ -143,6 +161,8 @@ def ensure_workbench(timeout: float = 120) -> dict:
     process = None
     instance = read_instance()
     health = probe_health(instance) if instance else None
+    if health:
+        request_comfy_start(instance, health, timeout=min(3, timeout))
     if not health:
         # Import lazily: settings uses lifecycle helpers as well.
         from workbench_settings import WorkbenchSettings
@@ -182,7 +202,7 @@ def ensure_workbench(timeout: float = 120) -> dict:
             raise RuntimeError(f"工作台启动失败；请检查 {runtime_dir() / 'logs' / 'app.log'}。")
         time.sleep(min(0.2, max(0, deadline - time.monotonic())))
     if health:
-        raise RuntimeError(f"画布服务已运行，但 ComfyUI 尚未就绪；请检查 {runtime_dir() / 'logs' / 'comfyui.log'}。未停止或重启已有服务。")
+        raise RuntimeError(f"画布服务已运行，但 ComfyUI 尚未就绪；请检查 {runtime_dir() / 'logs'}。未停止或重启已有服务。")
     raise RuntimeError(f"等待画布服务启动超时；请检查 {runtime_dir() / 'logs' / 'app.log'}。未停止后台启动过程。")
 
 
