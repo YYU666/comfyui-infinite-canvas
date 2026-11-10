@@ -34,7 +34,7 @@ def tracked_files():
     paths = sorted(item.decode("utf-8") for item in result.stdout.split(b"\0") if item)
     if not paths:
         raise RuntimeError("Git 跟踪文件为空，更新包未生成。")
-    required = {"video_workbench_launcher.py", "workbench_update.py", "workbench_update_helper.py", "workbench_lifecycle.py", "package.json", "package-lock.json", "requirements.lock"}
+    required = {"video_workbench_launcher.py", "workbench_comfy_lifecycle.py", "workbench_update.py", "workbench_update_helper.py", "workbench_lifecycle.py", "package.json", "package-lock.json", "requirements.lock"}
     if not required.issubset(paths):
         raise RuntimeError("更新必需文件尚未纳入 Git，已阻止生成不完整升级包。")
     return paths

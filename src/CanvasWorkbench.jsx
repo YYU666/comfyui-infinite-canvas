@@ -69,6 +69,8 @@ import { isImageProcess, imageProcessPorts, imageProcessSnapshot } from './image
 import { renderImageProcess } from './image-process-runtime';
 import { assetUrl } from './project-store-http';
 import { useLocalConnection } from './use-local-connection';
+import { localConnectionPresentation } from './local-connection';
+import { downloadDoctorLogs } from './doctor-client';
 
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
@@ -528,7 +530,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   });
   const restoreCurrentProjectAccess = useCallback((options) => accessRecoveryRef.current(options), []);
   useEffect(() => { setProjectConnectionError(''); }, [project.id]);
-  const { server, metrics, checkServer, onStatusClick, starting, notice: localConnectionNotice, dismissNotice, connectionEpoch } = useLocalConnection({ onReconnect: restoreCurrentProjectAccess });
+  const { server, metrics, checkServer, onStatusClick, starting, notice: localConnectionNotice, dismissNotice, setConnectionNotice: setLocalConnectionNotice, connectionEpoch } = useLocalConnection({ onReconnect: restoreCurrentProjectAccess });
   const [memoryCleanup, setMemoryCleanup] = useState('idle');
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
@@ -1871,6 +1873,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       },
     },
   });
+  const connectionPresentation = localConnectionPresentation(server, starting);
   const dropCanvasFiles = (e) => {
     e.preventDefault();
     if (project.readOnly || switchingRef.current) return;
@@ -1911,13 +1914,16 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
             }}><Layers3 size={15} /><span>节点库</span></button>
             <button className={creativeOpen ? 'active' : ''} onClick={() => setCreativeOpen(!creativeOpen)} title="角色、镜头与审片"><Film size={15} /><span>创作</span></button>
             <button className={handoffOpen ? 'active' : ''} disabled={project.readOnly} onClick={() => setHandoffOpen(true)} title="保存目标、验收结论并切换 Agent"><Link2 size={15} /><span>接力{project.settings?.handoff?.status === 'paused' ? ' · 已暂停' : ''}</span></button>
-            <button className={`server-status ${server.online ? 'online' : ''}`} onClick={onStatusClick} title={server.label} aria-busy={starting}><i />{server.online ? '本地已连接' : starting ? '正在启动…' : '本地未连接'}</button>
+            <button className={`server-status ${connectionPresentation.connected ? 'online' : ''}`} onClick={onStatusClick} title={server.label} aria-busy={starting}><i />{connectionPresentation.text}</button>
             <button onClick={async () => { if (!switchingRef.current && !hasActiveTask()) { try { await persistProject(); onSimpleMode(); } catch { /* Keep the unsaved canvas open. */ } } }} title="切换简易模式"><MousePointer2 size={15} /></button>
             <button onClick={() => window.open('http://127.0.0.1:8188','_blank')} title="打开 ComfyUI 高级节点"><MoreHorizontal size={17} /></button>
           </div>
         </div>
       </header>
-      {localConnectionNotice && <div className="local-connection-notice" role="status"><span>{localConnectionNotice}</span><button onClick={dismissNotice} aria-label="关闭连接提示"><X size={14} /></button></div>}
+      {localConnectionNotice && <div className="local-connection-notice" role="status"><span>{localConnectionNotice}</span>{server.backendOnline && <><button onClick={onStatusClick}>重新检查</button><button onClick={async () => {
+        try { const { blob, name } = await downloadDoctorLogs(); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+        catch (error) { setLocalConnectionNotice(error.message || '诊断日志下载失败，请稍后重试。'); }
+      }}>下载诊断日志</button></>}<button onClick={dismissNotice} aria-label="关闭连接提示"><X size={14} /></button></div>}
       {projectBusy && <div className="project-switching" role="status"><LoaderCircle className="spin" size={18} />正在保存并打开画布…</div>}
       {project.readOnly && <div className="project-switching readonly" role="status">此项目正在另一个窗口中编辑，当前以只读方式打开。</div>}
       <main className={`neo-canvas-wrap canvas-view-${viewTier}${connecting ? ' canvas-connecting' : ''}`} style={{ '--canvas-handle-size': `${Math.min(72, Math.max(24, 24 / (zoom / 100)))}px` }} inert={projectBusy || libraryModalOpen ? true : undefined}

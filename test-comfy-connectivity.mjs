@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import { probeLocalConnection, localConnectionPresentation, requestComfyStart } from './src/local-connection.js';
+const response = body => ({ ok: true, status: 200, json: async () => body });
+const stalled = () => new Promise(() => {});
+for (let i = 0; i < 3; i++) {
+  let published;
+  let metricsSignal;
+  const pending = probeLocalConnection({ metricsTimeoutMs: 25, onStatus: next => { published = next; }, fetchImpl: async (url, options) => {
+    if (url === '/api/health') return response({ ok: true });
+    if (url === '/api/comfy/system_stats') return response({ devices: [{ name: 'fixture', vram_total: 10, vram_free: 2 }] });
+    metricsSignal = options.signal;
+    return stalled();
+  } });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(published.online, true, 'readiness publishes while hardware request is hung');
+  const result = await pending;
+  assert.equal(result.online, true);
+  assert.equal(result.metrics.vramUsed, 8);
+  assert.equal(metricsSignal.aborted, true, 'hardware request is independently cancelled');
+}
+let bodyPublished;
+const bodyMetrics = await probeLocalConnection({ metricsTimeoutMs: 10, onStatus: next => { bodyPublished = next.online; }, fetchImpl: async url => url === '/api/hardware-metrics' ? { ok: true, json: stalled } : response(url === '/api/health' ? { ok: true } : { devices: [] }) });
+assert.equal(bodyPublished, true); assert.equal(bodyMetrics.online, true);
+let published;
+const timeout = await probeLocalConnection({ timeoutMs: 10, fetchImpl: stalled, onStatus: next => { published = next; } });
+assert.equal(timeout.state, 'connection_timeout'); assert.equal(published.online, false);
+const abort = new AbortController();
+const cancelled = probeLocalConnection({ signal: abort.signal, fetchImpl: stalled, onStatus: () => assert.fail('superseded check must not publish') });
+abort.abort(); await cancelled;
+const bodyTimeout = await probeLocalConnection({ timeoutMs: 10, fetchImpl: async () => ({ ok: true, json: stalled }) });
+assert.equal(bodyTimeout.state, 'connection_timeout');
+const recovered = await probeLocalConnection({ fetchImpl: async url => response(url === '/api/health' ? { ok: true } : { devices: [] }) });
+assert.equal(recovered.online, true);
+const failed = await probeLocalConnection({ fetchImpl: async url => url === '/api/health' ? response({ ok: true, comfy: { state: 'exited', error: '缺少 alembic_db', exitCode: 1 } }) : { ok: false, status: 503 } });
+assert.equal(failed.label, '缺少 alembic_db');
+assert.equal(localConnectionPresentation(failed).text, '启动失败');
+assert.equal(localConnectionPresentation({ state: 'session_error' }).text, '会话异常');
+let startOptions;
+await requestComfyStart({ fetchImpl: async (url, options) => { assert.equal(url, '/api/local-comfy/start'); startOptions = options; return response({ state: 'starting' }); } });
+assert.equal(startOptions.method, 'POST'); assert.equal(startOptions.credentials, 'same-origin');
+await assert.rejects(requestComfyStart({ fetchImpl: async () => ({ ok: false, status: 401 }) }), /会话/);
+console.log('COMFY_CONNECTIVITY_OK readiness before hung metrics x3, bounded requests/bodies, abort, recovery, reasons, authenticated start');

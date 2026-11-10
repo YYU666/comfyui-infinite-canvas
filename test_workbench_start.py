@@ -215,7 +215,7 @@ class StartIntegrationTests(unittest.TestCase):
                         instance = json.loads(instance_file.read_text(encoding="utf-8"))
                         with urllib.request.urlopen(f"http://127.0.0.1:{instance['port']}/api/health", timeout=3) as response:
                             health = json.load(response)
-                        if health["ok"]:
+                        if health["ok"] and health.get("pid") == instance["pid"]:
                             break
                     except (OSError, ValueError):
                         pass
