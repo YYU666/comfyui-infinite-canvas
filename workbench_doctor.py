@@ -90,7 +90,7 @@ def _configured_model_roots(comfy_root):
 
 class WorkbenchDoctor:
     def __init__(self, workbench_root, comfy_root, projects_root, comfy_url="http://127.0.0.1:8188",
-                 workbench_port=8790, model_roots=None, runtime=None, timeout=3):
+                 workbench_port=8790, model_roots=None, runtime=None, timeout=3, secret_provider=None):
         self.workbench_root = Path(workbench_root).resolve()
         self.comfy_root = Path(comfy_root).resolve()
         self.projects_root = Path(projects_root).resolve()
@@ -99,6 +99,7 @@ class WorkbenchDoctor:
         self.model_roots = [Path(path).resolve() for path in model_roots] if model_roots else _configured_model_roots(self.comfy_root)
         self.runtime = Path(runtime).resolve() if runtime else runtime_dir()
         self.timeout = timeout
+        self.secret_provider = secret_provider
 
     def _json_url(self, path, timeout=None):
         with urllib.request.urlopen(self.comfy_url + path, timeout=timeout or self.timeout) as response:
@@ -284,6 +285,9 @@ class WorkbenchDoctor:
         """Build a credential-redacted ZIP in memory; never include projects or instance.json."""
         key = self._deepseek_key()
         secrets = [key] if key else []
+        if self.secret_provider:
+            try: secrets.extend(self.secret_provider())
+            except Exception: raise RuntimeError("安全脱敏凭据不可用，诊断包未生成。") from None
         output = io.BytesIO()
         log_dir = self.runtime / "logs"
         logs = sorted(log_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:8] if log_dir.is_dir() else []

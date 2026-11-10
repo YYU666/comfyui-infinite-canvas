@@ -32,6 +32,7 @@ from workflow_extensions import ExtensionStore
 from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_websocket
 from thumbnail_cache import ThumbnailCache
 from project_api import ProjectAPI
+from art_director import ArtDirectorAPI
 from project_store import ProjectStore
 from queue_api import QueueAPI
 from workbench_doctor import WorkbenchDoctor
@@ -542,6 +543,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         agent_api = getattr(self.server, "agent_api", None)
         if agent_api and agent_api.handle_get(self, path):
             return
+        art_director_api = getattr(self.server, "art_director_api", None)
+        if art_director_api and art_director_api.handle_get(self, path):
+            return
         if self.server.project_api.handle_get(self, path):
             return
         if path != "/api/hardware-metrics":
@@ -620,6 +624,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         agent_api = getattr(self.server, "agent_api", None)
         if agent_api and agent_api.handle_post(self, path):
+            return
+        art_director_api = getattr(self.server, "art_director_api", None)
+        if art_director_api and art_director_api.handle_post(self, path):
             return
         if self.server.project_api.handle_post(self, path):
             return
@@ -721,6 +728,8 @@ def apply_server_settings(server):
         replacement = ProjectStore(projects_root, previous.owner_id, defaults)
         server.project_store = replacement
         server.project_api.store = replacement
+        if getattr(server, "art_director_api", None):
+            server.art_director_api.store = replacement
         server.project_api.domain.store = replacement
         if getattr(server, "agent_api", None):
             server.agent_api.protocol.store = replacement
@@ -733,6 +742,7 @@ def apply_server_settings(server):
     server.doctor = WorkbenchDoctor(
         HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
         model_roots=config["modelRoots"] or None,
+        secret_provider=lambda: server.art_director_api.redaction_secrets() if getattr(server, "art_director_api", None) else (),
     )
     logging.getLogger().setLevel(config["logLevel"])
 
@@ -791,10 +801,12 @@ def main():
             logging.getLogger().setLevel(server.settings.data["logLevel"])
             server.project_store = ProjectStore(server.settings.data["projectsRoot"], defaults=server.settings.data["defaults"])
             server.project_api = ProjectAPI(server.project_store)
+            server.art_director_api = ArtDirectorAPI(server.project_store)
             server.thumbnail_cache = ThumbnailCache(runtime_dir() / "thumbnails", server.project_store, COMFY_URL)
             server.doctor = WorkbenchDoctor(
                 HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
                 model_roots=server.settings.data["modelRoots"] or None,
+                secret_provider=lambda: server.art_director_api.redaction_secrets(),
             )
             server.queue_manager = QueueManager(adapter=ComfyQueueAdapter(COMFY_URL), concurrency=server.settings.data["queue"]["concurrency"])
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])

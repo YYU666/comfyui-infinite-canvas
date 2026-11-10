@@ -36,7 +36,7 @@ export function migrateCanvas(value, projectId) {
     }
     if (node.type === 'video') return { ...node, type: 'media', data: { ...node.data, kind: 'video', output: true } };
     if (node.type === 'prompt') return { ...node, data: { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...node.data } };
-    if (node.type === 'imageProcess') return { ...node, data: { ...node.data, status: ['running', 'uploading', 'finishing'].includes(node.data.status) ? 'idle' : node.data.status } };
+    if (node.type === 'imageProcess' || node.type === 'artDirector') return { ...node, data: { ...node.data, status: ['running', 'uploading', 'finishing'].includes(node.data.status) ? 'idle' : node.data.status } };
     if (node.type === 'note') return { ...node, data: node.data.title === '从这里开始' ? { ...node.data, text: '① 上传图片、视频或音频素材\n② 选中视频生成，用 + 添加或连线素材\n③ 输入 @ 名称引用角色、动作或声音\n④ 点击右下角箭头，本地生成视频\n\n视频生成支持全能参考和首尾帧两种模式。' } : node.data };
     // Retain newer/extension node types when reopening with an older client.
     // Dropping them here would make the next autosave permanently delete their data.

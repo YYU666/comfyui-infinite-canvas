@@ -10,6 +10,7 @@ import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-
 import { availableNodePresets } from './local-node-tools.js';
 
 export const NODE_PRESETS = {
+  art_director: ['artDirector', { title: '电子主美 · 图解分析', brief: '', preserve: '', referencePurposes: {} }],
   color_adjust: ['imageProcess', { ...DEFAULT_ADJUSTMENTS, mode: 'colorAdjust', title: '颜色调整' }],
   color_hsl: ['imageProcess', { mode: 'colorAdjust', adjustmentType: 'hsl', title: 'HSL 分色调整' }],
   color_levels: ['imageProcess', { mode: 'colorAdjust', adjustmentType: 'levels', title: '色阶 Levels' }],
@@ -168,6 +169,7 @@ function edgeSummary(edge) {
 }
 
 function defaultTargetHandle(target, source) {
+  if (target.type === 'artDirector') return 'artwork';
   if (isImageProcess(target)) return target.data.mode === 'channelPack' ? 'red' : target.data.mode === 'imageBlend' ? 'base' : 'guide';
   if (source?.type === 'prompt') return 'prompt';
   if (target?.data.mediaRole === 'mask') return 'guide';
@@ -205,6 +207,11 @@ function mcpNode(latest, id) {
 export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
   if (['uploading', 'queued', 'running', 'finishing'].includes(initial.data.status)) throw new Error('节点已经在生成，请使用 canvas_wait_for_node 等待，避免重复提交。');
+  if (initial.type === 'artDirector') {
+    const result = await latest.current.actions.generateNode(nodeId);
+    if (!result?.ok) throw new Error(result?.error || '解析图输出失败。');
+    return { node: nodeSummary(mcpNode(latest, nodeId)), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
+  }
   if (isImageProcess(initial)) {
     const result = await latest.current.actions.generateNode(nodeId);
     if (!result?.ok) throw new Error(result?.error || '图片输出失败。');
