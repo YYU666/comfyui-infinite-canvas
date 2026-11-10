@@ -89,6 +89,57 @@ class DiskParserTests(unittest.TestCase):
 
 
 class SessionTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows 8.3 aliases only')
+    def test_short_cache_path_is_canonicalized_before_security_checks(self):
+        import ctypes
+        parent = self.directory/'long cache parent directory'
+        parent.mkdir()
+        short = ctypes.create_unicode_buffer(32768)
+        self.assertTrue(ctypes.windll.kernel32.GetShortPathNameW(str(parent),short,len(short)))
+        if Path(short.value) == parent:
+            self.skipTest('8.3 name creation disabled on this volume')
+        manager = sessions.PureRefSessions(self.store,Path(short.value)/'cache')
+        manager._safe_root()
+        self.assertEqual(manager.root,(parent/'cache').resolve())
+        self.assertTrue((manager.root/sessions.ROOT_MARKER).is_file())
+        manager.close()
+
+    def test_reparse_cache_component_is_rejected_before_acl(self):
+        from types import SimpleNamespace
+        original = Path.lstat
+        def inspect(path, *args, **kwargs):
+            if path == self.manager.root:
+                return SimpleNamespace(st_mode=sessions.stat.S_IFDIR,st_file_attributes=0x400)
+            return original(path,*args,**kwargs)
+        with patch.object(Path,'lstat',inspect), patch.object(sessions,'private_acl',side_effect=AssertionError('must reject before ACL')):
+            with self.assertRaises(PureRefError): self.manager._safe_root()
+
+    def test_cancel_waiting_for_finish_stops_new_worker_before_cleanup(self):
+        self.create()
+        session = self.manager.sessions[self.session['id']]
+        errors = []
+        class Child:
+            pid = 0
+            stopped = False
+            def poll(self): return 0 if self.stopped else None
+            def kill(self): self.stopped = True
+            def wait(self, timeout): return 0
+        child = Child()
+        def cleanup():
+            try: self.manager._cleanup(session)
+            except Exception as error: errors.append(error)
+        with session['lock']:
+            thread = threading.Thread(target=cleanup)
+            thread.start()
+            self.assertTrue(session['cancel'].wait(2))
+            session['process'] = child
+        thread.join(3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors,[])
+        self.assertTrue(child.stopped)
+        self.assertFalse(session['path'].exists())
+        self.manager.sessions.pop(self.session['id'])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(); self.directory = Path(self.temporary.name).resolve()
         self.store = ProjectStore(self.directory/'projects')

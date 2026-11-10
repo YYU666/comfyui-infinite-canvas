@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -47,7 +48,17 @@ class PureRefSessions:
         return [Path(__file__).resolve().parent,self.store.root.resolve(),*[p.resolve().parent for p in self.store._opened_paths.values()]]
 
     def _safe_root(self):
-        if self.root.resolve() != self.root or any(self.root.is_relative_to(p) or p.is_relative_to(self.root) for p in self._roots()):
+        # Windows TEMP may use an 8.3 alias. Resolve legitimate aliases only
+        # after rejecting linked/reparse components, before changing any ACL.
+        for component in (self.root, *self.root.parents):
+            try:
+                info = component.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400):
+                raise PureRefError('PUREREF_STORAGE','PureRef 缓存目录不能使用链接或重解析目录。',503)
+        self.root = self.root.resolve()
+        if any(self.root.is_relative_to(p) or p.is_relative_to(self.root) for p in self._roots()):
             raise PureRefError('PUREREF_STORAGE','PureRef 缓存目录必须位于项目和程序目录之外。',503)
         marker = self.root/ROOT_MARKER
         # Validate a dedicated cache BEFORE changing any existing directory ACL.
@@ -133,10 +144,12 @@ class PureRefSessions:
 
     def _cleanup(self, session):
         session['cancel'].set()
-        process = session.get('process')
-        if process and process.poll() is None:
-            process.kill(); process.wait(timeout=10)
         with session['lock']:
+            # finish may have installed a worker while cleanup waited for this
+            # lock. Stop that worker before removing its working directory.
+            process = session.get('process')
+            if process and process.poll() is None:
+                process.kill(); process.wait(timeout=10)
             path = self._owned(session,scan=True)
             shutil.rmtree(path)
 
@@ -259,6 +272,7 @@ class PureRefSessions:
                 if session['phase'] != 'uploading' or session['offset'] != session['size']: raise PureRefError('PUREREF_OFFSET','文件尚未上传完成。',409)
                 with self.lock:
                     if any(s.get('process') and s['process'].poll() is None for s in self.sessions.values()): raise PureRefError('PUREREF_BUSY','另一个 PureRef 正在解析。',409)
+                    if session['cancel'].is_set(): raise PureRefError('PUREREF_CANCELLED','PureRef 导入已取消。',409)
                     atomic_write_json(directory/'status.json',dict(phase='verifying'))
                     session['process'] = subprocess.Popen([sys.executable,str(Path(__file__).with_name('pureref_worker.py')),str(directory),str(os.getpid()),str(psutil.Process().create_time())],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                     session['started'] = time.monotonic(); session['phase'] = 'parsing'

@@ -40,7 +40,9 @@ try {
   assert.equal((await create({ 'Content-Type': 'application/json' })).status, 401);
   assert.equal((await create({ 'X-H3-Token': token, Origin: 'https://untrusted.example', 'Content-Type':'application/json' })).status, 403);
   assert.equal((await create({ 'X-H3-Token': token, 'Content-Type':'text/plain' })).status, 415);
-  const session = await (await create({ 'X-H3-Token': token, 'Content-Type':'application/json' })).json();
+  const created = await create({ 'X-H3-Token': token, 'Content-Type':'application/json' });
+  const session = await created.json();
+  assert.equal(created.status, 201, JSON.stringify(session));
   const sessionHeaders = {'X-H3-Token':token,'X-PureRef-Session':session.capability};
   const endpoint = base + '/api/pureref/sessions/' + session.id;
   const sent = await fetch(endpoint+'/upload',{method:'PUT',headers:{...sessionHeaders,'Content-Type':'application/octet-stream','X-Upload-Offset':'0'},body:raw}); assert.equal(sent.status,200);
