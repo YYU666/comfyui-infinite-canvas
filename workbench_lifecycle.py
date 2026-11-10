@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 
 
 def runtime_dir() -> Path:

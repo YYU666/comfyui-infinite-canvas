@@ -1,4 +1,5 @@
 const NODE_SIZES = {
+  artDirector: { width: 540, height: 1700 },
   imageProcess: { width: 370, height: 1000 },
   media: { width: 310, height: 250 },
   generator: { width: 440, height: 360 },

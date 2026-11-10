@@ -14,6 +14,7 @@
 | 项目、素材、自动保存与无限画布 | 已实现，隔离回归通过 | 覆盖持久化、切换、冲突、撤销、上传失败和关闭恢复；不含多人在线协作 |
 | H3 核心模型配置 | `core-h3` 七项来源与哈希已登记 | 核心清单不代表完整 33 项已下载或全部通过真实 GPU 验收 |
 | Krea2／MOSS／Qwen、换装与四视图 | 工作流已实现 | 共用合同和仿真回归不替代各模型、各输入质量下的真实生成验收 |
+| 电子主美图解分析 | 已实现，合成与模拟验证 | 作品与最多 3 张用途明确的参考、可编辑辅助线和本地 PNG；云端账户权限及真实推理效果需自行验证 |
 | Agent HTTP／CLI／MCP | 真实队列全链路通过 | 已在临时项目完成建镜头、生成、等待、Take、选用和导出；隔离测试另覆盖编码、幂等与归属 |
 | 浏览器 WebMCP | 已实现 | 已验证排队成功语义；仍依赖当前页面与浏览器支持，后台 Agent 优先使用 HTTP／CLI／MCP |
 | 网页视频链接导入 | 已实现 | 仅处理用户有权使用的公开内容；平台登录、反爬、地域限制和版权要求不由本项目绕过 |
@@ -46,6 +47,14 @@
 - 右键生成节点或生成结果，选择「进入 ComfyUI」，可在当前画布内查看对应任务的内部节点。四视图可分别查看四张图和最终拼接阶段；打开查看器不会提交生成，修改副本不会自动写回画布。
 - 查看器需要任务记录。更新此功能后需同步仓库自有 `h3_workbench_refine` 节点的 `web/` 扩展，并在 ComfyUI 队列空闲时重启服务。
 - 可选的 Qwen Turbo、Muse V4 与 SeedVR2 7B 预设及模型说明见 [可选四视图模型升级](models/CHARACTER_UPGRADES.md)。模型权重需另外安装。
+
+## 电子主美 · 图解分析（v1.0.9）
+
+在图片节点点击「电子主美 · 图解分析」，或从添加菜单创建节点，再连接一张作品和最多三张参考图。填写创作目标、保留项及每张参考的用途，选择千问、Kimi、豆包或 DeepSeek Flash 后运行分析。云端分析会发送这些图片，并在完成后自动生成本地解析 PNG。
+
+解析板包含原图标注、局部裁剪、灰度与直方图、量化色板、参考用途以及「观察、影响、行动、保留、不确定性」。辅助线可拖动、输入坐标、隐藏、删除与撤销；更新解析复用一个下游结果节点，保留原素材及旧 PNG。作品、参考或目标变化后，旧解析会明确标为过期。
+
+无需密钥即可加载明确标识的操作示例，或导入结构化解析 JSON，编辑后在本地输出 PNG。示例不代表模型已经审图。密钥可用于本次后端会话；Windows 另支持当前用户 DPAPI 加密保存，凭据位于仓库和项目之外。操作说明见 [电子主美使用指南](docs/art-director.md)，供应商、模型与安全边界见 [电子主美配置](docs/art-director-providers.md)。本次验证使用合成素材和模拟响应，没有进行真实付费推理。
 
 ## 环境要求
 
@@ -131,7 +140,7 @@ python_embeded\python.exe video-workbench\scripts\install_models.py "D:\H3-Workb
 
 ## AI 提示词优化（可选）
 
-普通本地生成不需要 API 密钥。只有“AI 优化提示词”需要 DeepSeek：在本目录创建 `deepseek.key`，只写入密钥；也可使用环境变量 `DEEPSEEK_API_KEY`。密钥文件已被 Git 忽略，不要提交或分享。
+普通本地生成不需要 API 密钥。“AI 优化提示词”可配置 DeepSeek：在本目录创建 `deepseek.key`，只写入密钥；也可使用环境变量 `DEEPSEEK_API_KEY`。密钥文件已被 Git 忽略，不要提交或分享。
 
 ## 模型包
 
@@ -218,6 +227,6 @@ npm run build
 npm run test:all
 ```
 
-`test:all` 依次运行全部 Python 单元／故障注入测试、17 个纯 Node 测试文件和 7 个隔离浏览器／后端测试文件；不需要真实模型、ComfyUI 任务或用户项目。浏览器默认使用 Playwright 托管 Chromium，也可用 `CHROME_PATH` 指定浏览器；后端浏览器测试默认使用 PATH 中的 `python`，可用 `H3_TEST_PYTHON` 覆盖。CI 配置见 `.github/workflows/ci.yml`，覆盖 Windows 默认编码、UTF-8、前端构建及临时目录中的隔离验收。
+`test:all` 依次运行全部 Python 单元／故障注入测试、已登记的纯 Node 测试文件和隔离浏览器／后端测试文件；不需要真实模型、ComfyUI 任务或用户项目。浏览器默认使用 Playwright 托管 Chromium，也可用 `CHROME_PATH` 指定浏览器；后端浏览器测试默认使用 PATH 中的 `python`，可用 `H3_TEST_PYTHON` 覆盖。CI 配置见 `.github/workflows/ci.yml`，覆盖 Windows 默认编码、UTF-8、前端构建及临时目录中的隔离验收。
 
 更新 Python 版本约束后，在便携版根目录执行 `python_embeded\python.exe video-workbench\scripts\generate_requirements_lock.py` 重建哈希锁。`requirements.txt`、`requirements.lock` 和生成脚本的变更必须放在同一个可独立审查的提交中。

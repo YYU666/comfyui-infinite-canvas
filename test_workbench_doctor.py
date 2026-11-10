@@ -172,6 +172,16 @@ class DoctorTests(unittest.TestCase):
             external = [call for call in online.call_args_list if isinstance(call.args[0], urllib.request.Request)]
             self.assertEqual(len(external), 1)
 
+    def test_provider_exact_redaction_and_fail_closed(self):
+        secret='synthetic-bare-provider-value-credential'
+        doctor=self.doctor();doctor.secret_provider=lambda:(secret,)
+        logs=self.runtime/'logs';logs.mkdir(parents=True,exist_ok=True)
+        (logs/'app.log').write_text('bare value '+secret,encoding='utf-8')
+        with zipfile.ZipFile(io.BytesIO(doctor.create_log_bundle({'detail':secret}))) as archive:
+            self.assertNotIn(secret.encode(),b'\n'.join(archive.read(name) for name in archive.namelist()))
+        doctor.secret_provider=lambda:(_ for _ in ()).throw(RuntimeError('fake-secret-not-returned'))
+        with self.assertRaisesRegex(RuntimeError,'诊断包未生成'):doctor.create_log_bundle({})
+
     def test_redaction_covers_json_and_bearer_credentials(self):
         text = redact_text('{"token":"abc123", "Authorization":"Bearer xyz"}\nsk-abcdefgh123456')
         self.assertNotIn("abc123", text)

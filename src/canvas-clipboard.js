@@ -2,6 +2,7 @@ import { remapQwenReferences } from './qwen-references.js';
 import { allocateReferenceTag, replaceReferenceTags } from './reference-tags.js';
 
 const NODE_SIZES = {
+  artDirector: { width: 540, height: 1700 },
   imageProcess: { width: 370, height: 1000 },
   media: { width: 310, height: 250 },
   generator: { width: 440, height: 360 },
@@ -113,6 +114,11 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
     if (data.title) data.title = `${data.title} · 副本`;
     if (pastedRefTags.has(source.id)) data.refTag = pastedRefTags.get(source.id);
     TEXT_FIELDS.forEach((field) => { if (field in data) data[field] = replaceReferenceTags(replaceMentions(data[field]), tagMap); });
+    if (source.type === 'artDirector') {
+      Object.assign(data,{status:'idle',stage:'',analysis:null,boardAssetPath:null,boardSignature:null,boardResultId:null,stale:false});
+      delete data.error;
+    }
+    if (data.sourceArtDirectorId) data.sourceArtDirectorId = idMap.get(data.sourceArtDirectorId) || null;
     if (source.type === 'generator' || source.type === 'imageProcess') {
       Object.assign(data, { status: 'idle', progress: 0, stage: '', runs: [] });
       ['promptId', 'resultUrl', 'error', 'hasMedia'].forEach((field) => { delete data[field]; });

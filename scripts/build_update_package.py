@@ -17,8 +17,14 @@ from workbench_update import asset_name, parse_version
 
 def assert_public_path(relative):
     parts = relative.replace('\\', '/').casefold().split('/')
-    if any(part in {'.local-node-tools', '.cache', 'node_modules', 'dist'} for part in parts) or parts[-1].endswith('.h3pack'):
-        raise RuntimeError(f"本机工具、工作流包和构建缓存不得随开源更新发布：{relative}")
+    basename=parts[-1]
+    private_directories={'.local-node-tools','.cache','node_modules','dist','runtime','.runtime','credentials','.credentials','secrets','.secrets','h3workbench'}
+    private_names={'art-director-credentials.dpapi','credentials.json','credential-store.json','api-keys.json','providers.private.json','instance.json','id_rsa','id_ed25519','id_ecdsa','deepseek-key.json','deepseek-key.txt'}
+    private_suffixes=('.h3pack','.dpapi','.key','.pem','.p12','.pfx','.local','.local.json','.private.json')
+    env_file=basename.startswith('.env') and basename!='.env.example'
+    if any(part in private_directories for part in parts) or basename in private_names or basename.endswith(private_suffixes) or env_file:
+        raise RuntimeError(f"本机凭据、运行目录、工具和构建缓存不得随开源更新发布：{relative}")
+
 
 
 def tracked_files():

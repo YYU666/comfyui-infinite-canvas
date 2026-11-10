@@ -1,3 +1,4 @@
+import { ART_PORTS } from './art-director.js';
 import { isMaskNode } from './canvas-mask.js';
 import { qwenCanvasReferences } from './qwen-references.js';
 import { isImageProcess, acceptsImageProcessConnection } from './image-process-graph.js';
@@ -31,6 +32,13 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   const source = resolved.source;
   if (source.id === target.id) return fail('不能连接当前成品自身。');
   if (busy(target)) return fail('目标节点正在生成，请完成后再修改连接。');
+  if (target.type === 'artDirector') {
+    if (source.type !== 'media' || source.data.kind !== 'image' || isMaskNode(source) || !ART_PORTS.includes(connection.targetHandle)) return fail('电子主美只接受作品与可选参考图片。');
+    const queue = [target.id], seen = new Set();
+    while (queue.length) { const id = queue.pop(); if (id === source.id) return fail('电子主美连线不能形成循环。'); if (seen.has(id)) continue; seen.add(id); edges.filter(e => e.source === id).forEach(e => queue.push(e.target)); }
+    const normalized = { source: source.id, sourceHandle: 'ref', target: target.id, targetHandle: connection.targetHandle };
+    return { connection: normalized, source, target, multiple: false, existing: edges.find(e => Object.entries(normalized).every(([k,v]) => e[k] === v)), resolvedFrom: resolved.resolvedFrom };
+  }
   if (isImageProcess(target)) {
     const normalized = { source: source.id, sourceHandle: 'ref', target: target.id, targetHandle: connection.targetHandle };
     if (!acceptsImageProcessConnection(normalized, nodes, edges)) return fail('图片处理只接受图片输入和对应通道，且连线不能形成循环。');

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const suites = {
   node: [
+    'test-art-director.mjs',
     'test-canvas-migration.mjs',
     'test-canvas-move.mjs',
     'test-project-save-recovery.mjs',
@@ -52,6 +53,7 @@ const suites = {
     'test-update-check-scheduler.mjs',
   ],
   browser: [
+    'test-art-director-ui.mjs',
     'test-image-process-ui.mjs',
     'test-local-reconnect-ui.mjs',
     'test-canvas-current-page-ui.mjs',
