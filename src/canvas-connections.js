@@ -58,6 +58,7 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
     if (source.type !== 'media' || target.type !== 'generator') return fail('请把图片、视频或音频输出连接到生成节点的输入端口。');
     if (isMaskNode(source) && !(mode === 'qwenEdit' && targetHandle === 'mask')) return fail('局部遮罩修改只连接图生图的遮罩端口。');
     if (mode === 'qwenEdit' && targetHandle === 'mask') {
+      if (target.data.qwenModel === 'h3_image') return fail('H3-Image 不支持局部遮罩，请切回 Qwen。');
       if (!isMaskNode(source)) return fail('请连接「局部遮罩修改」节点。');
     } else if (mode === 'qwenEdit' && ['references', 'guide', 'identity'].includes(targetHandle)) {
       if (source.data.kind !== 'image') return fail('图生图只支持图片参考。');

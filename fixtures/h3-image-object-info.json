@@ -1,0 +1,307 @@
+{
+  "source": "https://github.com/Comfy-Org/ComfyUI/tree/0228a9d73cd7c2daf8f61fe13d56b12efe307171",
+  "version": "0.45.0",
+  "note": "Official node input/output API contract; loader/file choices reduced to the three public H3-Image dependencies and synthetic input.png. No user state.",
+  "nodes": {
+    "CLIPLoader": {
+      "input": {
+        "required": {
+          "clip_name": [
+            [
+              "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+            ]
+          ],
+          "type": [
+            [
+              "minimax"
+            ]
+          ]
+        },
+        "optional": {
+          "device": [
+            [
+              "default"
+            ],
+            {
+              "advanced": true
+            }
+          ]
+        }
+      },
+      "output": [
+        "CLIP"
+      ]
+    },
+    "ConditioningZeroOut": {
+      "input": {
+        "required": {
+          "conditioning": [
+            "CONDITIONING"
+          ]
+        }
+      },
+      "output": [
+        "CONDITIONING"
+      ]
+    },
+    "KSampler": {
+      "input": {
+        "required": {
+          "model": [
+            "MODEL",
+            {
+              "tooltip": "The model used for denoising the input latent."
+            }
+          ],
+          "seed": [
+            "INT",
+            {
+              "default": 0,
+              "min": 0,
+              "max": 18446744073709551615,
+              "control_after_generate": true,
+              "tooltip": "The random seed used for creating the noise."
+            }
+          ],
+          "steps": [
+            "INT",
+            {
+              "default": 20,
+              "min": 1,
+              "max": 10000,
+              "tooltip": "The number of steps used in the denoising process."
+            }
+          ],
+          "cfg": [
+            "FLOAT",
+            {
+              "default": 8.0,
+              "min": 0.0,
+              "max": 100.0,
+              "step": 0.1,
+              "round": 0.01,
+              "tooltip": "The Classifier-Free Guidance scale balances creativity and adherence to the prompt. Higher values result in images more closely matching the prompt however too high values will negatively impact quality."
+            }
+          ],
+          "sampler_name": [
+            [
+              "euler"
+            ],
+            {
+              "tooltip": "The algorithm used when sampling, this can affect the quality, speed, and style of the generated output."
+            }
+          ],
+          "scheduler": [
+            [
+              "simple"
+            ],
+            {
+              "tooltip": "The scheduler controls how noise is gradually removed to form the image."
+            }
+          ],
+          "positive": [
+            "CONDITIONING",
+            {
+              "tooltip": "The conditioning describing the attributes you want to include in the image."
+            }
+          ],
+          "negative": [
+            "CONDITIONING",
+            {
+              "tooltip": "The conditioning describing the attributes you want to exclude from the image."
+            }
+          ],
+          "latent_image": [
+            "LATENT",
+            {
+              "tooltip": "The latent image to denoise."
+            }
+          ],
+          "denoise": [
+            "FLOAT",
+            {
+              "default": 1.0,
+              "min": 0.0,
+              "max": 1.0,
+              "step": 0.01,
+              "tooltip": "The amount of denoising applied, lower values will maintain the structure of the initial image allowing for image to image sampling."
+            }
+          ]
+        }
+      },
+      "output": [
+        "LATENT"
+      ]
+    },
+    "LoadImage": {
+      "input": {
+        "required": {
+          "image": [
+            [
+              "input.png"
+            ],
+            {
+              "image_upload": true
+            }
+          ]
+        }
+      },
+      "output": [
+        "IMAGE",
+        "MASK"
+      ]
+    },
+    "MiniMaxH3ImageConditioning": {
+      "input": {
+        "required": {
+          "clip": [
+            "CLIP",
+            {}
+          ],
+          "prompt": [
+            "STRING",
+            {
+              "multiline": true,
+              "dynamicPrompts": true
+            }
+          ],
+          "width": [
+            "INT",
+            {
+              "tooltip": "0 uses the width of image_1 after its reference scaling, or 2048 without images. The model is tuned for 2048x2048 pixels of area",
+              "default": 0,
+              "min": 0,
+              "max": 16384,
+              "step": 32
+            }
+          ],
+          "height": [
+            "INT",
+            {
+              "tooltip": "0 uses the height of image_1 after its reference scaling, or 2048 without images.",
+              "default": 0,
+              "min": 0,
+              "max": 16384,
+              "step": 32
+            }
+          ]
+        },
+        "optional": {
+          "vae": [
+            "VAE",
+            {
+              "tooltip": "The MiniMax-H3-Image VAE. With it the pictures are also anchored as reference latents, without it they only condition the text encoder."
+            }
+          ],
+          "images": [
+            "COMFY_AUTOGROW_V3",
+            {
+              "template": {
+                "input": {
+                  "required": {
+                    "image": [
+                      "IMAGE",
+                      {
+                        "tooltip": "Reference picture, <Picture n> in the prompt; image_1 is the picture to edit."
+                      }
+                    ]
+                  }
+                },
+                "prefix": "image_",
+                "min": 0,
+                "max": 100
+              }
+            }
+          ]
+        }
+      },
+      "output": [
+        "CONDITIONING",
+        "LATENT"
+      ]
+    },
+    "SaveImage": {
+      "input": {
+        "required": {
+          "images": [
+            "IMAGE",
+            {
+              "tooltip": "The images to save."
+            }
+          ],
+          "filename_prefix": [
+            "STRING",
+            {
+              "default": "ComfyUI",
+              "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."
+            }
+          ]
+        },
+        "hidden": {
+          "prompt": "PROMPT",
+          "extra_pnginfo": "EXTRA_PNGINFO"
+        }
+      },
+      "output": [
+        "IMAGE"
+      ]
+    },
+    "UNETLoader": {
+      "input": {
+        "required": {
+          "unet_name": [
+            [
+              "minimax_h3_image_pruned_int8_convrot.safetensors"
+            ]
+          ],
+          "weight_dtype": [
+            [
+              "default"
+            ],
+            {
+              "advanced": true
+            }
+          ]
+        }
+      },
+      "output": [
+        "MODEL"
+      ]
+    },
+    "VAEDecode": {
+      "input": {
+        "required": {
+          "samples": [
+            "LATENT",
+            {
+              "tooltip": "The latent to be decoded."
+            }
+          ],
+          "vae": [
+            "VAE",
+            {
+              "tooltip": "The VAE model used for decoding the latent."
+            }
+          ]
+        }
+      },
+      "output": [
+        "IMAGE"
+      ]
+    },
+    "VAELoader": {
+      "input": {
+        "required": {
+          "vae_name": [
+            [
+              "minimax_h3_image_vae_fp16.safetensors"
+            ]
+          ]
+        }
+      },
+      "output": [
+        "VAE"
+      ]
+    }
+  }
+}

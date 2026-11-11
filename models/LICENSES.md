@@ -2,6 +2,8 @@
 
 可选 FLUX 3 Image Klein 权重适用 FLUX Kommunity License，来源与授权链接见 [FLUX3_KLEIN.md](FLUX3_KLEIN.md)。这组可选依赖独立于下面的 33 项记录，不继承工作台的 Apache-2.0 许可。
 
+可选 [H3-Image](H3_IMAGE.md) 使用独立的 [MiniMax-H3-Image Community License Agreement](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/blob/main/LICENSE)。与下方 H3 视频协议不同：年化收入超过 **100 万美元**，或向任何第三方提供托管服务，须事先通过 https://platform.minimax.io/license 取得书面授权；另有地域、署名、通知和使用限制。新增两份图片权重的许可链接登记在 [h3-image-sources.json](h3-image-sources.json)，不继承旧矩阵或工作台代码的授权。
+
 本文件解释 [`licenses.json`](licenses.json) 的 33 项逐文件记录。模型清单只说明工作台需要哪些权重，**不表示这些权重都是开源、可商用或可由本项目再分发**。GitHub 仓库不包含模型权重。
 
 核查日期：2026-10-29。许可证可能更新，商用或公开分发前应打开作者官方页复核最新文本。夸克等网盘仅作下载镜像，**镜像不授予额外权利**；授权判断优先依据作者官方 Hugging Face／Civitai 页面。

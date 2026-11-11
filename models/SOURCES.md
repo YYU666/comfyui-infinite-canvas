@@ -2,6 +2,8 @@
 
 可选 FLUX 3 Image Klein 的四项依赖、固定官方来源和校验信息见 [FLUX3_KLEIN.md](FLUX3_KLEIN.md)；它不属于下列 33 项安装清单，也不会随默认安装下载。
 
+可选 **MiniMax H3-Image** 的三份所需文件、固定官方直接下载地址和 SHA256 见 [H3_IMAGE.md](H3_IMAGE.md)；新增图片主模型和图片 VAE 使用 [h3-image-sources.json](h3-image-sources.json) 登记，32B INT8 文本编码器可复用。它不属于下列视频／综合安装 profile；不要用 H3 视频 VAE 或其他精度文件替代。
+
 本文件配合 `manifest.json` 使用。当前清单为 **33 个去重文件，164.803 GiB**。模型权重不放入 GitHub；优先从下列夸克原分享中只下载点名文件，不转存或下载整个分享。
 
 下载、商用或再分发前必须另读 [`LICENSES.md`](LICENSES.md) 与 [`licenses.json`](licenses.json)。夸克仅是镜像，不授予额外权利；H3、Krea 2、Qwen Image 2.1、Identity Edit V2 和 Civitai 单项模型各有独立限制，未知项不得推定可商用或可再分发。

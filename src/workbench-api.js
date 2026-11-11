@@ -1,3 +1,4 @@
+import { buildH3ImageWorkflow } from './h3-image.js';
 import { orderQwenReferences, compileQwenPrompt, validateQwenReferences } from './qwen-references.js';
 import { buildFlux3KleinWorkflow, scaleFlux3Dimensions } from './flux3-klein.js';
 import { LOCAL_RECONNECTED } from './local-connection.js';
@@ -179,6 +180,7 @@ export const MOSS_IMAGE_MODEL = {
 };
 
 export function buildImageWorkflow(options) {
+  if (options.imageModel === 'h3_image') return buildH3ImageWorkflow(options);
   const [width, height] = resolveImageDimensions(options.ratio);
   if (options.imageModel === 'flux3_klein') return buildFlux3KleinWorkflow(options, [width, height]);
   if (options.imageModel === 'moss') {
@@ -313,6 +315,7 @@ export function validateQwenSourceCrop(crop) {
 
 // Qwen Image 2.1 native editing: its encoder supplies the reference-matched latent.
 export function buildQwen21EditWorkflow(options) {
+  if (options.qwenModel === 'h3_image') return buildH3ImageWorkflow({ ...options, mode: 'qwenEdit' });
   if (options.qwenModel === 'flux3_klein') return buildFlux3KleinWorkflow({ ...options, mode: 'qwenEdit' });
   const cacheDevice = validateQwenCacheDevice(options.qwenCacheDevice === undefined ? 'auto' : options.qwenCacheDevice);
   if (options.qwenMaskCrop !== undefined && typeof options.qwenMaskCrop !== 'boolean') {

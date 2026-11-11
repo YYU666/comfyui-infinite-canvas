@@ -2,6 +2,8 @@
 
 `manifest.json` 是工作台安装器管理的模型清单。GitHub 仓库不包含模型权重。新增可选的 [FLUX 3 Image Klein 接入](FLUX3_KLEIN.md)使用独立来源与校验资料，尚未加入安装器 profile。
 
+可选的 [MiniMax H3-Image 图片模型](H3_IMAGE.md)提供三份文件的官方直链、大小、SHA256 与 ComfyUI 0.45.0 兼容说明；已有 32B INT8 编码器可复用。H3-Image 不属于 `core-h3` 视频七项或旧 `full` 33 项，按该独立说明安装，不必重复下载视频模型。
+
 **下载前必须阅读 [`LICENSES.md`](LICENSES.md)。** `manifest.json` 管文件完整性，[`licenses.json`](licenses.json) 管逐文件作者、许可证、商用和再分发状态；文件可下载不代表可商用或可再分发，网盘镜像不授予额外权利。
 
 - `core-h3`：7 个 H3 文生视频／参考图视频核心权重，合计 71.164 GiB；七个文件均可从 Comfy-Org 官方仓库取得并已登记 SHA256。
