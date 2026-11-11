@@ -1,6 +1,6 @@
 # Refmuse 本地工作台
 
-把本地 ComfyUI 包装为无限画布：素材引用、全能参考、首尾帧、角色替换、Krea2／MOSS 生图、Qwen 2.1 图生图、局部写实修复、无抠图换装、四视图、图片／视频高清和显存清理。Agent 协议 v2 提供 HTTP、CLI、MCP 和浏览器 WebMCP，可不打开浏览器完成建镜头、生成、选片与导出。
+把本地 ComfyUI 包装为无限画布：素材引用、全能参考、首尾帧、角色替换、Krea2／MOSS／H3-Image 生图、Qwen 2.1／H3-Image 多图编辑、局部写实修复、无抠图换装、四视图、图片／视频高清和显存清理。Agent 协议 v2 提供 HTTP、CLI、MCP 和浏览器 WebMCP，可不打开浏览器完成建镜头、生成、选片与导出。
 
 > **当前为开源发布候选版，不是稳定版。** 隔离测试、故障注入、构建、真实 Agent 队列全链路及干净环境在线安装已验证；中文空格路径、模拟无 D 盘和逻辑非 C 盘启动通过，8 小时规模长跑仍待完成。详见下方支持矩阵与 `docs/OPEN_SOURCE_REMEDIATION.md`。
 
@@ -10,10 +10,11 @@
 
 | 能力 | 当前状态 | 验证边界 |
 |---|---|---|
-| Windows + ComfyUI 0.42.5 | 已验证的目标组合 | 在线节点验证基于该版本；其他版本不保证兼容 |
+| Windows + ComfyUI 0.42.5 / 0.45.0 | 原工作流基于 0.42.5；H3-Image 已核验 0.45.0 | 新版原有节点注册兼容检查通过；不代表所有旧模型与输入已重新完成真实推理验收 |
 | 项目、素材、自动保存与无限画布 | 已实现，隔离回归通过 | 覆盖持久化、切换、冲突、撤销、上传失败和关闭恢复；不含多人在线协作 |
 | H3 核心模型配置 | `core-h3` 七项来源与哈希已登记 | 核心清单不代表完整 33 项已下载或全部通过真实 GPU 验收 |
 | Krea2／MOSS／Qwen、换装与四视图 | 工作流已实现 | 共用合同和仿真回归不替代各模型、各输入质量下的真实生成验收 |
+| H3-Image 文生图／多图编辑 | 原生模型切换、4MP / 16MP 与结果回传已实现 | 6 步、最多 10 图；构建与隔离界面、真实节点 schema 校验通过；需支持新图片节点的 ComfyUI 和独立 Image VAE |
 | 电子主美图解分析 | 已实现，合成与模拟验证 | 作品与最多 3 张用途明确的参考、可编辑辅助线和本地 PNG；云端账户权限及真实推理效果需自行验证 |
 | Agent HTTP／CLI／MCP | 真实队列全链路通过 | 已在临时项目完成建镜头、生成、等待、Take、选用和导出；隔离测试另覆盖编码、幂等与归属 |
 | 浏览器 WebMCP | 已实现 | 已验证排队成功语义；仍依赖当前页面与浏览器支持，后台 Agent 优先使用 HTTP／CLI／MCP |
@@ -35,6 +36,7 @@
 - 33 个模型的作者、官方页、许可证、商用与再分发状态逐项见 [`models/LICENSES.md`](models/LICENSES.md) 和机器可读 [`models/licenses.json`](models/licenses.json)。
 - 六个锁定节点的许可证见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)；安装器独立克隆节点，不在本仓库捆绑其源码。
 - H3 有适用地区、年收入、署名和生成内容披露等限制；Krea 2 有 100 万美元收入门槛；Qwen Image 2.1 和 Identity Edit V2 默认仅非商用。未知项不得视为可商用或可再分发。
+- H3-Image 采用独立社区协议：年化收入超过 100 万美元或向第三方提供托管服务须事先授权，另有地域及分发限制；[下载与授权说明](models/H3_IMAGE.md)不能以视频 H3 条款替代。
 - 网盘链接只是镜像，不授予额外权利。公开分发或商用前必须按作者官方页面复核最新条款。
 
 ## 画布中的图片与工作流
@@ -47,6 +49,14 @@
 - 右键生成节点或生成结果，选择「进入 ComfyUI」，可在当前画布内查看对应任务的内部节点。四视图可分别查看四张图和最终拼接阶段；打开查看器不会提交生成，修改副本不会自动写回画布。
 - 查看器需要任务记录。更新此功能后需同步仓库自有 `h3_workbench_refine` 节点的 `web/` 扩展，并在 ComfyUI 队列空闲时重启服务。
 - 可选的 Qwen Turbo、Muse V4 与 SeedVR2 7B 预设及模型说明见 [可选四视图模型升级](models/CHARACTER_UPGRADES.md)。模型权重需另外安装。
+
+## H3-Image · 文生图与多图编辑（v1.0.11）
+
+更新画布后刷新页面，右键选择「H3-Image 文生图」或「H3-Image 多图编辑」。已有文生图节点可在「生图模型」中切换到 **MiniMax H3 Image INT8**；图生图节点也可在模型下拉框切换 H3-Image 与原模型。编辑时将图片连到参考端口，在提示词里用图1、图2说明用途；最多 10 张，可调整顺序，图1决定输出比例。生成结果直接回到画布，可继续连下游节点。
+
+默认约 **4MP、6 步、CFG 1**，可选约 16MP。24GB 显卡建议先使用 4MP。无需额外提示词扩写模型或云端 API；H3-Image 不支持当前 Qwen 遮罩、局部裁切或其他图片模型 LoRA。
+
+**需要同时准备画布实际连接的 ComfyUI。** 0.42.5 没有新图片节点；已核验 0.45.0。画布升级不会替换 ComfyUI；把模型装到另一个端口也不会改变当前连接。提交前会列出具体缺项。三份所需文件的 [官方直链、SHA256、目录与兼容要求](models/H3_IMAGE.md)，以及 [详细使用说明与便携节点包](docs/h3-image.md)均已提供。已有正确的 32B INT8 文本编码器可复用，必须另装新的图片 VAE；只补此图片功能时无须下载整套视频模型。
 
 ## 导入 PureRef 图片
 
@@ -62,7 +72,7 @@
 
 ## 环境要求
 
-- Windows，ComfyUI 便携版；当前唯一完成在线节点验证的版本为 ComfyUI 0.42.5，更低版本不在支持矩阵中。
+- Windows，ComfyUI 便携版；原工作流基于 ComfyUI 0.42.5。H3-Image 需新版图片节点，已核验 ComfyUI 0.45.0；其模型与依赖准备见 [H3-Image 配置](models/H3_IMAGE.md)。
 - NVIDIA 显卡；复杂 H3 角色替换建议 24 GB 显存，较低显存需自行缩短时长和降低分辨率。
 - Git、Node.js 20.19+，以及足够的模型磁盘空间。
 - 模型包共 33 个去重文件、164.803 GiB；权重不在 GitHub 仓库中。
@@ -105,6 +115,7 @@ Windows 完整安装会创建桌面快捷方式，并在当前用户下注册固
 
 | 模型内容 | 原始链接 | 清单内包含的主要内容 |
 |---|---|---|
+| MiniMax H3-Image（可选图片模型） | [三文件直接下载与校验](models/H3_IMAGE.md) · [Comfy-Org 官方仓库](https://huggingface.co/Comfy-Org/MiniMax-H3-Image) | INT8 图片主模型、新图片 VAE、可复用 32B INT8 编码器；独立于视频七项与旧 33 项清单 |
 | MiniMax H3 主模型包 | https://pan.quark.cn/s/9ec095b95838 | FL2VA／REF2VA、32B 文本编码器、音频／视频 VAE、角色替换 LoRA |
 | H3 局部重绘／补充包 | https://pan.quark.cn/s/b9409d65ed09 | H3 Turbo LoRA、INT8 视频 VAE、SAM3.1；部分文件需在分享内搜索确认 |
 | Qwen Image 2.1 | https://pan.quark.cn/s/3df73f2e9f00 | Qwen 2.1 主模型、8B 文本编码器、VAE、Anything2RealCharacters 写实 LoRA |
@@ -118,7 +129,7 @@ Windows 完整安装会创建桌面快捷方式，并在当前用户下注册固
 | SAM3.1 官方备用 | https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors | `sam3.1_multiplex_fp16.safetensors` |
 | H3 latent 高清模型 | https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors | 下载后放在 `latent_upscale_models/` 根目录 |
 
-所有模型的**精确目标路径、目标文件名、字节数**以 [`models/manifest.json`](models/manifest.json) 为准；夸克搜索名和必要重命名以 [`models/SOURCES.md`](models/SOURCES.md) 为准。
+原有 33 项模型的**精确目标路径、目标文件名、字节数**以 [`models/manifest.json`](models/manifest.json) 为准；夸克搜索名和必要重命名以 [`models/SOURCES.md`](models/SOURCES.md) 为准。可选 H3-Image 使用 [独立三文件说明](models/H3_IMAGE.md) 和固定版本下载元数据，不在旧安装 profile 内。
 
 ## 模型配置方法
 
