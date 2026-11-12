@@ -118,12 +118,15 @@ def _background_chain(document, background, placement, fps):
                 parts.append(f"trim=start={_seconds(start)},setpts=PTS-STARTPTS")
             remaining = background["duration"] - start
             pad = duration - remaining if remaining < duration else Fraction(0)
-        parts.append(f"fps={rate}:round=near")
     else:
         pad = Fraction(0)
     parts.append(_fit(document["backgroundFit"], placement["outputWidth"], placement["outputHeight"]))
     if pad > 0:
         parts.append(f"tpad=stop_mode=clone:stop_duration={_seconds(pad + Fraction(1, fps))}")
+    # fps after tpad. FFmpeg 7.1 drops one frame when fps runs first: the hold
+    # starts on a duplicated timestamp and that frame never reaches the output.
+    if not background["isImage"]:
+        parts.append(f"fps={rate}:round=near")
     parts.append("setsar=1,format=rgba,setpts=PTS-STARTPTS")
     return "[1:v]" + ",".join(parts) + "[bg]", _seconds(pad) if pad > 0 else None
 

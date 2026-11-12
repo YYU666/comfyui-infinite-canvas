@@ -133,6 +133,7 @@ class DocumentTests(unittest.TestCase):
         plate = {"width": 64, "height": 64, "fps": Fraction(24, 1), "frameCount": 8, "duration": Fraction(8, 24), "isImage": False, "hasAudio": False}
         held, _ = build_graph(normalize_chroma_document({}), plate, short, "export")
         self.assertIn("tpad=stop_mode=clone:stop_duration=", held)
+        self.assertLess(held.index("tpad="), held.index("fps="))
         same, _ = build_graph(normalize_chroma_document({}), plate, {**short, "frameCount": 8, "duration": Fraction(8, 24)}, "export")
         self.assertNotIn("tpad=", same)
         skipped, _ = build_graph(normalize_chroma_document({"startOffset": 1}), plate, short, "export")
