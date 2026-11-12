@@ -33,6 +33,10 @@ from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_w
 from thumbnail_cache import ThumbnailCache
 from project_api import ProjectAPI
 from art_director import ArtDirectorAPI
+from video_edit_api import VideoEditAPI
+from video_edit_jobs import VideoEditJobs
+from video_rhythm_api import VideoRhythmAPI
+from video_rhythm_jobs import VideoRhythmJobs
 from pureref_sessions import PureRefSessions
 from project_store import ProjectStore
 from queue_api import QueueAPI
@@ -569,6 +573,12 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         art_director_api = getattr(self.server, "art_director_api", None)
         if art_director_api and art_director_api.handle_get(self, path):
             return
+        video_edit_api = getattr(self.server, "video_edit_api", None)
+        if video_edit_api and video_edit_api.handle_get(self, path):
+            return
+        video_rhythm_api = getattr(self.server, "video_rhythm_api", None)
+        if video_rhythm_api and video_rhythm_api.handle_get(self, path):
+            return
         if self.server.project_api.handle_get(self, path):
             return
         if path != "/api/hardware-metrics":
@@ -659,6 +669,12 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         art_director_api = getattr(self.server, "art_director_api", None)
         if art_director_api and art_director_api.handle_post(self, path):
+            return
+        video_edit_api = getattr(self.server, "video_edit_api", None)
+        if video_edit_api and video_edit_api.handle_post(self, path):
+            return
+        video_rhythm_api = getattr(self.server, "video_rhythm_api", None)
+        if video_rhythm_api and video_rhythm_api.handle_post(self, path):
             return
         if self.server.project_api.handle_post(self, path):
             return
@@ -768,6 +784,10 @@ def apply_server_settings(server):
             server.pureref_sessions.store = replacement
         if getattr(server, "art_director_api", None):
             server.art_director_api.store = replacement
+        for api_name in ("video_edit_api", "video_rhythm_api"):
+            api = getattr(server, api_name, None)
+            if api is not None and getattr(api, "jobs", None) is not None:
+                api.jobs.store = replacement
         server.project_api.domain.store = replacement
         if getattr(server, "agent_api", None):
             server.agent_api.protocol.store = replacement
@@ -842,6 +862,8 @@ def main():
             server.project_api = ProjectAPI(server.project_store)
             server.pureref_sessions = PureRefSessions(server.project_store)
             server.art_director_api = ArtDirectorAPI(server.project_store)
+            server.video_edit_api = VideoEditAPI(VideoEditJobs(runtime_dir() / "video-edit-jobs", server.project_store))
+            server.video_rhythm_api = VideoRhythmAPI(VideoRhythmJobs(runtime_dir() / "video-rhythm-jobs", server.project_store))
             server.thumbnail_cache = ThumbnailCache(runtime_dir() / "thumbnails", server.project_store, COMFY_URL)
             server.doctor = WorkbenchDoctor(
                 HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,

@@ -9,9 +9,9 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   ArrowDownToLine, ArrowUp, AudioLines, Check, ChevronDown, CircleHelp, Clock3,
-  Cpu, Crosshair, Film, FolderOpen, Grid2X2, History, Image as ImageIcon, Layers3,
+  Cpu, Crosshair, Film, FolderOpen, Gauge, Grid2X2, History, Image as ImageIcon, Layers3,
   Library, Link2, LoaderCircle, Magnet, Map as MapIcon, Maximize2, MemoryStick, Minus, MoreHorizontal, MousePointer2,
-  Music2, Pin, Plus, Redo2, RefreshCw, Search, Settings2, Sparkles, Square, Trash2,
+  Music2, Pin, Plus, Redo2, RefreshCw, Search, Settings2, Sparkles, Spline, Square, Trash2,
   Type, Undo2, Upload, Video, WandSparkles, X, Zap,
 } from 'lucide-react';
 import {
@@ -67,6 +67,12 @@ import { copyPureRefResource, pureRefImageNodes } from './pureref-import.js';
 import { DEFAULT_ADJUSTMENTS } from './image-compositing';
 import { isImageProcess, imageProcessPorts, imageProcessSnapshot } from './image-process-graph';
 import { renderImageProcess } from './image-process-runtime';
+import VideoEditorNode from './VideoEditorNode';
+import VideoRhythmNode from './VideoRhythmNode';
+import { defaultVideoEditDocument, videoEditInputView } from './video-edit-document';
+import { createVideoEditRunner } from './video-edit-runtime';
+import { defaultRemapKeyframes, defaultSpeedSettings } from './video-rhythm-document';
+import { createVideoRhythmRunner } from './video-rhythm-runtime';
 import { assetUrl } from './project-store-http';
 import { useLocalConnection } from './use-local-connection';
 import { localConnectionPresentation } from './local-connection';
@@ -466,11 +472,19 @@ function ImageProcessCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <ImageProcessNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
+function VideoEditCanvasNode(props) {
+  const actions = useContext(NodeContext);
+  return <VideoEditorNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
+}
+function VideoRhythmCanvasNode(props) {
+  const actions = useContext(NodeContext);
+  return <VideoRhythmNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
+}
 function ArtDirectorCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <ArtDirectorNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
-const nodeTypes = { artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode) };
+const nodeTypes = { artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode) };
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
   const saved = useMemo(() => {
@@ -1170,9 +1184,50 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       }
     }
   }, [project.id, project.readOnly, getImageProcessState, chooseMedia, saveCanvasAsset, updateNode, setNodes, setEdges, persistProject]);
+  const videoEditDepsRef = useRef({});
+  videoEditDepsRef.current = { updateNode, saveCanvasMedia, persistProject, saveProjectFile: (storageId, file, revision) => saveProjectFile(project.id, storageId, file, revision) };
+  const videoEditRunnerRef = useRef(null);
+  if (!videoEditRunnerRef.current) videoEditRunnerRef.current = createVideoEditRunner({
+    getProjectId: () => projectRef.current.id, getNodes: () => nodesRef.current, getEdges: () => edgesRef.current,
+    jobs: localImageJobsRef.current, onJobsChange: () => setLocalImageJobsVersion((version) => version + 1),
+    updateNode: (...args) => videoEditDepsRef.current.updateNode(...args),
+    saveCanvasMedia: (...args) => videoEditDepsRef.current.saveCanvasMedia(...args),
+    persistProject: () => videoEditDepsRef.current.persistProject(),
+    saveProjectFile: (...args) => videoEditDepsRef.current.saveProjectFile(...args),
+  });
+  const videoRhythmRunnerRef = useRef(null);
+  if (!videoRhythmRunnerRef.current) videoRhythmRunnerRef.current = createVideoRhythmRunner({
+    getProjectId: () => projectRef.current.id, getNodes: () => nodesRef.current, getEdges: () => edgesRef.current,
+    jobs: localImageJobsRef.current, onJobsChange: () => setLocalImageJobsVersion((version) => version + 1),
+    updateNode: (...args) => videoEditDepsRef.current.updateNode(...args),
+    saveCanvasMedia: (...args) => videoEditDepsRef.current.saveCanvasMedia(...args),
+    persistProject: () => videoEditDepsRef.current.persistProject(),
+    saveProjectFile: (...args) => videoEditDepsRef.current.saveProjectFile(...args),
+  });
+  const getVideoEditState = useCallback((id) => {
+    const node = nodesRef.current.find((item) => item.id === id);
+    return {
+      inputs: videoEditInputView(id, nodesRef.current, edgesRef.current, (path) => assetUrl(project.id, path)),
+      busy: localImageJobsRef.current.has(id),
+      resultUrl: node?.data.editResultAssetPath ? assetUrl(project.id, node.data.editResultAssetPath) : null,
+    };
+  }, [project.id]);
+  const getVideoRhythmState = useCallback((id) => {
+    const node = nodesRef.current.find((item) => item.id === id);
+    const edge = edgesRef.current.find((item) => item.target === id && item.targetHandle === 'v1');
+    const source = nodesRef.current.find((item) => item.id === edge?.source);
+    return {
+      busy: localImageJobsRef.current.has(id),
+      input: source ? { nodeId: source.id, title: source.data.title || '视频' } : null,
+      resultUrl: node?.data.rhythmResultAssetPath ? assetUrl(project.id, node.data.rhythmResultAssetPath) : null,
+    };
+  }, [project.id]);
 
   const generateNode = useCallback(async (id) => {
-    if (nodesRef.current.find(n => n.id === id)?.type === 'artDirector') return artRunRef.current?.(id);
+    const kind = nodesRef.current.find(n => n.id === id)?.type;
+    if (kind === 'artDirector') return artRunRef.current?.(id);
+    if (kind === 'videoEdit') return switchingRef.current || project.readOnly ? { ok: false, error: '当前画布不可编辑。' } : videoEditRunnerRef.current.run(id);
+    if (kind === 'videoSpeed' || kind === 'videoTimeRemap') return switchingRef.current || project.readOnly ? { ok: false, error: '当前画布不可编辑。' } : videoRhythmRunnerRef.current.run(id);
     if (switchingRef.current || project.readOnly) return;
     const attempt = generationAttemptsRef.current.begin(id);
     const assertCurrent = () => generationAttemptsRef.current.assert(id, attempt);
@@ -1360,6 +1415,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (type === 'generator') data = { ...DEFAULT_GENERATOR, ...extra };
     else if (type === 'artDirector') data = { title: '电子主美 · 图解分析', status: 'idle', brief: '', preserve: '', referencePurposes: {}, ...extra };
     else if (type === 'imageProcess') data = { ...DEFAULT_ADJUSTMENTS, adjustmentType: 'basic', mode: 'colorAdjust', title: '颜色调整', status: 'idle', blendMode: 'normal', opacity: 100, fit: 'cover', maskChannel: 'luminance', maskInvert: false, ...extra };
+    else if (type === 'videoEdit') data = { title: '视频编辑', status: 'idle', editDocument: defaultVideoEditDocument(), ...extra };
+    else if (type === 'videoSpeed') data = { title: '恒定速度', status: 'idle', ...defaultSpeedSettings(), ...extra };
+    else if (type === 'videoTimeRemap') data = { title: '时间重映射', status: 'idle', remapKeyframes: defaultRemapKeyframes(), ...extra };
     else if (type === 'prompt') data = { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...extra };
     else if (type === 'note') data = { title: '创作备注', text: '', ...extra };
     else {
@@ -1749,7 +1807,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       if (!columns.has(depth)) columns.set(depth, []);
       columns.get(depth).push(node);
     });
-    const heightOf = (node) => node.type === 'artDirector' ? 1450 : node.type === 'imageProcess' ? 1000 : node.type === 'generator' ? 360 : node.type === 'prompt' ? 390 : node.type === 'note' ? 250 : 260;
+    const heightOf = (node) => node.type === 'artDirector' ? 1450 : node.type === 'imageProcess' ? 1000 : node.type === 'videoEdit' ? 420 : node.type === 'videoTimeRemap' ? 420 : node.type === 'videoSpeed' ? 300 : node.type === 'generator' ? 360 : node.type === 'prompt' ? 390 : node.type === 'note' ? 250 : 260;
     const layouts = new Map();
     const maxHeight = Math.max(...[...columns.values()].map((items) => items.reduce((sum, node) => sum + heightOf(node) + 80, -80)));
     [...columns.entries()].sort(([a], [b]) => a - b).forEach(([depth, items]) => {
@@ -1836,7 +1894,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
   const artDirector = useArtDirector({ project, projectRef, switchingRef, nodes, edges, nodesRef, edgesRef, setNodes, setEdges, updateNode, addNode, chooseMedia, saveCanvasAsset, persistProject, localImageJobsRef, setLocalImageJobsVersion, mediaWritesRef, assetUrl, findFreePosition, uid, onConnect });
   artRunRef.current = (id) => { const state = artDirector.getArtDirectorState(id); return state.node?.data.analysis?.sourceVersion === state.signature ? artDirector.exportArtBoard(id) : artDirector.runArtAnalysis(id); };
-  const context = useMemo(() => ({ ...artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const context = useMemo(() => ({ ...artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoEditState, resumeVideoEdit: (id) => videoEditRunnerRef.current.resume(id), cancelVideoEdit: (id) => videoEditRunnerRef.current.cancel(id), prepareVideoEdit: (id) => videoEditRunnerRef.current.prepare(id), getVideoRhythmState, resumeVideoRhythm: (id) => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: (id) => videoRhythmRunnerRef.current.cancel(id), projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [getVideoEditState, getVideoRhythmState, project.id, artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -2016,22 +2074,30 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         </div>
         {addMenu && <div className="add-node-menu" role="menu" aria-label="添加节点" style={{ left: addMenu.x, top: addMenu.y }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}>
           <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>
+          <div className="add-menu-title">媒体</div>
+          <button onClick={() => addNode('image', {}, addMenu.flow)}><i><ImageIcon size={17} /></i><span>图片素材<small>角色、场景、风格参考</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode(...NODE_PRESETS.video_download, addMenu.flow)}><i><ArrowDownToLine size={17} /></i><span>视频链接下载<small>粘贴分享链接 · 下载到画布</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('video', {}, addMenu.flow)}><i><Video size={17} /></i><span>视频素材<small>动作、运镜或内容参考</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('audio', {}, addMenu.flow)}><i><Music2 size={17} /></i><span>音频素材<small>音色、配乐或声音参考</small></span><Plus size={13} /></button>
+          <button disabled={project.readOnly} onClick={() => pureRefFileRef.current?.click()}><i><Upload size={17} /></i><span>导入 PureRef 图片<small>.pur 内嵌图片 → 普通图片节点 · 网格排列</small></span><Plus size={13} /></button>
+          <div className="add-menu-title">视频节奏</div>
+          <button onClick={() => addNode('videoSpeed', { title: '恒定速度' }, addMenu.flow)}><i><Gauge size={17} /></i><span>恒定速度<small>0.5× 升格慢放 · 2× 快放 · 一条视频流</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoTimeRemap', { title: '时间重映射' }, addMenu.flow)}><i><Spline size={17} /></i><span>时间重映射<small>关键帧曲线 · 水平段为定格 · 缓入缓出</small></span><Plus size={13} /></button>
+          <div className="add-menu-title">颜色</div>
+          <p className="add-menu-empty">调色节点尚未加入</p>
+          <div className="add-menu-title">剪辑合成</div>
+          <button onClick={() => addNode('videoEdit', { title: '视频编辑' }, addMenu.flow)}><i><Film size={17} /></i><span>视频编辑<small>帧精确裁切 · 分割 · 倒放 · 补帧 · 拼接 · 原声</small></span><Plus size={13} /></button>
           <div className="add-menu-title">官方节点</div>
           <button onClick={() => addNode('generator', {}, addMenu.flow)}><i><WandSparkles size={17} /></i><span>视频生成<small>MiniMax H3 · 全能参考 / 首尾帧</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'image', title: '文生图' }, addMenu.flow)}><i><ImageIcon size={17} /></i><span>文生图<small>Krea2 / MOSS · 新人物与场景 · 约 1MP</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'qwenEdit', title: '图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>图生图<small>千问 2.1 · 多图参考 · 标准 / Turbo</small></span><Plus size={13} /></button>
           <button onClick={() => addNode(...NODE_PRESETS.local_mask, addMenu.flow)}><i><Crosshair size={17} /></i><span>局部遮罩修改<small>绘制修改范围 · 连接图生图遮罩输入</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'imageUpscale', title: '图片高清', imageScale: 1.5, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>图片高清<small>可选 SeedVR2 3B / 7B · 调整放大倍率</small></span><Plus size={13} /></button>
-          <button disabled={project.readOnly} onClick={() => pureRefFileRef.current?.click()}><i><Upload size={17} /></i><span>导入 PureRef 图片<small>.pur 内嵌图片 → 普通图片节点 · 网格排列</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>作品 + 可选参考 → 可编辑辅助线与详细解析 PNG</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'colorAdjust', title: '颜色调整' }, addMenu.flow)}><i><Settings2 size={17} /></i><span>图片调色<small>曲线 · 波峰色阶 · 曝光 · HSL · 色彩平衡等</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'imageBlend', title: '图像混合' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>图像混合<small>底图 + 叠加图 · 14 种混合模式 · 可选遮罩</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'channelPack', title: 'RGBA 通道合并', packPreview: 'rgb' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>RGBA 通道合并<small>四张灰度贴图 → RGBA · 32 位 TGA 导出</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'upscale', title: '视频高清二采', resolution: '720P', randomSeed: false }, addMenu.flow)}><i><Sparkles size={17} /></i><span>视频高清二采<small>独立运行 · 3D Latent 放大 · 4 步 Turbo</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('image', {}, addMenu.flow)}><i><ImageIcon size={17} /></i><span>图片素材<small>角色、场景、风格参考</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode(...NODE_PRESETS.video_download, addMenu.flow)}><i><ArrowDownToLine size={17} /></i><span>视频链接下载<small>粘贴分享链接 · 下载到画布</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('video', {}, addMenu.flow)}><i><Video size={17} /></i><span>视频素材<small>动作、运镜或内容参考</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('audio', {}, addMenu.flow)}><i><Music2 size={17} /></i><span>音频素材<small>音色、配乐或声音参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('note', {}, addMenu.flow)}><i><Type size={17} /></i><span>文本备注<small>分镜与创作设定</small></span><Plus size={13} /></button>
           <div className="add-menu-title">第三方工具</div>
           {LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset]).map((tool) => <button key={tool.preset} onClick={() => addNode(...NODE_PRESETS[tool.preset], addMenu.flow)}><i><WandSparkles size={17} /></i><span>{tool.label}<small>{tool.description}</small></span><Plus size={13} /></button>)}

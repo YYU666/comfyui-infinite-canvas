@@ -4,6 +4,9 @@ import { allocateReferenceTag, replaceReferenceTags } from './reference-tags.js'
 const NODE_SIZES = {
   artDirector: { width: 540, height: 1700 },
   imageProcess: { width: 370, height: 1000 },
+  videoEdit: { width: 400, height: 420 },
+  videoSpeed: { width: 360, height: 300 },
+  videoTimeRemap: { width: 380, height: 420 },
   media: { width: 310, height: 250 },
   generator: { width: 440, height: 360 },
   prompt: { width: 370, height: 430 },

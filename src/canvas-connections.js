@@ -2,6 +2,9 @@ import { ART_PORTS } from './art-director.js';
 import { isMaskNode } from './canvas-mask.js';
 import { qwenCanvasReferences } from './qwen-references.js';
 import { isImageProcess, acceptsImageProcessConnection } from './image-process-graph.js';
+import { isVideoEdit, planVideoEditConnection } from './video-edit-document.js';
+import { isVideoRhythm, planVideoRhythmConnection } from './video-rhythm-document.js';
+import { isVideoProcessor } from './video-stream.js';
 
 const busy = (node) => ['uploading', 'queued', 'running', 'finishing'].includes(node?.data?.status);
 const fail = (error) => ({ error });
@@ -45,6 +48,14 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
     const existing = edges.find((edge) => Object.entries(normalized).every(([key, value]) => edge[key] === value));
     return { connection: normalized, source, target, multiple: false, existing, resolvedFrom: resolved.resolvedFrom };
   }
+  if (isVideoEdit(target)) {
+    const plan = planVideoEditConnection(connection, source, target, nodes, edges);
+    return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom };
+  }
+  if (isVideoRhythm(target)) {
+    const plan = planVideoRhythmConnection(connection, source, target, nodes, edges);
+    return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom };
+  }
   let targetHandle = connection.targetHandle;
   let sourceHandle = isMaskNode(source) ? 'mask' : source.type === 'prompt' ? 'prompt' : 'ref';
   let multiple = false;
@@ -55,6 +66,7 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
     if (source.type !== 'media' || source.data.kind !== 'image' || isMaskNode(source) || targetHandle !== 'guide') return fail('遮罩底图只接受图片。');
     if (edges.some((edge) => edge.source === target.id && edge.targetHandle === 'mask' && busy(nodes.find((node) => node.id === edge.target)))) return fail('生成期间不能更改遮罩底图。');
   } else {
+    if (isVideoProcessor(source) && target.type === 'generator') return fail('视频处理成片还不能直接连接到生成节点（含 SAM3）。请先导出，再把成片导入为视频素材节点后连接。');
     if (source.type !== 'media' || target.type !== 'generator') return fail('请把图片、视频或音频输出连接到生成节点的输入端口。');
     if (isMaskNode(source) && !(mode === 'qwenEdit' && targetHandle === 'mask')) return fail('局部遮罩修改只连接图生图的遮罩端口。');
     if (mode === 'qwenEdit' && targetHandle === 'mask') {
