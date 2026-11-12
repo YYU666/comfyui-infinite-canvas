@@ -33,6 +33,44 @@ import { planCanvasConnection } from './canvas-connections';
 import ImageLightbox from './ImageLightbox';
 import { useCanvasMcp, NODE_PRESETS, describeNodeModels } from './canvas-mcp';
 import { LOCAL_NODE_TOOLS } from './local-node-tools';
+
+const ADD_MENU_LOCAL_OVERRIDES = {
+  character_swap: { label: '角色替换', description: '官方 SAM3 · 换人，保留源视频背景' },
+  character_sheet: { label: '角色四视图生成', description: '单张角色参考 · 四图拼接' },
+  identity_edit: { label: '母图编辑 V2', description: '按母图改身份与细节' },
+};
+
+const ADD_MENU_LOCAL_GROUPS = {
+  character_swap: 'video-gen',
+  character_sheet: 'image-gen',
+  identity_edit: 'image-gen',
+};
+
+const NATIVE3D_MENU = [
+  ['model_asset', '导入或分析模型'],
+  ['model_lowpoly', '从高模生成低模'],
+  ['model_lod', '按百分比减面'],
+  ['model_uv_plan', '规划 UV 切缝'],
+  ['model_uv', '展开 UV'],
+  ['model_bake', '烘焙材质贴图'],
+  ['model_lod_legacy', '旧版修复减面'],
+];
+
+function addMenuLocalTools(group) {
+  return LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset] && (ADD_MENU_LOCAL_GROUPS[tool.preset] || 'other') === group);
+}
+
+function AddMenuLocalButton({ tool, flow, onAdd }) {
+  const override = ADD_MENU_LOCAL_OVERRIDES[tool.preset] || {};
+  return (
+    <button key={tool.preset} onClick={() => onAdd(...NODE_PRESETS[tool.preset], flow)}>
+      <i><WandSparkles size={17} /></i>
+      <span>{override.label || tool.label}<small>{override.description || tool.description}</small></span>
+      <Plus size={13} />
+    </button>
+  );
+}
+
 import WorkflowInspector from './WorkflowInspector';
 import ReferenceLibrary, { REFERENCE_LIBRARIES } from './ReferenceLibrary';
 import NodeLibrary from './NodeLibrary';
@@ -2107,34 +2145,50 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         </div>
         {addMenu && <div className="add-node-menu" role="menu" aria-label="添加节点" style={{ left: addMenu.x, top: addMenu.y }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}>
           <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>
-          <div className="add-menu-title">媒体</div>
+
+          <div className="add-menu-group">媒体</div>
           <button onClick={() => addNode('image', {}, addMenu.flow)}><i><ImageIcon size={17} /></i><span>图片素材<small>角色、场景、风格参考</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode(...NODE_PRESETS.video_download, addMenu.flow)}><i><ArrowDownToLine size={17} /></i><span>视频链接下载<small>粘贴分享链接 · 下载到画布</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('video', {}, addMenu.flow)}><i><Video size={17} /></i><span>视频素材<small>动作、运镜或内容参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('audio', {}, addMenu.flow)}><i><Music2 size={17} /></i><span>音频素材<small>音色、配乐或声音参考</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode(...NODE_PRESETS.video_download, addMenu.flow)}><i><ArrowDownToLine size={17} /></i><span>视频链接下载<small>粘贴分享链接 · 下载到画布</small></span><Plus size={13} /></button>
           <button disabled={project.readOnly} onClick={() => pureRefFileRef.current?.click()}><i><Upload size={17} /></i><span>导入 PureRef 图片<small>.pur 内嵌图片 → 普通图片节点 · 网格排列</small></span><Plus size={13} /></button>
-          <div className="add-menu-title">视频节奏</div>
-          <button onClick={() => addNode('videoSpeed', { title: '恒定速度' }, addMenu.flow)}><i><Gauge size={17} /></i><span>恒定速度<small>0.5× 升格慢放 · 2× 快放 · 一条视频流</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('videoTimeRemap', { title: '时间重映射' }, addMenu.flow)}><i><Spline size={17} /></i><span>时间重映射<small>关键帧曲线 · 水平段为定格 · 缓入缓出</small></span><Plus size={13} /></button>
-          <div className="add-menu-title">颜色</div>
-          <p className="add-menu-empty">调色节点尚未加入</p>
-          <div className="add-menu-title">剪辑合成</div>
-          <button onClick={() => addNode('videoEdit', { title: '视频编辑' }, addMenu.flow)}><i><Film size={17} /></i><span>视频编辑<small>帧精确裁切 · 分割 · 倒放 · 补帧 · 拼接 · 原声</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('videoChromaKey', { title: '绿幕扣像合成' }, addMenu.flow)}><i><Aperture size={17} /></i><span>绿幕扣像合成<small>绿幕前景 · 图片或视频背景 · 预览一帧再导出</small></span><Plus size={13} /></button>
-          <div className="add-menu-title">官方节点</div>
-          <button onClick={() => addNode('generator', {}, addMenu.flow)}><i><WandSparkles size={17} /></i><span>视频生成<small>MiniMax H3 · 全能参考 / 首尾帧</small></span><Plus size={13} /></button>
+
+          <div className="add-menu-group">图像生成</div>
           <button onClick={() => addNode('generator', { mode: 'image', title: '文生图' }, addMenu.flow)}><i><ImageIcon size={17} /></i><span>文生图<small>Krea2 / MOSS · 新人物与场景 · 约 1MP</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'image', title: 'H3-Image · 文生图', imageModel: 'h3_image', imageLora: 'none', h3ImageResolution: '4MP', ratio: '1:1' }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>H3-Image 文生图<small>MiniMax · 6 步 · 4MP / 16MP</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'qwenEdit', title: 'H3-Image · 多图编辑', qwenModel: 'h3_image', imageLora: 'none', h3ImageResolution: '4MP' }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>H3-Image 多图编辑<small>连接参考图片 · 图1决定比例</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'qwenEdit', title: '图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>图生图<small>千问 2.1 · 多图参考 · 标准 / Turbo</small></span><Plus size={13} /></button>
           <button onClick={() => addNode(...NODE_PRESETS.local_mask, addMenu.flow)}><i><Crosshair size={17} /></i><span>局部遮罩修改<small>绘制修改范围 · 连接图生图遮罩输入</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('generator', { mode: 'imageUpscale', title: '图片高清', imageScale: 1.5, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>图片高清<small>可选 SeedVR2 3B / 7B · 调整放大倍率</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>作品 + 可选参考 → 可编辑辅助线与详细解析 PNG</small></span><Plus size={13} /></button>
+          {addMenuLocalTools('image-gen').map((tool) => <AddMenuLocalButton key={tool.preset} tool={tool} flow={addMenu.flow} onAdd={addNode} />)}
+
+          <div className="add-menu-group">视频生成</div>
+          <button onClick={() => addNode('generator', {}, addMenu.flow)}><i><WandSparkles size={17} /></i><span>视频生成<small>MiniMax H3 · 全能参考 / 首尾帧</small></span><Plus size={13} /></button>
+          {addMenuLocalTools('video-gen').map((tool) => <AddMenuLocalButton key={tool.preset} tool={tool} flow={addMenu.flow} onAdd={addNode} />)}
+          <button onClick={() => addNode('generator', { mode: 'upscale', title: '视频高清二采', resolution: '720P', randomSeed: false }, addMenu.flow)}><i><Sparkles size={17} /></i><span>视频高清二采<small>独立运行 · 3D Latent 放大 · 4 步 Turbo</small></span><Plus size={13} /></button>
+
+          <div className="add-menu-group">颜色</div>
           <button onClick={() => addNode('imageProcess', { mode: 'colorAdjust', title: '颜色调整' }, addMenu.flow)}><i><Settings2 size={17} /></i><span>图片调色<small>曲线 · 波峰色阶 · 曝光 · HSL · 色彩平衡等</small></span><Plus size={13} /></button>
+
+          <div className="add-menu-group">视频节奏</div>
+          <button onClick={() => addNode('videoSpeed', { title: '恒定速度' }, addMenu.flow)}><i><Gauge size={17} /></i><span>恒定速度<small>0.5× 升格慢放 · 2× 快放</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoTimeRemap', { title: '时间重映射' }, addMenu.flow)}><i><Spline size={17} /></i><span>时间重映射<small>关键帧曲线 · 走平为定格 · 缓入缓出</small></span><Plus size={13} /></button>
+
+          <div className="add-menu-group">剪辑合成</div>
+          <button onClick={() => addNode('videoEdit', { title: '视频编辑' }, addMenu.flow)}><i><Film size={17} /></i><span>视频编辑<small>裁切 · 分割 · 倒放 · 补帧 · 拼接 · 原声</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoChromaKey', { title: '绿幕扣像合成' }, addMenu.flow)}><i><Aperture size={17} /></i><span>绿幕扣像合成<small>绿幕人物叠到图片或视频背景</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'imageBlend', title: '图像混合' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>图像混合<small>底图 + 叠加图 · 14 种混合模式 · 可选遮罩</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'channelPack', title: 'RGBA 通道合并', packPreview: 'rgb' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>RGBA 通道合并<small>四张灰度贴图 → RGBA · 32 位 TGA 导出</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('generator', { mode: 'upscale', title: '视频高清二采', resolution: '720P', randomSeed: false }, addMenu.flow)}><i><Sparkles size={17} /></i><span>视频高清二采<small>独立运行 · 3D Latent 放大 · 4 步 Turbo</small></span><Plus size={13} /></button>
+
+          <div className="add-menu-group">3D</div>
+          {NATIVE3D_MENU.filter(([preset]) => NODE_PRESETS[preset]).map(([preset, hint]) => (
+            <button key={preset} onClick={() => addNode(...NODE_PRESETS[preset], addMenu.flow)}><i><Layers3 size={17} /></i><span>{NODE_PRESETS[preset][1].title}<small>{hint}</small></span><Plus size={13} /></button>
+          ))}
+
+          <div className="add-menu-group">辅助</div>
+          <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>作品 + 可选参考 → 可编辑辅助线与详细解析 PNG</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('note', {}, addMenu.flow)}><i><Type size={17} /></i><span>文本备注<small>分镜与创作设定</small></span><Plus size={13} /></button>
-          <div className="add-menu-title">第三方工具</div>
-          {LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset]).map((tool) => <button key={tool.preset} onClick={() => addNode(...NODE_PRESETS[tool.preset], addMenu.flow)}><i><WandSparkles size={17} /></i><span>{tool.label}<small>{tool.description}</small></span><Plus size={13} /></button>)}
+          {addMenuLocalTools('other').map((tool) => <AddMenuLocalButton key={tool.preset} tool={tool} flow={addMenu.flow} onAdd={addNode} />)}
           <button onClick={() => { setAddMenu(null); setWorkflowLibraryOpen(true); }}><i><Library size={17} /></i><span>已安装的节点工具<small>选择从节点库下载或本地导入的工作流</small></span><Plus size={13} /></button>
         </div>}
         {nodeMenu && <div className="add-node-menu node-context-menu" role="menu" aria-label="节点操作"

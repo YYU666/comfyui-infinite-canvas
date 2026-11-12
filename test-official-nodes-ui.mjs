@@ -74,19 +74,32 @@ try {
    assert.doesNotMatch(await menu.innerText(), /四视图/);
    assert.equal(await menu.getByRole('button',{name:/^母图编辑|^角色替换|^角色四视图/}).count(),0);
  }
- assert.ok((await menu.innerText()).includes('第三方工具'));
+ const menuText = await menu.innerText();
+ for (const group of ['媒体', '图像生成', '视频生成', '颜色', '视频节奏', '剪辑合成', '3D', '辅助']) assert.ok(menuText.includes(group), group);
+ for (const removed of ['官方节点', '第三方工具', '调色节点尚未加入']) assert.equal(menuText.includes(removed), false, removed);
  assert.equal(await menu.getByRole('button',{name:/^已安装的节点工具/}).count(),1);
  const groups = await menu.evaluate((element) => {
    let group = ''; const result = {};
    for (const child of element.children) {
-     if (child.classList.contains('add-menu-title')) { group = child.textContent; result[group] = []; }
+     if (child.classList.contains('add-menu-group')) { group = child.textContent; result[group] = []; }
      else if (child.tagName === 'BUTTON') result[group]?.push(child.querySelector('span')?.firstChild?.textContent || child.textContent);
    }
    return result;
  });
- for (const name of ['图片调色', '图像混合', 'RGBA 通道合并']) assert.ok(groups['官方节点'].includes(name), `${name} belongs to official nodes`);
- assert.deepEqual(groups['第三方工具'], [...expectedLocalTools.map(tool => tool.label), '已安装的节点工具']);
- for (const tool of expectedLocalTools) assert.ok(!groups['官方节点'].includes(tool.label), `${tool.label} stays in third-party tools`);
+ assert.ok(groups['颜色'].includes('图片调色'), '图片调色 belongs to 颜色');
+ for (const name of ['视频编辑', '绿幕扣像合成', '图像混合', 'RGBA 通道合并']) assert.ok(groups['剪辑合成'].includes(name), `${name} belongs to 剪辑合成`);
+ assert.ok(groups['视频生成'].includes('视频高清二采'));
+ const shownLabel = (tool) => ({ character_swap: '角色替换', character_sheet: '角色四视图生成', identity_edit: '母图编辑 V2' })[tool.preset] || tool.label;
+ const placed = { '图像生成': [], '视频生成': [], '辅助': [] };
+ for (const tool of expectedLocalTools) {
+   const label = shownLabel(tool);
+   if (tool.preset === 'character_swap') placed['视频生成'].push(label);
+   else if (tool.preset === 'character_sheet' || tool.preset === 'identity_edit') placed['图像生成'].push(label);
+   else placed['辅助'].push(label);
+ }
+ for (const label of placed['图像生成']) assert.ok(groups['图像生成'].includes(label), `${label} belongs to 图像生成`);
+ for (const label of placed['视频生成']) assert.ok(groups['视频生成'].includes(label), `${label} belongs to 视频生成`);
+ assert.deepEqual(groups['辅助'].slice(-(placed['辅助'].length + 1)), [...placed['辅助'], '已安装的节点工具']);
  if (!expectedLocalTools.length) {
    const qa = path.resolve('.cache/feature-dev/qa'); await mkdir(qa, {recursive:true});
    await menu.screenshot({path:path.join(qa,'node-classification-official.png')});
