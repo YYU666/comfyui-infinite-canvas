@@ -29,7 +29,7 @@ export const NODE_PRESETS = {
     { output: 0, source: 0, interpolation: 'linear' },
     { output: 1, source: 1, interpolation: 'linear' },
   ] }],
-  video_chroma_key: ['videoChromaKey', { title: '绿幕扣像合成', keyColor: '#00FF00', similarity: 0.2, blend: 0.08, despill: 0.5, choke: 0, feather: 0, scale: 1, offsetX: 0, offsetY: 0, anchor: 'center', backgroundFit: 'cover', outputSize: 'background', chromaAudio: 'preserve', startOffset: 0, previewTime: 0 }],
+  video_chroma_key: ['videoChromaKey', { title: '绿幕扣像合成', keyColor: '#00FF00', similarity: 0.2, blend: 0.08, despill: 0.5, choke: 0, feather: 0, secondKey: false, secondKeyColor: '#FFFFFF', secondSimilarity: 0.06, secondBlend: 0.02, scale: 1, offsetX: 0, offsetY: 0, anchor: 'center', backgroundFit: 'cover', outputSize: 'background', chromaAudio: 'preserve', startOffset: 0, previewTime: 0 }],
   video_download: ['note', { title: '视频链接下载', noteRole: 'videoDownload' }],
   audio_asset: ['audio', {}],
   note: ['note', {}],
@@ -406,7 +406,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           title: { type: 'string' },
           prompt: { type: 'string' },
           text: { type: 'string' },
-          settings: { type: 'object', description: '自定义工作流使用 workflowParameters 对象，键来自 workflowDefinition.parameters.properties；仅支持声明的标量参数。内置节点可选参数包含 qwenModel（standard/turbo/flux3_klein）、flux3Resolution（1MP/2K/4K，仅 FLUX 3）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。视频编辑（video_edit）的 settings.editDocument 为 schemaVersion 1。恒定速度（video_speed）用 speed（0.25–4，0.5 为升格慢放，2 为两倍快放）和 rhythmAudio（preserve、stretch、mute）。时间重映射（video_time_remap）用 remapKeyframes，与节点界面是同一数组：output 为成片秒，source 为源素材秒，interpolation 为 linear、easeIn、easeOut 或 easeInOut；水平段是定格。见 docs/VIDEO_RHYTHM_NODES_2026_11_12.md。绿幕扣像合成（video_chroma_key）用 keyColor（#RRGGBB，默认 #00FF00）、similarity、blend、despill、choke、feather、scale、offsetX、offsetY、anchor、backgroundFit（cover/contain/stretch）、outputSize（background/foreground）、chromaAudio（preserve/mute）、startOffset、previewTime。见 docs/VIDEO_CHROMA_KEY_NODE_2026_11_13.md。' },
+          settings: { type: 'object', description: '自定义工作流使用 workflowParameters 对象，键来自 workflowDefinition.parameters.properties；仅支持声明的标量参数。内置节点可选参数包含 qwenModel（standard/turbo/flux3_klein）、flux3Resolution（1MP/2K/4K，仅 FLUX 3）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。视频编辑（video_edit）的 settings.editDocument 为 schemaVersion 1。恒定速度（video_speed）用 speed（0.25–4，0.5 为升格慢放，2 为两倍快放）和 rhythmAudio（preserve、stretch、mute）。时间重映射（video_time_remap）用 remapKeyframes，与节点界面是同一数组：output 为成片秒，source 为源素材秒，interpolation 为 linear、easeIn、easeOut 或 easeInOut；水平段是定格。见 docs/VIDEO_RHYTHM_NODES_2026_11_12.md。绿幕扣像合成（video_chroma_key）用 keyColor（#RRGGBB，默认 #00FF00）、similarity、blend、despill、choke、feather、secondKey（布尔，默认 false，第二键色，与绿幕取并集）、secondKeyColor（默认 #FFFFFF）、secondSimilarity（默认 0.06）、secondBlend（默认 0.02）、scale、offsetX、offsetY、anchor、backgroundFit（cover/contain/stretch）、outputSize（background/foreground）、chromaAudio（preserve/mute）、startOffset、previewTime。见 docs/VIDEO_CHROMA_KEY_NODE_2026_11_13.md。' },
         }, ['nodeId']),
         execute: respond(async ({ nodeId, title, prompt, text, settings = {} }) => {
           const current = getNode(nodeId);
@@ -430,7 +430,9 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
             const merged = chromaDocumentFromNode({ ...current.data, ...settings });
             const exported = {
               keyColor: merged.keyColor, similarity: merged.similarity, blend: merged.blend, despill: merged.despill,
-              choke: merged.choke, feather: merged.feather, scale: merged.scale, offsetX: merged.offsetX, offsetY: merged.offsetY,
+              choke: merged.choke, feather: merged.feather,
+              secondKey: merged.secondKey, secondKeyColor: merged.secondKeyColor, secondSimilarity: merged.secondSimilarity, secondBlend: merged.secondBlend,
+              scale: merged.scale, offsetX: merged.offsetX, offsetY: merged.offsetY,
               anchor: merged.anchor, backgroundFit: merged.backgroundFit, outputSize: merged.outputSize,
               chromaAudio: merged.audio, startOffset: merged.startOffset,
             };

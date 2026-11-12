@@ -18,12 +18,14 @@ export default function VideoChromaKeyNode({ id, data, actions, title, toolbar }
   const disabled = running || actions.readOnly;
   const stale = videoChromaSummary(data).chromaStale;
   const [hexDraft, setHexDraft] = useState(data.keyColor || '#00FF00');
+  const [secondHexDraft, setSecondHexDraft] = useState(data.secondKeyColor || '#FFFFFF');
   const [preview, setPreview] = useState(null);
   const [previewing, setPreviewing] = useState(false);
   const [sampling, setSampling] = useState(false);
   const [previewError, setPreviewError] = useState('');
   useEffect(() => { actions.resumeVideoChroma?.(id); }, [id]);
   useEffect(() => { setHexDraft(data.keyColor || '#00FF00'); }, [data.keyColor]);
+  useEffect(() => { setSecondHexDraft(data.secondKeyColor || '#FFFFFF'); }, [data.secondKeyColor]);
   const patch = (values) => actions.updateNode(id, values);
   const setNumber = (key, fallback) => (event) => patch({ [key]: numberOr(event.target.value, fallback) });
 
@@ -65,6 +67,7 @@ export default function VideoChromaKeyNode({ id, data, actions, title, toolbar }
   }
 
   const colorValue = /^#[0-9A-Fa-f]{6}$/.test(data.keyColor || '') ? data.keyColor : '#00FF00';
+  const secondColorValue = /^#[0-9A-Fa-f]{6}$/.test(data.secondKeyColor || '') ? data.secondKeyColor : '#FFFFFF';
   return <div className="video-chroma-node" data-status={data.status || 'idle'}>
     {title}{toolbar}
     <Handle type="target" id="fg" position={Position.Left} style={{ top: 72 }} isConnectable={!disabled} title="前景：绿幕视频" />
@@ -87,6 +90,19 @@ export default function VideoChromaKeyNode({ id, data, actions, title, toolbar }
         <label>溢色<input aria-label="溢色抑制" type="number" min="0" max="1" step="0.01" value={data.despill ?? 0.5} disabled={disabled} onChange={setNumber('despill', 0.5)} /></label>
         <label>收缩<input aria-label="边缘收缩" type="number" min="0" max="8" step="1" value={data.choke ?? 0} disabled={disabled} onChange={setNumber('choke', 0)} /></label>
         <label>羽化<input aria-label="边缘羽化" type="number" min="0" max="16" step="1" value={data.feather ?? 0} disabled={disabled} onChange={setNumber('feather', 0)} /></label>
+      </div>
+      <label className="video-chroma-toggle">第二键色
+        <input aria-label="第二键色" type="checkbox" checked={data.secondKey === true} disabled={disabled} onChange={(event) => patch({ secondKey: event.target.checked })} />
+      </label>
+      <label>第二色<div className="video-chroma-color">
+        <input aria-label="第二键色取色" type="color" value={secondColorValue} disabled={disabled} onChange={(event) => patch({ secondKeyColor: event.target.value.toUpperCase() })} />
+        <input aria-label="第二键色十六进制" value={secondHexDraft} disabled={disabled} spellCheck={false} onChange={(event) => setSecondHexDraft(event.target.value)} onBlur={() => { if (/^#[0-9A-Fa-f]{6}$/.test(secondHexDraft)) patch({ secondKeyColor: secondHexDraft.toUpperCase() }); else setSecondHexDraft(data.secondKeyColor || '#FFFFFF'); }} />
+      </div></label>
+      <div className="video-chroma-grid">
+        <label>二相似<input aria-label="第二键色相似度" type="number" min="0" max="1" step="0.01" value={data.secondSimilarity ?? 0.06} disabled={disabled} onChange={setNumber('secondSimilarity', 0.06)} /></label>
+        <label>二柔和<input aria-label="第二键色柔和" type="number" min="0" max="1" step="0.01" value={data.secondBlend ?? 0.02} disabled={disabled} onChange={setNumber('secondBlend', 0.02)} /></label>
+      </div>
+      <div className="video-chroma-grid">
         <label>缩放<input aria-label="前景缩放" type="number" min="0.05" max="8" step="0.01" value={data.scale ?? 1} disabled={disabled} onChange={setNumber('scale', 1)} /></label>
         <label>横移<input aria-label="水平偏移" type="number" step="1" value={data.offsetX ?? 0} disabled={disabled} onChange={setNumber('offsetX', 0)} /></label>
         <label>纵移<input aria-label="垂直偏移" type="number" step="1" value={data.offsetY ?? 0} disabled={disabled} onChange={setNumber('offsetY', 0)} /></label>
@@ -108,7 +124,7 @@ export default function VideoChromaKeyNode({ id, data, actions, title, toolbar }
         </select></label>
       </div>
       <label>起点<input aria-label="背景起点" type="number" min="0" step="0.001" value={data.startOffset ?? 0} disabled={disabled} onChange={setNumber('startOffset', 0)} /></label>
-      <p className="video-chroma-note">缩放 1 是前景原始像素，居中叠到背景上。480×832 的人物叠到 720×1280 夜景时，四周会露出背景。收缩和羽化按前景像素计算。</p>
+      <p className="video-chroma-note">缩放 1 是前景原始像素，居中叠到背景上。480×832 的人物叠到 720×1280 夜景时，四周会露出背景。收缩和羽化按前景像素计算。第二键色默认关闭；打开后与绿幕一起抠除，默认白色、相似度 0.06。调低相似度可以保住人物高光。</p>
       <label>预览秒<input aria-label="预览时间" type="number" min="0" step="0.001" value={data.previewTime ?? 0} disabled={disabled} onChange={setNumber('previewTime', 0)} /></label>
       <div className="video-chroma-actions">
         <button type="button" disabled={disabled || previewing} onClick={() => runPreview('composite')}>预览合成</button>

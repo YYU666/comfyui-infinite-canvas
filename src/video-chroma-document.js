@@ -10,7 +10,7 @@ export const CHROMA_AUDIO = ['preserve', 'mute'];
 export const CHROMA_PREVIEW_MODES = ['composite', 'matte', 'foreground'];
 export const CHROMA_FG = 'fg';
 export const CHROMA_BG = 'bg';
-export const CHROMA_FIELDS = ['keyColor', 'similarity', 'blend', 'despill', 'choke', 'feather', 'scale', 'offsetX', 'offsetY', 'anchor', 'backgroundFit', 'outputSize', 'chromaAudio', 'startOffset', 'previewTime'];
+export const CHROMA_FIELDS = ['keyColor', 'similarity', 'blend', 'despill', 'choke', 'feather', 'secondKey', 'secondKeyColor', 'secondSimilarity', 'secondBlend', 'scale', 'offsetX', 'offsetY', 'anchor', 'backgroundFit', 'outputSize', 'chromaAudio', 'startOffset', 'previewTime'];
 
 const DEFAULTS = {
   keyColor: '#00FF00',
@@ -19,6 +19,10 @@ const DEFAULTS = {
   despill: 0.5,
   choke: 0,
   feather: 0,
+  secondKey: false,
+  secondKeyColor: '#FFFFFF',
+  secondSimilarity: 0.06,
+  secondBlend: 0.02,
   scale: 1,
   offsetX: 0,
   offsetY: 0,
@@ -58,6 +62,10 @@ function choice(value, allowed, path) {
   if (!allowed.includes(value)) fail(`${path} 必须是 ${allowed.join('、')}。`);
   return value;
 }
+function flag(value, path) {
+  if (typeof value !== 'boolean') fail(`${path} 必须是布尔值。`);
+  return value;
+}
 export function spillType(keyColor) {
   const red = Number.parseInt(keyColor.slice(1, 3), 16);
   const green = Number.parseInt(keyColor.slice(3, 5), 16);
@@ -79,6 +87,10 @@ export function normalizeChromaDocument(document = {}) {
     despill: snap(merged.despill, 'despill', 0, 1),
     choke: whole(merged.choke, 'choke', 0, 8),
     feather: whole(merged.feather, 'feather', 0, 16),
+    secondKey: flag(merged.secondKey, 'secondKey'),
+    secondKeyColor: color(merged.secondKeyColor, 'secondKeyColor'),
+    secondSimilarity: snap(merged.secondSimilarity, 'secondSimilarity', 0, 1),
+    secondBlend: snap(merged.secondBlend, 'secondBlend', 0, 1),
     scale: snap(merged.scale, 'scale', 0.05, 8),
     offsetX: whole(merged.offsetX, 'offsetX', -4096, 4096),
     offsetY: whole(merged.offsetY, 'offsetY', -4096, 4096),
@@ -99,6 +111,7 @@ export function normalizePreviewTime(value) {
 export function defaultChromaSettings() {
   return {
     keyColor: '#00FF00', similarity: 0.2, blend: 0.08, despill: 0.5, choke: 0, feather: 0,
+    secondKey: false, secondKeyColor: '#FFFFFF', secondSimilarity: 0.06, secondBlend: 0.02,
     scale: 1, offsetX: 0, offsetY: 0, anchor: 'center', backgroundFit: 'cover', outputSize: 'background',
     chromaAudio: 'preserve', startOffset: 0, previewTime: 0,
   };
@@ -108,7 +121,9 @@ export function chromaDocumentFromNode(data = {}) {
   const document = { schemaVersion: 1 };
   const pairs = {
     keyColor: data.keyColor, similarity: data.similarity, blend: data.blend, despill: data.despill,
-    choke: data.choke, feather: data.feather, scale: data.scale, offsetX: data.offsetX, offsetY: data.offsetY,
+    choke: data.choke, feather: data.feather,
+    secondKey: data.secondKey, secondKeyColor: data.secondKeyColor, secondSimilarity: data.secondSimilarity, secondBlend: data.secondBlend,
+    scale: data.scale, offsetX: data.offsetX, offsetY: data.offsetY,
     anchor: data.anchor, backgroundFit: data.backgroundFit, outputSize: data.outputSize,
     audio: data.chromaAudio, startOffset: data.startOffset,
   };
@@ -183,10 +198,20 @@ export function planVideoChromaConnection(connection, source, target, nodes, edg
   return { connection: normalized, source, target, multiple: false, existing };
 }
 
+function canonicalDocument(value) {
+  try { return JSON.stringify(normalizeChromaDocument(value)); }
+  catch { return null; }
+}
+
 export function videoChromaSummary(data = {}) {
   let canonical = null;
-  try { canonical = JSON.stringify(chromaDocumentFromNode(data)); }
+  try { canonical = canonicalDocument(chromaDocumentFromNode(data)); }
   catch { canonical = null; }
+  let submitted = null;
+  if (data.chromaResultSettings) {
+    try { submitted = canonicalDocument(JSON.parse(data.chromaResultSettings)); }
+    catch { submitted = data.chromaResultSettings; }
+  }
   return {
     keyColor: data.keyColor ?? null,
     similarity: data.similarity ?? null,
@@ -194,6 +219,10 @@ export function videoChromaSummary(data = {}) {
     despill: data.despill ?? null,
     choke: data.choke ?? null,
     feather: data.feather ?? null,
+    secondKey: data.secondKey ?? false,
+    secondKeyColor: data.secondKeyColor ?? '#FFFFFF',
+    secondSimilarity: data.secondSimilarity ?? 0.06,
+    secondBlend: data.secondBlend ?? 0.02,
     scale: data.scale ?? null,
     offsetX: data.offsetX ?? null,
     offsetY: data.offsetY ?? null,
@@ -206,6 +235,6 @@ export function videoChromaSummary(data = {}) {
     chromaResultAssetPath: data.chromaResultAssetPath || null,
     chromaResult: data.chromaResult || null,
     chromaJobId: data.chromaJobId || null,
-    chromaStale: Boolean(data.chromaResultAssetPath && canonical && data.chromaResultSettings !== canonical),
+    chromaStale: Boolean(data.chromaResultAssetPath && canonical && submitted !== canonical),
   };
 }

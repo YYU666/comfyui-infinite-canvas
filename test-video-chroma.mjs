@@ -13,6 +13,8 @@ const documents = [
   {},
   { keyColor: '#00ff00', similarity: 0.2, blend: 0.08, despill: 0.5, audio: 'mute' },
   { keyColor: '#0000FF', scale: 2, anchor: 'bottom', offsetX: 10, offsetY: -4, outputSize: 'foreground', backgroundFit: 'contain', choke: 2, feather: 1, startOffset: 0.5 },
+  { secondKey: true, secondKeyColor: '#ffffff', secondSimilarity: 0.1, secondBlend: 0.04 },
+  { secondKey: 'yes' },
   { keyColor: '#00FF00;rm' },
   { keyColor: '#00FF00', filter: 'chromakey=color=red' },
   { similarity: 2 },
@@ -113,6 +115,14 @@ assert.equal(NODE_PRESETS.video_chroma_key[0], 'videoChromaKey');
     assert.equal(updated.node.similarity, 0.3);
     assert.equal(updated.node.chromaAudio, 'mute');
     assert.equal(updated.node.previewTime, 1.5);
+    const second = await call('canvas_update_node', { nodeId: id, settings: { secondKey: true, secondKeyColor: '#ffffff', secondSimilarity: 0.1, secondBlend: 0.04 } });
+    assert.equal(second.ok, true, second.error);
+    assert.equal(second.node.secondKey, true);
+    assert.equal(second.node.secondKeyColor, '#FFFFFF');
+    assert.equal(second.node.secondSimilarity, 0.1);
+    assert.equal(second.node.secondBlend, 0.04);
+    const rejectedFlag = await call('canvas_update_node', { nodeId: id, settings: { secondKey: 'yes' } });
+    assert.equal(rejectedFlag.ok, false);
     const bad = await call('canvas_update_node', { nodeId: id, settings: { keyColor: '#00FF00;rm' } });
     assert.equal(bad.ok, false);
     const wrongNode = await call('canvas_update_node', { nodeId: 'm1', settings: { similarity: 0.3 } });
@@ -155,9 +165,12 @@ assert.equal(NODE_PRESETS.video_chroma_key[0], 'videoChromaKey');
   const submit = calls.find(([url]) => url === '/api/video-chroma/jobs')[2];
   assert.equal(submit.foreground, video.data.assetPath);
   assert.equal(submit.background, image.data.assetPath);
-  assert.equal(submit.settings.keyColor, '#00FF00');
-  assert.equal(submit.settings.similarity, 0.2);
-  assert.equal(submit.settings.audio, 'preserve');
+    assert.equal(submit.settings.keyColor, '#00FF00');
+    assert.equal(submit.settings.similarity, 0.2);
+    assert.equal(submit.settings.audio, 'preserve');
+    assert.equal(submit.settings.secondKey, false);
+    assert.equal(submit.settings.secondKeyColor, '#FFFFFF');
+    assert.equal(submit.settings.secondSimilarity, 0.06);
   assert.equal(submit.settings.outputSize, 'background');
   for (let index = 0; index < 40 && node.data.status !== 'done'; index += 1) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(node.data.chromaResultAssetPath, hash('e', 'mp4'));

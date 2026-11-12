@@ -20,6 +20,7 @@ AUDIO_MODES = ("preserve", "mute")
 PREVIEW_MODES = ("composite", "matte", "foreground")
 FIELDS = (
     "schemaVersion", "keyColor", "similarity", "blend", "despill", "choke", "feather",
+    "secondKey", "secondKeyColor", "secondSimilarity", "secondBlend",
     "scale", "offsetX", "offsetY", "anchor", "backgroundFit", "outputSize", "audio", "startOffset",
 )
 DEFAULTS = {
@@ -29,6 +30,10 @@ DEFAULTS = {
     "despill": 0.5,
     "choke": 0,
     "feather": 0,
+    "secondKey": False,
+    "secondKeyColor": "#FFFFFF",
+    "secondSimilarity": 0.06,
+    "secondBlend": 0.02,
     "scale": 1,
     "offsetX": 0,
     "offsetY": 0,
@@ -105,6 +110,12 @@ def _choice(value, allowed, path):
     return value
 
 
+def _flag(value, path):
+    if not isinstance(value, bool):
+        _fail(f"{path} 必须是布尔值。")
+    return value
+
+
 def spill_type(key_color):
     """Green unless blue is strictly the strongest channel (a blue screen)."""
     red = int(key_color[1:3], 16)
@@ -130,6 +141,10 @@ def normalize_chroma_document(document):
         "despill": _snap(merged["despill"], "despill", 0, 1),
         "choke": _whole(merged["choke"], "choke", 0, 8),
         "feather": _whole(merged["feather"], "feather", 0, 16),
+        "secondKey": _flag(merged["secondKey"], "secondKey"),
+        "secondKeyColor": _color(merged["secondKeyColor"], "secondKeyColor"),
+        "secondSimilarity": _snap(merged["secondSimilarity"], "secondSimilarity", 0, 1),
+        "secondBlend": _snap(merged["secondBlend"], "secondBlend", 0, 1),
         "scale": _snap(merged["scale"], "scale", 0.05, 8),
         "offsetX": _whole(merged["offsetX"], "offsetX", -4096, 4096),
         "offsetY": _whole(merged["offsetY"], "offsetY", -4096, 4096),

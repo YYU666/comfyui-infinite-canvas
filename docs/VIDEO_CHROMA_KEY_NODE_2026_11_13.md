@@ -40,6 +40,10 @@ canvas_update_node {
     "despill": 0.5,
     "choke": 0,
     "feather": 0,
+    "secondKey": false,
+    "secondKeyColor": "#FFFFFF",
+    "secondSimilarity": 0.06,
+    "secondBlend": 0.02,
     "scale": 1,
     "offsetX": 0,
     "offsetY": 0,
@@ -67,6 +71,10 @@ canvas_get_state { "nodeId": "<id>" }
 | `despill` | `0.5` | 0–1。溢色抑制强度，ffmpeg `despill` 的 mix。键色里蓝色严格强于绿色时用 `type=blue`，否则 `type=green` |
 | `choke` | `0` | 0–8 的整数。抠完后按前景像素对 alpha 做几次 3×3 腐蚀 |
 | `feather` | `0` | 0–16 的整数。alpha 的 boxblur 半径，单位也是前景像素 |
+| `secondKey` | `false` | 第二键色开关。默认关闭，已保存的节点不写这个字段时也保持只抠绿幕。打开后，第二种颜色和绿幕取并集：碰到任一键色的像素都变透明 |
+| `secondKeyColor` | `#FFFFFF` | 第二键色，`#RRGGBB`。默认白色，用来去掉白地板、白杆这类垃圾色 |
+| `secondSimilarity` | `0.06` | 0–1，步进 0.001。只在 `secondKey` 打开时生效。0.06 能去掉接近纯白的区域，并留下明显偏暖的人物高光。高光被吃掉时调低，白杆还在时再调高 |
+| `secondBlend` | `0.02` | 0–1。第二键色的边缘柔和，对应 ffmpeg `chromakey` 的 blend |
 | `scale` | `1` | 0.05–8。`1` 是前景的原始像素，不是「撑满画面」。480×832 叠到 720×1280 时人物居中，四周露出夜景。要撑满高度可用 `scale ≈ 输出高 / 前景高`（1280/832 ≈ 1.538） |
 | `offsetX` / `offsetY` | `0` | 锚点算完后再加的像素，-4096–4096 |
 | `anchor` | `center` | `center`、`top`、`bottom`、`left`、`right`、`topLeft`、`topRight`、`bottomLeft`、`bottomRight` |
@@ -76,7 +84,7 @@ canvas_get_state { "nodeId": "<id>" }
 | `startOffset` | `0` | 秒，0–600，精确到毫秒。只对视频背景有意义：从背景的这个时间开始铺。超过背景时长时整段停在背景最后一帧。静帧忽略 |
 | `previewTime` | `0` | 秒。只决定「预览当前帧」看哪一帧，不改变导出。帧号是 `min(N-1, floor(t × fps))` |
 
-成片帧率 = 前景恒定帧率，成片帧数 = 前景帧数，因此时长跟前景。静帧背景按这个帧率循环。视频背景更短时用最后一帧补上，更长时被成片时长截断。编码是 H.264、`yuv420p`、恒定帧率、`veryfast`、CRF 16。前景必须是恒定帧率，1–20000 帧。
+成片帧率 = 前景恒定帧率，成片帧数 = 前景帧数，因此时长跟前景。对齐用的是帧数，不是两条素材各自报的时长。静帧背景按这个帧率循环。视频背景更短时用最后一帧补上，更长时被成片帧数截断。两边帧数相同但时长差一毫秒时也补最后一帧，不再截成少一帧后校验失败。例如前景 175 帧、7.2917 秒（24fps），背景同样 175 帧但时长是 7.290 秒、`avg_frame_rate` 为 17500/729，成片仍是 175 帧。编码是 H.264、`yuv420p`、恒定帧率（`-fps_mode cfr`）、`veryfast`、CRF 16。前景必须是恒定帧率，1–20000 帧。
 
 默认落点（480×832 前景，720×1280 背景，scale 1，居中）：
 
@@ -139,6 +147,10 @@ POST /api/video-chroma/preview
     "despill": 0.5,
     "choke": 0,
     "feather": 0,
+    "secondKey": false,
+    "secondKeyColor": "#FFFFFF",
+    "secondSimilarity": 0.06,
+    "secondBlend": 0.02,
     "scale": 1,
     "offsetX": 0,
     "offsetY": 0,
@@ -169,5 +181,5 @@ Linux 上若 `python` 不在 PATH，节点测试用 `H3_TEST_PYTHON=python3`。
 - 颜色类节点仍然是空的。
 - 处理节点的成片不能直接接进官方生成器 / SAM3，需要先变成视频素材节点。
 - 预览不在页面桥工具列表里，只能在当前节点上点，或直接调上面的 HTTP。
-- 没有垃圾遮罩、没有逐帧键色动画。收缩只做腐蚀，不做反向膨胀。
+- 没有逐帧键色动画。收缩只做腐蚀，不做反向膨胀。第二键色是整段一个颜色，不是手绘垃圾遮罩。
 - 前景不接受可变帧率。背景音频不会保留。

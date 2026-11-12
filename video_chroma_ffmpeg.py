@@ -102,33 +102,67 @@ def _fit(mode, width, height):
     raise FFmpegError("背景适配方式无效。")
 
 
+def _hold_then_lock(fps, frames, extra=Fraction(0)):
+    """Clone the last frame, resample, then cut to an exact frame count.
+
+    fps runs after tpad. On FFmpeg 7.1 the other order duplicates a timestamp
+    where the hold starts and that frame never reaches the output. The extra
+    two frames cover a one-frame shortfall: 175 frames at 17500/729 last 7.290s,
+    a millisecond under 175/24, and a duration trim (or passthrough mux) writes 174.
+    """
+    if extra < 0:
+        extra = Fraction(0)
+    hold = extra + Fraction(2, fps)
+    return (
+        f"tpad=stop_mode=clone:stop_duration={_seconds(hold)},fps={_fps(fps)}:round=near,"
+        f"trim=end_frame={_px(frames)},setpts=PTS-STARTPTS"
+    )
+
+
 def _background_chain(document, background, placement, fps):
-    """Loop a still in the input args. A short video is trimmed then last-frame held."""
+    """Loop a still in the input args. A video is locked to the foreground frame count."""
     parts = []
-    rate = _fps(fps)
-    duration = Fraction(placement["frames"], fps)
+    frames = int(placement["frames"])
+    duration = Fraction(frames, fps)
     if not background["isImage"]:
         start = Fraction(int(round(float(document["startOffset"]) * 1000)), 1000)
         if start > 0 and start >= background["duration"]:
             last = background["frameCount"] - 1
             parts.append(f"trim=start_frame={_px(last)}:end_frame={_px(last + 1)},setpts=PTS-STARTPTS")
-            pad = duration
+            remaining = Fraction(0)
         else:
             if start > 0:
                 parts.append(f"trim=start={_seconds(start)},setpts=PTS-STARTPTS")
             remaining = background["duration"] - start
-            pad = duration - remaining if remaining < duration else Fraction(0)
+            if remaining < 0:
+                remaining = Fraction(0)
+        deficit = duration - remaining if remaining < duration else Fraction(0)
     else:
-        pad = Fraction(0)
+        deficit = None
     parts.append(_fit(document["backgroundFit"], placement["outputWidth"], placement["outputHeight"]))
-    if pad > 0:
-        parts.append(f"tpad=stop_mode=clone:stop_duration={_seconds(pad + Fraction(1, fps))}")
-    # fps after tpad. FFmpeg 7.1 drops one frame when fps runs first: the hold
-    # starts on a duplicated timestamp and that frame never reaches the output.
-    if not background["isImage"]:
-        parts.append(f"fps={rate}:round=near")
+    if deficit is not None:
+        parts.append(_hold_then_lock(fps, frames, deficit))
     parts.append("setsar=1,format=rgba,setpts=PTS-STARTPTS")
-    return "[1:v]" + ",".join(parts) + "[bg]", _seconds(pad) if pad > 0 else None
+    return "[1:v]" + ",".join(parts) + "[bg]", _seconds(deficit) if deficit else None
+
+
+def _primary_key(document):
+    spill = "blue" if document.get("spill") == "blue" else "green"
+    return (
+        f"chromakey=color={_color(document['keyColor'])}:similarity={_unit(document['similarity'])}:"
+        f"blend={_unit(document['blend'])}:yuv=0,despill=type={spill}:mix={_unit(document['despill'])}:expand=0.0"
+    )
+
+
+def _alpha_shape(document):
+    choke, feather = document["choke"], document["feather"]
+    if not choke and not feather:
+        return ""
+    alpha = ["alphaextract"]
+    alpha.extend(["erosion"] * int(choke))
+    if feather:
+        alpha.append(f"boxblur={_px(int(feather))}:1")
+    return ",".join(alpha)
 
 
 def _foreground_chain(document, placement, mode):
@@ -136,21 +170,35 @@ def _foreground_chain(document, placement, mode):
     scale = f"scale={width}:{height}:flags=bicubic,format=rgba,setpts=PTS-STARTPTS[fg]"
     if mode == "foreground":
         return f"[0:v]format=rgba,{scale}"
-    spill = "blue" if document.get("spill") == "blue" else "green"
-    head = (
-        f"format=rgba,chromakey=color={_color(document['keyColor'])}:similarity={_unit(document['similarity'])}:"
-        f"blend={_unit(document['blend'])}:yuv=0,despill=type={spill}:mix={_unit(document['despill'])}:expand=0.0"
-    )
-    choke, feather = document["choke"], document["feather"]
-    if not choke and not feather:
-        return f"[0:v]{head},{scale}"
-    alpha = ["alphaextract"]
-    alpha.extend(["erosion"] * int(choke))
-    if feather:
-        alpha.append(f"boxblur={_px(int(feather))}:1")
+    head = _primary_key(document)
+    shape = _alpha_shape(document)
+    if document.get("secondKey"):
+        second = (
+            f"chromakey=color={_color(document['secondKeyColor'])}:similarity={_unit(document['secondSimilarity'])}:"
+            f"blend={_unit(document['secondBlend'])}:yuv=0"
+        )
+        # Multiply the two alphas: a pixel matching either key becomes transparent.
+        keyed = (
+            f"[0:v]format=rgba,split[src][wsrc];"
+            f"[src]format=rgba,{head},format=rgba[keyed];"
+            f"[wsrc]{second},format=rgba,alphaextract,format=gray[wA];"
+            f"[keyed]split[k0][k1];"
+            f"[k1]format=rgba,alphaextract,format=gray[gA];"
+            f"[gA][wA]blend=all_mode=multiply,format=gray[cA];"
+            f"[k0][cA]alphamerge,format=rgba"
+        )
+        if not shape:
+            return f"{keyed},{scale}"
+        return (
+            f"{keyed},split[ck0][ck1];"
+            f"[ck1]format=rgba,{shape}[ckA];"
+            f"[ck0][ckA]alphamerge,{scale}"
+        )
+    if not shape:
+        return f"[0:v]format=rgba,{head},{scale}"
     return (
-        f"[0:v]{head},format=rgba,split[ck0][ck1];"
-        f"[ck1]{','.join(alpha)}[ckA];"
+        f"[0:v]format=rgba,{head},format=rgba,split[ck0][ck1];"
+        f"[ck1]{shape}[ckA];"
         f"[ck0][ckA]alphamerge,{scale}"
     )
 
@@ -183,6 +231,9 @@ def build_graph(document, foreground, background, mode="export"):
         chain, _pad = _background_chain(document, background, placement, fps)
         chains.append(chain)
     x, y = _px(placement["overlayX"]), _px(placement["overlayY"])
+    # The background chain already holds and cuts to the foreground frame count.
+    # A second fps/tpad on the overlay output drops one frame: the hold's cloned
+    # timestamp does not survive that resample.
     chains.append(
         f"[bg][fg]overlay=x={x}:y={y}:format=rgb:eof_action=repeat:shortest=1,format=yuv420p,setsar=1[vout]"
     )
@@ -246,7 +297,7 @@ def render_export(runner, document, foreground_path, background_path, background
     if audio:
         args += ["-map", "0:a:0"]
     args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p",
-             "-frames:v", _px(placement["frames"]), "-fps_mode", "passthrough"]
+             "-r", _fps(foreground["fps"]), "-fps_mode", "cfr", "-frames:v", _px(placement["frames"])]
     if audio:
         args += ["-c:a", "aac", "-b:a", "192k"]
     args += ["-movflags", "+faststart", "-y", str(target)]

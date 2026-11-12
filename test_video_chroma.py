@@ -76,6 +76,10 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual(document["keyColor"], "#00FF00")
         self.assertEqual(document["similarity"], 0.2)
         self.assertEqual(document["spill"], "green")
+        self.assertEqual(document["secondKey"], False)
+        self.assertEqual(document["secondKeyColor"], "#FFFFFF")
+        self.assertEqual(document["secondSimilarity"], 0.06)
+        self.assertEqual(document["secondBlend"], 0.02)
         self.assertEqual(document["audio"], "preserve")
         placed = plan_placement(document, 480, 832, 720, 1280)
         self.assertEqual(placed, {
@@ -108,6 +112,9 @@ class DocumentTests(unittest.TestCase):
             {"startOffset": -1},
             {"schemaVersion": 2},
             {"path": "C:/secret.mp4"},
+            {"secondKey": "yes"},
+            {"secondKeyColor": "#FFFFFF;rm"},
+            {"secondSimilarity": 2},
         ):
             with self.assertRaises(ChromaDocumentError):
                 normalize_chroma_document(bad)
@@ -129,13 +136,28 @@ class DocumentTests(unittest.TestCase):
         self.assertNotIn("chromakey", plain)
         blue, _ = build_graph(normalize_chroma_document({"keyColor": "#0000FF"}), foreground, image, "export")
         self.assertIn("despill=type=blue", blue)
+        self.assertNotIn("0xFFFFFF", graph)
+        second = normalize_chroma_document({"secondKey": True, "secondKeyColor": "#ffffff", "secondSimilarity": 0.06, "secondBlend": 0.02})
+        union, _ = build_graph(second, foreground, image, "export")
+        self.assertIn("chromakey=color=0x00FF00:similarity=0.200:blend=0.080:yuv=0", union)
+        self.assertIn("chromakey=color=0xFFFFFF:similarity=0.060:blend=0.020:yuv=0", union)
+        self.assertIn("blend=all_mode=multiply", union)
         short = {"width": 64, "height": 64, "isImage": False, "frameCount": 4, "duration": Fraction(4, 24), "fps": Fraction(24, 1), "hasAudio": False}
         plate = {"width": 64, "height": 64, "fps": Fraction(24, 1), "frameCount": 8, "duration": Fraction(8, 24), "isImage": False, "hasAudio": False}
         held, _ = build_graph(normalize_chroma_document({}), plate, short, "export")
         self.assertIn("tpad=stop_mode=clone:stop_duration=", held)
         self.assertLess(held.index("tpad="), held.index("fps="))
+        self.assertIn("trim=end_frame=8", held)
         same, _ = build_graph(normalize_chroma_document({}), plate, {**short, "frameCount": 8, "duration": Fraction(8, 24)}, "export")
-        self.assertNotIn("tpad=", same)
+        self.assertIn("trim=end_frame=8", same)
+        mismatched = {
+            "width": 64, "height": 64, "isImage": False, "frameCount": 175,
+            "duration": Fraction(729, 100), "fps": Fraction(17500, 729), "hasAudio": False,
+        }
+        counted = {"width": 64, "height": 64, "fps": Fraction(24, 1), "frameCount": 175, "duration": Fraction(175, 24), "isImage": False, "hasAudio": False}
+        locked, _ = build_graph(normalize_chroma_document({}), counted, mismatched, "export")
+        self.assertIn("trim=end_frame=175", locked)
+        self.assertLess(locked.index("tpad="), locked.index("fps="))
         skipped, _ = build_graph(normalize_chroma_document({"startOffset": 1}), plate, short, "export")
         self.assertIn("trim=start_frame=3:end_frame=4", skipped)
         choked, _ = build_graph(normalize_chroma_document({"choke": 2, "feather": 2}), foreground, image, "export")
@@ -209,6 +231,66 @@ class FfmpegChromaTests(unittest.TestCase):
         muted, muted_path = self.export("plate", "night", {"audio": "mute"}, node="videoChromaKey-mute")
         self.assertEqual(muted["result"]["audio"], "mute")
         self.assertFalse(has_audio(muted_path))
+
+    def test_duration_mismatch_keeps_the_foreground_frame_count(self):
+        media = Path(self.temporary.name) / "media"
+        foreground_path = write_clip(media / "count-fg.mp4", [green_plate(32, 32, (8, 8, 12, 12))] * 175, fps=Fraction(24, 1))
+        background_path = write_clip(media / "count-bg.mp4", [np.full((32, 32, 3), (11, 16, 32), np.uint8)] * 175, fps=Fraction(17500, 729))
+        foreground = probe(Runner(), foreground_path)
+        background = probe(Runner(), background_path)
+        self.assertEqual(foreground["frameCount"], 175)
+        self.assertEqual(background["frameCount"], 175)
+        self.assertEqual(foreground["duration"], Fraction(175, 24))
+        self.assertEqual(background["duration"], Fraction(729, 100))
+        self.assertEqual(background["frameTimebase"], Fraction(729, 17500))
+        with foreground_path.open("rb") as stream:
+            foreground_asset = self.store.put_asset(self.project, foreground_path.name, stream, "video/mp4")["asset"]["path"]
+        with background_path.open("rb") as stream:
+            background_asset = self.store.put_asset(self.project, background_path.name, stream, "video/mp4")["asset"]["path"]
+        job = self.jobs.submit({
+            "projectId": self.project, "nodeId": "videoChromaKey-count",
+            "foreground": foreground_asset, "background": background_asset, "settings": {"schemaVersion": 1},
+        })
+        done = self.jobs.wait(job["id"], 180)
+        self.assertEqual(done["status"], "completed", done.get("error"))
+        info = probe(Runner(), self.jobs.output_file(job["id"]))
+        self.assertEqual(info["frameCount"], 175)
+        self.assertEqual((info["width"], info["height"]), (32, 32))
+        self.assertEqual(info["frameTimebase"], Fraction(1, 24))
+
+    def test_second_key_removes_white_and_keeps_the_subject(self):
+        plate = np.zeros((64, 64, 3), np.uint8)
+        plate[:, :, 1] = 255
+        plate[40:, :] = (255, 255, 255)
+        plate[8:36, 30:36] = (255, 255, 255)
+        plate[10:28, 8:22] = (220, 40, 40)
+        plate[12:22, 40:54] = (255, 220, 180)
+        media = Path(self.temporary.name) / "media"
+        foreground_path = write_clip(media / "white-fg.mp4", [plate] * 4)
+        background_path = write_clip(media / "white-bg.mp4", [np.full((64, 64, 3), (11, 16, 32), np.uint8)] * 4)
+        with foreground_path.open("rb") as stream:
+            foreground_asset = self.store.put_asset(self.project, foreground_path.name, stream, "video/mp4")["asset"]["path"]
+        with background_path.open("rb") as stream:
+            background_asset = self.store.put_asset(self.project, background_path.name, stream, "video/mp4")["asset"]["path"]
+
+        def run(settings, node):
+            job = self.jobs.submit({
+                "projectId": self.project, "nodeId": node,
+                "foreground": foreground_asset, "background": background_asset, "settings": settings,
+            })
+            done = self.jobs.wait(job["id"], 180)
+            self.assertEqual(done["status"], "completed", done.get("error"))
+            return read_rgb(self.jobs.output_file(job["id"]))[0]
+
+        closed = run({"schemaVersion": 1}, "videoChromaKey-white-off")
+        opened = run({"schemaVersion": 1, "secondKey": True}, "videoChromaKey-white-on")
+        self.assertGreater(int(closed[50, 8, 0]), 200)
+        self.assertGreater(int(opened[20, 14, 0]), 160)
+        self.assertLess(int(opened[20, 14, 1]), 90)
+        self.assertGreater(int(opened[16, 46, 0]), 180)
+        self.assertTrue(_close(opened[50, 8], (11, 16, 32), tolerance=40))
+        self.assertTrue(_close(opened[16, 32], (11, 16, 32), tolerance=40))
+        self.assertGreater(int(closed[16, 32, 0]), 180)
 
     def test_short_video_background_holds_its_last_frame(self):
         _done, path = self.export("small", "hold", {}, node="videoChromaKey-hold")

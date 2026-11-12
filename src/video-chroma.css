@@ -13,6 +13,8 @@
 .video-chroma-controls label { display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 6px; font-size: 11px; }
 .video-chroma-controls input, .video-chroma-controls select { min-width: 0; background: #17181d; color: inherit; border: 1px solid var(--neo-line, #41434c); border-radius: 4px; padding: 4px 6px; font-size: 11px; }
 .video-chroma-color { display: flex; gap: 6px; align-items: center; }
+.video-chroma-toggle { grid-template-columns: 1fr auto; }
+.video-chroma-toggle input { width: 16px; height: 16px; justify-self: end; }
 .video-chroma-color input[type="color"] { width: 28px; height: 24px; padding: 0; background: transparent; }
 .video-chroma-node button { display: inline-flex; gap: 4px; align-items: center; padding: 5px 7px; font-size: 11px; background: transparent; border: 1px solid var(--neo-line, #41434c); border-radius: 4px; color: inherit; cursor: pointer; }
 .video-chroma-node button:disabled { opacity: .5; cursor: default; }
