@@ -24,11 +24,12 @@
       "path": "diffusion_models/museByStableYogi_v40INT8Extended.safetensors",
       "bytes": 13491952248,
       "sha256": "1c045de770519c5acfad3d77cafa4fda0f1b1d836f4931c56e22b85ceb1f6830",
-      "source": "https://huggingface.co/RunningHubAI/rh-musebystableyogi-v40int8extended.safetensors-unet/resolve/main/museByStableYogi_v40INT8Extended.safetensors",
-      "sourceKind": "public-mirror-author-sha256-match",
+      "source": "https://civitai.com/models/2741166?modelVersionId=3425119",
+      "sourceKind": "official-civitai-sha256-match",
       "authorPage": "https://civitai.com/models/2741166?modelVersionId=3425119",
       "authorFileId": 3319930,
-      "licenseReview": "Author restrictions and Krea base-model terms apply independently. Mirror availability does not grant commercial or redistribution permission."
+      "publishedFilename": "Muse By Stable Yogi Krea2 V4.0 Extended CIV INT8-ConvRot C86.safetensors",
+      "licenseReview": "Same SHA256 as the author file on this Civitai version. Anonymous download returns 401; the creator requires a Civitai login. Rename the downloaded file to the path above. Author restrictions and Krea base-model terms apply independently."
     }
   ]
 }

@@ -37,7 +37,7 @@
 - 六个锁定节点的许可证见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)；安装器独立克隆节点，不在本仓库捆绑其源码。
 - H3 有适用地区、年收入、署名和生成内容披露等限制；Krea 2 有 100 万美元收入门槛；Qwen Image 2.1 和 Identity Edit V2 默认仅非商用。未知项不得视为可商用或可再分发。
 - H3-Image 采用独立社区协议：年化收入超过 100 万美元或向第三方提供托管服务须事先授权，另有地域及分发限制；[下载与授权说明](models/H3_IMAGE.md)不能以视频 H3 条款替代。
-- 网盘链接只是镜像，不授予额外权利。公开分发或商用前必须按作者官方页面复核最新条款。
+- realism engine 仍保留一条夸克镜像，镜像不授予额外权利。公开分发或商用前必须按作者官方页面复核最新条款。
 
 ## 画布中的图片与工作流
 
@@ -111,25 +111,31 @@ Windows 完整安装会创建桌面快捷方式，并在当前用户下注册固
 
 ## 模型与 LoRA 下载链接
 
-模型不上传到 GitHub。按下表进入原始分享或作者页面，再根据 [`models/SOURCES.md`](models/SOURCES.md) 的 33 项映射逐项下载；**不要全量转存 TB 级分享，也不要用同名旧版或其他量化版代替。**
+模型不上传到 GitHub。按下表的官方地址，再根据 [`models/SOURCES.md`](models/SOURCES.md) 的 33 项映射逐项下载；**不要整仓转存，也不要用同名旧版或其他量化版代替。** 前缀型地址要接上清单相对路径，除非 `SOURCES.md` 写了不同的远程路径。
 
-| 模型内容 | 原始链接 | 清单内包含的主要内容 |
+| 模型内容 | 官方链接 | 清单内包含的主要内容 |
 |---|---|---|
 | MiniMax H3-Image（可选图片模型） | [三文件直接下载与校验](models/H3_IMAGE.md) · [Comfy-Org 官方仓库](https://huggingface.co/Comfy-Org/MiniMax-H3-Image) | INT8 图片主模型、新图片 VAE、可复用 32B INT8 编码器；独立于视频七项与旧 33 项清单 |
-| MiniMax H3 主模型包 | https://pan.quark.cn/s/9ec095b95838 | FL2VA／REF2VA、32B 文本编码器、音频／视频 VAE、角色替换 LoRA |
-| H3 局部重绘／补充包 | https://pan.quark.cn/s/b9409d65ed09 | H3 Turbo LoRA、INT8 视频 VAE、SAM3.1；部分文件需在分享内搜索确认 |
-| Qwen Image 2.1 | https://pan.quark.cn/s/3df73f2e9f00 | Qwen 2.1 主模型、8B 文本编码器、VAE、Anything2RealCharacters 写实 LoRA |
-| Krea2 全攻略 | https://pan.quark.cn/s/83b5ad9265e8 | Krea2 Turbo、4B 文本编码器、VAE、写实／亚洲／奇幻现实／复古动漫／水彩 LoRA |
-| MOSS | https://pan.quark.cn/s/70e57d93e32d | MOSS 主模型、9B 文本编码器、FLUX2 VAE、SeedVR2 VAE |
-| 四视图原视频分享 | https://pan.quark.cn/s/4b5a36d50e9c | 在分享内搜索 `QuadView_krea2_v1`；未逐项核实，搜不到用下方官方链接 |
+| MiniMax H3 视频权重 | https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/ | FL2VA／REF2VA、INT8 与 NVFP4 文本编码器、音频／视频 VAE、三份 Turbo LoRA。路径与清单相同 |
+| 角色替换 LoRA | https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA/resolve/main/h3_character_swap_v1.5.safetensors | `h3_character_swap_v1.5.safetensors` |
+| Qwen Image 2.1 | https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/ | Qwen 2.1 主模型、8B 文本编码器、VAE。路径与清单相同 |
+| Anything2RealCharacters | https://huggingface.co/WarmBloodAban/Qwen-Image-2.1-LoRAs/resolve/main/Qwen2.1_Anything2RealCharacters.safetensors | 官方文件名已是清单目标名 |
+| Krea2 Turbo、4B 编码器与 VAE | https://huggingface.co/Comfy-Org/Krea-2/resolve/main/ | `krea2_turbo_fp8_scaled`、`qwen3vl_4b_fp8_scaled`、`qwen_image_vae` |
+| 复古动漫 LoRA | https://huggingface.co/krea/Krea-2-LoRA-retroanime/resolve/main/retroanime.safetensors | 下载后改名为 `krea2_紫调复古旧动漫retroanime.safetensors` |
+| 柔和水彩 LoRA | https://huggingface.co/krea/Krea-2-LoRA-softwatercolor/resolve/main/softwatercolor.safetensors | 下载后改名为 `krea2_装饰艺术柔和水彩softwatercolor.safetensors` |
+| 奇幻现实 LoRA | https://huggingface.co/vrgamedevgirl84/Krea2_FantasyRealism/resolve/main/Krea2_FantasyRealism.safetensors | 下载后改名为 `Krea2-奇幻现实FantasyRealism.safetensors` |
+| 亚洲人物 LoRA v1 | https://civitai.com/models/2746042?modelVersionId=3093245 | hinablue v1.0 RAW。需登录 Civitai。下载 `hina_krea2_asianMix_v1-bf16.safetensors` 后改成清单名 |
+| realism engine（未替换） | https://pan.quark.cn/s/83b5ad9265e8 | 只搜索 `Krea2-realism_engine_v2`。作者候选文件大 48 字节，不能改用 |
+| MOSS | https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/ | 主模型、9B 编码器、`flux2-vae_small`。主模型下载后放入 `Moss_image/` |
+| SeedVR2 VAE | https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/vae/seedvr2_ema_vae_fp16.safetensors | `seedvr2_ema_vae_fp16.safetensors` |
 | Muse V3.0 作者页 | https://civitai.com/models/2741166 | 当前公开文件与本机 V3.0 FP8 不完全匹配，不能下载后强行改名顶替 |
 | Identity Edit V2 官方权重 | https://huggingface.co/conradlocke/krea2-identity-edit/resolve/main/krea2_identity_edit_v2.safetensors | `krea2_identity_edit_v2.safetensors` 完整版 |
 | 四视图官方权重 | https://huggingface.co/Alissonerdx/CharacterSheet/resolve/main/QuadView_krea2_v1.safetensors | 下载后重命名为 `Krea2-四视图QuadView_krea2_v1.safetensors` |
-| SeedVR2 3B 官方权重 | https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/diffusion_models/seedvr2_3b_int8_convrot.safetensors | 必须是 3B INT8 ConvRot，不是 MOSS 包中的 7B |
-| SAM3.1 官方备用 | https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors | `sam3.1_multiplex_fp16.safetensors` |
+| SeedVR2 3B 官方权重 | https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/diffusion_models/seedvr2_3b_int8_convrot.safetensors | 必须是 3B INT8 ConvRot，不是 7B |
+| SAM3.1 官方权重 | https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors | `sam3.1_multiplex_fp16.safetensors` |
 | H3 latent 高清模型 | https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors | 下载后放在 `latent_upscale_models/` 根目录 |
 
-原有 33 项模型的**精确目标路径、目标文件名、字节数**以 [`models/manifest.json`](models/manifest.json) 为准；夸克搜索名和必要重命名以 [`models/SOURCES.md`](models/SOURCES.md) 为准。可选 H3-Image 使用 [独立三文件说明](models/H3_IMAGE.md) 和固定版本下载元数据，不在旧安装 profile 内。
+原有 33 项模型的**精确目标路径、目标文件名、字节数**以 [`models/manifest.json`](models/manifest.json) 为准；官方远程路径和必要重命名以 [`models/SOURCES.md`](models/SOURCES.md) 为准。可选 H3-Image 使用 [独立三文件说明](models/H3_IMAGE.md) 和固定版本下载元数据，不在旧安装 profile 内。
 
 ## 模型配置方法
 
@@ -159,7 +165,7 @@ python_embeded\python.exe video-workbench\scripts\install_models.py "D:\H3-Workb
 
 ## 模型包
 
-完整路径、目标文件名、字节数和已登记的 SHA256 见 `models/manifest.json`，目录说明见 `models/README.md`。**逐文件夸克原链接、官方备用、重命名规则及 Agent 安装步骤见 `models/SOURCES.md`。** 不再依赖统一网盘总包；其中 Muse V3.0 FP8 的完全匹配公开文件仍待核实，文档已明确标注。
+完整路径、目标文件名、字节数和已登记的 SHA256 见 `models/manifest.json`，目录说明见 `models/README.md`。**逐文件官方地址、重命名规则及 Agent 安装步骤见 `models/SOURCES.md`。** Muse V3.0 FP8 仍没有完全匹配的公开文件；realism engine 仍使用原来的夸克链接。这两项已在文档中标明。
 
 新用户先安装 7 个核心 H3 权重（71.164 GiB），全部可从 `https://huggingface.co/Comfy-Org/MiniMax-H3` 按清单相对路径直接下载。核心配置校验：
 

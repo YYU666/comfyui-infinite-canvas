@@ -130,15 +130,15 @@
     },
     {
       "path": "loras/Krea2-功能/Krea2-亚洲asianMix_v1-bf16.safetensors",
-      "authors": "unknown／待作者确认",
-      "officialPage": "https://pan.quark.cn/s/83b5ad9265e8",
-      "license": "unknown／待作者确认",
-      "licenseUrl": "https://pan.quark.cn/s/83b5ad9265e8",
+      "authors": "hinablue",
+      "officialPage": "https://civitai.com/models/2746042?modelVersionId=3093245",
+      "license": "unknown／作者页未提供可直接引用的许可证文本",
+      "licenseUrl": "https://civitai.com/models/2746042?modelVersionId=3093245",
       "commercialUse": "unknown",
       "redistribution": "unknown",
-      "restrictions": "当前仅有镜像入口，未确认作者官方页和许可证；取得作者授权前不得商用或再分发，不得用相似名称模型代替。",
-      "sourceStatus": "mirror-only-license-unknown",
-      "verifiedAt": "2026-10-29"
+      "restrictions": "对应作者 v1.0 RAW 文件 hina_krea2_asianMix_v1-bf16.safetensors，字节数与清单一致；匿名下载接口返回 401，需登录 Civitai。作者页没有机器可读许可证，取得授权前不得商用或再分发。不要用 v2 及以后大小不同的版本代替。仍叠加 Krea 2 基座条款。",
+      "sourceStatus": "official-size-match-license-unknown",
+      "verifiedAt": "2026-11-12"
     },
     {
       "path": "loras/Krea2-四视图QuadView_krea2_v1.safetensors",

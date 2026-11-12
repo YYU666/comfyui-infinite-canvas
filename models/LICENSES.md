@@ -6,7 +6,7 @@
 
 本文件解释 [`licenses.json`](licenses.json) 的 33 项逐文件记录。模型清单只说明工作台需要哪些权重，**不表示这些权重都是开源、可商用或可由本项目再分发**。GitHub 仓库不包含模型权重。
 
-核查日期：2026-10-29。许可证可能更新，商用或公开分发前应打开作者官方页复核最新文本。夸克等网盘仅作下载镜像，**镜像不授予额外权利**；授权判断优先依据作者官方 Hugging Face／Civitai 页面。
+核查日期：2026-10-29；asianMix 的作者页于 2026-11-12 改为 hinablue 的 Civitai 版本页。许可证可能更新，商用或公开分发前应打开作者官方页复核最新文本。realism engine 仍只有夸克下载入口，**网盘不授予额外权利**；授权判断优先依据作者官方 Hugging Face／Civitai 页面。
 
 ## 使用前必须知道
 
@@ -15,7 +15,7 @@
 - **Qwen Image 2.1**：适用 Qwen Research License，不是 Apache-2.0；仅研究、评估等非商用用途。商用联系 `model-business@notice.qwencloud.com`。即使组合中的编码器或 LoRA 是 Apache-2.0，也不会解除基座的非商用限制。
 - **Identity Edit V2**：仅个人、研究、教育等非商用免费；公司使用、客户工作、广告、出售输出或商业服务均须向作者逐案取得书面许可：`l.bouaraba@gmail.com`。
 - **Civitai 单项许可**：每个作者对出售图片、生成服务、衍生模型、合并模型和署名的选择不同，不能把某一 LoRA 的权限套用到其他 LoRA。
-- **未知项**：Muse 精确 FP8、Krea2 realism engine 精确身份和 asianMix 许可证尚未完全核实。`unknown` 不是“可自由使用”，取得作者授权前不要商用或再分发。
+- **未知项**：Muse 精确 FP8、Krea2 realism engine 精确身份，以及 asianMix 的许可证文本尚未完全核实。asianMix 已对应 hinablue v1.0 RAW 的文件名和字节数，但作者页没有可直接引用的许可条款。`unknown` 不是“可自由使用”，取得作者授权前不要商用或再分发。
 
 状态含义：`allowed` 表示许可证允许但仍须履行署名等义务；`conditional` 表示仅在列明条件和范围内允许；`non-commercial` 表示仅非商用；`unknown` 表示未知或精确身份未确认。
 
@@ -35,7 +35,7 @@
 | 8 | `diffusion_models/seedvr2_3b_int8_convrot.safetensors` | ByteDance Seed | Apache-2.0 | allowed | 保留版权、许可和 NOTICE，标明修改。 |
 | 9 | `latent_upscale_models/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors` | LBH-123-AI | Apache-2.0 | conditional | 文件本身 Apache；与 H3 组合仍受 H3 条款约束。 |
 | 10 | `loras/Krea2-N/Krea2-realism_engine_v2.safetensors` | unknown；候选 RudySen | unknown；候选仓库标 MIT | unknown | 候选文件相差 48 字节，精确身份确认前不得商用或再分发。 |
-| 11 | `loras/Krea2-功能/Krea2-亚洲asianMix_v1-bf16.safetensors` | unknown | unknown | unknown | 仅有镜像，作者和许可证待确认；授权前不得商用或再分发。 |
+| 11 | `loras/Krea2-功能/Krea2-亚洲asianMix_v1-bf16.safetensors` | hinablue | unknown | unknown | 文件对应作者 v1.0 RAW，许可证文本仍未知；授权前不得商用或再分发。 |
 | 12 | `loras/Krea2-四视图QuadView_krea2_v1.safetensors` | NRDX | Civitai 作者许可 + Krea 2 | conditional | 作者允许其标注范围内商用和衍生；仍叠加 Krea 2。 |
 | 13 | `loras/Krea2-风格/Krea2-奇幻现实FantasyRealism.safetensors` | vrgamedevgirl | Civitai 作者许可 + Krea 2 | conditional | 可售图／生成服务；不得分享衍生或合并模型；叠加 Krea 2。 |
 | 14 | `loras/Krea2-风格/krea2_紫调复古旧动漫retroanime.safetensors` | Krea | Krea 2 Community | conditional | Krea 2 全部条件。 |
