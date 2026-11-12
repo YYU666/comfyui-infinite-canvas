@@ -248,9 +248,12 @@ def main() -> int:
                 run([str(python), "-X", "utf8", str(HERE / "workbench_start.py"),
                      "--comfy-root", str(root), "register"], HERE)
         print(f"本次请求的步骤已完成（含前置检查 {reporter.completed} 阶段，{time.monotonic() - reporter.started:.1f}s）。")
-        print("尚未运行工作台离线/在线验收；请运行 scripts/verify_workbench.py，并在服务就绪后加 --online。")
+        print("尚未运行工作台离线/在线验收；请运行 scripts/verify_workbench.py，并在服务就绪后加 --online。尚未安装所选模型时，不要把模型缺失当成画布程序安装失败。")
+        print(f"Agent 安装完成后请先阅读：{HERE / 'docs' / 'AGENT_MANUAL.md'}")
+        print(f"向用户说明各功能所需模型及体积：{HERE / 'docs' / 'MODEL_CATALOG.md'}")
+        print("列出套装（不会下载）：python scripts/model_catalog.py list")
         if not args.models_source:
-            print("本次未安装或校验模型。")
+            print("本次只安装画布本体与 ComfyUI 依赖／节点／前端，未安装或校验模型。请先向用户说明套装与体积，得到明确同意后再下载。")
         print(f"完整日志：{reporter.directory}")
         return 0
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:

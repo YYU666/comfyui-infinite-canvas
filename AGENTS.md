@@ -16,8 +16,8 @@
 ### 最短执行路径
 
 1. 确认便携版路径与所选 profile，检查第 2–4 节的安全边界和环境要求。
-2. 运行一次第 5 节安装命令；模型已整理好时，同一命令加 `--models-source "<MODEL_STAGE>" --profile core-h3`。
-3. 如果程序已装好、之后才补模型，使用 `install.py --comfy-root "<PORTABLE_ROOT>" --models-only --models-source "<MODEL_STAGE>" --profile core-h3`，或直接用第 7 节模型脚本；不要重复运行完整安装。
+2. 第一次只运行第 5 节安装命令，**不要**附带 `--models-source`。安装成功后立刻阅读 `docs/AGENT_MANUAL.md`，并用 `docs/MODEL_CATALOG.md` 或 `scripts/model_catalog.py list` 向用户说明各功能所需模型及体积。用户只要求「安装画布」不等于同意下载模型。
+3. 只有用户明确点名某个套装（例如 `core-h3` 或 `h3-image`）后，才补装模型：把已整理的目录交给 `install.py --comfy-root "<PORTABLE_ROOT>" --models-only --models-source "<MODEL_STAGE>" --profile core-h3`，或使用第 7 节脚本。不要重复运行完整安装，也不要在未经确认时从网络拉取权重。
 4. 默认只看步骤摘要。详细子进程输出保存在 `.cache/install-logs/` 的本次目录；失败后先读失败步骤及日志末尾，必要时再扩大。`--verbose` 仅用于诊断。长命令等待同一进程，禁止重复提交安装或频繁拉取整份日志。
 5. 安装器不自动下载模型，不代替最终验收。服务就绪时一次执行第 9 节 `--online` 校验，它同时包含离线检查；暂不能启动服务时先做第 8 节并明确“在线未验收”，之后再补在线。不要额外提交真实生成作安装验收。
 
@@ -115,7 +115,7 @@ python_embeded\python.exe video-workbench\install.py --comfy-root "."
 
 ### 6.1 下载原则
 
-1. 新用户先安装 `core-h3` 七项（71.164 GiB），完整 33 项是可选项。核心七项全部从 `https://huggingface.co/Comfy-Org/MiniMax-H3` 按 `profiles.core-h3.files` 的相对路径下载，无需夸克或重命名。
+1. 经用户确认需要视频生成后，再安装 `core-h3` 七项（71.163 GiB；仓库部分文档曾写作 71.164 GiB）。完整 33 项不是默认选项。核心七项全部从 `https://huggingface.co/Comfy-Org/MiniMax-H3` 按 `profiles.core-h3.files` 的相对路径下载，无需夸克或重命名。说明体积与功能时以 `docs/MODEL_CATALOG.md` 为准。
 2. 只有用户明确需要完整模型库时，才按 `models/SOURCES.md` 的 33 行映射继续下载其余文件；不要默认转存整个网盘分享。
 3. 下载到 `MODEL_STAGE` 的临时下载区；不要改变清单之外已有文件。
 4. 按 `models/manifest.json` 的 `path` 字段创建目标目录并移动／重命名。
