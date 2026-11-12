@@ -37,6 +37,8 @@ from video_edit_api import VideoEditAPI
 from video_edit_jobs import VideoEditJobs
 from video_rhythm_api import VideoRhythmAPI
 from video_rhythm_jobs import VideoRhythmJobs
+from video_chroma_api import VideoChromaAPI
+from video_chroma_jobs import VideoChromaJobs
 from pureref_sessions import PureRefSessions
 from project_store import ProjectStore
 from queue_api import QueueAPI
@@ -579,6 +581,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         video_rhythm_api = getattr(self.server, "video_rhythm_api", None)
         if video_rhythm_api and video_rhythm_api.handle_get(self, path):
             return
+        video_chroma_api = getattr(self.server, "video_chroma_api", None)
+        if video_chroma_api and video_chroma_api.handle_get(self, path):
+            return
         if self.server.project_api.handle_get(self, path):
             return
         if path != "/api/hardware-metrics":
@@ -675,6 +680,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         video_rhythm_api = getattr(self.server, "video_rhythm_api", None)
         if video_rhythm_api and video_rhythm_api.handle_post(self, path):
+            return
+        video_chroma_api = getattr(self.server, "video_chroma_api", None)
+        if video_chroma_api and video_chroma_api.handle_post(self, path):
             return
         if self.server.project_api.handle_post(self, path):
             return
@@ -784,7 +792,7 @@ def apply_server_settings(server):
             server.pureref_sessions.store = replacement
         if getattr(server, "art_director_api", None):
             server.art_director_api.store = replacement
-        for api_name in ("video_edit_api", "video_rhythm_api"):
+        for api_name in ("video_edit_api", "video_rhythm_api", "video_chroma_api"):
             api = getattr(server, api_name, None)
             if api is not None and getattr(api, "jobs", None) is not None:
                 api.jobs.store = replacement
@@ -864,6 +872,7 @@ def main():
             server.art_director_api = ArtDirectorAPI(server.project_store)
             server.video_edit_api = VideoEditAPI(VideoEditJobs(runtime_dir() / "video-edit-jobs", server.project_store))
             server.video_rhythm_api = VideoRhythmAPI(VideoRhythmJobs(runtime_dir() / "video-rhythm-jobs", server.project_store))
+            server.video_chroma_api = VideoChromaAPI(VideoChromaJobs(runtime_dir() / "video-chroma-jobs", server.project_store))
             server.thumbnail_cache = ThumbnailCache(runtime_dir() / "thumbnails", server.project_store, COMFY_URL)
             server.doctor = WorkbenchDoctor(
                 HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,

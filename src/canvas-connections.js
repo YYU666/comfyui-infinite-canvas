@@ -4,6 +4,7 @@ import { qwenCanvasReferences } from './qwen-references.js';
 import { isImageProcess, acceptsImageProcessConnection } from './image-process-graph.js';
 import { isVideoEdit, planVideoEditConnection } from './video-edit-document.js';
 import { isVideoRhythm, planVideoRhythmConnection } from './video-rhythm-document.js';
+import { isVideoChroma, planVideoChromaConnection } from './video-chroma-document.js';
 import { isVideoProcessor } from './video-stream.js';
 
 const busy = (node) => ['uploading', 'queued', 'running', 'finishing'].includes(node?.data?.status);
@@ -54,6 +55,10 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   }
   if (isVideoRhythm(target)) {
     const plan = planVideoRhythmConnection(connection, source, target, nodes, edges);
+    return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom };
+  }
+  if (isVideoChroma(target)) {
+    const plan = planVideoChromaConnection(connection, source, target, nodes, edges);
     return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom };
   }
   let targetHandle = connection.targetHandle;

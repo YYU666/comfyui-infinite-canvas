@@ -3,7 +3,8 @@
 
 export const isVideoEditNode = (node) => node?.type === 'videoEdit';
 export const isVideoRhythmNode = (node) => node?.type === 'videoSpeed' || node?.type === 'videoTimeRemap';
-export const isVideoProcessor = (node) => isVideoEditNode(node) || isVideoRhythmNode(node);
+export const isVideoChromaNode = (node) => node?.type === 'videoChromaKey';
+export const isVideoProcessor = (node) => isVideoEditNode(node) || isVideoRhythmNode(node) || isVideoChromaNode(node);
 
 export function videoStreamKind(source) {
   if (isVideoProcessor(source)) return 'video';
@@ -22,6 +23,11 @@ export function videoStreamAsset(source, cache = {}) {
     return source.data?.rhythmResultAssetPath
       ? { assetPath: source.data.rhythmResultAssetPath }
       : { needsExport: source.data?.title || '视频节奏' };
+  }
+  if (isVideoChromaNode(source)) {
+    return source.data?.chromaResultAssetPath
+      ? { assetPath: source.data.chromaResultAssetPath }
+      : { needsExport: source.data?.title || '绿幕扣像合成' };
   }
   if (source?.data?.assetPath) return { assetPath: source.data.assetPath };
   if (source?.data?.url && cache[source.id]?.url === source.data.url) return { assetPath: cache[source.id].assetPath };
