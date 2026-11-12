@@ -4,12 +4,12 @@
 
 可选的 [MiniMax H3-Image 图片模型](H3_IMAGE.md)提供三份文件的官方直链、大小、SHA256 与 ComfyUI 0.45.0 兼容说明；已有 32B INT8 编码器可复用。H3-Image 不属于 `core-h3` 视频七项或旧 `full` 33 项，按该独立说明安装，不必重复下载视频模型。
 
-**下载前必须阅读 [`LICENSES.md`](LICENSES.md)。** `manifest.json` 管文件完整性，[`licenses.json`](licenses.json) 管逐文件作者、许可证、商用和再分发状态；文件可下载不代表可商用或可再分发，网盘镜像不授予额外权利。
+**下载前必须阅读 [`LICENSES.md`](LICENSES.md)。** `manifest.json` 管文件完整性，[`licenses.json`](licenses.json) 管逐文件作者、许可证、商用和再分发状态；文件可下载不代表可商用或可再分发。realism engine 仍使用夸克镜像，镜像不授予额外权利。
 
 - `core-h3`：7 个 H3 文生视频／参考图视频核心权重，合计 71.164 GiB；七个文件均可从 Comfy-Org 官方仓库取得并已登记 SHA256。
 - `full`：33 个去重文件，合计 164.803 GiB，增加可选生图、高清和风格 LoRA；Muse V3.0 FP8 的完全匹配来源仍未解决，不属于完整可下载保证。
 
-从官方或夸克原链接下载后，应整理为以下结构，再将这些目录复制到 `ComfyUI/models/`。**逐文件来源、分享内搜索名、重命名规则和 Agent 安装步骤见 `SOURCES.md`。**
+从 `SOURCES.md` 的官方地址下载后，应整理为以下结构，再将这些目录复制到 `ComfyUI/models/`。**逐文件来源、远程路径、重命名规则和 Agent 安装步骤见 `SOURCES.md`。**
 
 ```text
 checkpoints/
@@ -24,11 +24,11 @@ text_encoders/
 vae/
 ```
 
-核心 H3 的官方仓库为 `https://huggingface.co/Comfy-Org/MiniMax-H3`。在仓库 `Files and versions` 中按 `manifest.json` 的七个 `core-h3` 路径下载，保持目录与文件名不变，不需要网盘或重命名。其直接下载地址规则为 `https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/` 加上目标相对路径。
+核心 H3 的官方仓库为 `https://huggingface.co/Comfy-Org/MiniMax-H3`。在 `https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/` 后拼接 `manifest.json` 的 `core-h3` 相对路径，保持目录与文件名不变。
 
 注意：
 
-- `Qwen2.1_Anything2RealCharacters.safetensors` 是目标文件名；若下载源使用 `Qwen21-任转真Anything2RealCharacters.safetensors`，请按清单重命名。
+- `Qwen2.1_Anything2RealCharacters.safetensors` 在作者仓库里已经是这个文件名，下载后不必再改名。
 - 不要重复保存 C、D 两个模型根目录中的相同文件。
 - 用便携版 Python 运行 `scripts/verify_workbench.py --model-root "模型包路径" --profile core-h3` 校验核心配置；省略 `--profile` 时默认核心七项，完整 33 项需显式指定 `--profile full`。
 - 清单中有 `sha256` 的文件会执行内容哈希校验；其余文件只检查文件名和字节数，并在结果中明确列为“待核实”。相同字节数不等于内容相同。

@@ -116,23 +116,24 @@ python_embeded\python.exe video-workbench\install.py --comfy-root "."
 ### 6.1 下载原则
 
 1. 经用户确认需要视频生成后，再安装 `core-h3` 七项（71.163 GiB；仓库部分文档曾写作 71.164 GiB）。完整 33 项不是默认选项。核心七项全部从 `https://huggingface.co/Comfy-Org/MiniMax-H3` 按 `profiles.core-h3.files` 的相对路径下载，无需夸克或重命名。说明体积与功能时以 `docs/MODEL_CATALOG.md` 为准。
-2. 只有用户明确需要完整模型库时，才按 `models/SOURCES.md` 的 33 行映射继续下载其余文件；不要默认转存整个网盘分享。
+2. 只有用户明确需要完整模型库时，才按 `models/SOURCES.md` 的 33 行映射继续下载其余文件。realism engine 仍指向一条夸克分享，Muse V3.0 FP8 仍没有匹配文件；其余已核实文件使用官方地址。不要整仓或整包转存。
 3. 下载到 `MODEL_STAGE` 的临时下载区；不要改变清单之外已有文件。
 4. 按 `models/manifest.json` 的 `path` 字段创建目标目录并移动／重命名。
 5. 校验时，有 `sha256` 的文件必须验证内容哈希；其余文件只能按 `bytes` 检查并报告“待核实”。
 
 ### 6.2 必须注意的重命名
 
-- `Qwen21-任转真Anything2RealCharacters.safetensors`
-  → `loras/Qwen2.1_Anything2RealCharacters.safetensors`
 - 官方 `QuadView_krea2_v1.safetensors`
   → `loras/Krea2-四视图QuadView_krea2_v1.safetensors`
+- 官方 `retroanime.safetensors`、`softwatercolor.safetensors`、`Krea2_FantasyRealism.safetensors`、`hina_krea2_asianMix_v1-bf16.safetensors`
+  → `models/SOURCES.md` 第 14、15、13、11 行的目标名
 - 官方 H3 latent upscaler 位于版本子目录；目标为
   → `latent_upscale_models/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors`
+- MOSS 主模型官方路径没有 `Moss_image/` 子目录，下载后按清单放入该子目录，文件名不变。
 
 ### 6.3 官方备用下载
 
-对 `models/SOURCES.md` 中以 `O-` 开头的直接下载地址，可用浏览器或支持断点续传的下载工具。下载后仍必须按清单重命名和校验字节数；`.safetensors` 不是压缩包，不要解压。
+对 `models/SOURCES.md` 中的官方下载地址，可用浏览器或支持断点续传的下载工具。O-ASIAN 与 Muse V4 的 Civitai 下载需要用户自己登录。下载后仍必须按清单重命名和校验字节数；`.safetensors` 不是压缩包，不要解压。
 
 ### 6.4 已知例外
 
@@ -142,9 +143,9 @@ python_embeded\python.exe video-workbench\install.py --comfy-root "."
 https://civitai.com/models/2741166
 ```
 
-不得把 V1.5、V2、V3.5、V4 或 INT8 文件改名后冒充它。若用户没有该权重，明确报告这一项尚未解决；其余文件可以继续安装，但不得宣称完整验收通过。
+不得把 V1.5、V2、V3.5、V4 或 INT8 文件改名后冒充它。2026-11-12 复核时，作者页的 v3.0 Turbo fp8-scaled 为 14,128,290,360 字节，不是清单的 13,784,899,896 字节。若用户没有该权重，明确报告这一项尚未解决；其余已核实文件可以继续安装，但不得宣称完整验收通过。
 
-`Q-H3-EXTRA` 和 `Q-QUAD` 内部分文件尚需在分享内搜索确认。搜不到时记录具体文件名，不要使用相似文件替代。
+`loras/Krea2-N/Krea2-realism_engine_v2.safetensors` 仍使用 `models/SOURCES.md` 的夸克入口。`RudySen/Krea2-realism-V2` 的 HEAD 大小是 1,562,410,344 字节，比清单多 48 字节，不能替换。搜不到清单文件时记录文件名，不要使用相似文件替代。
 
 ## 7. 配置模型目录
 

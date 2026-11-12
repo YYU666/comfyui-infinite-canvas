@@ -4,7 +4,7 @@
 
 体积一律按仓库清单中的 **字节数** 换算为 GiB（1 GiB = 1024³ 字节），并同时给出字节。未在清单或官方元数据中出现的大小标为「未知」，不会估算。显存只收录仓库已经写明的建议；未写明的标为「未登记」。
 
-下载、商用或再分发前请阅读 [`models/LICENSES.md`](../models/LICENSES.md) 与作者官方条款。可下载不等于可商用。网盘镜像不授予额外权利。不要用旧版、其他量化或相似文件名顶替清单中的文件。
+下载、商用或再分发前请阅读 [`models/LICENSES.md`](../models/LICENSES.md) 与作者官方条款。可下载不等于可商用。realism engine 仍使用夸克镜像，镜像不授予额外权利。不要用旧版、其他量化或相似文件名顶替清单中的文件。逐文件官方地址见 [`models/SOURCES.md`](../models/SOURCES.md)。
 
 校验：有 SHA256 的文件必须核对内容哈希；只有字节数的文件只能做大小检查，并视为「待核实」。
 
@@ -21,7 +21,7 @@
 | **千问生图** | Qwen 2.1 图生图、局部遮罩编辑；可选 Turbo 与漫转真 LoRA。 | 标准三件 **16.096 GiB**；Turbo 主模型另加 **6.758 GiB**；任转真 LoRA 另加 **0.297 GiB** | 局部遮罩节点本身不占模型。 |
 | **FLUX 3 Klein** | 可选文生图／多参考编辑（1MP／2K／4K）。 | **19.344 GiB**（20,770,759,307 字节） | 四份官方文件，有 SHA256。权重许可为 FLUX Kommunity License，仓库需登录／接受条款后才能下载。官方相似名称的 MOSS 编码器或 `flux2-vae_small` **不能替代**。 |
 | **Krea2 文生图** | 节点默认的 Krea2／Muse V3.0 Turbo 文生图，可选风格 LoRA。 | 主模型＋编码器＋VAE **17.957 GiB**；五个风格 LoRA 另加 **2.761 GiB** | **Muse V3.0 FP8 与清单完全匹配的公开来源尚未解决**，不能用 V4 或 INT8 改名冒充。未解决前不要宣称这一套可完整自动安装。 |
-| **MOSS 文生图** | 文生图模型切换为 MOSS。 | **14.353 GiB**（15,411,341,830 字节） | 来源以 `models/SOURCES.md` 的 Q-MOSS 等为准；不在当前官方直链自动下载列表中。 |
+| **MOSS 文生图** | 文生图模型切换为 MOSS。 | **14.353 GiB**（15,411,341,830 字节） | 三份文件可从 `Comfy-Org/MOSS-Image` 按 `SOURCES.md` 下载。主模型要放入 `Moss_image/`。不在当前安装器自动下载列表中。 |
 | **完整 33 项 `full`** | 工作台旧综合清单里的视频＋多种生图＋部分 LoRA＋3B 高清等。 | **164.803 GiB**（176,955,706,249 字节） | **不建议作为默认。** 仍不包含 H3-Image 新图片模型、Klein、Qwen Turbo、Muse V4、SeedVR2 7B。其中 Muse V3.0 FP8 来源未解决，不能声称 33／33 都可下载。 |
 
 「全部已知清单文件」（33 项＋H3-Image 新增两份＋Klein 四份＋四视图升级三份，去重后 42 个文件）合计 **231.860 GiB**（248,957,923,723 字节）。没有任何人需要一次性装齐。
@@ -32,7 +32,7 @@
 
 「必要／可选」针对该功能本身：没有必要文件则该功能不能跑；可选文件只增强效果或提供另一档质量。
 
-「官方直链」表示已登记在安装器可信任源（`extension_dependencies.canonical_sources` 或独立 JSON 的 Hugging Face 地址）。未标官方直链的，请按 `models/SOURCES.md` 在点名的夸克分享中搜索，不要整包转存。
+「官方直链」表示已登记在安装器可信任源（`extension_dependencies.canonical_sources` 或独立 JSON 的 Hugging Face 地址）。未标官方直链的，仍可按 `models/SOURCES.md` 的已核实官方地址手动下载。只有 realism engine 还要到夸克分享里搜索单个文件，不要整包转存。Muse V3.0 FP8 没有匹配的公开文件。
 
 ### 0. 不需要扩散模型的功能
 
@@ -71,7 +71,7 @@
 
 仅额外四项合计 **21.230 GiB**。若本机还没有核心里被复用的三份（REF2VA、音频 VAE、8-step Turbo），整套角色替换为 **43.146 GiB**（46,327,436,111 字节）。
 
-SAM 有官方直链且已登记 SHA256。其余额外项当前主要来自 `models/SOURCES.md` 的 H3 包／补充包，不在安装器「可信任自动下载」14 项之内（SAM 除外）。
+SAM 有官方直链且已登记 SHA256。NVFP4 编码器、FP16 视频 VAE 和角色替换 LoRA 也已在 `SOURCES.md` 对上 Comfy-Org 或 akatz-ai 的同名同字节文件；它们仍不在安装器「可信任自动下载」14 项之内（SAM 除外）。
 
 ### 3. 视频高清二采
 
@@ -95,17 +95,17 @@ SAM 有官方直链且已登记 SHA256。其余额外项当前主要来自 `mode
 
 ### 5. Qwen 2.1 图生图、局部修复、四视图（默认）
 
-标准三件来自 `models/manifest.json` 与 `SOURCES.md` 的 Q-QWEN，**当前不在官方自动下载列表**。Turbo 与 7B、Muse V4 登记在 `models/character-upgrades.json`。HEAD 抽查 Turbo 主模型 `Content-Length` 与清单一致（7,256,787,829）。
+标准三件来自 `Comfy-Org/Qwen-Image-2.1`，路径与清单相同，**当前不在安装器自动下载列表**。写实 LoRA 来自 `WarmBloodAban/Qwen-Image-2.1-LoRAs`，官方文件名已是目标名。Turbo 与 7B、Muse V4 登记在 `models/character-upgrades.json`。HEAD 抽查 Turbo 主模型 `Content-Length` 与清单一致（7,256,787,829）。
 
 | 功能 | 模型 | 大小 | 显存 | 必要／可选 |
 | --- | --- | --- | --- | --- |
 | 图生图标准版、局部写实、默认四视图／换装 | `diffusion_models/qwen_image_2.1_int8_convrot.safetensors` | 6.758 GiB（7,256,783,064 字节） | 未登记 | 标准版必要 |
 | 同上 | `text_encoders/qwen3vl_8b_int8_convrot.safetensors` | 8.709 GiB（9,350,798,360 字节） | 未登记 | 必要 |
 | 同上 | `vae/qwen_image_2.1_vae_bf16.safetensors` | 0.629 GiB（675,509,688 字节） | 未登记 | 必要 |
-| 漫转真、写实修复可选 | `loras/Qwen2.1_Anything2RealCharacters.safetensors` | 0.297 GiB（318,820,200 字节） | 未登记 | 可选；若下载源名为 `Qwen21-任转真…`，须改成目标名 |
+| 漫转真、写实修复可选 | `loras/Qwen2.1_Anything2RealCharacters.safetensors` | 0.297 GiB（318,820,200 字节） | 未登记 | 可选；作者仓库文件名已是目标名 |
 | 图生图 Turbo、换装 Turbo 预设 | `diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors` | 6.758 GiB（7,256,787,829 字节） | 未登记 | Turbo 档必要；与标准主模型并存，不是同一文件 |
 | 图片高清 7B、换装 7B 高清 | `diffusion_models/seedvr2_7b_int8_convrot.safetensors` | 7.762 GiB（8,334,897,976 字节） | 24 GB 仍依赖分块与内存管理，未登记峰值 | 7B 档必要；不要下载成 7B 却当作清单里的 3B，反之亦然 |
-| 换装 Muse V4 预设 | `diffusion_models/museByStableYogi_v40INT8Extended.safetensors` | 12.565 GiB（13,491,952,248 字节） | 未登记 | 该预设必要；镜像来源与作者条款需自行核对 |
+| 换装 Muse V4 预设 | `diffusion_models/museByStableYogi_v40INT8Extended.safetensors` | 12.565 GiB（13,491,952,248 字节） | 未登记 | 该预设必要。作者 Civitai 版本 3425119 的 SHA256 与清单一致；匿名下载返回 401，需登录。下载后改成清单文件名 |
 
 标准三件合计 **16.096 GiB**（17,283,091,112 字节）。
 
@@ -114,19 +114,21 @@ SAM 有官方直链且已登记 SHA256。其余额外项当前主要来自 `mode
 | 功能 | 模型 | 大小 | 显存 | 必要／可选 |
 | --- | --- | --- | --- | --- |
 | 图片高清默认 3B | `diffusion_models/seedvr2_3b_int8_convrot.safetensors` | 3.221 GiB（3,458,259,704 字节） | 未登记 | 3B 必要；官方直链，HEAD 与清单一致 |
-| 图片高清（3B／7B 共用） | `vae/seedvr2_ema_vae_fp16.safetensors` | 0.467 GiB（501,324,814 字节） | 未登记 | 必要；来源见 SOURCES.md（Q-MOSS 已确认），不在自动下载 14 项内 |
+| 图片高清（3B／7B 共用） | `vae/seedvr2_ema_vae_fp16.safetensors` | 0.467 GiB（501,324,814 字节） | 未登记 | 必要；`Comfy-Org/SeedVR2` 同名文件的 HEAD 大小与清单一致，不在自动下载 14 项内 |
 | 图片高清 7B | `diffusion_models/seedvr2_7b_int8_convrot.safetensors` | 7.762 GiB（见上） | 见上 | 仅 7B 档必要 |
 
 3B 套装（主模型＋VAE）**3.688 GiB**（3,959,584,518 字节）。
 
 ### 7. Krea2 文生图、风格 LoRA、母图编辑
 
+Turbo、4B 编码器和 `qwen_image_vae` 在 `Comfy-Org/Krea-2`，路径与清单相同。复古动漫、水彩、奇幻现实和亚洲 v1 的作者地址及改名规则见 `SOURCES.md`。realism engine 的作者候选文件大 48 字节，仍用该文件的夸克入口。
+
 | 功能 | 模型 | 大小 | 显存 | 必要／可选 |
 | --- | --- | --- | --- | --- |
 | 文生图默认 Krea2 | `diffusion_models/Krea2-MuseByStable_v30Turbo_fp8.safetensors` | 12.838 GiB（13,784,899,896 字节） | 未登记 | 该默认档必要；**与清单完全匹配的公开来源未解决** |
 | 文生图 Krea2／母图编辑共用 | `text_encoders/qwen3vl_4b_fp8_scaled.safetensors` | 4.882 GiB（5,242,467,968 字节） | 未登记 | 必要；与 Klein 的 `qwen3vl_4b_int8_convrot` 不是同一文件 |
 | 文生图 Krea2／母图编辑共用 | `vae/qwen_image_vae.safetensors` | 0.236 GiB（253,806,246 字节） | 未登记 | 必要；与 Qwen 2.1 的 `qwen_image_2.1_vae_bf16` 不是同一文件 |
-| 写实风格 LoRA | `loras/Krea2-N/Krea2-realism_engine_v2.safetensors` | 1.455 GiB（1,562,410,296 字节） | 未登记 | 可选 |
+| 写实风格 LoRA | `loras/Krea2-N/Krea2-realism_engine_v2.safetensors` | 1.455 GiB（1,562,410,296 字节） | 未登记 | 可选；精确官方文件未核实，不要用大 48 字节的候选文件 |
 | 亚洲人物 LoRA | `loras/Krea2-功能/Krea2-亚洲asianMix_v1-bf16.safetensors` | 0.213 GiB（228,617,720 字节） | 未登记 | 可选 |
 | 奇幻现实 LoRA | `loras/Krea2-风格/Krea2-奇幻现实FantasyRealism.safetensors` | 0.219 GiB（234,704,064 字节） | 未登记 | 可选 |
 | 复古动漫 LoRA | `loras/Krea2-风格/krea2_紫调复古旧动漫retroanime.safetensors` | 0.437 GiB（469,291,992 字节） | 未登记 | 可选 |
@@ -138,6 +140,8 @@ SAM 有官方直链且已登记 SHA256。其余额外项当前主要来自 `mode
 Krea2 文生图三件 **17.957 GiB**；风格 LoRA 五件 **2.761 GiB**；母图编辑（主模型＋Identity LoRA＋共用编码器／VAE）**19.061 GiB**。
 
 ### 8. MOSS 文生图
+
+三份文件都在 `Comfy-Org/MOSS-Image`。主模型的官方路径没有 `Moss_image/` 子目录，下载后按清单放入该目录。
 
 | 功能 | 模型 | 大小 | 显存 | 必要／可选 |
 | --- | --- | --- | --- | --- |
@@ -174,7 +178,7 @@ Klein 不支持把 Qwen 遮罩／裁切或 Qwen／Krea2 LoRA 直接套用。
 - H3-Image 新增主模型与图片 VAE（20.627 GiB；编码器已含在核心七项中）
 - SAM3.1、SeedVR2 3B 主模型、H3 Latent 放大、Identity Edit V2、四视图 LoRA
 
-其余文件（Qwen 标准套件、MOSS、Krea 风格 LoRA、NVFP4 编码器、FP16 视频 VAE、角色替换 LoRA、4-step 768p Turbo、SeedVR2 VAE、Klein、升级档等）需要按 `SOURCES.md` 或各独立说明手动准备，或等待后续把已核实官方源登记进目录。Muse V3.0 FP8 在来源解决之前不能自动安装。
+其余文件（Qwen 标准套件、MOSS、Krea 风格 LoRA、NVFP4 编码器、FP16 视频 VAE、角色替换 LoRA、4-step 768p Turbo、SeedVR2 VAE、Klein、升级档等）可按 `SOURCES.md` 的官方地址手动准备，但还没有登记进安装器自动下载列表。Muse V3.0 FP8 在来源解决之前不能安装。realism engine 仍只有夸克入口。Klein 的官方仓库 HEAD 会返回 401，需先接受许可。
 
 ---
 
