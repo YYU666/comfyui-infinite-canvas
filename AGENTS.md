@@ -16,7 +16,7 @@
 ### 最短执行路径
 
 1. 确认便携版路径与所选 profile，检查第 2–4 节的安全边界和环境要求。
-2. 第一次只运行第 5 节安装命令，**不要**附带 `--models-source`。安装成功后立刻阅读 `docs/AGENT_MANUAL.md`，并用 `docs/MODEL_CATALOG.md` 或 `scripts/model_catalog.py list` 向用户说明各功能所需模型及体积。用户只要求「安装画布」不等于同意下载模型。
+2. 第一次只运行第 5 节安装命令，**不要**附带 `--models-source`。安装成功后立刻阅读 `docs/AGENT_MANUAL.md`，并用 `docs/MODEL_CATALOG.md` 或 `scripts/model_catalog.py list` 向用户说明各功能所需模型及体积。用户只要求「安装画布」不等于同意下载模型。手册要求不自评强弱、一律从标准配方开始；偏离须先写明原因且仍通过同一份核验，连续两次核验失败则回到标准配方。
 3. 只有用户明确点名某个套装（例如 `core-h3` 或 `h3-image`）后，才补装模型：把已整理的目录交给 `install.py --comfy-root "<PORTABLE_ROOT>" --models-only --models-source "<MODEL_STAGE>" --profile core-h3`，或使用第 7 节脚本。不要重复运行完整安装，也不要在未经确认时从网络拉取权重。
 4. 默认只看步骤摘要。详细子进程输出保存在 `.cache/install-logs/` 的本次目录；失败后先读失败步骤及日志末尾，必要时再扩大。`--verbose` 仅用于诊断。长命令等待同一进程，禁止重复提交安装或频繁拉取整份日志。
 5. 安装器不自动下载模型，不代替最终验收。服务就绪时一次执行第 9 节 `--online` 校验，它同时包含离线检查；暂不能启动服务时先做第 8 节并明确“在线未验收”，之后再补在线。不要额外提交真实生成作安装验收。
