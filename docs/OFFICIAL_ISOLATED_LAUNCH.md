@@ -96,7 +96,7 @@ python_embeded/pythonw.exe
 | `H3_WORKBENCH_DATA_DIR` | 沿用已记住的数据目录，否则按现有规则选盘 | 必填绝对路径。不写用户的数据目录选择文件。 |
 | `H3_PROJECTS_ROOT` | `%USERPROFILE%\Documents\H3 Workbench` | 必填绝对路径。 |
 | `H3_COMFY_AUTOSTART` | 未设置或 `1`：保持现在的 Comfy 启动/附着行为。`H3_WORKBENCH_TEST_MODE` 仍然只用于测试，它还会关掉更新检查并改健康检查字段，**不能**拿来代替本开关。 | 必须设为 `0`。不启动 Comfy，不附着已有 Comfy，健康检查、诊断、Comfy 代理和队列都不会连接 `8188`。 |
-| `H3_COMFY_ROOT` | `启动.vbs` 在未设置时用脚本目录的上一级，并在那里找 `python_embeded\pythonw.exe` | 指到上面的运行时 identity 目录。不要指到 ComfyUI 便携版，除非这份进程确实要管理那一份 Comfy。 |
+| `H3_COMFY_ROOT` | `启动.vbs` 在未设置端口时用脚本目录的上一级，并在那里找 `python_embeded\pythonw.exe` | 必填，指到上面的运行时 identity 目录。端口已设置但此变量为空时，`启动.vbs` 直接失败，不会改用安装目录的上一级（那会变成 `official-canvas/python_embeded`）。 |
 
 `H3_WORKBENCH_PORT` 已设置但三个目录里缺任何一个时，进程直接失败，并说明缺哪一个。失败路径不会创建 `%LOCALAPPDATA%\H3Workbench`，也不会去附着用户正在用的 `8790` 实例。
 

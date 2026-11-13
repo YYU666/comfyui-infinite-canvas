@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "1.0.13"
+APP_VERSION = "1.0.14"
 WORKBENCH_PORT_SPAN = range(8790, 8800)
 # Official instances must not take the worktree port span or the ComfyUI port.
 OFFICIAL_FORBIDDEN_PORTS = frozenset(WORKBENCH_PORT_SPAN) | {8188}
