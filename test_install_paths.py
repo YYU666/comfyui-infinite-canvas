@@ -27,6 +27,18 @@ class InstallPathTests(unittest.TestCase):
             self.assertIn('if defined H3_COMFY_ROOT set "PYTHON=%H3_COMFY_ROOT%\\python_embeded\\python.exe"',
                           (ROOT / name).read_text(encoding="utf-8"))
 
+    def test_official_vbs_refuses_empty_comfy_root_before_parent_fallback(self):
+        text = (ROOT / "启动.vbs").read_text(encoding="utf-8")
+        port_at = text.find("H3_WORKBENCH_PORT")
+        quit_at = text.find("WScript.Quit 1")
+        fallback_at = text.find("GetParentFolderName(root)")
+        self.assertGreaterEqual(port_at, 0)
+        self.assertLess(port_at, quit_at)
+        self.assertLess(quit_at, fallback_at)
+        self.assertIn("will not use the parent of the install directory", text)
+        self.assertIn("If workbenchPort <> \"\" Then", text)
+        self.assertIn("If comfyRoot = \"\" Then", text)
+
     def test_existing_data_root_is_never_migrated(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -24,6 +24,7 @@ Git 安装会在下载前和重启前两次检查代码。更新器造成的差�
 ## 包完整性与故障恢复
 
 - Release 必须同时提供 `refmuse-update-<tag>.zip` 和同名 `.zip.sha256`。
+- `refmuse-update-*` 只用于覆盖更新已经安装好的工作台，目标机器仍会在本地执行 `npm ci` 和 `npm run build`。它不是空目录安装包，也不包含 `dist/`。引擎隔离目录请安装 `refmuse-portable-*`，说明见 `docs/OFFICIAL_ISOLATED_LAUNCH.md`。
 - 后端只从固定官方仓库读取 Release，下载地址必须为 GitHub HTTPS；客户端只能提交刚确认的 `tag`，不能提交下载 URL。
 - 下载包限制为 128 MiB、2500 个文件、解压后 256 MiB。ZIP 路径逃逸、绝对路径、符号链接、重复清单、额外文件、缺失文件、错误版本和错误 SHA256 均拒绝。
 - `package.json`、`workbench_lifecycle.APP_VERSION` 和 Release 标签必须一致。校验只解析文本和 AST，不执行下载包中的安装脚本。
@@ -35,13 +36,17 @@ Git 安装会在下载前和重启前两次检查代码。更新器造成的差�
 
 1. 在同一个提交中更新 `package.json`、`package-lock.json` 的版本，以及 `workbench_lifecycle.py` 的 `APP_VERSION`。三者与 Release 标签去掉开头 `v` 后必须一致，例如 `v1.1.0` 对应 `1.1.0`。
 2. 运行完整测试和构建，再创建带发布说明的 GitHub Release。语义化版本比较支持 `rc.1` 等预发布标识；GitHub“最新 Release”接口的选择规则保持不变。
-3. `.github/workflows/release.yml` 在 Release 发布时执行：
+3. `.github/workflows/release.yml` 在 Release **发布之后**执行（创建标签本身不会上传这些资产）。它用 Node 22 按 CI 的方式构建前端，然后生成三组文件并附加到同一 Release：
 
    ```bat
+   npm ci
+   npm run build
    python scripts\build_update_package.py --tag v1.1.0 --output .release
+   python scripts\build_portable_package.py --tag v1.1.0 --dist dist --output .release
+   python scripts\build_runtime_package.py --output .release
    ```
 
-   随后把 ZIP 与 SHA256 附加到同一 Release。打包只读取 Git 跟踪文件，不包含本地项目、模型、密钥、未跟踪审计文档或生成结果。
+   更新包只读取 Git 跟踪文件，不包含 `dist/`、本地项目、模型、密钥或 Python 运行时。便携包在同一份公开源码之外加入本次构建的 `dist/`。Windows amd64 运行时是单独的 zip，不打进更新包。
 4. 等 Release 资源上传工作流成功结束，再通知用户检查更新。缺少升级包或校验文件时，界面只允许手动查看 Release，不会尝试不安全安装。
 
 普通提交、合并 PR 或创建标签不会直接通知用户。小修复可合并成一个补丁版本并发布 Release，说明用户能感知的修复。检查源为 GitHub `releases/latest`，预发布版本不会进入正式版通知渠道；尚未发布正式 Release 时，手动检查会明确说明，而不会声称网络失败或已是最新版本。旧后端缺少更新接口时，需先按 README 更新并在任务结束后重新启动工作台。

@@ -43,7 +43,7 @@ try {
       return route.fulfill({ contentType: 'text/html', body: '<!doctype html><meta charset="utf-8"><input aria-label="参考搜索">' });
     }
     assert.equal(url.origin, origin, 'all external traffic must be intercepted');
-    if (!['GET', 'HEAD'].includes(request.method()) && !['/api/projects/open', '/api/agent/canvas/heartbeat', '/api/agent/canvas/release'].includes(url.pathname)) mutations.push(`${request.method()} ${url.pathname}`);
+    if (!['GET', 'HEAD'].includes(request.method()) && !['/api/projects/open', '/api/agent/canvas/heartbeat', '/api/agent/canvas/release', '/api/ui-ready'].includes(url.pathname)) mutations.push(`${request.method()} ${url.pathname}`);
     if (url.pathname === '/api/projects') return json({ projects: [project] });
     if (url.pathname === '/api/projects/trash') return json({ projects: [] });
     if (url.pathname === '/api/projects/open' || url.pathname === '/api/projects/prj_nodes_fixture') return json(project);

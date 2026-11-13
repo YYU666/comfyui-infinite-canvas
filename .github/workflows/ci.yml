@@ -72,3 +72,73 @@ jobs:
           H3_TEST_DIST_DIR: ${{ runner.temp }}\h3-dist
           H3_WORKBENCH_DIST_DIR: ${{ runner.temp }}\h3-dist
         run: npm run test:browser
+
+  package-evidence:
+    name: Unsigned portable and update packages
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Build frontend into dist/ the same way as CI
+        shell: pwsh
+        run: |
+          npm ci
+          npm run build
+          if (-not (Test-Path dist/index.html)) { throw "vite build did not write dist/index.html" }
+      - name: Build unsigned update and portable zips
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $out = Join-Path $env:RUNNER_TEMP "refmuse-evidence"
+          python scripts/build_update_package.py --tag "v$version" --output $out
+          python scripts/build_portable_package.py --tag "v$version" --dist dist --output $out
+          python scripts/assert_package_evidence.py "$out"
+          @(
+            '这些 zip 是 PR 上的未签名 CI 证据，不是 GitHub Release 资产。'
+            '引擎只能安装将来 Release 上的 refmuse-portable 与 refmuse-runtime，并且必须先核对 SHA-256 和字节数。'
+            '不要把 refmuse-update 解压进空的 official-canvas 目录。'
+          ) | Set-Content -Encoding utf8 (Join-Path $out "CI-EVIDENCE.txt")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: refmuse-package-evidence
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/refmuse-evidence/refmuse-update-*.zip
+            ${{ runner.temp }}/refmuse-evidence/refmuse-update-*.zip.sha256
+            ${{ runner.temp }}/refmuse-evidence/refmuse-portable-*.zip
+            ${{ runner.temp }}/refmuse-evidence/refmuse-portable-*.zip.sha256
+            ${{ runner.temp }}/refmuse-evidence/CI-EVIDENCE.txt
+
+  runtime-evidence:
+    name: Windows amd64 Python runtime recipe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the embeddable runtime zip
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "refmuse-runtime"
+          python scripts/build_runtime_package.py --describe
+          python scripts/build_runtime_package.py --output $out
+          python scripts/assert_runtime_evidence.py "$out"
+          @(
+            '此运行时 zip 是 windows-latest 上的未签名 CI 证据，不是 GitHub Release 资产。'
+            '解压前仍须核对旁边的 .sha256（SHA-256 和字节数）。macOS 本轮没有运行时。'
+          ) | Set-Content -Encoding utf8 (Join-Path $out "CI-EVIDENCE.txt")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: refmuse-runtime-win-amd64
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/refmuse-runtime/refmuse-runtime-python-win-amd64-*.zip
+            ${{ runner.temp }}/refmuse-runtime/refmuse-runtime-python-win-amd64-*.zip.sha256
+            ${{ runner.temp }}/refmuse-runtime/CI-EVIDENCE.txt

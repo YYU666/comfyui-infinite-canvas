@@ -7,7 +7,7 @@ import stat
 import subprocess
 from pathlib import Path
 
-from workbench_lifecycle import atomic_write_json, runtime_dir
+from workbench_lifecycle import atomic_write_json, require_official_isolation, runtime_dir
 
 RATIOS = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9"}
 RESOLUTIONS = {"480P", "720P", "1080P"}
@@ -126,6 +126,7 @@ def _absolute_path(value, label):
 
 class WorkbenchSettings:
     def __init__(self, path=None, comfy_root=None, projects_root=None):
+        require_official_isolation()
         self.path = Path(path).resolve() if path else runtime_dir() / "config.json"
         default_comfy = comfy_root or os.environ.get("H3_COMFY_ROOT") or str(Path(__file__).resolve().parent.parent)
         default_projects = projects_root or os.environ.get("H3_PROJECTS_ROOT") or str(Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / "H3 Workbench")

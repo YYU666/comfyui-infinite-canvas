@@ -15,12 +15,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build checksummed source update package
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Build frontend the same way as CI
         shell: pwsh
-        run: python scripts/build_update_package.py --tag "${{ github.event.release.tag_name }}" --output "$env:RUNNER_TEMP\refmuse-release"
-      - name: Attach update package and SHA256
+        run: |
+          npm ci
+          npm run build
+          if (-not (Test-Path dist/index.html)) { throw "vite build did not write dist/index.html" }
+      - name: Build update, portable, and Windows runtime packages
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "refmuse-release"
+          python scripts/build_update_package.py --tag $env:TAG --output $out
+          python scripts/build_portable_package.py --tag $env:TAG --dist dist --output $out
+          python scripts/build_runtime_package.py --output $out
+      - name: Attach update, portable, and runtime packages
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$env:TAG" "$env:RUNNER_TEMP\refmuse-release\refmuse-update-$env:TAG.zip" "$env:RUNNER_TEMP\refmuse-release\refmuse-update-$env:TAG.zip.sha256" --clobber
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "refmuse-release"
+          $assets = @(
+            (Join-Path $out "refmuse-update-$env:TAG.zip"),
+            (Join-Path $out "refmuse-update-$env:TAG.zip.sha256"),
+            (Join-Path $out "refmuse-portable-$env:TAG.zip"),
+            (Join-Path $out "refmuse-portable-$env:TAG.zip.sha256")
+          ) + @(Get-ChildItem $out -File -Filter "refmuse-runtime-python-win-amd64-*.zip*" | ForEach-Object { $_.FullName })
+          gh release upload $env:TAG @assets --clobber

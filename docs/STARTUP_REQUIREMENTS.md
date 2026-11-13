@@ -60,7 +60,7 @@
 ## 5. 可选但不阻塞启动
 
 - `deepseek.key`：只用于提示词优化；没有不影响画布打开。
-- `H3_COMFY_ROOT`：仓库不在便携版根目录时需要。
+- `H3_COMFY_ROOT`：目录里要有 `python_embeded\pythonw.exe`。普通工作树把它指到 ComfyUI 便携版根；官方隔离启动把它指到托管 Python 运行时，不是 ComfyUI 安装根。见 `docs/OFFICIAL_ISOLATED_LAUNCH.md`。
 - `H3_WORKBENCH_NO_BROWSER=1`：不自动打开浏览器。
 - 外置模型目录：`ComfyUI/extra_model_paths.yaml`；需要时配置 `modelRoots`。
 - 更新检查：启动检查/用户确认；活动任务、打开项目、Git 本地修改会阻止升级。

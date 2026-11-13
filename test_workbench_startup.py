@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -132,6 +133,21 @@ class WorkbenchStartupTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "便携版 Python"):
                 ensure_workbench(timeout=2)
         spawn.assert_not_called()
+
+    def test_autostart_zero_does_not_probe_or_attach_comfy(self):
+        self.publish_instance()
+        with patch.dict(os.environ, {"H3_COMFY_AUTOSTART": "0"}), \
+             patch("workbench_lifecycle.urllib.request.urlopen", wraps=urllib.request.urlopen) as opened:
+            result = ensure_workbench(timeout=2)
+        self.assertTrue(result["workbenchReady"])
+        self.assertFalse(result["comfyReady"])
+        self.assertEqual(self.server.comfy_probes, 0)
+        self.assertNotIn("private-test-token", json.dumps(result))
+        for call in opened.call_args_list:
+            target = getattr(call.args[0], "full_url", str(call.args[0]))
+            self.assertNotIn(":8188", target)
+            self.assertNotIn("/system_stats", target)
+            self.assertNotIn("/api/local-comfy/start", target)
 
     def test_timeout_is_bounded(self):
         for value in (0, -1, 601, float("inf"), float("nan")):

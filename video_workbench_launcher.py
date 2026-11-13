@@ -44,17 +44,23 @@ from workbench_security import session_cookie, valid_content_type, valid_host, v
 from workbench_settings import SettingsError, WorkbenchSettings, read_deepseek_key
 from workbench_lifecycle import (
     APP_VERSION,
+    apply_cli_port,
     atomic_write_json,
+    bind_workbench,
+    comfy_autostart_enabled,
+    comfy_launch_switches,
     instance_path,
     instance_process_alive,
+    official_port_requested,
     probe_health,
     read_instance,
     remove_instance,
+    require_official_isolation,
     runtime_dir,
     startup_guard,
-    workbench_ports,
     utc_now,
     request_comfy_start,
+    workbench_ports,
 )
 from workbench_logging import cleanup_legacy_comfy_logs, configure_application_logging
 from workbench_update import UpdateError, WorkbenchUpdateManager, validate_update_request
@@ -112,6 +118,9 @@ def resolve_data_dir(candidates, legacy=None, configured=None, state_path=None):
 
 
 def default_data_dir():
+    if official_port_requested():
+        require_official_isolation()
+        return Path(os.environ["H3_WORKBENCH_DATA_DIR"].strip()).expanduser()
     configured = os.environ.get("H3_WORKBENCH_DATA_DIR")
     legacy = Path("D:/H3_Workbench")
     partitions = [Path(item.mountpoint) for item in psutil.disk_partitions(all=False)
@@ -144,6 +153,15 @@ def sync_comfy_ownership(server, status):
             atomic_write_json(instance_path(), {**record, "comfyOwned": owned, "comfyPid": process.pid if process else None})
         except Exception:
             LOGGER.warning("ComfyUI 归属状态已变化，实例元数据暂未更新。")
+
+
+class _ComfyDisabled:
+    """Stand-in adapter. Official launches must not open a socket to ComfyUI."""
+
+    def _refuse(self, *args, **kwargs):
+        raise RuntimeError("H3_COMFY_AUTOSTART=0，不会连接 ComfyUI。")
+
+    submit = cancel = poll = preflight = download = upload_image = free = _refuse
 
 
 def queue_summary():
@@ -517,6 +535,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             self.server.thumbnail_cache.handle_get(self)
             return
         if is_comfy_path(path):
+            if self.reject_disabled_comfy():
+                return
             if is_websocket_request(self):
                 proxy_websocket(self)
             else:
@@ -524,10 +544,15 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/health":
             manager = getattr(self.server, "comfy_lifecycle", None)
-            comfy = manager.status(refresh=True) if manager else {"running": self.comfy_is_running(),
-                "owned": bool(getattr(self.server, "comfy_owned", False))}
             if manager:
+                # A disabled lifecycle must not refresh: refresh probes port 8188.
+                comfy = manager.status(refresh=bool(manager.enabled))
                 sync_comfy_ownership(self.server, comfy)
+            elif comfy_autostart_enabled():
+                comfy = {"running": self.comfy_is_running(), "owned": bool(getattr(self.server, "comfy_owned", False))}
+            else:
+                comfy = {"state": "disabled", "enabled": False, "running": False, "ready": False,
+                         "owned": False, "error": "", "pid": None}
             queue_state = self.server.queue_manager.snapshot()
             health = {
                 "ok": True,
@@ -535,6 +560,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 "port": self.server.server_port,
                 "pid": os.getpid(),
                 "startedAt": self.server.started_at,
+                "uiReady": bool(getattr(self.server, "ui_ready", False)),
+                "uiReadyAt": getattr(self.server, "ui_ready_at", None),
                 "comfy": comfy,
                 "queue": {
                     "running": sum(job["status"] in {"running", "finishing"} for job in queue_state["jobs"]),
@@ -543,7 +570,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 },
             }
             if os.environ.get("H3_WORKBENCH_TEST_MODE") == "1":
-                health["projectsRoot"] = str(self.server.project_store.root)
+                project_store = getattr(self.server, "project_store", None)
+                if project_store is not None:
+                    health["projectsRoot"] = str(project_store.root)
             self.send_json(200, health)
             return
         if path == "/api/settings":
@@ -576,6 +605,33 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         self.send_json(200, hardware_metrics())
 
+    def mark_ui_ready(self):
+        """Record that the frontend root mounted. The token check already happened."""
+        ready_at = getattr(self.server, "ui_ready_at", None)
+        if not getattr(self.server, "ui_ready", False) or not ready_at:
+            ready_at = utc_now()
+            self.server.ui_ready = True
+            self.server.ui_ready_at = ready_at
+            record = read_instance()
+            if record and record.get("pid") == os.getpid():
+                try:
+                    atomic_write_json(instance_path(), {**record, "uiReady": True, "uiReadyAt": ready_at})
+                except Exception:
+                    LOGGER.warning("界面已打开，实例元数据暂未更新。")
+        self.send_json(200, {"ok": True, "uiReady": True, "uiReadyAt": ready_at})
+
+    def comfy_contact_allowed(self):
+        manager = getattr(self.server, "comfy_lifecycle", None)
+        if manager is not None:
+            return bool(manager.enabled)
+        return comfy_autostart_enabled()
+
+    def reject_disabled_comfy(self):
+        if self.comfy_contact_allowed():
+            return False
+        self.send_json(409, {"code": "COMFY_AUTOSTART_DISABLED", "message": "H3_COMFY_AUTOSTART=0，当前实例不会启动、附着或探测 ComfyUI。"})
+        return True
+
     def comfy_is_running(self):
         try:
             api_status()
@@ -590,9 +646,16 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "POST", path):
             return
         if is_comfy_path(path):
+            if self.reject_disabled_comfy():
+                return
             proxy_http(self)
             return
+        if path == "/api/ui-ready":
+            self.mark_ui_ready()
+            return
         if path == "/api/local-comfy/start":
+            if self.reject_disabled_comfy():
+                return
             manager = getattr(self.server, "comfy_lifecycle", None)
             if not manager:
                 self.send_json(503, {"code": "START_UNAVAILABLE", "message": "当前实例未启用 ComfyUI 启动管理。"})
@@ -600,6 +663,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 self.send_json(202, manager.request_start())
             return
         if path in {"/api/doctor", "/api/doctor/log-bundle"}:
+            if self.reject_disabled_comfy():
+                return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if length < 0 or length > 16384:
@@ -690,6 +755,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "PUT", path):
             return
         if is_comfy_path(path):
+            if self.reject_disabled_comfy():
+                return
             proxy_http(self)
             return
         if path == "/api/settings":
@@ -722,6 +789,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "DELETE", path):
             return
         if is_comfy_path(path):
+            if self.reject_disabled_comfy():
+                return
             proxy_http(self)
             return
         if not self.server.project_api.handle_delete(self, path):
@@ -789,9 +858,16 @@ def configure_logging(debug=False):
     return configure_application_logging(debug)
 
 
-def main():
-    global WEB_URL, ROOT
-    debug = "--debug" in sys.argv
+def main(argv=None):
+    global WEB_URL, ROOT, DATA_DIR, INPUT_DIR, OUTPUT_DIR
+    args = list(sys.argv[1:] if argv is None else argv)
+    debug = "--debug" in args
+    apply_cli_port(args)
+    require_official_isolation()
+    if official_port_requested():
+        DATA_DIR = default_data_dir()
+        INPUT_DIR = DATA_DIR / "references"
+        OUTPUT_DIR = DATA_DIR / "generated"
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
     log_dir = configure_logging(debug)
     server = None
@@ -805,7 +881,8 @@ def main():
                 if health:
                     url = f"http://127.0.0.1:{health['port']}/"
                     LOGGER.info("工作台已在运行：%s", url)
-                    request_comfy_start(instance, health)
+                    if comfy_autostart_enabled():
+                        request_comfy_start(instance, health)
                     if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
                         webbrowser.open(url)
                     return 0
@@ -819,14 +896,8 @@ def main():
             (INPUT_DIR / "workbench").mkdir(parents=True, exist_ok=True)
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             handler = functools.partial(WorkbenchHandler, directory=str(dist_dir))
-            for port in workbench_ports(instance):
-                try:
-                    server = WorkbenchServer(("127.0.0.1", port), handler)
-                    break
-                except OSError:
-                    continue
-            if server is None:
-                raise RuntimeError("8790–8799 端口均被占用，请查看诊断日志。")
+            # workbench_ports is a module global so tests can pin the candidate list.
+            server = bind_workbench(lambda address: WorkbenchServer(address, handler), instance, ports=workbench_ports(instance))
             WEB_URL = f"http://127.0.0.1:{server.server_port}"
             atomic_write_json(runtime_dir() / "workbench-port.json", {"port": server.server_port})
             server.token = secrets.token_urlsafe(32)
@@ -837,6 +908,7 @@ def main():
             server.settings = WorkbenchSettings(comfy_root=ROOT)
             server.settings.load()
             ROOT = Path(server.settings.data["comfyRoot"]).resolve()
+            enabled, allow_start = comfy_launch_switches(ROOT)
             logging.getLogger().setLevel(server.settings.data["logLevel"])
             server.project_store = ProjectStore(server.settings.data["projectsRoot"], defaults=server.settings.data["defaults"])
             server.project_api = ProjectAPI(server.project_store)
@@ -848,7 +920,8 @@ def main():
                 model_roots=server.settings.data["modelRoots"] or None,
                 secret_provider=lambda: server.art_director_api.redaction_secrets(),
             )
-            server.queue_manager = QueueManager(adapter=ComfyQueueAdapter(COMFY_URL), concurrency=server.settings.data["queue"]["concurrency"])
+            queue_adapter = ComfyQueueAdapter(COMFY_URL) if enabled else _ComfyDisabled()
+            server.queue_manager = QueueManager(adapter=queue_adapter, concurrency=server.settings.data["queue"]["concurrency"])
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
             server.queue_api = QueueAPI(server.queue_manager)
             server.agent_api = AgentAPI(server.project_store, server.queue_manager)
@@ -862,6 +935,8 @@ def main():
                 "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch", "--enable-cors-header", WEB_URL,
             ]
             def spawn_comfy(command, root, log):
+                if not comfy_launch_switches(root)[0]:
+                    raise RuntimeError("H3_COMFY_AUTOSTART=0 或官方运行时根目录禁止启动 ComfyUI。")
                 cleanup_legacy_comfy_logs(log_dir)
                 process, logger = start_owned_comfy(command, root, log)
                 server.comfy_owned, server.comfy_process = True, process
@@ -872,19 +947,23 @@ def main():
                     except Exception:
                         LOGGER.warning("ComfyUI 已启动，实例元数据暂未更新。")
                 return process, logger
+            server.ui_ready = False
+            server.ui_ready_at = None
             server.comfy_lifecycle = ComfyLifecycle(url=COMFY_URL, root=ROOT, log_dir=log_dir,
-                command=command, spawn=spawn_comfy,
-                allow_start=os.environ.get("H3_WORKBENCH_TEST_MODE") != "1")
+                command=command, spawn=spawn_comfy, enabled=enabled, allow_start=allow_start)
             atomic_write_json(instance_path(), {
                 "port": server.server_port,
                 "token": server.token,
                 "pid": os.getpid(),
                 "pidCreatedAt": psutil.Process().create_time(),
                 "startedAt": server.started_at,
+                "uiReady": False,
+                "uiReadyAt": None,
                 "comfyOwned": server.comfy_owned,
                 "comfyPid": comfy_process.pid if comfy_process else None,
             })
-            server.comfy_lifecycle.request_start()
+            if enabled:
+                server.comfy_lifecycle.request_start()
             LOGGER.info("视频工作台已就绪：%s", WEB_URL)
             if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
                 webbrowser.open(WEB_URL + "/")
