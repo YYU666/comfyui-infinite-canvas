@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { selectCharacterSwapVideo } from './src/canvas-output-selection.js';
+import { outputFileLocation, selectCharacterSwapVideo, selectCompletedVideo, selectFirstPassVideo, selectHdRefineVideo } from './src/canvas-output-selection.js';
 globalThis.window = { location: { hostname: '127.0.0.1' } };
 const api = await import('./src/workbench-api.js');
 assert.equal(api.durationToFrames(5), 124);
@@ -43,6 +43,48 @@ assert.equal(selectCharacterSwapVideo(swapFiles).url, swapFiles[3].url, 'preserv
 assert.throws(() => selectCharacterSwapVideo(swapFiles.slice(0, 3)), /未找到.*成品视频/);
 assert.throws(() => selectCharacterSwapVideo([]), /未找到.*成品视频/);
 assert.throws(() => selectCharacterSwapVideo([{ filename: 'H3_CharacterSwap_00001_.png', type: 'output' }]), /未找到.*成品视频/);
+const guideName = '对拍点成片 · 略加快近景入画.mp4';
+const refineName = 'H3_HD_Refine_00004_.mp4';
+const hdFiles = api.extractVideos({ outputs: {
+  source: { images: [{ filename: guideName, subfolder: 'workbench', type: 'input' }] },
+  preview: { videos: [{ filename: 'ComfyUI_temp_preview.mp4', subfolder: '', type: 'temp' }] },
+  misleading: { videos: [{ filename: 'H3_Workbench_00009_.mp4', subfolder: 'video', type: 'output' }] },
+  save: { images: [{ filename: refineName, subfolder: 'video', type: 'output' }] },
+} });
+assert.equal(hdFiles[0].filename, guideName, 'history still lists the guide video first');
+const hdResult = selectHdRefineVideo(hdFiles);
+assert.equal(selectCompletedVideo('upscale', hdFiles), hdResult);
+assert.equal(hdResult.filename, refineName, 'upscale result filename is the Comfy SaveVideo output');
+assert.equal(hdResult.subfolder, 'video');
+assert.equal(hdResult.type, 'output');
+assert.match(hdResult.url, /filename=H3_HD_Refine_00004_/);
+assert.doesNotMatch(hdResult.url, /type=input/);
+assert.notEqual(hdResult.filename, guideName);
+const hdNode = { ...hdResult, output: true, kind: 'video', name: hdResult.filename };
+assert.equal(hdNode.name, refineName, 'player label uses the Comfy output filename');
+assert.deepEqual(outputFileLocation(hdNode), { kind: 'output', name: `video/${refineName}` }, '打开文件位置 resolves the saved output');
+assert.throws(() => selectHdRefineVideo(hdFiles.slice(0, 3)), /未将输入视频作为结果/);
+assert.throws(() => selectCompletedVideo('upscale', [{ filename: guideName, subfolder: 'workbench', type: 'input' }]), /未将输入视频作为结果/);
+assert.throws(() => selectCompletedVideo('upscale', [{ filename: 'H3_HD_Refine_00004_.mp4', subfolder: 'workbench', type: 'input' }]), /未将输入视频作为结果/);
+const firstPassFiles = api.extractVideos({ outputs: {
+  reference: { images: [{ filename: guideName, subfolder: 'workbench', type: 'input' }] },
+  save: { images: [{ filename: 'H3_Workbench_00007_.mp4', subfolder: 'video', type: 'output' }] },
+} });
+assert.equal(firstPassFiles[0].filename, guideName);
+for (const mode of ['reference', 'frames', 'text']) {
+  const saved = selectCompletedVideo(mode, firstPassFiles);
+  assert.equal(saved.filename, 'H3_Workbench_00007_.mp4', `${mode} binds the saved first-pass video`);
+  assert.equal(saved.type, 'output');
+  assert.deepEqual(outputFileLocation({ ...saved, name: saved.filename }), { kind: 'output', name: 'video/H3_Workbench_00007_.mp4' });
+}
+assert.equal(selectFirstPassVideo(firstPassFiles).filename, 'H3_Workbench_00007_.mp4');
+const reusedGuide = api.extractVideos({ outputs: {
+  source: { images: [{ filename: 'H3_Workbench_00001_.mp4', subfolder: 'video', type: 'output' }] },
+  save: { images: [{ filename: 'H3_Workbench_00008_.mp4', subfolder: 'video', type: 'output' }] },
+} });
+assert.equal(selectCompletedVideo('reference', reusedGuide).filename, 'H3_Workbench_00008_.mp4', 'a previous output listed first is not the new first-pass file');
+assert.throws(() => selectFirstPassVideo([{ filename: guideName, subfolder: 'workbench', type: 'input' }]), /未将输入视频作为结果/);
+assert.throws(() => selectCompletedVideo('customWorkflow', hdFiles), /未将输入视频作为结果/);
 const swapOptions = {
   ...base, prompt: 'Female, short black bob hair, oval face, red jacket', preserveBackground: true,
   references: [{ kind: 'video', slot: 'guide', name: 'workbench/guide.mp4' }, { kind: 'image', slot: 'identity', name: 'workbench/identity.png' }],
