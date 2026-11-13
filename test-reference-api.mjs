@@ -16,10 +16,13 @@ const references = [
   { kind: 'audio', title: '声音参考', name: audioName },
 ];
 const workflow = api.buildReferenceWorkflow({ prompt: '@主角 模仿 @动作参考 的动作，声音参考 @声音参考', references, ratio: '16:9', duration: 5, seed: 42, turbo: true });
-assert.deepEqual(workflow['7'].inputs.ref_images.ref_image_0, ['100', 0]);
-assert.deepEqual(workflow['7'].inputs.ref_videos.ref_video_0, ['201', 0]);
-assert.deepEqual(workflow['7'].inputs.ref_video_audios.ref_video_audio_0, ['201', 1]);
-assert.deepEqual(workflow['7'].inputs.ref_audios.ref_audio_0, ['102', 0]);
+assert.deepEqual(workflow['7'].inputs['ref_images.ref_image_0'], ['100', 0]);
+assert.deepEqual(workflow['7'].inputs['ref_videos.ref_video_0'], ['201', 0]);
+assert.deepEqual(workflow['7'].inputs['ref_video_audios.ref_video_audio_0'], ['201', 1]);
+assert.deepEqual(workflow['7'].inputs['ref_audios.ref_audio_0'], ['102', 0]);
+for (const key of ['ref_images', 'ref_videos', 'ref_video_audios', 'ref_audios']) {
+  assert.equal(Object.hasOwn(workflow['7'].inputs, key), false, `nested ${key} is dropped by ComfyUI /prompt`);
+}
 assert.equal(workflow['7'].inputs.prompt, '<Picture 1> 模仿 <Video 1> 的动作，声音参考 <Audio 1>');
 const queued = await api.queuePrompt(workflow, 'h3-reference-api-test');
 await new Promise(resolve => setTimeout(resolve, 2200));
@@ -33,8 +36,8 @@ await api.comfyFetch('/interrupt', { method: 'POST', headers: { 'Content-Type': 
 const queue = await api.comfyFetch('/queue');
 const report = {
   promptStatus: 200, promptId: queued.prompt_id, compiledPrompt: workflow['7'].inputs.prompt,
-  imageInput: workflow['7'].inputs.ref_images, videoInput: workflow['7'].inputs.ref_videos,
-  videoAudioInput: workflow['7'].inputs.ref_video_audios, audioInput: workflow['7'].inputs.ref_audios,
+  imageInput: workflow['7'].inputs['ref_images.ref_image_0'], videoInput: workflow['7'].inputs['ref_videos.ref_video_0'],
+  videoAudioInput: workflow['7'].inputs['ref_video_audios.ref_video_audio_0'], audioInput: workflow['7'].inputs['ref_audios.ref_audio_0'],
   immediateExecutionStatus: status.status_str || 'running/loading without error',
   queueRunningAfterCancel: queue.queue_running.length, queuePendingAfterCancel: queue.queue_pending.length,
 };
