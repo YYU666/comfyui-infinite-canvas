@@ -147,29 +147,24 @@ export function buildReferenceWorkflow(options) {
   };
   if (turbo) graph['2'] = { class_type: 'LoraLoaderModelOnly', inputs: { model: ['1', 0], lora_name: MODEL_INFO.referenceTurboLora, strength_model: 1 } };
   const counters = { image: 0, video: 0, audio: 0 };
-  const autoGrow = { images: {}, videos: {}, videoAudios: {}, audios: {} };
   references.forEach((reference, index) => {
     const kind = reference.kind || 'image';
     const nodeId = String(100 + index);
     const kindIndex = counters[kind]++;
     if (kind === 'image') {
       graph[nodeId] = { class_type: 'LoadImage', inputs: { image: reference.name } };
-      autoGrow.images[`ref_image_${kindIndex}`] = [nodeId, 0];
+      graph['7'].inputs[`ref_images.ref_image_${kindIndex}`] = [nodeId, 0];
     } else if (kind === 'video') {
       graph[nodeId] = { class_type: 'LoadVideo', inputs: { file: reference.name } };
       const componentsId = String(200 + index);
       graph[componentsId] = { class_type: 'GetVideoComponents', inputs: { video: [nodeId, 0] } };
-      autoGrow.videos[`ref_video_${kindIndex}`] = [componentsId, 0];
-      autoGrow.videoAudios[`ref_video_audio_${kindIndex}`] = [componentsId, 1];
+      graph['7'].inputs[`ref_videos.ref_video_${kindIndex}`] = [componentsId, 0];
+      graph['7'].inputs[`ref_video_audios.ref_video_audio_${kindIndex}`] = [componentsId, 1];
     } else {
       graph[nodeId] = { class_type: 'LoadAudio', inputs: { audio: reference.name } };
-      autoGrow.audios[`ref_audio_${kindIndex}`] = [nodeId, 0];
+      graph['7'].inputs[`ref_audios.ref_audio_${kindIndex}`] = [nodeId, 0];
     }
   });
-  if (Object.keys(autoGrow.images).length) graph['7'].inputs.ref_images = autoGrow.images;
-  if (Object.keys(autoGrow.videos).length) graph['7'].inputs.ref_videos = autoGrow.videos;
-  if (Object.keys(autoGrow.videoAudios).length) graph['7'].inputs.ref_video_audios = autoGrow.videoAudios;
-  if (Object.keys(autoGrow.audios).length) graph['7'].inputs.ref_audios = autoGrow.audios;
   return graph;
 }
 

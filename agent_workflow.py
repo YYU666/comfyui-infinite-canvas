@@ -65,7 +65,6 @@ def build_video_workflow(options, references=None):
     }
     if turbo:
         graph["2"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["1", 0], "lora_name": lora, "strength_model": 1}}
-    auto = {"image": {}, "video": {}, "videoAudio": {}, "audio": {}}
     counters = {"image": 0, "video": 0, "audio": 0}
     for index, item in enumerate(references):
         kind = item.get("kind", "image")
@@ -74,22 +73,14 @@ def build_video_workflow(options, references=None):
         node_id = str(100 + index)
         if kind == "image":
             graph[node_id] = {"class_type": "LoadImage", "inputs": {"image": item["name"]}}
-            auto["image"][f"ref_image_{kind_index}"] = [node_id, 0]
+            inputs[f"ref_images.ref_image_{kind_index}"] = [node_id, 0]
         elif kind == "video":
             graph[node_id] = {"class_type": "LoadVideo", "inputs": {"file": item["name"]}}
             component = str(200 + index)
             graph[component] = {"class_type": "GetVideoComponents", "inputs": {"video": [node_id, 0]}}
-            auto["video"][f"ref_video_{kind_index}"] = [component, 0]
-            auto["videoAudio"][f"ref_video_audio_{kind_index}"] = [component, 1]
+            inputs[f"ref_videos.ref_video_{kind_index}"] = [component, 0]
+            inputs[f"ref_video_audios.ref_video_audio_{kind_index}"] = [component, 1]
         else:
             graph[node_id] = {"class_type": "LoadAudio", "inputs": {"audio": item["name"]}}
-            auto["audio"][f"ref_audio_{kind_index}"] = [node_id, 0]
-    if auto["image"]:
-        inputs["ref_images"] = auto["image"]
-    if auto["video"]:
-        inputs["ref_videos"] = auto["video"]
-    if auto["videoAudio"]:
-        inputs["ref_video_audios"] = auto["videoAudio"]
-    if auto["audio"]:
-        inputs["ref_audios"] = auto["audio"]
+            inputs[f"ref_audios.ref_audio_{kind_index}"] = [node_id, 0]
     return graph
