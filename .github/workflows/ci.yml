@@ -99,11 +99,11 @@ jobs:
           python scripts/build_update_package.py --tag "v$version" --output $out
           python scripts/build_portable_package.py --tag "v$version" --dist dist --output $out
           python scripts/assert_package_evidence.py "$out"
-          @"
-这些 zip 是 PR 上的未签名 CI 证据，不是 GitHub Release 资产。
-引擎只能安装将来 Release 上的 refmuse-portable 与 refmuse-runtime，并且必须先核对 SHA-256 和字节数。
-不要把 refmuse-update 解压进空的 official-canvas 目录。
-"@ | Set-Content -Encoding utf8 (Join-Path $out "CI-EVIDENCE.txt")
+          @(
+            '这些 zip 是 PR 上的未签名 CI 证据，不是 GitHub Release 资产。'
+            '引擎只能安装将来 Release 上的 refmuse-portable 与 refmuse-runtime，并且必须先核对 SHA-256 和字节数。'
+            '不要把 refmuse-update 解压进空的 official-canvas 目录。'
+          ) | Set-Content -Encoding utf8 (Join-Path $out "CI-EVIDENCE.txt")
       - uses: actions/upload-artifact@v4
         with:
           name: refmuse-package-evidence
@@ -129,11 +129,11 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP "refmuse-runtime"
           python scripts/build_runtime_package.py --describe
           python scripts/build_runtime_package.py --output $out
-          python -c "import hashlib, json, zipfile; from pathlib import Path; root=Path(r'$env:RUNNER_TEMP')/'refmuse-runtime'; zips=list(root.glob('refmuse-runtime-python-win-amd64-*.zip')); assert len(zips)==1, zips; archive=zips[0]; checksum=(archive.parent/(archive.name+'.sha256')).read_text(encoding='ascii').split(); data=archive.read_bytes(); assert checksum[0]==hashlib.sha256(data).hexdigest(); assert int(checksum[1])==len(data); names=zipfile.ZipFile(archive).namelist(); assert any(name.endswith('runtime-manifest.json') for name in names); assert any(name.endswith('python_embeded/pythonw.exe') for name in names); assert any(name.endswith('LICENSES/PSF-LICENSE.txt') for name in names); print(json.dumps({'archive': archive.name, 'bytes': len(data), 'sha256': checksum[0]}))"
-          @"
-此运行时 zip 是 windows-latest 上的未签名 CI 证据，不是 GitHub Release 资产。
-解压前仍须核对旁边的 .sha256（SHA-256 和字节数）。macOS 本轮没有运行时。
-"@ | Set-Content -Encoding utf8 (Join-Path $out "CI-EVIDENCE.txt")
+          python scripts/assert_runtime_evidence.py "$out"
+          @(
+            '此运行时 zip 是 windows-latest 上的未签名 CI 证据，不是 GitHub Release 资产。'
+            '解压前仍须核对旁边的 .sha256（SHA-256 和字节数）。macOS 本轮没有运行时。'
+          ) | Set-Content -Encoding utf8 (Join-Path $out "CI-EVIDENCE.txt")
       - uses: actions/upload-artifact@v4
         with:
           name: refmuse-runtime-win-amd64
