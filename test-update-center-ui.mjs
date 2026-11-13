@@ -179,6 +179,24 @@ try {
   await close();
   await banner.waitFor();
   assert.match(await banner.innerText(), /v9.9.12/, 'a failed apply leaves the upgrade entry in place');
+
+  // Rollback restarts the old backend, whose live phase is idle with a persisted error.
+  updateStatus = {phase: 'idle', currentVersion: '1.0.1-rc.1'};
+  await page.getByRole('button', {name: '查看更新', exact: true}).click();
+  const rollbackStart = await page.evaluate(() => Date.now());
+  await page.getByRole('button', {name: '立即升级', exact: true}).click();
+  await page.getByRole('heading', {name: '正在安全升级'}).waitFor();
+  const stale = {phase: 'error', version: result.version, message: '旧的回滚记录', updatedAt: new Date(rollbackStart - 60000).toISOString()};
+  updateStatus = {phase: 'idle', lastResult: stale};
+  await heldApply.fulfill({json: {accepted: true, version: result.version}});
+  await page.clock.runFor(1600);
+  assert.equal(await page.getByRole('button', {name: '关闭更新窗口'}).count(), 0, 'an older rollback cannot end this attempt');
+  updateStatus = {phase: 'idle', lastResult: {...stale, message: '合成测试：新版启动失败，已恢复旧版。', updatedAt: await page.evaluate(() => new Date().toISOString())}};
+  await page.clock.runFor(1600);
+  await page.getByText('合成测试：新版启动失败，已恢复旧版。', {exact: true}).waitFor();
+  await close();
+  await banner.waitFor();
+  assert.equal(applyBodies.length, 3, 'rollback recovery never resubmits automatically');
   assert.equal(errors.length, 0, errors.join('\n'));
   console.log(JSON.stringify({ok: true, syntheticOnly: true, banner: true, laterKeepsUpgrade: true, explicitIgnorePersists: true, newVersion: true, settingsLive: true, manualOptOut: true, noRelease: true, oldBackend: true, quietAutomaticErrors: true, timeoutRecovery: true, inFlightClose: true, inFlightOptOut: true, joinedManual: true, projectGuard: true, confirmedApplyOnly: true, longApplyProgress: true, ambiguousApplyReconciled: true, failedApplyKeepsEntry: true}));
 } finally {

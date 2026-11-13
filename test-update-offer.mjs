@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describeUpdateFailure, priorFailureForRelease } from './src/update-client.js';
+import { currentAttemptFailure, describeUpdateFailure, priorFailureForRelease } from './src/update-client.js';
 
 const release = { updateAvailable: true, version: 'v1.0.15', currentVersion: '1.0.6-local.20261107' };
 assert.equal(priorFailureForRelease({
@@ -23,4 +23,12 @@ assert.equal(describeUpdateFailure({
   details: { kind: 'installed-files', paths: ['src/App.jsx'], count: 1 },
 }).includes('src/App.jsx'), true);
 
-console.log('UPDATE_OFFER_OK staleFailureHidden=true rejectionKeepsPaths=true');
+const startedAt = Date.parse('2026-11-13T14:30:00Z');
+const rollback = { phase: 'error', version: 'v1.0.16', message: '新版启动失败，已恢复旧版。', updatedAt: '2026-11-13T14:30:10Z' };
+assert.equal(currentAttemptFailure({ phase: 'idle', lastResult: rollback }, 'v1.0.16', startedAt), rollback);
+assert.equal(currentAttemptFailure({ phase: 'idle', lastResult: { ...rollback, updatedAt: '2026-11-13T14:29:59Z' } }, 'v1.0.16', startedAt), null, 'a previous same-version failure cannot unlock a new attempt');
+assert.equal(currentAttemptFailure({ phase: 'idle', lastResult: { ...rollback, version: 'v1.0.15' } }, 'v1.0.16', startedAt), null);
+assert.equal(currentAttemptFailure({ phase: 'idle', lastResult: { ...rollback, updatedAt: undefined } }, 'v1.0.16', startedAt), null);
+assert.equal(currentAttemptFailure({ phase: 'restarting', lastResult: rollback }, 'v1.0.16', startedAt), null);
+assert.equal(currentAttemptFailure(rollback, 'v1.0.16', startedAt), rollback);
+console.log('UPDATE_OFFER_OK staleFailureHidden=true rejectionKeepsPaths=true rollbackRecovered=true');

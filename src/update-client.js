@@ -67,3 +67,17 @@ export function priorFailureForRelease(status, release) {
   if (!failure || !release?.updateAvailable || !release.version || !failure.version) return null;
   return failure.version === release.version ? failure : null;
 }
+
+/** A restarted backend reports rollback through lastResult, not its idle phase. */
+export function currentAttemptFailure(status, version, startedAt) {
+  const target = version.replace(/^v/, '');
+  if (status?.phase === 'error') {
+    const reported = status.version?.replace(/^v/, '');
+    return !reported || reported === target ? status : null;
+  }
+  if (status?.phase !== 'idle') return null;
+  const failure = status.lastResult;
+  if (failure?.phase !== 'error' || failure.version?.replace(/^v/, '') !== target) return null;
+  const updatedAt = Date.parse(failure.updatedAt);
+  return Number.isFinite(updatedAt) && updatedAt >= startedAt ? failure : null;
+}

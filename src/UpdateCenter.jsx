@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, ArrowUpCircle, Check, ExternalLink, LoaderCircle, ShieldCheck, X } from 'lucide-react';
-import { applyUpdate, checkForUpdates, describeUpdateFailure, getUpdateStatus, getWorkbenchHealth, priorFailureForRelease } from './update-client';
+import { applyUpdate, checkForUpdates, currentAttemptFailure, describeUpdateFailure, getUpdateStatus, getWorkbenchHealth, priorFailureForRelease } from './update-client';
 import { getSettings } from './settings-client';
 import { createUpdateCheckScheduler } from './update-check-scheduler';
 import './updates.css';
@@ -109,17 +109,14 @@ export default function UpdateCenter({ projectOpen }) {
         if (disposed.current || !applying.current) return;
         if (status.message) setMessage(status.message);
         // A pending POST owns the outcome; a stale status must not unlock a second apply.
-        if (!request.pending && status.phase === 'error') {
-          const reported = status.version?.replace(/^v/, '');
-          // Only this attempt's live error ends the wait. An older saved lastResult stays out of the way.
-          if (!reported || reported === target) {
-            applying.current = false;
-            const text = status.message || '升级失败，请查看工作台状态和运行日志。';
-            setMessage(text);
-            setAvailableNotice((current) => current || (release ? { ...release, message: text } : null));
-            showDialog(release ? 'available' : 'error');
-            return;
-          }
+        const failure = !request.pending && currentAttemptFailure(status, version, request.startedAt);
+        if (failure) {
+          applying.current = false;
+          const text = failure.message || '升级失败，请查看工作台状态和运行日志。';
+          setMessage(text);
+          setAvailableNotice((current) => current || (release ? { ...release, message: text } : null));
+          showDialog(release ? 'available' : 'error');
+          return;
         } else if (!request.pending && request.uncertain && !['preparing', 'restarting'].includes(status.phase)) {
           setMessage('升级请求的响应已断开，正在核实实际状态。不会重复提交升级；请保持页面打开，必要时检查运行日志。');
         }

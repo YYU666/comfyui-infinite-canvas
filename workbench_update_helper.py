@@ -28,6 +28,7 @@ class OldProcessTimeout(RuntimeError):
 
 
 def atomic_json(path, payload):
+    payload = {"updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), **payload}
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
