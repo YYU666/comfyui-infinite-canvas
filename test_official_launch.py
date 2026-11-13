@@ -131,9 +131,13 @@ class IsolationTests(unittest.TestCase):
                 [sys.executable, "-c", "import video_workbench_launcher"],
                 cwd=ROOT, env=env, capture_output=True, text=True, timeout=60,
             )
-            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("H3_WORKBENCH_RUNTIME_DIR", result.stderr)
-            self.assertIn("不会使用", result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertNotEqual(result.returncode, 0, combined)
+            self.assertIn("H3_WORKBENCH_RUNTIME_DIR", combined)
+            self.assertIn("H3_WORKBENCH_DATA_DIR", combined)
+            self.assertIn("H3_PROJECTS_ROOT", combined)
+            # cp1252 tracebacks escape the Chinese sentence; the path token stays ASCII.
+            self.assertTrue("不会使用" in combined or "%LOCALAPPDATA%" in combined, combined)
             self.assertFalse((local / "H3Workbench").exists())
             self.assertFalse((root / "profile" / "Documents").exists())
 
