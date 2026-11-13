@@ -1868,7 +1868,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const bundle = await getExtension(digest);
       if (switchingRef.current || project.readOnly) throw new Error('当前画布不可写。');
       return addNode('generator', extensionNodeData(bundle, nodeDefinitionId), position, focus);
-    }, updateNode, removeNode, onConnect, generateNode, tidyCanvas, focusNode, inspectNode, openReferenceLibrary, persistProject, retryProjectSave,
+    }, updateNode, removeNode, onConnect, generateNode, cancelNode, tidyCanvas, focusNode, inspectNode, openReferenceLibrary, persistProject, retryProjectSave,
       prepareProjectSwitch, commitProjectSwitch, abandonProjectSwitch,
       importAsset: async (nodeId, assetPath, name, sourceProjectId) => {
         if (switchingRef.current || project.readOnly) throw new Error('当前项目无法导入素材。');

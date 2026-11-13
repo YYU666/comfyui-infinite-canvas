@@ -13,9 +13,12 @@ from project_store import StoreError
 TOOLS = frozenset({"canvas_move_nodes", "canvas_retry_save", "canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
                    "canvas_generate_node", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset",
                    "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
-                   "canvas_create_extension"})
+                   "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node"})
 LAUNCHER_TOOLS = frozenset({"canvas_get_state", "canvas_create_project", "canvas_open_project"})
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}")
+# A page-bridge wait holds the single command slot (heartbeats still run). Cap it
+# so a long read cannot stall later commands for the tool's 25 minute maximum.
+PAGE_BRIDGE_WAIT_MS = 20000
 
 
 class CanvasPageBridge:
@@ -92,7 +95,9 @@ class CanvasPageBridge:
             if project_id == "launcher" and tool not in LAUNCHER_TOOLS:
                 raise StoreError("BAD_REQUEST", "请先在当前页面打开项目，再操作画布节点。")
             if tool == "canvas_generate_node" and args.get("wait", False) is not False:
-                raise StoreError("BAD_REQUEST", "当前页通道只提交生成（wait:false），请用 canvas_get_state 查询结果。")
+                raise StoreError("BAD_REQUEST", "当前页通道只提交生成（wait:false），请用 canvas_get_state 或完成事件查询结果。")
+            if tool == "canvas_wait_for_node":
+                args = self._bounded_wait_args(args)
             identity = {"sessionId": session_id, "projectId": project_id, "tool": tool, "args": args}
             encoded = json.dumps(identity, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
             if len(encoded) > 32768:
@@ -141,6 +146,16 @@ class CanvasPageBridge:
             if not command:
                 raise StoreError("NOT_FOUND", "Canvas command not found.", 404)
             return {key: command[key] for key in ("opId", "epoch", "sessionId", "projectId", "status", "result") if key in command}
+
+    @staticmethod
+    def _bounded_wait_args(args):
+        """Copy args and force a short timeout. Omitted timeout becomes the cap, not 5 minutes."""
+        timeout = args.get("timeoutMs", PAGE_BRIDGE_WAIT_MS)
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1000 or timeout > PAGE_BRIDGE_WAIT_MS:
+            raise StoreError("BAD_REQUEST", f"当前页通道的 canvas_wait_for_node 等待时间须在 1000–{PAGE_BRIDGE_WAIT_MS} 毫秒之间，避免占住页面命令。未结束时页面返回 pending，不会重新提交。")
+        bounded = dict(args)
+        bounded["timeoutMs"] = timeout
+        return bounded
 
     def release(self, payload):
         with self.lock:

@@ -110,6 +110,7 @@ class ProjectStoreTests(unittest.TestCase):
                 other.acquire_lock(self.path)
             self.assertEqual(caught.exception.status, 423)
             payload["pid"] = 99999999
+            payload["heartbeat"] = time.time()
             lock.write_text(json.dumps(payload), encoding="utf-8")
             self.assertEqual(other.acquire_lock(self.path)["owner"], "owner-b")
         finally:

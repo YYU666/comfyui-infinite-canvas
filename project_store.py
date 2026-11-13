@@ -189,6 +189,36 @@ def _writer_running(pid):
         return False
 
 
+def _process_dead(pid):
+    """True only when the pid is confirmed gone. Access denied is not dead."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0 or pid == os.getpid():
+        return False
+    if os.name == "nt":
+        import ctypes
+        kernel = ctypes.windll.kernel32
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return kernel.GetLastError() == 87  # ERROR_INVALID_PARAMETER: no such process
+        try:
+            return kernel.WaitForSingleObject(handle, 0) == 0  # WAIT_OBJECT_0: exited
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    except OSError as exc:
+        return getattr(exc, "errno", None) == 3  # ESRCH
+    return False
+
+
 def _read_project_json(path):
     # Windows can briefly deny a reader while another thread atomically replaces
     # project.json. Retry only that transient sharing violation, never bad JSON.
@@ -376,6 +406,87 @@ class ProjectStore:
             raise StoreError("BAD_REQUEST", "项目 ID 或 schema 版本不一致。")
         return self._write(path, document, int(expected_revision))
 
+    def held_project_details(self):
+        """Projects this process still holds. `stale` is true only for a confirmed-dead owner pid."""
+        details = []
+        for lock_path, owner in list(self._held):
+            lock_path = Path(lock_path)
+            try:
+                lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                lock = {}
+            if not isinstance(lock, dict):
+                lock = {}
+            try:
+                pid = int(lock.get("pid", 0))
+            except (TypeError, ValueError):
+                pid = 0
+            project_id, name = None, None
+            try:
+                document = json.loads((lock_path.parent / "project.json").read_text(encoding="utf-8"))
+                if isinstance(document, dict):
+                    project_id, name = document.get("id"), document.get("name")
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                name = lock_path.parent.name
+            details.append({
+                "id": project_id, "name": name, "owner": lock.get("owner") or owner,
+                "pid": pid or None, "stale": _process_dead(pid), "thisProcess": pid == os.getpid(),
+            })
+        return details
+
+    def reclaim_dead_locks(self):
+        """Drop locks whose owner pid is confirmed dead. Never remove a live process's lock."""
+        reclaimed = []
+        seen = set()
+        candidates = [Path(lock_path) for lock_path, _owner in list(self._held)]
+        if self.root.is_dir():
+            for child in self.root.iterdir():
+                if child.is_dir() and not child.name.startswith("."):
+                    candidates.append(child / ".lock")
+        for lock_path in candidates:
+            key = os.path.normcase(str(lock_path))
+            if key in seen:
+                continue
+            seen.add(key)
+            info = self._reclaim_if_dead(lock_path)
+            if info:
+                reclaimed.append(info)
+        return reclaimed
+
+    def _reclaim_if_dead(self, lock_path):
+        lock_path = Path(lock_path)
+        resolved = lock_path.resolve()
+        if not lock_path.is_file():
+            self._held = {item for item in self._held if Path(item[0]).resolve() != resolved}
+            return None
+        project_json = lock_path.parent / "project.json"
+        try:
+            with self._guard(project_json):
+                try:
+                    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    return None
+                if not isinstance(lock, dict):
+                    return None
+                try:
+                    pid = int(lock.get("pid", 0))
+                except (TypeError, ValueError):
+                    return None
+                if not _process_dead(pid):
+                    return None
+                project_id, name = None, lock_path.parent.name
+                try:
+                    document = json.loads(project_json.read_text(encoding="utf-8"))
+                    if isinstance(document, dict):
+                        project_id, name = document.get("id"), document.get("name") or name
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    pass
+                lock_path.unlink(missing_ok=True)
+                self._held = {item for item in self._held if Path(item[0]).resolve() != resolved}
+                return {"id": project_id, "name": name, "pid": pid, "stale": True}
+        except StoreError:
+            return None
+
     def release(self, project_id):
         path = self._project_path(project_id)
         lock_path = path.parent / ".lock"
@@ -404,13 +515,19 @@ class ProjectStore:
             except (OSError, UnicodeError, json.JSONDecodeError):
                 lock = None
             if lock and lock.get("owner") != owner:
-                fresh = now - float(lock.get("heartbeat", 0)) < 30
                 try:
-                    owner_alive = _writer_running(int(lock.get("pid", 0)))
+                    lock_pid = int(lock.get("pid", 0))
                 except (TypeError, ValueError):
-                    owner_alive = False
-                if fresh or owner_alive:
-                    raise StoreError("LOCKED", "项目正由另一个实例编辑，请以只读方式打开。", 423, {"owner": lock.get("owner")})
+                    lock_pid = 0
+                # A dead owner is reclaimed even when its heartbeat timestamp is still fresh.
+                if not _process_dead(lock_pid):
+                    fresh = now - float(lock.get("heartbeat", 0)) < 30
+                    try:
+                        owner_alive = _writer_running(lock_pid) if lock_pid else False
+                    except (TypeError, ValueError):
+                        owner_alive = False
+                    if fresh or owner_alive:
+                        raise StoreError("LOCKED", "项目正由另一个实例编辑，请以只读方式打开。", 423, {"owner": lock.get("owner")})
             atomic_write_json(lock_path, {"owner": owner, "pid": os.getpid(), "heartbeat": now})
             self._held.add((lock_path, owner))
             if not self._heartbeat_thread or not self._heartbeat_thread.is_alive():

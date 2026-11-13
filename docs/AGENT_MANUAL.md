@@ -120,6 +120,8 @@ MCP 等价工具：`canvas_current`、`canvas_call`（等到页面工具返回�
 | `canvas_connect_nodes` | 连接两个真实节点 | 省略 `targetHandle` 时按规则自动判断；必须回读边数据，不能靠外观 |
 | `canvas_import_asset` | 复用已保存素材 | 需要素材节点；`assetPath` 必须是 `assets/<64位十六进制>.<扩展名>` |
 | `canvas_generate_node` | 提交一次生成 | **`wait` 必须为 `false`**；成功只表示已提交（有新 `promptId`）。`wait:true` 会被拒绝 |
+| `canvas_wait_for_node` | 只读等待已提交的任务 | `timeoutMs` 在当前页通道为 1000–20000，省略则 20000。未结束返回 `pending:true`，不重新提交 |
+| `canvas_cancel_node` | 取消该节点正在进行的生成 | 只有 `nodeId`。与界面取消按钮相同，不删除节点。只读页会拒绝 |
 | `canvas_focus_node` | 把视口对到节点 | 便于用户看见 |
 | `canvas_delete_node` | 删除节点 | 仅清理已确认无用的临时节点；运行中可能取消任务 |
 | `canvas_move_nodes` / `canvas_tidy` | 移动或整理 | `tidy` 会移动全部节点，须用户明确许可 |
@@ -143,10 +145,10 @@ MCP 等价工具：`canvas_current`、`canvas_call`（等到页面工具返回�
 
 ### 2.4 当前页通道的真实限制
 
-- 没有面向 Agent 的完成 SSE。生成是否结束，只能反复调用 `canvas_get_state`。`GET /api/agent/canvas/commands/<opId>` 变成 `done`，只表示页面工具已返回；对生成而言是「已提交」，不是成片终态。工作台界面使用的 `/api/queue/events` 不是这条回路的完成通知，也不能代替 `canvas_get_state`。
-- `canvas_get_state` 不返回结果 `url` 或 `filename`。摘要里有 `status`、`stage`、`progress`、`promptId`、`queueJobId`、`hasMedia` 和节点 `name`。`hasMedia` 只是布尔值；`name` 不是结果地址。图片处理节点可能另有 `processedAssetPath`，不能把它当成生图或视频结果地址。终态看 `status` 是否为 `done`、`error` 或 `cancelled`，以及画布上是否出现连回本次 `promptId` 的结果节点。
-- `canvas_wait_for_node` 不在页桥允许列表。用它调用 `POST /api/agent/canvas/commands` 会返回 400。等待只用 `canvas_get_state` 轮询。
-- 页桥没有取消工具。不要调用不存在的 `canvas_cancel`。运行中删除节点可能按界面取消任务，那不是取消接口。
+- 生成完成用 `GET /api/agent/canvas/events?after=<cursor>&timeoutMs=20000`（`X-H3-Token`，最长 25 秒）。它只报告 `done` / `error` / `cancelled`，带 `nodeId` 和结果文件的 `filename` / `subfolder` / `type` / `url`。没有事件就返回空列表和下一次要用的 `cursor`。这不是提交，也不能代替最后一次 `canvas_get_state`。`GET /api/agent/canvas/commands/<opId>` 变成 `done`，只表示页面工具已返回；对生成而言是「已提交」，不是成片终态。界面用的 `/api/queue/events` 会推送进度和较大的任务体，不要用它代替这条完成通知。
+- `canvas_get_state` 在有结果或素材位置时给出 `media`（`url`、`filename`、`subfolder`、`type`、`assetPath` 中存在的字段）。默认不含长提示词。`hasMedia` 仍是布尔值；`name` 不是地址。图片处理节点可能另有 `processedAssetPath`。终态看 `status` 是否为 `done`、`error` 或 `cancelled`，以及画布上是否出现连回本次 `promptId` 的结果节点。
+- `canvas_wait_for_node` 可以在当前页通道使用。`timeoutMs` 超过 20000 会得到 400；省略则按 20000。到时 `pending:true`，任务仍在跑，不要因此重新提交。
+- 取消用 `canvas_cancel_node`。不要调用不存在的 `canvas_cancel`。运行中删除节点也可能按界面取消任务，那不是取消接口。
 - `canvas_import_asset` 只复用已保存素材，不能上传任意本地文件。`assetPath` 必须匹配 `assets/<64位十六进制>.<扩展名>`，目标必须是素材节点。
 - `canvas_generate_node` 的 `wait` 必须为 `false`。页桥和当前页执行都会拒绝其他值。
 
@@ -209,7 +211,7 @@ Agent 不判断自己是「强」还是「弱」，也不因自认能力高低�
 
 偏离之后，若同一任务的核验**连续失败两次**，停用这次偏离，回到该配方的标准步骤重做。不要沿失败的偏离再换第三种做法。回到标准配方后仍然失败，按第 6 节处理；属于第 7 节的情况就停下来问用户。
 
-每个配方都按「前置 → 逐步操作 → 期望输出 → 核验」执行。配方里写的「提交并等待」都是配方 B 的第 5–6 步：`canvas_generate_node`（`wait:false`），再用 `canvas_get_state` 轮询到终态。没有第二种等待接口。缺模型时停在前置，向用户展示 `MODEL_CATALOG.md` 对应行，**等待具名套装的明确同意**，不要开始下载。
+每个配方都按「前置 → 逐步操作 → 期望输出 → 核验」执行。配方里写的「提交并等待」都是配方 B 的第 5–6 步：`canvas_generate_node`（`wait:false`），再用完成事件或 `canvas_wait_for_node` 等到终态，并用 `canvas_get_state` 核对可见结果。缺模型时停在前置，向用户展示 `MODEL_CATALOG.md` 对应行，**等待具名套装的明确同意**，不要开始下载。
 
 公共前置（所有生成配方都要做）：
 
@@ -243,7 +245,7 @@ Agent 不判断自己是「强」还是「弱」，也不因自认能力高低�
 3. 首尾帧：把图片素材连到 `first`／`last`，**必须指定端口**。
 4. 回读节点，确认参数和连线。
 5. `canvas_generate_node`（`wait:false`），记录 `promptId`，向用户报告「已提交」而不是「已完成」。
-6. 用 `canvas_get_state` 轮询，直到 `done` 或失败。超时只表示还在等，再读一次状态。
+6. 用 `GET /api/agent/canvas/events` 或 `canvas_wait_for_node` 等到 `done`、`error`、`cancelled`，或 `pending:true`。`pending` 只表示这一小段时间还没结束，用新的 `opId` 再等，不要重新 `canvas_generate_node`。然后 `canvas_get_state` 核对结果节点和 `media`。
 
 **期望：** 终态 `done`，出现可播放的视频结果节点，连回该生成节点，对应本次 `promptId`，revision 已保存。
 
@@ -354,7 +356,7 @@ Agent 不判断自己是「强」还是「弱」，也不因自认能力高低�
 | 现象 | 先检查什么 | 怎么处理 |
 | --- | --- | --- |
 | `NO_VISIBLE_CANVAS` | 用户是否已在现有页打开项目；目标页是否只读或隐藏；工作台是否刚重启 | 请用户打开当前可操作页；重新 `canvas_current`。`projectId` 不能操作隐藏页。不要另开浏览器 |
-| 页桥 400，不支持的工具 | 是否调用了 `canvas_wait_for_node`、取消工具或 `wait:true` | 改回 `wait:false`，用 `canvas_get_state` 轮询。不要发明等待或取消接口 |
+| 页桥 400，不支持的工具 | 是否把 `canvas_generate_node` 设成了 `wait:true`，或 `canvas_wait_for_node` 的 `timeoutMs` 大于 20000 | 生成保持 `wait:false`。等待把 `timeoutMs` 降到 20000 以内，或改用 `GET /api/agent/canvas/events`。取消用 `canvas_cancel_node` |
 | `AMBIGUOUS_CANVAS` | 是否有第二窗口或第二标签 | 请用户只留一个可见页后重试 |
 | `CANVAS_EPOCH_CHANGED` | 工作台已重启 | 重新读取当前页；旧命令不重放 |
 | 生成报缺失模型／节点 | 对照 `MODEL_CATALOG.md` 与 `verify_workbench.py`；画布是否连错端口上的 ComfyUI | 列出缺的文件、大小和来源，等用户同意再下载。不要改用相似文件名顶替 |

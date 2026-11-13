@@ -12,7 +12,7 @@ import {
 import { listLegacyProjects, migrateLegacyProjects } from './legacy-migration';
 import { downloadDoctorLogs, runDoctor } from './doctor-client';
 import SettingsDialog from './SettingsDialog';
-import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page';
+import { startCurrentCanvasPage, createProjectPageTools, launcherPage } from './canvas-current-page';
 import './launcher.css';
 
 const TEMPLATES = [
@@ -81,7 +81,7 @@ export default function ProjectLauncher({ onOpen }) {
     for (const tool of tools) if (document.modelContext?.registerTool) {
       Promise.resolve(document.modelContext.registerTool(tool, { signal: controller.signal })).catch(() => {});
     }
-    const stop = startCurrentCanvasPage({ tools, getPage: () => ({ projectId: 'launcher', visible: document.visibilityState === 'visible' }) });
+    const stop = startCurrentCanvasPage({ tools, getPage: () => launcherPage() });
     return () => { stop(); controller.abort(); };
   }, []);
 

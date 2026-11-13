@@ -230,7 +230,7 @@ python_embeded\python.exe video-workbench\scripts\verify_workbench.py --comfy-ro
 
 - **唯一可见画布**：只使用当前侧栏里已经打开、且页桥标记为可操作的项目页。不得另开第二个可写画布、第二个标签页或外部浏览器窗口。`projectId` 只能在多个可见页中选定目标，不能操作隐藏页。页桥的 `visible` 表示该页可以写入，不是窗口是否在最前。
 - **不新开可写实例**：不得用 `/api/projects/open`、第二标签页或外部 Chrome/Edge 与当前页面争抢同一项目。需要切换项目时，通过当前页面的 `canvas_open_project` 执行。
-- **生成发生在可见节点上**：用页桥创建节点、连线，以 `canvas_generate_node`（`wait:false`）提交，再轮询 `canvas_get_state` 直到终态。画布不是事后贴图的显示区。只返回文件路径、只改后端、只在 ComfyUI 里成功，都不算完成。
+- **生成发生在可见节点上**：用页桥创建节点、连线，以 `canvas_generate_node`（`wait:false`）提交。用 `GET /api/agent/canvas/events` 或页桥 `canvas_wait_for_node`（最长 20 秒，未结束则 `pending`）等待终态，再用 `canvas_get_state` 核对可见结果节点及其 `media`。需要停止时用 `canvas_cancel_node`。画布不是事后贴图的显示区。只返回文件路径、只改后端、只在 ComfyUI 里成功，都不算完成。
 - **单写交付**：同一项目只允许当前页面作为最终写入者。不得直接覆盖 `project.json` 或绕过页面 revision。发现第二个写客户端、只读或保存冲突时停止并报告。
 - **失败即停**：当前画布不可操作、锁冲突、页面只读、结果没有出现在可见节点上时，报告「未交付」。不得改走 8188 或 `apply`／`wait`，也不得自行开新页面绕过。
 

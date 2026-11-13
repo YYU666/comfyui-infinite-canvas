@@ -11,7 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from workbench_update_helper import backup_current, replace_program, restore_program, run, safe_path, wait_for_health
+from workbench_update_helper import backup_current, main, replace_program, restore_program, run, safe_path, wait_for_health
 
 
 class HelperTests(unittest.TestCase):
@@ -105,6 +105,21 @@ class HelperTests(unittest.TestCase):
         status = json.loads(self.status.read_text(encoding="utf-8"))
         self.assertEqual(status["phase"], "error")
         self.assertIn("已恢复并重新启动旧版", status["message"])
+        self.assert_user_data_untouched()
+
+    def test_exit_timeout_writes_actionable_error_without_replacing_files(self):
+        request = {**self.request, "expectedPid": os.getpid(), "exitTimeout": 0.2}
+        path = self.base / "request.json"
+        path.write_text(json.dumps(request), encoding="utf-8")
+        with mock.patch.object(sys, "argv", ["workbench_update_helper.py", "--request", str(path)]):
+            code = main()
+        self.assertEqual(code, 1)
+        status = json.loads(self.status.read_text(encoding="utf-8"))
+        self.assertEqual(status["phase"], "error")
+        self.assertEqual(status["code"], "OLD_PROCESS_TIMEOUT")
+        self.assertIn("尚未替换", status["message"])
+        self.assertIn("ComfyUI", status["message"])
+        self.assertEqual((self.root / "video_workbench_launcher.py").read_text(encoding="utf-8"), "old")
         self.assert_user_data_untouched()
 
     def test_manifest_paths_cannot_escape_install_root(self):

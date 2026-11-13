@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { generateNodeForMcp, waitForNodeForMcp } from './src/canvas-mcp.js';
+import { generateNodeForMcp, nodeSummary, registerCanvasMcp, waitForNodeForMcp } from './src/canvas-mcp.js';
 
 const fastWait = async (read, timeoutMs = 1000, intervalMs = 1) => {
   const deadline = Date.now() + timeoutMs;
@@ -60,7 +60,56 @@ for (const paused of [true, false]) {
   setTimeout(() => Object.assign(node.data, { status: 'cancelled', stage: '已取消' }), 5);
   const waited = await waitForNodeForMcp(latest, { nodeId: 'g1', timeoutMs: 1000 }, fastWait);
   assert.equal(waited.node.status, 'cancelled');
+  assert.equal(waited.pending, false);
   assert.equal(latest.current.submissions, 0, '只读等待不能重新提交');
+}
+
+{
+  const { latest, node } = fixture();
+  Object.assign(node.data, { status: 'running', queueJobId: 'job-existing', promptId: 'prompt-1', progress: 40 });
+  const pending = await waitForNodeForMcp(latest, { nodeId: 'g1', timeoutMs: 20 }, fastWait);
+  assert.equal(pending.pending, true);
+  assert.equal(pending.node.status, 'running');
+  assert.equal(latest.current.submissions, 0, '超时等待不能重新提交');
+}
+
+{
+  const summary = nodeSummary({
+    id: 'image-1', type: 'media', position: { x: 1, y: 2 },
+    data: { title: '成品', kind: 'image', name: 'H3_Image_0001.png', filename: 'H3_Image_0001.png', subfolder: 'image', type: 'output', url: '/api/comfy/view?filename=H3_Image_0001.png&subfolder=image&type=output', output: true, prompt: '不要放进默认摘要的长提示词' },
+  }, false);
+  assert.equal(summary.media.filename, 'H3_Image_0001.png');
+  assert.equal(summary.media.subfolder, 'image');
+  assert.equal(summary.media.type, 'output');
+  assert.match(summary.media.url, /filename=H3_Image_0001\.png/);
+  assert.equal(summary.prompt, undefined);
+  assert.equal(summary.hasMedia, true);
+  const asset = nodeSummary({ id: 'asset-1', type: 'media', position: { x: 0, y: 0 }, data: { title: '素材', kind: 'image', assetPath: 'assets/' + 'a'.repeat(64) + '.png', url: 'blob:local' } });
+  assert.equal(asset.media.assetPath, 'assets/' + 'a'.repeat(64) + '.png');
+  assert.equal(asset.media.url, undefined);
+}
+
+{
+  const node = { id: 'g1', type: 'generator', position: { x: 0, y: 0 }, data: { title: '生成', status: 'running', queueJobId: 'job-1' } };
+  let cancelled = 0;
+  const latest = { current: { nodesRef: { current: [node] }, edgesRef: { current: [] }, readOnly: false, actions: {
+    cancelNode: async (id) => { cancelled += 1; assert.equal(id, 'g1'); node.data.status = 'cancelled'; },
+    persistProject: async () => {},
+  } } };
+  const registered = [];
+  const stop = registerCanvasMcp(latest, { context: { registerTool(tool) { registered.push(tool); } }, startPage: () => () => {} });
+  try {
+    const tool = registered.find((item) => item.name === 'canvas_cancel_node');
+    const result = JSON.parse(await tool.execute({ nodeId: 'g1' }));
+    assert.equal(result.ok, true);
+    assert.equal(result.cancelled, true);
+    assert.equal(result.node.status, 'cancelled');
+    assert.equal(cancelled, 1);
+    latest.current.readOnly = true;
+    const denied = JSON.parse(await tool.execute({ nodeId: 'g1' }));
+    assert.equal(denied.ok, false);
+    assert.equal(cancelled, 1, '只读页面不能取消');
+  } finally { stop(); }
 }
 
 console.log('CANVAS_MCP_QUEUE_OK paused=true gpuBusy=true promptless=true terminal=true noDuplicate=true');

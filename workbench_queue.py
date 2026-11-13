@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import queue
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,6 +17,8 @@ from workbench_lifecycle import atomic_write_json, runtime_dir, utc_now
 
 TERMINAL = {"done", "error", "cancelled"}
 ACTIVE = {"running", "finishing"}
+TERMINAL_EVENTS = {"job.done", "job.error", "job.cancelled"}
+COMPLETION_BUFFER = 200
 
 
 def _error(code, message, suggestion=None):
@@ -25,6 +28,45 @@ def _error(code, message, suggestion=None):
 def _public(job):
     hidden = {"workflow", "plan", "clientId"}
     return {key: copy.deepcopy(value) for key, value in job.items() if key not in hidden}
+
+
+def compact_outputs(outputs, limit=12):
+    """File locations only. History, workflows and bytes stay out of agent events."""
+    files = []
+    if not isinstance(outputs, dict):
+        return files
+    for node_outputs in outputs.values():
+        if not isinstance(node_outputs, dict):
+            continue
+        for value in node_outputs.values():
+            if not isinstance(value, list):
+                continue
+            for file in value:
+                if not isinstance(file, dict) or not file.get("filename"):
+                    continue
+                filename = str(file.get("filename"))[:240]
+                subfolder = str(file.get("subfolder") or "")[:240]
+                file_type = str(file.get("type") or "output")[:32]
+                query = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": file_type})
+                files.append({"filename": filename, "subfolder": subfolder, "type": file_type, "url": f"/api/comfy/view?{query}"})
+                if len(files) >= limit:
+                    return files
+    return files
+
+
+def completion_record(event_id, event_type, job):
+    job = job or {}
+    error = job.get("error")
+    if isinstance(error, dict):
+        error = {"code": error.get("code"), "message": str(error.get("message") or "")[:500]}
+    elif error is not None:
+        error = {"message": str(error)[:500]}
+    return {
+        "id": event_id, "type": event_type, "status": job.get("status"), "jobId": job.get("id"),
+        "nodeId": job.get("nodeId"), "projectId": job.get("projectId"), "promptId": job.get("comfyPromptId"),
+        "stage": job.get("stage"), "error": error, "outputs": compact_outputs(job.get("outputs")),
+        "finishedAt": job.get("finishedAt"),
+    }
 
 
 class ComfyQueueAdapter:
@@ -139,6 +181,7 @@ class QueueManager:
         self._thread = None
         self._listeners = set()
         self._event_id = 0
+        self._completions = []
         self._load()
 
     @staticmethod
@@ -406,6 +449,36 @@ class QueueManager:
         with self._lock:
             self._listeners.discard(listener)
 
+    def wait_completions(self, after=0, timeout=20.0):
+        """Block until a terminal job event arrives, or return the buffered ones.
+
+        The completion buffer is the source of truth. The listener only wakes
+        the caller; a lost wakeup still returns whatever landed before timeout.
+        """
+        if isinstance(after, bool) or not isinstance(after, int) or after < 0:
+            raise ValueError("after 无效。")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0 or timeout > 25:
+            raise ValueError("timeout 无效。")
+        listener = queue.Queue(maxsize=200)
+        with self._lock:
+            self._listeners.add(listener)
+            ready = any(item["id"] > after for item in self._completions)
+        try:
+            deadline = time.monotonic() + float(timeout)
+            while not ready and time.monotonic() < deadline:
+                try:
+                    listener.get(timeout=max(0, deadline - time.monotonic()))
+                except queue.Empty:
+                    break
+                with self._lock:
+                    ready = any(item["id"] > after for item in self._completions)
+            with self._lock:
+                found = [dict(item) for item in self._completions if item["id"] > after]
+                cursor = self._event_id
+            return {"events": found, "cursor": cursor}
+        finally:
+            self.unsubscribe(listener)
+
     def _find_locked(self, job_id):
         for job in self.jobs:
             if job["id"] == job_id:
@@ -421,6 +494,9 @@ class QueueManager:
             job["updatedAt"] = utc_now()
         self._persist_locked()
         self._event_id += 1
+        if event_type in TERMINAL_EVENTS and job_to_write:
+            self._completions.append(completion_record(self._event_id, event_type, job_to_write))
+            del self._completions[:-COMPLETION_BUFFER]
         event = {"id": self._event_id, "type": event_type, "job": _public(job_to_write) if job_to_write else None}
         for listener in list(self._listeners):
             try:
