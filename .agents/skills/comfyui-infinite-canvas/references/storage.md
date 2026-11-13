@@ -45,7 +45,7 @@
 
 ## 4. 生成结果定位
 
-先读取画布真实结果节点、Take 的 `recipe.output` 或对应 ComfyUI 历史，再按 `filename`、`subfolder`、`type` 定位，不要只按修改时间猜结果。
+先按 `docs/AGENT_MANUAL.md` 把可见节点等到终态，再读取画布上的结果节点、Take 的 `recipe.output` 或对应 ComfyUI 历史，按 `filename`、`subfolder`、`type` 定位。`canvas_get_state` 不返回结果 `url` 或 `filename`。不要只按修改时间猜结果，也不要为了拿到文件而向 `127.0.0.1:8188/prompt` 直接提交。
 
 常见 `filename_prefix`：
 

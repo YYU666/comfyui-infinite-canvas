@@ -24,7 +24,7 @@
 
 32B 文本编码器与原 MiniMax H3 共用，已有正确版本可复用。三份文件的[官方直接下载地址、字节数、SHA256 和兼容说明](../models/H3_IMAGE.md)已集中登记。已核验 ComfyUI 0.45.0；0.42.5 不包含新图片节点，升级画布不会自动升级 ComfyUI。模型受 MiniMax-H3-Image Community License Agreement 约束；模型权重不随画布代码分发。保留原有模型和节点，不自动改变其他电脑的磁盘路径或下载大权重。
 
-Agent 可使用 `h3_image` 和 `h3_image_edit` 预设；对应参数分别为 `imageModel: h3_image` / `qwenModel: h3_image`，通用尺寸参数 `h3ImageResolution: 4MP | 16MP`。
+Agent 在可见画布上使用 `h3_image` 和 `h3_image_edit` 预设，步骤见 `docs/AGENT_MANUAL.md` 配方 D：创建、连接、`canvas_generate_node`（`wait:false`），再轮询 `canvas_get_state`。不要改用 `apply`／`wait` 或向 8188 直接提交。对应参数分别为 `imageModel: h3_image` / `qwenModel: h3_image`，通用尺寸参数 `h3ImageResolution: 4MP | 16MP`。
 
 ## 可导入节点包
 
