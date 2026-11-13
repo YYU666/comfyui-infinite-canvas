@@ -35,12 +35,39 @@ class AgentAPI:
     def _query(handler):
         return urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
 
+    def _completion_events(self, handler):
+        """Token-protected long-poll for queue terminal events. Not a generation submit."""
+        if not self.protocol.queue:
+            raise StoreError("UNAVAILABLE", "当前实例没有任务队列。", 503)
+        query = self._query(handler)
+        allowed = {"after", "timeoutMs"}
+        if set(query) - allowed or any(len(values) != 1 or len(values[0]) > 20 for values in query.values()):
+            raise StoreError("BAD_REQUEST", "完成事件参数无效。")
+        after = self._bounded_int(query, "after", 0, 0, 2**53)
+        timeout_ms = self._bounded_int(query, "timeoutMs", 20000, 0, 25000)
+        return self.protocol.queue.wait_completions(after, timeout_ms / 1000)
+
+    @staticmethod
+    def _bounded_int(query, key, default, low, high):
+        raw = query.get(key, [None])[0]
+        if raw is None:
+            return default
+        if not raw.isdigit():
+            raise StoreError("BAD_REQUEST", f"{key} 无效。")
+        value = int(raw)
+        if value < low or value > high:
+            raise StoreError("BAD_REQUEST", f"{key} 超出范围。")
+        return value
+
     def handle_get(self, handler, path):
         if not path.startswith("/api/agent/"):
             return False
         try:
             if path == "/api/agent/canvas/current":
                 handler.send_json(200, self.canvas.current(self._query(handler).get("projectId", [None])[0]))
+                return True
+            if path == "/api/agent/canvas/events":
+                handler.send_json(200, self._completion_events(handler))
                 return True
             if re.fullmatch(r"/api/agent/canvas/commands/[A-Za-z0-9_-]{1,100}", path):
                 handler.send_json(200, self.canvas.get(path.rsplit("/", 1)[1]))

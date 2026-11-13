@@ -7,6 +7,7 @@ being replaced while this process runs.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -20,6 +21,10 @@ import urllib.request
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
+
+
+class OldProcessTimeout(RuntimeError):
+    """The previous workbench did not exit. Program files must stay untouched."""
 
 
 def atomic_json(path, payload):
@@ -71,19 +76,27 @@ def manifest_paths(path, installation_root=None):
         raise RuntimeError("更新文件清单无法读取。") from exc
 
 
+def exit_timeout_message(pid, timeout):
+    return (f"旧工作台进程 {pid} 在 {int(timeout)} 秒内没有退出，更新已停止，程序文件尚未替换。"
+            "请只关闭画布主进程后重新打开工作台并再次检查更新；不要结束 ComfyUI。")
+
+
 def wait_for_exit(pid, timeout=120):
+    pid = int(pid)
     if os.name == "nt":
         import ctypes
         synchronize = 0x00100000
-        handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, int(pid))
+        kernel = ctypes.windll.kernel32
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel.OpenProcess(synchronize, False, pid)
         if not handle:
             return
         try:
-            result = ctypes.windll.kernel32.WaitForSingleObject(handle, int(timeout * 1000))
+            result = kernel.WaitForSingleObject(handle, int(timeout * 1000))
             if result != 0:
-                raise RuntimeError("旧工作台未能按时退出，未替换任何程序文件。")
+                raise OldProcessTimeout(exit_timeout_message(pid, timeout))
         finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
+            kernel.CloseHandle(handle)
         return
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -92,7 +105,7 @@ def wait_for_exit(pid, timeout=120):
         except ProcessLookupError:
             return
         time.sleep(0.2)
-    raise RuntimeError("旧工作台未能按时退出，未替换任何程序文件。")
+    raise OldProcessTimeout(exit_timeout_message(pid, timeout))
 
 
 def copy_file(source, target):
@@ -279,15 +292,31 @@ def main():
     request_path = Path(arguments.request).resolve()
     request = json.loads(request_path.read_text(encoding="utf-8"))
     try:
-        wait_for_exit(int(request["expectedPid"]))
+        timeout = request.get("exitTimeout", 120)
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError):
+            timeout = 120
+        timeout = min(120.0, max(0.2, timeout))
+        wait_for_exit(int(request["expectedPid"]), timeout)
         run(request)
     except Exception as exc:
+        status_path = Path(request["status"])
         try:
-            existing = json.loads(Path(request["status"]).read_text(encoding="utf-8"))
-            if existing.get("phase") != "error" or not existing.get("message"):
-                atomic_json(request["status"], {"phase": "error", "message": f"升级未完成：{str(exc)[:180]}", "version": request.get("targetVersion")})
+            existing = json.loads(status_path.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            existing = {}
+        if not isinstance(existing, dict) or existing.get("phase") != "error" or not existing.get("message"):
+            if isinstance(exc, OldProcessTimeout):
+                payload = {"phase": "error", "code": "OLD_PROCESS_TIMEOUT", "message": str(exc)[:300],
+                           "version": request.get("targetVersion"), "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+            else:
+                payload = {"phase": "error", "message": f"升级未完成：{str(exc)[:180]}", "version": request.get("targetVersion"),
+                           "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+            try:
+                atomic_json(status_path, payload)
+            except Exception:
+                pass
         return 1
     return 0
 

@@ -8,7 +8,7 @@
 
 工作台地址以 `agent_cli.py start` 返回的 `url` 为准，不要写死 `8790`。画布页面向当前浏览器注册 WebMCP 工具。HTTP 页桥执行的是同一页上的工具；必须连到这个可操作页面。浏览器只打开了地址、或页面不支持通道时，不要假装调用成功，也不要另开第二个页面。
 
-工具返回 JSON 字符串。先检查 `ok`，再读取 `node` 或 `edge`。节点完整 ID 必须来自 `canvas_get_state` 或创建接口返回值。生成提交的回执没有结果 `url` 或 `filename`。
+工具返回 JSON 字符串。先检查 `ok`，再读取 `node` 或 `edge`。节点完整 ID 必须来自 `canvas_get_state` 或创建接口返回值。生成提交的回执没有结果地址；终态节点的 `media` 才有 `url`、`filename`、`subfolder`、`type` 或 `assetPath`。
 
 ### 当前已打开页面的 HTTP 通道
 
@@ -20,21 +20,23 @@
 
 同一 `opId` 和参数重发只读原回执，不重复执行；不同参数复用 ID 返回冲突。`dispatched/unknown` 时不可换 ID 重新生成，应先核对画布节点和队列任务；断线不能证明任务未提交。服务重启会改变 `epoch`，旧命令拒绝执行。会话心跳有效期为 15 秒，命令记录最多 512 条，达到容量后明确报错，不删除去重记录再重放。
 
-当前页通道只支持下表工具。生成必须 `wait:false`，终态用 `canvas_get_state` 轮询。页面心跳与回执由前端管理，Agent 不得伪造页面心跳。新版本后端启动、现有网页重新载入后才会连接；旧实例不支持时明确报告，不以另开网页降级。
+当前页通道只支持下表工具。生成必须 `wait:false`。完成用 `GET /api/agent/canvas/events` 或表中的 `canvas_wait_for_node`，再用一次 `canvas_get_state` 核对可见节点。页面心跳与回执由前端管理，Agent 不得伪造页面心跳。新版本后端启动、现有网页重新载入后才会连接；旧实例不支持时明确报告，不以另开网页降级。
 
 `projectId` 只在 `visible:true` 的页面里选定目标。隐藏或只读页不会被操作。`visible` 表示该页可以写入，不是窗口是否在最前。
 
 ## 2. 页桥工具清单
 
-与 `canvas_page_bridge.py` 的 `TOOLS` 一致。表外工具（包括 `canvas_wait_for_node` 和任何取消工具）会让 `POST /api/agent/canvas/commands` 返回 400。
+与 `canvas_page_bridge.py` 的 `TOOLS` 一致。表外工具会让 `POST /api/agent/canvas/commands` 返回 400。
 
 | 工具 | 用途 | 关键参数 |
 | --- | --- | --- |
-| `canvas_get_state` | 读取当前项目、真实节点、连线和状态 | 可选 `nodeId`、`includePrompt`。不返回结果 `url` 或 `filename` |
+| `canvas_get_state` | 读取当前项目、真实节点、连线和状态 | 可选 `nodeId`、`includePrompt`。有结果时含 `media`，默认不含长提示词 |
 | `canvas_create_node` | 在当前画布创建可见节点 | 必填 `preset`；可选 `title`、`prompt`、`text`、`x`、`y`、`focus` |
 | `canvas_update_node` | 更新标题、提示词、备注或白名单参数 | 必填 `nodeId`；可选 `title`、`prompt`、`text`、`settings` |
 | `canvas_connect_nodes` | 连接两个真实节点 | 必填 `sourceId`、`targetId`；通常省略 `targetHandle` 自动判断 |
 | `canvas_generate_node` | 提交一次真实生成 | 必填 `nodeId`；`wait` 必须为 `false`。成功只表示已提交 |
+| `canvas_wait_for_node` | 只读等待已提交任务 | 必填 `nodeId`。当前页 `timeoutMs` 为 1000–20000，省略则 20000。未结束为 `pending:true`，不重新提交 |
+| `canvas_cancel_node` | 取消该节点正在进行的生成 | 必填 `nodeId`。与界面取消按钮相同，不删除节点 |
 | `canvas_import_asset` | 复用已保存素材 | 必填 `nodeId`、`assetPath`；路径必须是 `assets/<64位十六进制>.<扩展名>`。可选 `name`、`sourceProjectId` |
 | `canvas_focus_node` | 把视口对到节点 | 必填 `nodeId` |
 | `canvas_delete_node` | 删除指定节点及连线 | 必填 `nodeId`；运行中删除可能取消任务，这不是取消工具 |
@@ -47,7 +49,7 @@
 | `canvas_open_project` | 在当前页打开已有项目 | 必填 `projectId`。启动器页可用 |
 | `canvas_create_extension` | 从已导入的本地工作流包创建一个节点 | 必填 `digest`、`nodeDefinitionId` |
 
-没有面向 Agent 的完成 SSE。长任务分段调用 `canvas_get_state`；某一次读取还在 `running`，只表示尚未终态，不代表失败。
+完成通知是 `GET /api/agent/canvas/events?after=<cursor>&timeoutMs=20000`，请求头 `X-H3-Token`。`timeoutMs` 最大 25000。返回的 `events` 只有 `done` / `error` / `cancelled`，含 `nodeId` 和结果文件位置；空列表表示这一轮还没有终态，用返回的 `cursor` 再等。某一次读取还在 `running` 或 `pending:true`，只表示尚未终态，不代表失败，也不要重新提交。
 
 ## 3. 节点预设
 
@@ -88,12 +90,12 @@ Qwen 多图的编号以节点内参考图列表为准，不以素材在画布上
 
 标准路径见 `docs/AGENT_MANUAL.md` 配方 B 的第 5–6 步，不要改用别的等待接口。
 
-节点处于 `uploading`、`queued`、`running`、`finishing` 时，不要再次调用 `canvas_generate_node`。页桥没有 `canvas_wait_for_node`，调用会得到 400。继续轮询 `canvas_get_state`。
+节点处于 `uploading`、`queued`、`running`、`finishing` 时，不要再次调用 `canvas_generate_node`。用 `canvas_wait_for_node` 或 `GET /api/agent/canvas/events` 等待。
 
 - 只提交：`canvas_generate_node`，`wait: false`。确认返回新的 `promptId`，报告「已提交」而非「已完成」。`wait: true` 会被页桥拒绝。
 - 命令 `GET /api/agent/canvas/commands/<opId>` 变为 `done` 且 `result.ok` 为真，只表示页面工具已返回。
-- 终态只看后续 `canvas_get_state`：`status` 为 `done`、`error` 或 `cancelled`。`done` 时还应能在画布上看到连回本次 `promptId` 的结果节点。状态摘要不含结果 `url` 或 `filename`。
-- 没有 Agent 完成 SSE，也没有页桥取消工具。
+- 终态以 `canvas_get_state` 为准：`status` 为 `done`、`error` 或 `cancelled`。`done` 时还应能在画布上看到连回本次 `promptId` 的结果节点，并用该节点的 `media` 取结果位置。
+- 停止这次生成用 `canvas_cancel_node`。
 
 若返回 `error`、`cancelled` 或 `ok: false`，如实报告错误。先检查输入、连线、模型和当前画布连着的 ComfyUI，不要改向 `127.0.0.1:8188/prompt` 直接提交，也不要盲目再生成。
 

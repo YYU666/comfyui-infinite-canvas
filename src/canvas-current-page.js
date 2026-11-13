@@ -24,6 +24,17 @@ export function validateCanvasArgs(value, schema, path = 'args') {
   }
 }
 
+// `visible` means this session may operate, not that the browser tab is focused.
+export function pageMayOperate(page) {
+  return Boolean(page?.projectId) && page.readOnly !== true && page.visible === true;
+}
+
+// The launcher is the current page even when its tab is in the background.
+// Do not consult document.visibilityState; a second tab is rejected by the bridge.
+export function launcherPage() {
+  return { projectId: 'launcher', visible: true, readOnly: false };
+}
+
 // Preparing opens the target only after the native page has flushed its saves.
 // Keep that page mounted until the transport has acknowledged the result.
 export function createProjectPageTools({ prepare, commit, abandon }) {
@@ -117,7 +128,7 @@ export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, inte
     let tool;
     try {
       const page = getPage();
-      if (page.readOnly || !page.visible || page.projectId !== command.projectId
+      if (!pageMayOperate(page) || page.projectId !== command.projectId
         || command.sessionId !== sessionId || command.epoch !== epoch) throw new Error('当前可见页面已改变，命令未执行。');
       tool = toolMap.get(command.tool);
       if (!tool) throw new Error('Unsupported current-page tool.');
@@ -143,7 +154,7 @@ export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, inte
       // "this session may operate", not browser focus; a second tab would make
       // the bridge ambiguous and is rejected instead of stealing the lease.
       const reply = await request('heartbeat', { sessionId, projectId: initial.projectId,
-        visible: !page.readOnly && Boolean(initial.projectId) && page.projectId === initial.projectId,
+        visible: pageMayOperate(page) && page.projectId === initial.projectId,
         busy: executing || Boolean(delivery) || Boolean(deliveryFlight),
       }, { signal: abort.signal });
       if (stopped) return;

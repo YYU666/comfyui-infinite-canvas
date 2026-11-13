@@ -33,11 +33,12 @@ ACTIVE_PHASES = {"preparing", "restarting"}
 
 
 class UpdateError(Exception):
-    def __init__(self, message, status=400, code="UPDATE_ERROR"):
+    def __init__(self, message, status=400, code="UPDATE_ERROR", details=None):
         super().__init__(message)
         self.message = message
         self.status = status
         self.code = code
+        self.details = details or {}
 
 
 def parse_version(value):
@@ -115,23 +116,35 @@ class WorkbenchUpdateManager:
     def _set_state(self, phase, message="", **extra):
         with self._lock:
             self._state = {"phase": phase, "message": message, "updatedAt": utc_now(), **extra}
-        if phase in {"error", "success"}:
+        if phase in {"error", "success", "restarting"}:
             try:
                 atomic_write_json(self.status_path, self._state)
             except OSError:
                 LOGGER.exception("无法写入更新状态。")
 
+    def _read_status_file(self):
+        try:
+            persisted = json.loads(self.status_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        return persisted if isinstance(persisted, dict) else None
+
     def status(self):
         with self._lock:
             result = dict(self._state)
         result["currentVersion"] = APP_VERSION
-        if result["phase"] == "idle":
-            try:
-                persisted = json.loads(self.status_path.read_text(encoding="utf-8"))
-                if isinstance(persisted, dict):
-                    result["lastResult"] = persisted
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                pass
+        persisted = self._read_status_file()
+        # The helper writes the actionable error while this process may still be
+        # serving the in-memory "restarting" phase. Surface that file immediately.
+        if result.get("phase") == "restarting" and persisted and persisted.get("phase") == "error" and persisted.get("version") in {None, result.get("version")}:
+            with self._lock:
+                if self._state.get("phase") == "restarting":
+                    self._state = {**self._state, "phase": "error", "code": persisted.get("code") or "UPDATE_ERROR",
+                                   "message": str(persisted.get("message") or "升级未完成。"), "version": persisted.get("version") or self._state.get("version")}
+                result = dict(self._state)
+            result["currentVersion"] = APP_VERSION
+        elif result["phase"] == "idle" and persisted:
+            result["lastResult"] = persisted
         if self._last_check:
             result["check"] = self._last_check
         return result

@@ -129,8 +129,27 @@ export function validateModelSettings(settings, mode) {
   if ('museSteps' in settings && (!Number.isInteger(settings.museSteps) || settings.museSteps < 8 || settings.museSteps > 20)) throw new Error('museSteps 必须是 8–20 之间的整数。');
 }
 
-function nodeSummary(node, includeContent = true) {
+function mediaLocation(data = {}) {
+  const media = {};
+  const text = (value, max = 500) => (typeof value === 'string' && value ? value.slice(0, max) : undefined);
+  const assetPath = text(data.assetPath);
+  const directUrl = typeof data.url === 'string' && !data.url.startsWith('blob:') ? data.url : undefined;
+  const fallbackUrl = typeof data.resultUrl === 'string' ? data.resultUrl : undefined;
+  const url = text(directUrl || fallbackUrl, 800);
+  const filename = text(data.filename) || (data.output ? text(data.name) : undefined);
+  const subfolder = text(data.subfolder);
+  const type = ['output', 'input', 'temp'].includes(data.type) ? data.type : undefined;
+  if (assetPath) media.assetPath = assetPath;
+  if (url) media.url = url;
+  if (filename) media.filename = filename;
+  if (subfolder) media.subfolder = subfolder;
+  if (type) media.type = type;
+  return Object.keys(media).length ? media : null;
+}
+
+export function nodeSummary(node, includeContent = true) {
   if (!node) return null;
+  const media = mediaLocation(node.data);
   return {
     id: node.id,
     type: node.type,
@@ -157,7 +176,8 @@ function nodeSummary(node, includeContent = true) {
     position: node.position,
     selected: Boolean(node.selected),
     pinned: Boolean(node.data.pinned),
-    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath),
+    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath),
+    ...(media ? { media } : {}),
   };
 }
 
@@ -250,13 +270,22 @@ export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, 
   const promptId = initial.data.promptId;
   const queueJobId = initial.data.queueJobId;
   if (!promptId && !queueJobId) throw new Error('这个节点还没有提交生成任务。');
-  const finished = await waitImpl(() => {
-    const node = mcpNode(latest, nodeId);
-    const sameJob = queueJobId ? node.data.queueJobId === queueJobId : node.data.promptId === promptId;
-    return sameJob && ['done', 'error', 'cancelled'].includes(node.data.status) ? node : null;
-  }, timeoutMs, 500);
+  let finished;
+  try {
+    finished = await waitImpl(() => {
+      const node = mcpNode(latest, nodeId);
+      const sameJob = queueJobId ? node.data.queueJobId === queueJobId : node.data.promptId === promptId;
+      return sameJob && ['done', 'error', 'cancelled'].includes(node.data.status) ? node : null;
+    }, timeoutMs, 500);
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (!message.includes('超时') && !/timeout/i.test(message)) throw error;
+    const current = mcpNode(latest, nodeId);
+    const pendingEdge = latest.current.edgesRef.current.find((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
+    return { pending: true, node: nodeSummary(current), resultNode: pendingEdge ? nodeSummary(mcpNode(latest, pendingEdge.target)) : null };
+  }
   const resultEdge = latest.current.edgesRef.current.find((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
-  return { node: nodeSummary(finished), resultNode: resultEdge ? nodeSummary(mcpNode(latest, resultEdge.target)) : null };
+  return { pending: false, node: nodeSummary(finished), resultNode: resultEdge ? nodeSummary(mcpNode(latest, resultEdge.target)) : null };
 }
 
 export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readOnly = false, server, actions }) {
@@ -430,10 +459,22 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         description: '只读等待当前画布上已经提交的任务进入完成、失败或取消状态，并返回自动生成结果节点。不会重复提交任务。',
         inputSchema: schema({
           nodeId: nodeIdProperty,
-          timeoutMs: { type: 'integer', minimum: 1000, maximum: 1500000, description: '等待上限，默认 300000 毫秒。' },
+          timeoutMs: { type: 'integer', minimum: 1000, maximum: 1500000, description: '等待上限，默认 300000 毫秒。当前页通道最长 20000 毫秒；到时返回 pending:true，不重新提交。' },
         }, ['nodeId']),
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         execute: respond(async ({ nodeId, timeoutMs = 300000 }) => waitForNodeForMcp(latest, { nodeId, timeoutMs })),
+      },
+      {
+        name: 'canvas_cancel_node',
+        description: '取消当前画布节点上正在进行的生成，走与界面取消按钮相同的逻辑。不删除节点，不提交新任务。',
+        inputSchema: schema({ nodeId: nodeIdProperty }, ['nodeId']),
+        execute: respond(async ({ nodeId }) => {
+          getNode(nodeId);
+          if (!latest.current.actions.cancelNode) throw new Error('当前页面不能取消生成。');
+          await latest.current.actions.cancelNode(nodeId);
+          const node = getNode(nodeId);
+          return { node: nodeSummary(node), cancelled: node.data.status === 'cancelled' };
+        }),
       },
       {
         name: 'canvas_delete_node',

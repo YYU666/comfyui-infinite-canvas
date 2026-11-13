@@ -7,7 +7,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from PIL import Image
@@ -117,6 +120,34 @@ class AgentTransportTests(unittest.TestCase):
         self.assertEqual(delivered["opId"], "same_generation")
         self.assertIsNone(self.client.request("POST", base + "/heartbeat", page)["command"])
         self.assertEqual(self.queue.snapshot()["jobs"], [])
+
+    def test_canvas_completion_events_are_protected_and_compact(self):
+        bare = urllib.request.Request(self.origin + "/api/agent/canvas/events?timeoutMs=0")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(bare, timeout=3)
+        self.assertEqual(caught.exception.code, 401)
+        with self.assertRaises(RuntimeError):
+            self.client.request("GET", "/api/agent/canvas/events?timeoutMs=999999")
+        job = self.queue.enqueue({"workflow": {"1": {"class_type": "Note", "inputs": {}}}, "projectId": self.pid, "nodeId": "node_result", "clientId": "events-test"})
+        payload = {"events": []}
+        for _ in range(50):
+            payload = self.client.request("GET", "/api/agent/canvas/events?timeoutMs=0&after=0")
+            if any(event.get("jobId") == job["id"] for event in payload["events"]):
+                break
+            time.sleep(0.05)
+        event = next(item for item in payload["events"] if item["jobId"] == job["id"])
+        self.assertEqual(event["status"], "done")
+        self.assertEqual(event["nodeId"], "node_result")
+        self.assertEqual(event["projectId"], self.pid)
+        self.assertEqual(event["outputs"][0]["filename"], "H3_Agent_Test.png")
+        self.assertIn("/api/comfy/view?", event["outputs"][0]["url"])
+        self.assertNotIn("history", event)
+        self.assertNotIn("workflow", event)
+        self.assertNotIn("clientId", event)
+        started = time.monotonic()
+        empty = self.client.request("GET", f"/api/agent/canvas/events?timeoutMs=200&after={payload['cursor']}")
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(empty["events"], [])
 
     def test_cli_and_mcp_stdio_without_browser(self):
         root = Path(__file__).resolve().parent

@@ -168,6 +168,19 @@ class ReleaseTests(UpdateTestCase):
         self.assertEqual(caught.exception.code, "RELEASE_CHANGED")
         self.process_launcher.assert_not_called()
 
+    def test_restarting_status_adopts_helper_timeout(self):
+        self.manager._set_state("restarting", "更新已准备好，工作台即将重启…", version="v9.9.9")
+        self.assertEqual(self.manager.status()["phase"], "restarting")
+        self.manager.status_path.write_text(json.dumps({
+            "phase": "error", "code": "OLD_PROCESS_TIMEOUT", "version": "v9.9.9",
+            "message": "旧工作台进程 1 在 120 秒内没有退出，更新已停止，程序文件尚未替换。请只关闭画布主进程后重新打开工作台并再次检查更新；不要结束 ComfyUI。",
+        }, ensure_ascii=False), encoding="utf-8")
+        status = self.manager.status()
+        self.assertEqual(status["phase"], "error")
+        self.assertEqual(status["code"], "OLD_PROCESS_TIMEOUT")
+        self.assertIn("不要结束 ComfyUI", status["message"])
+        self.assertIn("尚未替换", status["message"])
+
     def test_duplicate_apply_is_rejected(self):
         self.manager._set_state("restarting", "busy")
         with self.assertRaises(UpdateError) as caught: self.manager.apply("v9.9.9")

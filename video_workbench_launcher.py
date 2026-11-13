@@ -180,6 +180,80 @@ def comfy_queue_counts():
     return len(queue.get("queue_running", [])), len(queue.get("queue_pending", []))
 
 
+def exit_after_update(code=0):
+    """End the process after an update. Tests keep the interpreter alive."""
+    if os.environ.get("H3_WORKBENCH_TEST_MODE") == "1":
+        return False
+    os._exit(code)
+
+
+def begin_update_restart(server):
+    """Stop listening and make sure this process actually ends.
+
+    Cleanup is bounded. A second timer calls os._exit if shutdown or finally
+    wedges on a non-daemon thread. ComfyUI is not signalled from either path.
+    """
+    server.restart_for_update = True
+    server.block_on_close = False
+    if os.environ.get("H3_WORKBENCH_TEST_MODE") == "1":
+        return
+
+    def _shutdown():
+        try:
+            server.shutdown()
+        except Exception:
+            LOGGER.exception("更新重启时关闭监听失败。")
+
+    def _force_exit():
+        time.sleep(25)
+        LOGGER.error("更新重启后画布进程仍未退出，强制结束本进程；不会结束 ComfyUI。")
+        exit_after_update(0)
+
+    threading.Thread(target=_shutdown, name="update-restart-shutdown", daemon=True).start()
+    threading.Thread(target=_force_exit, name="update-restart-force", daemon=True).start()
+
+
+def shutdown_workbench(server, *, preserve_comfy=False):
+    """Bounded teardown. An update restart must not stop ComfyUI or its log pump."""
+    comfy_process = None
+    comfy_logger_process = None
+    if server is not None and hasattr(server, "comfy_lifecycle"):
+        try:
+            server.comfy_lifecycle.close()
+        except Exception:
+            LOGGER.exception("关闭 ComfyUI 监视失败。")
+        comfy_process = getattr(server.comfy_lifecycle, "process", None)
+        comfy_logger_process = getattr(server.comfy_lifecycle, "logger", None)
+    if server is not None and hasattr(server, "queue_manager"):
+        try:
+            server.queue_manager.stop()
+        except Exception:
+            LOGGER.exception("停止任务队列失败。")
+    if server is not None and hasattr(server, "pureref_sessions"):
+        try:
+            server.pureref_sessions.close()
+        except Exception:
+            LOGGER.exception("关闭 PureRef 会话失败。")
+    if server is not None and hasattr(server, "project_store"):
+        try:
+            server.project_store.close()
+        except Exception:
+            LOGGER.exception("关闭项目存储失败。")
+    if server is not None:
+        server.block_on_close = False
+        try:
+            server.server_close()
+        except Exception:
+            LOGGER.exception("关闭 HTTP 服务失败。")
+    remove_instance(os.getpid())
+    if preserve_comfy:
+        LOGGER.info("更新重启保留 ComfyUI，不结束其进程。")
+        return "preserved-update"
+    outcome = stop_owned_comfy(comfy_process) if comfy_process else "not-owned"
+    stop_comfy_logger(comfy_logger_process, outcome)
+    return outcome
+
+
 def stop_owned_comfy(process, queue_probe=comfy_queue_counts):
     if not process or process.poll() is not None:
         return "already-stopped"
@@ -705,9 +779,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 result = manager.apply(validate_update_request(payload))
                 self.send_json(200, result)
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                begin_update_restart(self.server)
             except UpdateError as exc:
-                self.send_json(exc.status, {"code": exc.code, "message": exc.message, "details": {}})
+                self.send_json(exc.status, {"code": exc.code, "message": exc.message, "details": exc.details})
             except (ValueError, TypeError, json.JSONDecodeError):
                 self.send_json(400, {"code": "BAD_REQUEST", "message": "升级请求不是有效 JSON。", "details": {}})
             except Exception as exc:
@@ -798,8 +872,22 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 
 
 def validate_update_ready(server):
-    if server.project_store._held:
-        raise UpdateError("仍有项目处于打开或编辑状态。请先保存并返回项目启动页，再升级。", status=409, code="PROJECT_OPEN")
+    store = server.project_store
+    reclaimed = store.reclaim_dead_locks() if hasattr(store, "reclaim_dead_locks") else []
+    held = store.held_project_details() if hasattr(store, "held_project_details") else ([{"id": None, "name": None, "stale": False}] if store._held else [])
+    if held:
+        names = []
+        for item in held:
+            label = f"{item.get('name') or '未命名项目'}（{item.get('id') or '未知 ID'}）"
+            if item.get("stale"):
+                label += "，锁的所有者进程已不在，但文件仍未能释放"
+            elif item.get("thisProcess") is False:
+                label += "，由其他仍在运行的进程持有"
+            else:
+                label += "，当前进程打开"
+            names.append(label)
+        raise UpdateError("仍有项目处于打开或编辑状态：" + "；".join(names) + "。请先保存并关闭这些项目，再升级。不会接管仍在运行的进程所持有的锁。",
+                          status=409, code="PROJECT_OPEN", details={"projects": held, "reclaimed": reclaimed})
     active = [job for job in server.queue_manager.snapshot()["jobs"] if job.get("status") in {"queued", "running", "finishing"}]
     if active:
         raise UpdateError("队列仍有活动任务，完成或取消后才能升级。", status=409, code="QUEUE_BUSY")
@@ -977,21 +1065,13 @@ def main(argv=None):
             print(f"\n{exc}\n", file=sys.stderr)
         return 1
     finally:
-        if server and hasattr(server, "comfy_lifecycle"):
-            server.comfy_lifecycle.close()
-            comfy_process = server.comfy_lifecycle.process
-            comfy_logger_process = server.comfy_lifecycle.logger
-        if server and hasattr(server, "queue_manager"):
-            server.queue_manager.stop()
-        if server and hasattr(server, "pureref_sessions"):
-            server.pureref_sessions.close()
-        if server and hasattr(server, "project_store"):
-            server.project_store.close()
-        if server:
-            server.server_close()
-        remove_instance(os.getpid())
-        comfy_outcome = stop_owned_comfy(comfy_process) if comfy_process else "not-owned"
-        stop_comfy_logger(comfy_logger_process, comfy_outcome)
+        # `is True` so a test Mock does not look like an update restart.
+        exiting_for_update = server is not None and getattr(server, "restart_for_update", False) is True
+        try:
+            shutdown_workbench(server, preserve_comfy=exiting_for_update)
+        finally:
+            if exiting_for_update:
+                exit_after_update(0)
 
 
 if __name__ == "__main__":

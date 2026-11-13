@@ -118,6 +118,33 @@ class CanvasPageBridgeTests(unittest.TestCase):
         self.assertEqual(result['result']['nodeCount'], 10)
         self.assertIsNone(self.bridge.heartbeat(self.page)['command'])
 
+    def test_wait_for_node_is_bounded_and_not_redelivered(self):
+        self.bridge.heartbeat(self.page)
+        queued = self.submit('wait_node', tool='canvas_wait_for_node', args={'nodeId': 'g1'})
+        self.assertEqual(queued['status'], 'queued')
+        command = self.bridge.heartbeat(self.page)['command']
+        self.assertEqual(command['tool'], 'canvas_wait_for_node')
+        self.assertEqual(command['args']['timeoutMs'], 20000)
+        self.assertIsNone(self.bridge.heartbeat(self.page)['command'])
+        self.assertEqual(self.submit('wait_node', tool='canvas_wait_for_node', args={'nodeId': 'g1'})['status'], 'dispatched')
+        self.assert_code('BAD_REQUEST', lambda: self.submit('wait_long', tool='canvas_wait_for_node', args={'nodeId': 'g1', 'timeoutMs': 300000}))
+        self.assert_code('BAD_REQUEST', lambda: self.submit('wait_bool', tool='canvas_wait_for_node', args={'nodeId': 'g1', 'timeoutMs': True}))
+        self.assert_code('BAD_REQUEST', lambda: self.submit('generate_wait', tool='canvas_generate_node', args={'nodeId': 'g1', 'wait': True}))
+        self.bridge.complete({**command, 'result': {'ok': True, 'pending': True, 'node': {'status': 'running'}}})
+        self.assertEqual(self.bridge.get('wait_node')['status'], 'done')
+
+    def test_cancel_node_is_whitelisted_and_launcher_cannot_use_it(self):
+        self.bridge.heartbeat(self.page)
+        self.submit('cancel_node', tool='canvas_cancel_node', args={'nodeId': 'g1'})
+        command = self.bridge.heartbeat(self.page)['command']
+        self.assertEqual(command['tool'], 'canvas_cancel_node')
+        self.assertIsNone(self.bridge.heartbeat(self.page)['command'])
+        page = {**self.page, 'sessionId': 'launcher_page', 'projectId': 'launcher'}
+        self.bridge.heartbeat(page)
+        active = self.bridge.current('launcher')
+        self.assert_code('BAD_REQUEST', lambda: self.bridge.submit({**active, 'opId': 'launcher_cancel', 'tool': 'canvas_cancel_node', 'args': {'nodeId': 'g1'}}))
+        self.assert_code('BAD_REQUEST', lambda: self.bridge.submit({**active, 'opId': 'launcher_wait', 'tool': 'canvas_wait_for_node', 'args': {'nodeId': 'g1'}}))
+
 
 if __name__ == '__main__':
     unittest.main()

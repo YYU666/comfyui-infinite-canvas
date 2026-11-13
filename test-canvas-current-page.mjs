@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { startCurrentCanvasPage, validateCanvasArgs } from './src/canvas-current-page.js';
+import { readFileSync } from 'node:fs';
+import { launcherPage, startCurrentCanvasPage, validateCanvasArgs } from './src/canvas-current-page.js';
 
 const schema = { type: 'object', properties: { nodeId: { type: 'string' }, wait: { type: 'boolean' } }, required: ['nodeId'], additionalProperties: false };
 assert.throws(() => validateCanvasArgs({}, schema), /required/);
@@ -123,3 +124,57 @@ try {
   assert.equal(restartExecutions, 2, 'old op not rerun; only the new op executes after restart');
 } finally { stopRestart(); }
 console.log('CURRENT_CANVAS_RESTART_OK oldReceiptAbandoned=true duplicateGenerationBlocked=true newCommandAccepted=true');
+
+const launcherSource = readFileSync(new URL('./src/ProjectLauncher.jsx', import.meta.url), 'utf8');
+assert.match(launcherSource, /getPage:\s*\(\)\s*=>\s*launcherPage\(\)/);
+assert.doesNotMatch(launcherSource, /visibilityState/);
+assert.equal(launcherPage().visible, true);
+assert.equal(launcherPage().projectId, 'launcher');
+assert.equal(launcherPage().readOnly, false);
+let launcherOpened = 0;
+const stopLauncher = startCurrentCanvasPage({
+  intervalMs: 5,
+  getPage: () => launcherPage(),
+  tools: [{ name: 'canvas_open_project', inputSchema: { type: 'object', properties: { projectId: { type: 'string' } }, required: ['projectId'], additionalProperties: false },
+    execute: async (args) => { launcherOpened += 1; return JSON.stringify({ ok: true, projectId: args.projectId }); } }],
+  fetchImpl: async (url, options) => {
+    const payload = JSON.parse(options.body);
+    if (url.endsWith('/result') || url.endsWith('/release')) return { ok: true, json: async () => ({}) };
+    return { ok: true, json: async () => ({ epoch: 'launcher_epoch', command: launcherOpened ? null : {
+      epoch: 'launcher_epoch', sessionId: payload.sessionId, projectId: 'launcher', opId: 'open-hidden-tab',
+      tool: 'canvas_open_project', args: { projectId: 'prj_real' },
+    } }) };
+  },
+});
+try {
+  for (let i = 0; i < 200 && launcherOpened < 1; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(launcherOpened, 1, 'background launcher tab must still open a project');
+} finally { stopLauncher(); }
+console.log('LAUNCHER_BACKGROUND_OK visibleMeansOperable=true');
+
+let waitHeartbeats = 0;
+let releaseWait;
+const waitGate = new Promise((resolve) => { releaseWait = resolve; });
+let waitResult = null;
+const stopWait = startCurrentCanvasPage({
+  intervalMs: 5,
+  getPage: () => ({ projectId: 'prj_wait', visible: true }),
+  tools: [{ name: 'canvas_wait_for_node', inputSchema: { type: 'object', properties: { nodeId: { type: 'string' }, timeoutMs: { type: 'integer' } }, required: ['nodeId'], additionalProperties: false },
+    execute: async () => { await waitGate; return JSON.stringify({ ok: true, pending: true }); } }],
+  fetchImpl: async (url, options) => {
+    const payload = JSON.parse(options.body);
+    if (url.endsWith('/result')) { waitResult = payload.result; return { ok: true, json: async () => ({}) }; }
+    if (url.endsWith('/release')) return { ok: true, json: async () => ({}) };
+    waitHeartbeats += 1;
+    const command = waitHeartbeats === 1 ? { epoch: 'wait_epoch', sessionId: payload.sessionId, projectId: 'prj_wait', opId: 'wait-long', tool: 'canvas_wait_for_node', args: { nodeId: 'g1', timeoutMs: 20000 } } : null;
+    return { ok: true, json: async () => ({ epoch: 'wait_epoch', command }) };
+  },
+});
+try {
+  for (let i = 0; i < 200 && waitHeartbeats < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(waitHeartbeats >= 3, 'a long read-only wait must not block heartbeats');
+  releaseWait();
+  for (let i = 0; i < 200 && !waitResult; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(waitResult.pending, true);
+} finally { stopWait(); }
+console.log('WAIT_HEARTBEAT_OK heartbeatsDuringWait=true');

@@ -30,14 +30,14 @@ MCP 使用 stdio：
 C:\ComfyUI_windows_portable\python_embeded\python.exe agent_mcp.py
 ```
 
-可选环境变量 `H3_PROJECT_ID` 用于读取 `canvas://context`。MCP 工具包括协议工具 `state`、`query`、`apply`、`wait`，以及当前页工具 `canvas_current`、`canvas_command`、`canvas_call`、`canvas_result`。资源为 `canvas://context`、`canvas://protocol`、`canvas://schema`。用户要看见的生成走当前页工具，并遵守手册里的 `wait:false` 与 `canvas_get_state` 轮询。
+可选环境变量 `H3_PROJECT_ID` 用于读取 `canvas://context`。MCP 工具包括协议工具 `state`、`query`、`apply`、`wait`，以及当前页工具 `canvas_current`、`canvas_command`、`canvas_call`、`canvas_result`。资源为 `canvas://context`、`canvas://protocol`、`canvas://schema`。用户要看见的生成走当前页工具，`canvas_generate_node` 仍用 `wait:false`。完成通知用 `GET /api/agent/canvas/events` 或有上限的 `canvas_wait_for_node`，再用一次 `canvas_get_state` 核对可见结果节点。
 
 ## 调用顺序
 
 1. 先按手册连上当前可见画布。会话开始可以读取 `state(view=context)` 或 `canvas://context`，不要重放历史，也不要据此改走无头生成。
 2. 日常摘要可用 `state(view=digest)`；排障才使用 `generation/errors/topology`，不要默认 `all`。用户可见生成的终态仍以 `canvas_get_state` 为准。
 3. 用 `query` 在服务端过滤和投影字段，用 `maxChars` 控制预算；出现 `truncated` 时按 `nextCursor` 继续。
-4. 用户要看见的图片或视频不要放进 `apply` 的 `generate`。按手册在可见画布上创建、连接、`canvas_generate_node`（`wait:false`），再轮询 `canvas_get_state`。
+4. 用户要看见的图片或视频不要放进 `apply` 的 `generate`。按手册在可见画布上创建、连接、`canvas_generate_node`（`wait:false`），用完成事件或 `canvas_wait_for_node` 等待，再以 `canvas_get_state` 核对。
 5. `apply` 仍可用于接力 `handoff.update`，以及已经出现在项目里的 Take 选用与导出。每次提供唯一 `opId`；相同 `opId` 重放不会重复生成。需要预检时先 `dryRun=true`。过期 `revision` 返回 409，不覆盖其他窗口。
 6. 协议 `wait` 没有完成 SSE，只是阻塞轮询队列里的任务 ID，并在完成后把绑定镜头的输出写入 Take。它不能代替可见节点上的终态，也不能代替画布上的结果节点。
 7. `take.select` 后执行 `delivery.export`。导出时才把外部 ComfyUI 输出复制到项目目录。
@@ -56,9 +56,23 @@ GET  /api/agent/canvas/commands/<opId>
 
 `current` 返回 `epoch/sessionId/projectId`。`projectId` 只在 `visible:true` 的页面里筛选；没有可操作页，或目标只在隐藏／只读页上，返回 `NO_VISIBLE_CANVAS`。多个可见候选且无法唯一确定时返回 `AMBIGUOUS_CANVAS`。不自动创建页面。页面心跳只由前端发送。
 
-提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","wait":false}`。显式传入的 `wait` 只要不是 `false`，页桥就返回 400。实际执行发生在现有页面。命令回执 `done` 且 `result.ok` 为真，只表示页面工具已返回；生成还要用 `canvas_get_state` 轮询到终态。没有 Agent 完成 SSE，`canvas_get_state` 也不返回结果 `url` 或 `filename`。
+提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","wait":false}`。显式传入的 `wait` 只要不是 `false`，页桥就返回 400。实际执行发生在现有页面。命令回执 `done` 且 `result.ok` 为真，只表示页面工具已返回；生成终态仍以当前页节点为准。
 
-允许的工具以 `canvas_page_bridge.py` 为准，不含 `canvas_wait_for_node`，也没有取消工具。`canvas_import_asset` 的 `assetPath` 仍须匹配 `assets/<64位十六进制>.<扩展名>`。命令按 ID 去重，断线后不重发已派发的生成。`unknown/dispatched` 应先核对节点，不换 ID 盲目再生成。服务重启后旧 epoch 被拒绝。新通道需要启动新版后端并重新载入现有网页；不会为升级通道自动中断任务。容量边界见 canvas-operations.md。
+等待完成用下面之一，不要紧循环打 `canvas_get_state`：
+
+```text
+GET /api/agent/canvas/events?after=<cursor>&timeoutMs=20000
+```
+
+该接口沿用 `X-H3-Token`。`timeoutMs` 为 0–25000，默认 20000。没有新事件时返回 `events: []` 和当前 `cursor`。只包含进入 `done` / `error` / `cancelled` 的队列任务，字段有 `nodeId`、`jobId`、`projectId`、`promptId`、`status`、`error` 和最多 12 个 `outputs`（`filename` / `subfolder` / `type` / `url`）。`url` 是 `/api/comfy/view?...`，仍须带令牌访问。缓冲最近 200 条；`after` 用上次的 `cursor`。这不是提交生成，也不能代替随后一次 `canvas_get_state`：可见结果节点和 `media` 仍在当前页上。
+
+也可以提交 `canvas_wait_for_node`。当前页通道把 `timeoutMs` 限制在 1000–20000（省略则为 20000）。未结束时结果是 `ok: true` 且 `pending: true`，不会重新提交。这次等待会占住该页的一条命令，心跳继续续约。`canvas_generate_node` 的 `wait: true` 仍然被拒绝。
+
+`canvas_get_state` 在有结果或素材位置的节点上增加 `media`：`url`、`filename`、`subfolder`、`type`、`assetPath` 中实际存在的项。默认仍不返回长提示词。`blob:` 地址不会写出。
+
+`canvas_cancel_node` 只接收 `nodeId`，与界面取消按钮相同，不删除节点。只读页会拒绝。
+
+允许的工具以 `canvas_page_bridge.py` 为准。`canvas_import_asset` 的 `assetPath` 仍须匹配 `assets/<64位十六进制>.<扩展名>`。命令按 ID 去重，断线后不重发已派发的生成。`unknown/dispatched` 应先核对节点，不换 ID 盲目再生成。服务重启后旧 epoch 被拒绝。新通道需要启动新版后端并重新载入现有网页；不会为升级通道自动中断任务。容量边界见 canvas-operations.md。
 
 画布自动保存只跟随实际内容和任务状态变化；平移、缩放使用独立本机视口偏好，纯进度更新不写整份项目。拖动、调整大小与批量导入完成后合并保存。保存失败可显式重试；版本冲突会停止写入并保留本页结果，可下载仅含数据与素材引用的 JSON 快照后重新载入，快照不是包含素材的项目备份。
 
@@ -76,9 +90,9 @@ GET  /api/agent/resources/<protocol|context|schema>
 
 ## 批量与语义操作
 
-这些 op 存在于后端 `apply`，不能代替手册里的可见节点回路。用户要看见的图片或视频不要提交 `generate` 或 `shot.create` 来绕过当前页。`cancel` 也不是页桥工具；页桥没有取消接口。`wait` 不会把结果节点画到当前页上。
+这些 op 存在于后端 `apply`，不能代替手册里的可见节点回路。用户要看见的图片或视频不要提交 `generate` 或 `shot.create` 来绕过当前页。可见生成的取消用 `canvas_cancel_node`。协议 `wait` 不会把结果节点画到当前页上。
 
-`apply` 基础 op：`create`、`connect`、`set`、`generate`、`delete`、`cancel`。
+`apply` 基础 op：`create`、`connect`、`set`、`generate`、`delete`、`cancel`。用户要在当前画布上取消一次可见生成时，用 `canvas_cancel_node`，不要改走这里的 `cancel`。
 
 语义 op：
 
