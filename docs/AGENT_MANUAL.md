@@ -70,7 +70,7 @@ CLI／MCP 默认读 `%LOCALAPPDATA%\H3Workbench\instance.json` 中的回环地�
 
 1. **不要另开第二个可写画布、第二个标签页或外部浏览器窗口。** 复用用户当前侧面页。`agent_cli.py start` 本身不打开额外浏览器，也不停止已有任务。
 2. **ComfyUI 有运行或排队任务时，不得停止、重启或调用「清理显存」／`/free`。** 清理显存只允许在队列空闲时进行。
-3. **结果必须落到当前可见画布：** 真实素材、结果节点、与来源的连线、已保存 revision。只返回文件路径、只改后端、只在 ComfyUI 里成功，都不算完成。
+3. **用户要看见的图片或视频必须走可见节点：** 创建 → 连接 → 提交 → 等待终态。逐步操作只用第 4 节。协议 v2 的 `apply`／`wait`，以及向 `http://127.0.0.1:8188/prompt` 直接提交，都不能代替这条回路。只返回文件路径、只改后端、只在 ComfyUI 里成功，都不算完成。
 4. **不要直接改写 `project.json` 或绕过页面 revision。** 交付走当前页桥（`/api/agent/canvas/*`）。发现第二写入端、只读或保存冲突时停止并报告「未交付」。
 5. **生成必须 `wait:false` 提交，再用状态查询等待。** 同一 `opId` 不得换参数重放；`dispatched`／`unknown` 时先核对队列，不得换 ID 再生成一次。
 6. **不要删除用户节点、覆盖母图、取消他人任务或擅自 `canvas_tidy` 重排整张画布。**
@@ -84,28 +84,30 @@ CLI／MCP 默认读 `%LOCALAPPDATA%\H3Workbench\instance.json` 中的回环地�
 
 ### 2.1 选择通道
 
-用户已经打开项目、并要求在当前网页制作时，**必须走当前页通道**（WebMCP 或 HTTP 页桥）。不得再开后台浏览器，也不得同时用服务端 `apply` 改同一张画布。
+用户要在画布上看到的图片或视频，标准路径是可见节点：**创建 → 连接 → 提交 → 等待终态**。逐步操作只用第 4 节配方（生成回路以配方 B、E 为准），不要另写一套。
 
-无界面、用户明确要求纯后端流程时，才用 `state`／`query`／`apply`／`wait`。即便如此，若任务目标是「在画布上看到结果」，最终仍须经当前页交付。
+协议 v2 的 `apply`／`wait`，以及向 `http://127.0.0.1:8188/prompt` 直接提交，都不能代替这条回路。不要在 ComfyUI 里生成后再把文件贴回画布。
+
+必须有一个可操作的可见画布。当前页 WebMCP 与下面的 HTTP 页桥是同一条通道。`GET /api/agent/canvas/current` 的 `projectId` 只在多个可见页中选定一个；`visible:false` 的隐藏或只读页不会被操作，即使 `projectId` 匹配也返回 `NO_VISIBLE_CANVAS`。这里的 `visible` 表示该页可以写入，不是窗口是否在最前。不要另开浏览器或无头页。
 
 会话开始：
 
-1. 运行 `agent_cli.py start`，使用返回的 `url`。
-2. 只读一次 `state(view=context)` 或 `canvas://context`，查看 `handoff` 与 `activeJobs`。不要重放历史，不要重复提交活动任务。
-3. 日常用 `state(view=digest)`；排障才用 `generation`／`errors`／`topology`，不要默认 `all`。
+1. 运行 `agent_cli.py start`，使用返回的 `url`，并确认当前可操作画布。
+2. 可以只读一次 `state(view=context)` 或 `canvas://context`，查看 `handoff` 与 `activeJobs`。不要重放历史，不要重复提交活动任务。这些读取不代替 `canvas_get_state`。
+3. `state(view=digest)` 只用于摘要。可见节点的 ID、连线和终态仍用 `canvas_get_state`。排障才用 `generation`／`errors`／`topology`，不要默认 `all`。
 
 ### 2.2 当前页 HTTP 通道（固定顺序）
 
 1. `GET /api/agent/canvas/current?projectId=<项目ID>`  
-   得到 `epoch`、`sessionId`、`projectId`。没有可见页 → `NO_VISIBLE_CANVAS`，请用户在现有网页打开项目，不要自己开页。多个可见候选 → `AMBIGUOUS_CANVAS`，请用户只留一个目标页。
+   得到 `epoch`、`sessionId`、`projectId`。`projectId` 只在可见页中选定一个。没有可操作页，或该项目只在隐藏／只读页上 → `NO_VISIBLE_CANVAS`，请用户在现有网页打开项目，不要自己开页。同一项目有多个可见页 → `AMBIGUOUS_CANVAS`，请用户只留一个目标页。
 2. `POST /api/agent/canvas/commands`  
    带上上述三个字段，以及唯一 `opId`、`tool`、`args`。
 3. `GET /api/agent/canvas/commands/<opId>`  
-   状态为 `done` **且** `result.ok=true` 才算工具成功。修改类工具还会等保存屏障。
+   状态为 `done` **且** `result.ok=true` 才算该次页面工具成功。修改类工具还会等保存屏障。生成的成片终态不在这里，见 2.4。
 
-MCP 等价工具：`canvas_current`、`canvas_call`（执行并等待；生成类必须 `wait:false`）、`canvas_command`（只入队）、`canvas_result`。
+MCP 等价工具：`canvas_current`、`canvas_call`（等到页面工具返回；生成必须 `wait:false`，返回不等于成片终态）、`canvas_command`（只入队）、`canvas_result`。协议工具 `state`／`query`／`apply`／`wait` 不代替这条通道。
 
-也可使用便携版 Python 调用 `agent_mcp.py`（stdio）。资源：`canvas://context`、`canvas://protocol`、`canvas://schema`；合入后应增加手册资源，见分阶段安装设计。
+也可使用便携版 Python 调用 `agent_mcp.py`（stdio）。资源：`canvas://context`、`canvas://protocol`、`canvas://schema`。`canvas://protocol` 仍把批量 `apply` 写成默认写路径；用户要看见的生图或生视频不以该资源为准。
 
 ### 2.3 页桥工具与节点必须可见
 
@@ -116,13 +118,13 @@ MCP 等价工具：`canvas_current`、`canvas_call`（执行并等待；生成�
 | `canvas_create_node` | 按 `preset` 创建可见节点 | 未指定坐标时由画布放置；指定坐标也要避让，间距约 70、网格 22 |
 | `canvas_update_node` | 改标题、提示词、白名单参数 | 只传要改的字段，改后回读核验 |
 | `canvas_connect_nodes` | 连接两个真实节点 | 省略 `targetHandle` 时按规则自动判断；必须回读边数据，不能靠外观 |
-| `canvas_import_asset` | 复用本项目已保存素材 | 需要 `nodeId`、`assetPath` |
-| `canvas_generate_node` | 提交一次生成 | **`wait` 必须为 `false`**；成功只表示已提交（有新 `promptId`） |
+| `canvas_import_asset` | 复用已保存素材 | 需要素材节点；`assetPath` 必须是 `assets/<64位十六进制>.<扩展名>` |
+| `canvas_generate_node` | 提交一次生成 | **`wait` 必须为 `false`**；成功只表示已提交（有新 `promptId`）。`wait:true` 会被拒绝 |
 | `canvas_focus_node` | 把视口对到节点 | 便于用户看见 |
 | `canvas_delete_node` | 删除节点 | 仅清理已确认无用的临时节点；运行中可能取消任务 |
 | `canvas_move_nodes` / `canvas_tidy` | 移动或整理 | `tidy` 会移动全部节点，须用户明确许可 |
 | `canvas_retry_save` | 保存失败后重试 | 版本冲突时停止，不覆盖 |
-| `canvas_open_reference_library` | 打开参考库界面 | 不下载、不生成 |
+| `canvas_open_reference_library` | 打开参考库界面 | 必填 `library`：`refmuse`、`costume` 或 `pose`；不下载、不生成 |
 | `canvas_inspect_node` | 在当前页查看内部 ComfyUI 图 | 不提交生成；不是完成标准 |
 | `canvas_create_extension` | 自定义工作流节点 | 不要冒充官方预设 |
 
@@ -136,6 +138,17 @@ MCP 等价工具：`canvas_current`、`canvas_call`（执行并等待；生成�
 - 遮罩节点 `mask` 出口 → 图生图 `mask` 入口；遮罩底图须与图1 相同
 
 布局固定为「素材 → 处理 → 结果」从左到右，标题能看出用途。新结果节点由画布流程自动生成，不要再复制一个无法追踪来源的节点。
+
+上表就是页桥允许列表（`canvas_page_bridge.py` 的 `TOOLS`）。不要调用表外的名字。
+
+### 2.4 当前页通道的真实限制
+
+- 没有面向 Agent 的完成 SSE。生成是否结束，只能反复调用 `canvas_get_state`。`GET /api/agent/canvas/commands/<opId>` 变成 `done`，只表示页面工具已返回；对生成而言是「已提交」，不是成片终态。工作台界面使用的 `/api/queue/events` 不是这条回路的完成通知，也不能代替 `canvas_get_state`。
+- `canvas_get_state` 不返回结果 `url` 或 `filename`。摘要里有 `status`、`stage`、`progress`、`promptId`、`queueJobId`、`hasMedia` 和节点 `name`。`hasMedia` 只是布尔值；`name` 不是结果地址。图片处理节点可能另有 `processedAssetPath`，不能把它当成生图或视频结果地址。终态看 `status` 是否为 `done`、`error` 或 `cancelled`，以及画布上是否出现连回本次 `promptId` 的结果节点。
+- `canvas_wait_for_node` 不在页桥允许列表。用它调用 `POST /api/agent/canvas/commands` 会返回 400。等待只用 `canvas_get_state` 轮询。
+- 页桥没有取消工具。不要调用不存在的 `canvas_cancel`。运行中删除节点可能按界面取消任务，那不是取消接口。
+- `canvas_import_asset` 只复用已保存素材，不能上传任意本地文件。`assetPath` 必须匹配 `assets/<64位十六进制>.<扩展名>`，目标必须是素材节点。
+- `canvas_generate_node` 的 `wait` 必须为 `false`。页桥和当前页执行都会拒绝其他值。
 
 ---
 
@@ -196,7 +209,7 @@ Agent 不判断自己是「强」还是「弱」，也不因自认能力高低�
 
 偏离之后，若同一任务的核验**连续失败两次**，停用这次偏离，回到该配方的标准步骤重做。不要沿失败的偏离再换第三种做法。回到标准配方后仍然失败，按第 6 节处理；属于第 7 节的情况就停下来问用户。
 
-每个配方都按「前置 → 逐步操作 → 期望输出 → 核验」执行。缺模型时停在前置，向用户展示 `MODEL_CATALOG.md` 对应行，**等待具名套装的明确同意**，不要开始下载。
+每个配方都按「前置 → 逐步操作 → 期望输出 → 核验」执行。配方里写的「提交并等待」都是配方 B 的第 5–6 步：`canvas_generate_node`（`wait:false`），再用 `canvas_get_state` 轮询到终态。没有第二种等待接口。缺模型时停在前置，向用户展示 `MODEL_CATALOG.md` 对应行，**等待具名套装的明确同意**，不要开始下载。
 
 公共前置（所有生成配方都要做）：
 
@@ -340,7 +353,8 @@ Agent 不判断自己是「强」还是「弱」，也不因自认能力高低�
 
 | 现象 | 先检查什么 | 怎么处理 |
 | --- | --- | --- |
-| `NO_VISIBLE_CANVAS` | 用户是否已在现有页打开项目；工作台是否刚重启 | 请用户打开当前页；重新 `canvas_current`。不要另开浏览器 |
+| `NO_VISIBLE_CANVAS` | 用户是否已在现有页打开项目；目标页是否只读或隐藏；工作台是否刚重启 | 请用户打开当前可操作页；重新 `canvas_current`。`projectId` 不能操作隐藏页。不要另开浏览器 |
+| 页桥 400，不支持的工具 | 是否调用了 `canvas_wait_for_node`、取消工具或 `wait:true` | 改回 `wait:false`，用 `canvas_get_state` 轮询。不要发明等待或取消接口 |
 | `AMBIGUOUS_CANVAS` | 是否有第二窗口或第二标签 | 请用户只留一个可见页后重试 |
 | `CANVAS_EPOCH_CHANGED` | 工作台已重启 | 重新读取当前页；旧命令不重放 |
 | 生成报缺失模型／节点 | 对照 `MODEL_CATALOG.md` 与 `verify_workbench.py`；画布是否连错端口上的 ComfyUI | 列出缺的文件、大小和来源，等用户同意再下载。不要改用相似文件名顶替 |

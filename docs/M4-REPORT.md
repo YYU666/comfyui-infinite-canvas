@@ -1,5 +1,7 @@
 # M4 Agent 协议 v2 验收
 
+> 本文记录 M4 当时的验收，不是当前操作规程。用户要在画布上看到的图片或视频，以 `docs/AGENT_MANUAL.md` 的可见节点回路为准。文中的 `apply`／`wait` 和无浏览器写入 Take，不能代替那条回路。
+
 - 阶段：M4
 - Commit：`M4: add efficient agent protocol CLI and MCP`（本提交）
 - Tag：`m4-done`
