@@ -1,15 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, ArrowUpCircle, Check, ExternalLink, LoaderCircle, ShieldCheck, X } from 'lucide-react';
-import { applyUpdate, checkForUpdates, getUpdateStatus, getWorkbenchHealth } from './update-client';
+import { applyUpdate, checkForUpdates, currentAttemptFailure, describeUpdateFailure, getUpdateStatus, getWorkbenchHealth, priorFailureForRelease } from './update-client';
 import { getSettings } from './settings-client';
 import { createUpdateCheckScheduler } from './update-check-scheduler';
 import './updates.css';
 
 const NOTIFIED_KEY = 'refmuse-update-completed';
-const DISMISSED_KEY = 'refmuse-update-dismissed-versions';
+const IGNORED_KEY = 'refmuse-update-ignored-versions';
 const readStored = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
 const writeStored = (key, value) => { try { localStorage.setItem(key, value); } catch { /* Private browsing may disable storage. */ } };
-const dismissedVersions = () => { try { const value = JSON.parse(readStored(DISMISSED_KEY) || '[]'); return Array.isArray(value) ? value : []; } catch { return []; } };
+const ignoredVersions = () => { try { const value = JSON.parse(readStored(IGNORED_KEY) || '[]'); return Array.isArray(value) ? value : []; } catch { return []; } };
 
 
 export default function UpdateCenter({ projectOpen }) {
@@ -57,12 +57,14 @@ export default function UpdateCenter({ projectOpen }) {
             setNotice(initial.lastResult.message);
           }
           if (result.updateAvailable) {
+            const prior = priorFailureForRelease(initial, result);
+            const ignored = ignoredVersions().includes(result.version);
+            const notice = { ...result, message: prior?.message || result.message || '' };
+            if (!ignored) setAvailableNotice(notice);
             if (manualResult) {
-              setRelease(result);
-              setMessage(result.message || '');
+              setRelease(notice);
+              setMessage(notice.message || '');
               showDialog('available');
-            } else if (!dismissedVersions().includes(result.version)) {
-              setAvailableNotice(result);
             }
           } else {
             setAvailableNotice(null);
@@ -107,19 +109,16 @@ export default function UpdateCenter({ projectOpen }) {
         if (disposed.current || !applying.current) return;
         if (status.message) setMessage(status.message);
         // A pending POST owns the outcome; a stale status must not unlock a second apply.
-        if (!request.pending) {
-          const failure = status.phase === 'error' ? status : status.lastResult?.phase === 'error' ? status.lastResult : null;
-          const recentFailure = failure && (!failure.version || failure.version.replace(/^v/, '') === target)
-            && (!failure.updatedAt || Date.parse(failure.updatedAt) >= request.startedAt - 1000);
-          if (recentFailure) {
-            applying.current = false;
-            setMessage(failure.message || '升级失败，请查看工作台状态和运行日志。');
-            showDialog('error');
-            return;
-          }
-          if (request.uncertain && !['preparing', 'restarting'].includes(status.phase)) {
-            setMessage('升级请求的响应已断开，正在核实实际状态。不会重复提交升级；请保持页面打开，必要时检查运行日志。');
-          }
+        const failure = !request.pending && currentAttemptFailure(status, version, request.startedAt);
+        if (failure) {
+          applying.current = false;
+          const text = failure.message || '升级失败，请查看工作台状态和运行日志。';
+          setMessage(text);
+          setAvailableNotice((current) => current || (release ? { ...release, message: text } : null));
+          showDialog(release ? 'available' : 'error');
+          return;
+        } else if (!request.pending && request.uncertain && !['preparing', 'restarting'].includes(status.phase)) {
+          setMessage('升级请求的响应已断开，正在核实实际状态。不会重复提交升级；请保持页面打开，必要时检查运行日志。');
         }
       } catch {
         if (!disposed.current && applying.current && !request.pending) {
@@ -154,8 +153,14 @@ export default function UpdateCenter({ projectOpen }) {
       if (error.status && error.code && error.code !== 'UPDATE_BUSY') {
         // A structured backend rejection is definitive; transport failure is not.
         applying.current = false;
-        setMessage(error.message);
-        showDialog('error');
+        const text = describeUpdateFailure(error);
+        setMessage(text);
+        setAvailableNotice((current) => {
+          const source = current || release;
+          return source ? { ...source, message: text } : null;
+        });
+        setRelease((current) => current ? { ...current, message: text } : current);
+        showDialog(release ? 'available' : 'error');
       } else {
         request.uncertain = true;
         setMessage('升级请求的响应已断开，正在核实实际状态。不会重复提交升级；请保持页面打开。');
@@ -164,13 +169,16 @@ export default function UpdateCenter({ projectOpen }) {
   };
 
   const dismissVersion = (version) => {
-    if (version) writeStored(DISMISSED_KEY, JSON.stringify([...new Set([...dismissedVersions(), version])]));
+    if (version) writeStored(IGNORED_KEY, JSON.stringify([...new Set([...ignoredVersions(), version])]));
     setAvailableNotice(null);
   };
   const close = () => {
     if (applying.current) return;
     if (pending.current) pending.current.dismissed = true;
-    if (dialogRef.current === 'available') dismissVersion(release?.version);
+    // 稍后 / 关闭只离开对话框。明确点「忽略此版本」才会记住，返回启动页仍能看到这次更新。
+    if (dialogRef.current === 'available' && release?.version && !ignoredVersions().includes(release.version)) {
+      setAvailableNotice((current) => current?.version === release.version ? current : release);
+    }
     showDialog(null);
   };
   return <>
@@ -200,7 +208,7 @@ export default function UpdateCenter({ projectOpen }) {
           {dialog === 'available' && <>
             <a className="update-link" href={release?.url} target="_blank" rel="noreferrer">查看 Release<ExternalLink size={14} /></a>
             <button onClick={close}>稍后</button>
-            <button className="primary" disabled={projectOpen || !release?.canApply} onClick={upgrade}><ArrowUpCircle size={15} />立即升级</button>
+            <button className="primary" disabled={projectOpen || !release?.canApply} title={projectOpen ? '请先返回项目启动页，再升级' : undefined} onClick={upgrade}><ArrowUpCircle size={15} />立即升级</button>
           </>}
           {(dialog === 'latest' || dialog === 'error' || dialog === 'info') && <button className="primary" onClick={close}>知道了</button>}
         </div>

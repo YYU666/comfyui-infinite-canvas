@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import subprocess
@@ -90,6 +91,7 @@ class HelperTests(unittest.TestCase):
         self.assert_user_data_untouched()
 
     def test_failed_dependency_install_restores_old_program_and_dependencies(self):
+        started_at = datetime.datetime.now(datetime.timezone.utc)
         calls = []
         def dependencies(python, requirements):
             calls.append(Path(requirements).read_text(encoding="utf-8"))
@@ -105,6 +107,8 @@ class HelperTests(unittest.TestCase):
         status = json.loads(self.status.read_text(encoding="utf-8"))
         self.assertEqual(status["phase"], "error")
         self.assertIn("已恢复并重新启动旧版", status["message"])
+        self.assertEqual(status["version"], self.request["targetVersion"])
+        self.assertGreaterEqual(datetime.datetime.fromisoformat(status["updatedAt"]), started_at)
         self.assert_user_data_untouched()
 
     def test_exit_timeout_writes_actionable_error_without_replacing_files(self):
@@ -167,6 +171,7 @@ class HelperTests(unittest.TestCase):
         request.assert_not_called()
 
     def test_rollback_does_not_stop_another_instance(self):
+        started_at = datetime.datetime.now(datetime.timezone.utc)
         owned, restored = mock.Mock(pid=123), mock.Mock(pid=124)
         owned.poll.return_value = None
         with mock.patch("workbench_update_helper.install_dependencies"), \
@@ -179,6 +184,10 @@ class HelperTests(unittest.TestCase):
         owned.terminate.assert_called_once()
         self.assertEqual([call.kwargs["expected_pid"] for call in health.call_args_list], [123, 124])
         self.assertEqual((self.root / "video_workbench_launcher.py").read_text(encoding="utf-8"), "old")
+        status = json.loads(self.status.read_text(encoding="utf-8"))
+        self.assertEqual(status["phase"], "error")
+        self.assertEqual(status["version"], self.request["targetVersion"])
+        self.assertGreaterEqual(datetime.datetime.fromisoformat(status["updatedAt"]), started_at)
         self.assert_user_data_untouched()
 
 

@@ -1,4 +1,5 @@
 import { assetUrl } from './project-store-http.js';
+import { settleSavedNode } from './canvas-task-state.js';
 import { qwenCanvasReferences, bindQwenPrompt } from './qwen-references.js';
 import { ensureReferenceTags } from './reference-tags.js';
 
@@ -41,7 +42,7 @@ export function migrateCanvas(value, projectId) {
     // Retain newer/extension node types when reopening with an older client.
     // Dropping them here would make the next autosave permanently delete their data.
     return node;
-  }).filter(Boolean);
+  }).filter(Boolean).map((node) => settleSavedNode(node));
   const edges = (value.edges || []).map((edge) => {
     const target = nodes.find((node) => node.id === edge.target);
     const isReference = target?.type === 'generator' && (target.data.mode || 'reference') === 'reference';

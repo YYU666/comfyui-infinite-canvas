@@ -10,6 +10,7 @@ const suites = {
     'test-pureref-import.mjs',
     'test-art-director.mjs',
     'test-canvas-migration.mjs',
+    'test-canvas-task-state.mjs',
     'test-canvas-move.mjs',
     'test-project-save-recovery.mjs',
     'test-canvas-heartbeat-timeout.mjs',
@@ -54,6 +55,7 @@ const suites = {
     'test-reference-tags.mjs',
     'test-resolution.mjs',
     'test-update-check-scheduler.mjs',
+    'test-update-offer.mjs',
   ],
   browser: [
     'test-pureref-import-ui.mjs',

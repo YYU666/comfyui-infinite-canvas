@@ -66,8 +66,12 @@ try {
 
   const readProject = () => api(`/api/projects/${projectId}`);
   const waitForNodeCount = async (count) => {
-    await page.waitForTimeout(750);
-    const project = await readProject();
+    const deadline = Date.now() + 5000;
+    let project = await readProject();
+    while (project.canvas.nodes.length !== count && Date.now() < deadline) {
+      await page.waitForTimeout(200);
+      project = await readProject();
+    }
     assert.equal(project.canvas.nodes.length, count, `自动保存后应有 ${count} 个节点`);
     return project;
   };

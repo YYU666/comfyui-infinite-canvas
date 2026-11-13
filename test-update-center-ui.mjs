@@ -75,12 +75,20 @@ try {
   await page.getByRole('button', {name: '查看更新', exact: true}).click();
   assert.equal(await page.locator('.update-notes').innerText(), '合成测试发布说明');
   await page.getByRole('button', {name: '稍后', exact: true}).click();
-  await page.reload(); await waitChecks(2); await page.waitForTimeout(100);
-  assert.equal(await banner.count(), 0, 'dismiss survives refresh');
+  assert.equal(await page.getByRole('dialog').count(), 0);
+  assert.equal(await banner.count(), 1, '稍后 only closes the dialog');
+  await page.evaluate(() => localStorage.setItem('refmuse-update-dismissed-versions', JSON.stringify(['v9.9.9'])));
+  await page.reload(); await waitChecks(2); await banner.waitFor();
+  assert.match(await banner.innerText(), /v9.9.9/, 'closing the dialog and an old dismiss key both leave the upgrade visible');
   await manual(); await page.getByRole('heading', {name: '发现新版本 v9.9.9'}).waitFor(); await close();
+  assert.equal(await banner.count(), 1, 'the dialog close button does not hide the upgrade');
   result = {...result, version: 'v9.9.10'};
   await page.reload(); await banner.waitFor(); assert.match(await banner.innerText(), /v9.9.10/);
   await page.getByRole('button', {name: '忽略此版本更新提示'}).click();
+  assert.equal(await banner.count(), 0);
+  const beforeIgnoredReload = checks;
+  await page.reload(); await waitChecks(beforeIgnoredReload + 1);
+  assert.equal(await banner.count(), 0, 'explicit ignore survives refresh');
 
   await page.getByRole('button', {name: '设置', exact: true}).click();
   await page.getByLabel('自动检查 GitHub Release').uncheck();
@@ -168,8 +176,29 @@ try {
   await page.clock.runFor(1600);
   await page.getByText('合成测试：构建失败，旧版尚未替换。', {exact: true}).waitFor();
   assert.equal(await page.getByRole('button', {name: '关闭更新窗口'}).count(), 1, 'definitive status failure safely releases busy state');
+  await close();
+  await banner.waitFor();
+  assert.match(await banner.innerText(), /v9.9.12/, 'a failed apply leaves the upgrade entry in place');
+
+  // Rollback restarts the old backend, whose live phase is idle with a persisted error.
+  updateStatus = {phase: 'idle', currentVersion: '1.0.1-rc.1'};
+  await page.getByRole('button', {name: '查看更新', exact: true}).click();
+  const rollbackStart = await page.evaluate(() => Date.now());
+  await page.getByRole('button', {name: '立即升级', exact: true}).click();
+  await page.getByRole('heading', {name: '正在安全升级'}).waitFor();
+  const stale = {phase: 'error', version: result.version, message: '旧的回滚记录', updatedAt: new Date(rollbackStart - 60000).toISOString()};
+  updateStatus = {phase: 'idle', lastResult: stale};
+  await heldApply.fulfill({json: {accepted: true, version: result.version}});
+  await page.clock.runFor(1600);
+  assert.equal(await page.getByRole('button', {name: '关闭更新窗口'}).count(), 0, 'an older rollback cannot end this attempt');
+  updateStatus = {phase: 'idle', lastResult: {...stale, message: '合成测试：新版启动失败，已恢复旧版。', updatedAt: await page.evaluate(() => new Date().toISOString())}};
+  await page.clock.runFor(1600);
+  await page.getByText('合成测试：新版启动失败，已恢复旧版。', {exact: true}).waitFor();
+  await close();
+  await banner.waitFor();
+  assert.equal(applyBodies.length, 3, 'rollback recovery never resubmits automatically');
   assert.equal(errors.length, 0, errors.join('\n'));
-  console.log(JSON.stringify({ok: true, syntheticOnly: true, banner: true, dismissPersists: true, newVersion: true, settingsLive: true, manualOptOut: true, noRelease: true, oldBackend: true, quietAutomaticErrors: true, timeoutRecovery: true, inFlightClose: true, inFlightOptOut: true, joinedManual: true, projectGuard: true, confirmedApplyOnly: true, longApplyProgress: true, ambiguousApplyReconciled: true}));
+  console.log(JSON.stringify({ok: true, syntheticOnly: true, banner: true, laterKeepsUpgrade: true, explicitIgnorePersists: true, newVersion: true, settingsLive: true, manualOptOut: true, noRelease: true, oldBackend: true, quietAutomaticErrors: true, timeoutRecovery: true, inFlightClose: true, inFlightOptOut: true, joinedManual: true, projectGuard: true, confirmedApplyOnly: true, longApplyProgress: true, ambiguousApplyReconciled: true, failedApplyKeepsEntry: true}));
 } finally {
   if (browser) await browser.close();
   await server.close();
