@@ -142,7 +142,7 @@ try {
   assert.deepEqual(errors, []);
   assert.equal(requests.filter(([method, url]) => method === 'POST' && url === '/api/queue').length, 0, 'never enqueue generation');
   assert.equal(requests.filter(([method]) => ['PUT', 'PATCH', 'DELETE'].includes(method)).length, 0, 'never save or mutate project content');
-  const allowedPosts = new Set(['/api/projects/open', '/api/agent/canvas/heartbeat', '/api/agent/canvas/release']);
+  const allowedPosts = new Set(['/api/projects/open', '/api/agent/canvas/heartbeat', '/api/agent/canvas/release', '/api/ui-ready']);
   const unexpected = requests.filter(([method, url]) => method !== 'GET' && !(method === 'POST' && (allowedPosts.has(url) || url.endsWith('/close'))));
   assert.deepEqual(unexpected, [], 'only project open/close and existing page presence requests are allowed');
   console.log('PROJECT_RESUME_UI_OK reload=true viewport=true switch=true failedSwitch=true launcher=true failures=2 readonly=true storage=2 generation=0 saves=0');

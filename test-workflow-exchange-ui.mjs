@@ -68,7 +68,7 @@ try {
   if(url.pathname==='/api/comfy/view')return url.searchParams.get('filename')==='missing.png'?json({error:'missing'},404):route.fulfill({contentType:'image/png',body:coverPng});
   if(url.pathname==='/api/comfy/system_stats')return json({devices:[]});
   if(url.pathname==='/api/hardware-metrics')return json({});
-  if(url.pathname.startsWith('/api/')){if(!['GET','HEAD'].includes(req.method()))unexpected.push(url.pathname);return json({});}
+  if(url.pathname.startsWith('/api/')){if(!['GET','HEAD'].includes(req.method()) && url.pathname!=='/api/ui-ready')unexpected.push(url.pathname);return json({});}
   const file=path.join(dist,url.pathname==='/'?'index.html':url.pathname.slice(1));return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:await readFile(file)});
  });
  const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));
