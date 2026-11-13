@@ -26,6 +26,7 @@
 | `canvas_inspect_node` | 在当前页内打开节点对应的 ComfyUI 工作流查看器；不提交生成 | 必填 `nodeId`；可选 `stage`（四视图支持单张阶段及 `stitch`） |
 | `canvas_open_reference_library` | 在当前画布内打开外部参考库；只打开界面，不下载、不生成 | 可选 `library`：`refmuse`（默认）、`costume`（衣装）或 `pose`（姿势） |
 | `canvas_import_asset` | 在当前页复用本项目已保存素材 | 必填 `nodeId`、`assetPath`；可选 `name` |
+| `canvas_download_video` | 在当前页把分享链接下载为视频节点 | 必填 `url`；可选 `nodeId`、`x`、`y`、`wait`（默认 false） |
 | `canvas_create_node` | 在当前画布创建节点 | 必填 `preset`；可选 `title`、`prompt`、`text`、`x`、`y`、`focus` |
 | `canvas_update_node` | 更新标题、提示词、备注或白名单参数 | 必填 `nodeId`；可选 `title`、`prompt`、`text`、`settings` |
 | `canvas_connect_nodes` | 连接两个真实节点 | 必填 `sourceId`、`targetId`；通常省略 `targetHandle` 自动判断 |
@@ -132,3 +133,5 @@ Refmuse 页签使用官网专用嵌入模式：登录搜索后点击「导入当
 ### 连接手感与视频下载
 
 端口支持拖动和依次点击连接，缩放时扩大命中范围；类型不匹配、目标忙或无成品时显示明确提示。生成器输出口只引用当前已保存的唯一成品，连线落到该成品素材上，不随之后的新生成悄悄换图。首尾帧模式在「视频生成」节点内选择。右键「视频链接下载」可独立下载为素材，不自动提交生成。
+
+`canvas_download_video` 走同一条页面下载：已有下载节点时写入 `nodeId` 并让输入框显示链接；否则在 `x`/`y` 新建。完成后在右侧生成视频节点并经页面保存。`wait:false` 立即返回 `nodeId`、`jobId` 和 `status:"queued"`；`wait:true` 返回 `videoNodeId`。用 `canvas_get_state` 看该节点的 `downloadStatus`（`queued`/`downloading`/`done`/`failed`）和 `message`。只接受 http/https，拒绝带账号密码的链接，不把凭据写入错误或日志。

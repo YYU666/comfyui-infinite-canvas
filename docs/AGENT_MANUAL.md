@@ -117,6 +117,7 @@ MCP 等价工具：`canvas_current`、`canvas_call`（执行并等待；生成�
 | `canvas_update_node` | 改标题、提示词、白名单参数 | 只传要改的字段，改后回读核验 |
 | `canvas_connect_nodes` | 连接两个真实节点 | 省略 `targetHandle` 时按规则自动判断；必须回读边数据，不能靠外观 |
 | `canvas_import_asset` | 复用本项目已保存素材 | 需要 `nodeId`、`assetPath` |
+| `canvas_download_video` | 把分享链接下载进当前画布 | 必填 `url`（仅 http/https，可含一段分享文字）。可选 `nodeId`（已有视频链接下载节点）、`x`/`y`（新建坐标，须成对）、`wait`（默认 `false`） |
 | `canvas_generate_node` | 提交一次生成 | **`wait` 必须为 `false`**；成功只表示已提交（有新 `promptId`） |
 | `canvas_focus_node` | 把视口对到节点 | 便于用户看见 |
 | `canvas_delete_node` | 删除节点 | 仅清理已确认无用的临时节点；运行中可能取消任务 |
@@ -125,6 +126,13 @@ MCP 等价工具：`canvas_current`、`canvas_call`（执行并等待；生成�
 | `canvas_open_reference_library` | 打开参考库界面 | 不下载、不生成 |
 | `canvas_inspect_node` | 在当前页查看内部 ComfyUI 图 | 不提交生成；不是完成标准 |
 | `canvas_create_extension` | 自定义工作流节点 | 不要冒充官方预设 |
+
+`canvas_download_video` 在当前页执行，复用「视频链接下载」节点和已有下载流程，不另写下载器，也不从后端改项目。
+
+- `wait: false`（默认）立即返回 `{ nodeId, jobId, status: "queued", message }`。下载节点的输入框会显示该链接。
+- `wait: true` 等到视频节点创建并保存后返回 `{ nodeId, jobId, status: "done", videoNodeId, message }`。页面通道在此期间忙碌；要看进度请用 `wait: false`。
+- 之后用 `canvas_get_state`（可带该 `nodeId`）读下载节点：`downloadStatus` 为 `queued`、`downloading`、`done` 或 `failed`，`message` 为说明，失败时还有 `error`。`done` 时 `videoNodeId` 指向右侧新视频节点（与手动下载一样，不另拉连线）。`sourceUrl` 是去掉账号密码后的链接。
+- 只接受 http/https。带账号或密码的链接直接拒绝，错误和日志不包含凭据。单次下载最长约 8 分钟，超时记为 `failed`。
 
 自动端口（省略 `targetHandle` 时）：
 

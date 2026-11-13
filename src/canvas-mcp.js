@@ -8,6 +8,7 @@ import { PHOTO_ADJUSTMENTS, DEFAULT_PHOTO_SETTINGS, normalizePhotoAdjustment } f
 import { CHANNEL_KEYS, normalizeChannelPackSettings } from './channel-packing.js';
 import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-references.js';
 import { availableNodePresets } from './local-node-tools.js';
+import { publicDownloadError, validatePublicVideoUrl, videoDownloadState } from './video-download.js';
 
 export const NODE_PRESETS = {
   art_director: ['artDirector', { title: '电子主美 · 图解分析', brief: '', preserve: '', referencePurposes: {} }],
@@ -142,6 +143,7 @@ function nodeSummary(node, includeContent = true) {
     ...(node.data.mode === 'customWorkflow' ? { extensionDigest: node.data.extensionDigest, nodeDefinitionId: node.data.nodeDefinitionId, workflowDefinition: node.data.workflowDefinition, workflowParameters: node.data.workflowParameters } : {}),
     status: node.data.status,
     stage: node.data.stage,
+    ...(videoDownloadState(node.data) || {}),
     progress: node.data.progress,
     promptId: node.data.promptId,
     queueJobId: node.data.queueJobId,
@@ -257,6 +259,84 @@ export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, 
   }, timeoutMs, 500);
   const resultEdge = latest.current.edgesRef.current.find((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
   return { node: nodeSummary(finished), resultNode: resultEdge ? nodeSummary(mcpNode(latest, resultEdge.target)) : null };
+}
+
+function patchDownloadNode(latest, nodeId, patch) {
+  const apply = latest.current.actions.patchNode || latest.current.actions.updateNode;
+  if (!apply) throw new Error('当前画布不能更新下载节点。');
+  apply(nodeId, patch);
+}
+
+function newDownloadJobId() {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid || `video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function rememberDownloadFailure(latest, nodeId, error) {
+  const node = latest.current.nodesRef.current.find((item) => item.id === nodeId);
+  if (!node || node.data.downloadStatus === 'done' || node.data.downloadStatus === 'failed') return Promise.resolve();
+  const message = publicDownloadError(error);
+  patchDownloadNode(latest, nodeId, {
+    downloadStatus: 'failed', status: 'failed', downloadMessage: message, stage: message, error: message,
+  });
+  return Promise.resolve(latest.current.actions.persistProject?.()).catch(() => {});
+}
+
+// Runs the page's importVideoReference path. wait:false returns as soon as the
+// download node shows the link and a queued job; the video node is created later
+// by that same path. wait:true resolves with the new video node id.
+export async function downloadVideoForMcp(latest, args = {}, waitImpl = waitFor) {
+  const url = validatePublicVideoUrl(args?.url);
+  const wait = args.wait === true;
+  if (latest.current.actions.isVideoDownloadBusy?.()) throw new Error('另一段视频正在下载或保存，请完成后再导入。');
+  const hasX = args.x !== undefined && args.x !== null;
+  const hasY = args.y !== undefined && args.y !== null;
+  let nodeId = args.nodeId;
+  if (!nodeId && (hasX !== hasY || (hasX && !Number.isFinite(Number(args.x))) || (hasY && !Number.isFinite(Number(args.y))))) {
+    throw new Error('新建下载节点时请同时提供有效的 x 和 y。');
+  }
+  if (nodeId) {
+    const node = mcpNode(latest, nodeId);
+    if (node.type !== 'note' || node.data.noteRole !== 'videoDownload') throw new Error('nodeId 必须是视频链接下载节点。');
+  } else {
+    const position = hasX ? { x: Number(args.x), y: Number(args.y) } : null;
+    nodeId = latest.current.actions.addNode('note', { title: '视频链接下载', noteRole: 'videoDownload' }, position, false);
+    await waitImpl(() => latest.current.nodesRef.current.find((node) => node.id === nodeId) || null);
+  }
+  const jobId = newDownloadJobId();
+  patchDownloadNode(latest, nodeId, {
+    downloadUrl: url,
+    sourceUrl: url,
+    downloadStatus: 'queued',
+    status: 'queued',
+    downloadMessage: '已排队，准备下载',
+    stage: '已排队，准备下载',
+    downloadJobId: jobId,
+    videoNodeId: null,
+    error: null,
+  });
+  try {
+    await latest.current.actions.persistProject?.();
+  } catch (error) {
+    const message = publicDownloadError(error);
+    patchDownloadNode(latest, nodeId, { downloadStatus: 'failed', status: 'failed', downloadMessage: message, stage: message, error: message });
+    throw new Error(message || '下载节点尚未保存。');
+  }
+  if (!latest.current.actions.importVideoReference) {
+    const message = '当前页面没有视频下载流程。';
+    patchDownloadNode(latest, nodeId, { downloadStatus: 'failed', status: 'failed', downloadMessage: message, stage: message, error: message });
+    throw new Error(message);
+  }
+  const task = Promise.resolve().then(() => latest.current.actions.importVideoReference(url, nodeId)).catch(async (error) => {
+    await rememberDownloadFailure(latest, nodeId, error);
+    throw new Error(publicDownloadError(error));
+  });
+  if (!wait) {
+    task.catch(() => {});
+    return { nodeId, jobId, status: 'queued', message: '已排队，准备下载' };
+  }
+  const videoNodeId = await task;
+  return { nodeId, jobId, status: 'done', videoNodeId, message: '下载完成' };
 }
 
 export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readOnly = false, server, actions }) {
@@ -378,7 +458,9 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         }, ['nodeId']),
         execute: respond(async ({ nodeId, title, prompt, text, settings = {} }) => {
           const current = getNode(nodeId);
-          if (['uploading', 'queued', 'running', 'finishing'].includes(current.data.status)) throw new Error('节点正在生成，请先完成或取消后再修改。');
+          if (current.data.noteRole === 'videoDownload') {
+            if (latest.current.actions.isVideoDownloadBusy?.() && ['queued', 'downloading'].includes(current.data.downloadStatus)) throw new Error('节点正在下载，请完成后再修改。');
+          } else if (['uploading', 'queued', 'running', 'finishing'].includes(current.data.status)) throw new Error('节点正在生成，请先完成或取消后再修改。');
           const unknown = Object.keys(settings).filter((key) => !EDITABLE_SETTINGS.has(key));
           if (unknown.length) throw new Error(`不支持的参数：${unknown.join(', ')}`);
           validateModelSettings(settings, current.data.mode ?? '');
@@ -492,13 +574,25 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         return { node: nodeSummary(getNode(nodeId)) };
       }),
     });
+    tools.push({
+      name: 'canvas_download_video',
+      description: '在当前页把 http/https 分享链接下载为视频素材。复用视频链接下载节点和页面已有的下载流程：写入链接、下载、在旁边创建视频节点并保存。wait 默认 false，立即返回下载节点与 queued 任务；wait 为 true 时返回新视频节点。进度与错误用 canvas_get_state 读取该下载节点的 downloadStatus（queued/downloading/done/failed）和 message。',
+      inputSchema: schema({
+        nodeId: { ...nodeIdProperty, description: '可选。已有「视频链接下载」节点的 ID。省略则新建。' },
+        x: { type: 'number', description: '新建下载节点时的画布坐标 X，需与 y 同时提供。' },
+        y: { type: 'number', description: '新建下载节点时的画布坐标 Y，需与 x 同时提供。' },
+        url: { type: 'string', description: 'http 或 https 视频链接，或包含一个该链接的分享文字。不能包含账号或密码。' },
+        wait: { type: 'boolean', description: '是否等待下载结束，默认 false。' },
+      }, ['url']),
+      execute: respond((args) => downloadVideoForMcp(latest, args)),
+    });
     for (const tool of tools) {
       const original = tool.execute;
       tool.execute = async (args = {}, executionOptions) => {
         const mutation = !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
         const result = JSON.parse(await original(args, executionOptions));
-        if (mutation && result.ok && !['canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
+        if (mutation && result.ok && !['canvas_create_project', 'canvas_open_project', 'canvas_retry_save', 'canvas_download_video'].includes(tool.name)) {
           try { await latest.current.actions.persistProject?.(); }
           catch (error) { return JSON.stringify({ ...result, ok: false, error: error.message, localChangesRetained: true }); }
         }

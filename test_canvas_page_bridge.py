@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from canvas_page_bridge import CanvasPageBridge
@@ -91,6 +92,31 @@ class CanvasPageBridgeTests(unittest.TestCase):
         self.assert_code("CANVAS_SESSION_CHANGED", lambda: self.bridge.complete({**command,
                          "projectId": "prj_two", "result": {"ok": True}}))
         self.assertEqual(self.bridge.complete({**command, "result": {"ok": True}})["status"], "done")
+
+    def test_download_video_accepts_wait_without_opening_a_browser(self):
+        self.bridge.heartbeat(self.page)
+        queued = self.submit('download_now', tool='canvas_download_video', args={
+            'url': 'https://www.bilibili.com/video/BV1xx', 'wait': False, 'x': 40, 'y': 80,
+        })
+        self.assertEqual(queued['status'], 'queued')
+        command = self.bridge.heartbeat(self.page)['command']
+        self.assertEqual(command['tool'], 'canvas_download_video')
+        self.assertEqual(command['args']['wait'], False)
+        self.assertNotIn('password', json.dumps(command))
+        self.bridge.complete({**command, 'result': {
+            'ok': True, 'nodeId': 'note_download', 'jobId': 'job_download', 'status': 'queued', 'message': '已排队，准备下载',
+        }})
+        waiting = self.submit('download_wait', tool='canvas_download_video', args={
+            'nodeId': 'note_download', 'url': 'https://www.youtube.com/watch?v=abcdefghijk', 'wait': True,
+        })
+        self.assertEqual(waiting['status'], 'queued')
+        follow = self.bridge.heartbeat(self.page)['command']
+        self.assertTrue(follow['args']['wait'])
+        done = self.bridge.complete({**follow, 'result': {
+            'ok': True, 'nodeId': 'note_download', 'jobId': 'job_wait', 'status': 'done', 'videoNodeId': 'media_video', 'message': '下载完成',
+        }})
+        self.assertEqual(done['result']['videoNodeId'], 'media_video')
+        self.assert_code('BAD_REQUEST', lambda: self.submit('generate_still_rejects_wait', args={'nodeId': 'g1', 'wait': True}))
 
     def test_reference_library_dispatches_without_claiming_remote_load(self):
         self.bridge.heartbeat(self.page)

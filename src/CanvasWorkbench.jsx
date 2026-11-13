@@ -33,6 +33,7 @@ import { isMaskNode, maskSourceKey, canvasMaskGuide, qwenCanvasMask, validateCan
 import { planCanvasConnection } from './canvas-connections';
 import ImageLightbox from './ImageLightbox';
 import { useCanvasMcp, NODE_PRESETS, describeNodeModels } from './canvas-mcp';
+import { publicDownloadError, validatePublicVideoUrl, videoDownloadSignal } from './video-download.js';
 import { LOCAL_NODE_TOOLS } from './local-node-tools';
 import WorkflowInspector from './WorkflowInspector';
 import ReferenceLibrary, { REFERENCE_LIBRARIES } from './ReferenceLibrary';
@@ -152,26 +153,32 @@ function NoteNode({ id, data, selected }) {
   const [error, setError] = useState('');
   const isGuide = id === 'welcome';
   const isVideoDownload = data.noteRole === 'videoDownload';
+  const downloading = importing || (isVideoDownload && ['queued', 'downloading'].includes(data.downloadStatus));
   const videoInputId = isGuide ? 'video-url-input' : `video-url-${id}`;
+  useEffect(() => {
+    if (!isVideoDownload || typeof data.downloadUrl !== 'string' || data.downloadStatus === 'done') return;
+    setUrl(data.downloadUrl);
+  }, [isVideoDownload, data.downloadUrl, data.downloadStatus]);
   const submitUrl = async (event) => {
     event.preventDefault();
-    if (!url.trim() || importing) return;
+    if (!url.trim() || downloading) return;
     setImporting(true); setError('');
     try { await importVideoReference(url.trim(), isVideoDownload ? id : null); setUrl(''); }
-    catch (reason) { setError(reason.message || '视频加载失败，请重试。'); }
+    catch (reason) { setError(publicDownloadError(reason)); }
     finally { setImporting(false); }
   };
+  const shownError = error || (isVideoDownload && data.downloadStatus === 'failed' ? data.downloadMessage : '');
   return <div className={`note-shell ${isGuide ? 'guide-note' : ''} ${selected ? 'selected' : ''}`}>
     <NodeTitle id={id} data={data} kind="note" /><NodeActions id={id} data={data} selected={selected} />
     {!isVideoDownload && <textarea className="nodrag nowheel" value={data.text || ''} onChange={(e) => updateNode(id, { text: e.target.value })} placeholder="写下分镜、角色设定或创作备注……" />}
     {(isGuide || isVideoDownload) && <form className="video-url-import nodrag nowheel" onSubmit={submitUrl} onDoubleClick={(event) => event.stopPropagation()}>
       <label htmlFor={videoInputId}><Link2 size={13} />{isVideoDownload ? '视频链接下载' : '手机分享链接加载参考'}</label>
       <div className="video-url-row">
-        <input id={videoInputId} type="text" inputMode="url" autoComplete="off" spellCheck={false} value={url} disabled={importing} onChange={(event) => setUrl(event.target.value)} placeholder="粘贴抖音 / 小红书分享文字或链接" required />
-        <button type="submit" disabled={importing || !url.trim()} title={isVideoDownload ? '下载并添加到画布' : '提取链接并连接为视频参考'} aria-label="加载视频链接">{importing ? <LoaderCircle className="spin" size={14} /> : <ArrowDownToLine size={14} />}</button>
+        <input id={videoInputId} type="text" inputMode="url" autoComplete="off" spellCheck={false} value={url} disabled={downloading} onChange={(event) => setUrl(event.target.value)} placeholder="粘贴抖音 / 小红书分享文字或链接" required />
+        <button type="submit" disabled={downloading || !url.trim()} title={isVideoDownload ? '下载并添加到画布' : '提取链接并连接为视频参考'} aria-label="加载视频链接">{downloading ? <LoaderCircle className="spin" size={14} /> : <ArrowDownToLine size={14} />}</button>
       </div>
-      <span>{importing ? '正在解析并下载到本机，请保持窗口开启……' : '支持 App 复制的一整段分享内容，会自动提取短链接。'}</span>
-      {error && <p className="video-url-error">{error}</p>}
+      <span>{downloading ? (data.downloadMessage || '正在解析并下载到本机，请保持窗口开启……') : isVideoDownload && data.downloadStatus === 'done' ? '下载完成，视频已放在右侧。' : '支持 App 复制的一整段分享内容，会自动提取短链接。'}</span>
+      {shownError && <p className="video-url-error">{shownError}</p>}
     </form>}
   </div>;
 }
@@ -652,7 +659,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     catch (error) { setProjectError(error.message || '项目列表读取失败。'); }
   }, []);
   useEffect(() => { refreshProjects(); }, [refreshProjects]);
-  const hasActiveTask = () => pureRefBusyRef.current || Boolean(videoImportBusyRef.current) || localImageJobsRef.current.size > 0 || nodesRef.current.some((node) => ['uploading', 'queued', 'running', 'finishing', 'optimizing'].includes(node.data.status));
+  const hasActiveTask = () => pureRefBusyRef.current || Boolean(videoImportBusyRef.current) || localImageJobsRef.current.size > 0 || nodesRef.current.some((node) => node.data.noteRole !== 'videoDownload' && ['uploading', 'queued', 'running', 'finishing', 'optimizing'].includes(node.data.status));
   const downloadLocalSnapshot = () => {
     const snapshot = { ...projectRef.current, revision: revisionRef.current, name: nameRef.current,
       canvas: canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current) };
@@ -715,6 +722,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       });
     });
   }, [setNodes, project.readOnly]);
+
+  useEffect(() => {
+    if (project.readOnly || videoImportBusyRef.current) return;
+    const stale = nodesRef.current.filter((node) => node.data.noteRole === 'videoDownload' && ['queued', 'downloading'].includes(node.data.downloadStatus));
+    stale.forEach((node) => updateNode(node.id, { downloadStatus: 'failed', status: 'failed', downloadMessage: '下载已中断，请重试。', stage: '下载已中断，请重试。', error: '下载已中断，请重试。' }));
+  }, [project.id, project.readOnly, updateNode]);
 
   useEffect(() => {
     if (project.readOnly) return;
@@ -1558,6 +1571,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }, [addNode, chooseMedia, setEdges]);
 
   const importVideoReference = useCallback(async (url, downloadNodeId = null) => {
+    const cleanUrl = validatePublicVideoUrl(url);
     if (switchingRef.current || projectRef.current.readOnly || autoSaveRef.current?.conflict) throw new Error('当前画布不可写，请先处理保存状态后重试。');
     if (videoImportBusyRef.current) throw new Error('另一段视频正在下载或保存，请完成后再导入。');
     const projectId = projectRef.current.id;
@@ -1582,8 +1596,21 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     videoImportBusyRef.current = operation;
     autoSaveRef.current?.suspend();
     setSaveState('保存中');
+    const markDownload = (patch) => {
+      if (!downloadNodeId) return;
+      flushSync(() => updateNode(downloadNodeId, patch));
+    };
+    markDownload({
+      downloadUrl: cleanUrl, sourceUrl: cleanUrl, downloadStatus: 'downloading', status: 'downloading',
+      downloadMessage: '正在解析并下载到本机', stage: '正在下载', error: null,
+    });
     const pending = (async () => {
-      const result = await importVideoFromUrl(url);
+      let result;
+      try { result = await importVideoFromUrl(cleanUrl, { signal: videoDownloadSignal() }); }
+      catch (error) {
+        if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw new Error('视频下载超时，请换较短的视频，或下载后手动上传。');
+        throw error;
+      }
       if (videoImportBusyRef.current !== operation || projectRef.current.id !== projectId || switchingRef.current || projectRef.current.readOnly || autoSaveRef.current?.conflict) throw new Error('当前画布已改变或不可写，尚未添加视频。');
       const { current, videoCount } = validateTarget();
       const remoteName = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
@@ -1592,19 +1619,27 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       let id;
       flushSync(() => {
         id = addNode('video', { title: result.title || (downloadNodeId ? '下载的视频' : '在线视频参考'), name: result.name, remoteName,
-          url: remoteMediaUrl(remoteName), sourceUrl: result.sourceUrl || url, localFile: false }, position);
+          url: remoteMediaUrl(remoteName), sourceUrl: result.sourceUrl || cleanUrl, localFile: false }, position);
         if (!downloadNodeId) setEdges((items) => addEdge({ id: `edge-${id}-${current.id}`, source: id, target: current.id, sourceHandle: 'ref', targetHandle }, items));
       });
       return id;
     })();
     mediaWritesRef.current.set(operation.id, pending);
+    let createdId = null;
+    let failure = null;
     try {
-      const id = await pending;
+      createdId = await pending;
       // Remove our own barrier before flushing, otherwise the flush awaits itself.
       mediaWritesRef.current.delete(operation.id);
+      markDownload({ downloadStatus: 'done', status: 'done', downloadMessage: '下载完成', stage: '下载完成', videoNodeId: createdId, error: null });
       try { await persistProject(); }
       catch (error) { throw new Error(`视频已下载并保留在画布，但尚未保存：${error.message}。请重试保存，不要重复下载。`); }
-      return id;
+    } catch (error) {
+      failure = error;
+      if (downloadNodeId && nodesRef.current.find((node) => node.id === downloadNodeId)?.data.downloadStatus !== 'done') {
+        const message = publicDownloadError(error);
+        markDownload({ downloadStatus: 'failed', status: 'failed', downloadMessage: message, stage: message, error: message });
+      }
     } finally {
       mediaWritesRef.current.delete(operation.id);
       if (videoImportBusyRef.current === operation) {
@@ -1612,7 +1647,14 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         autoSaveRef.current?.observe(nameRef.current, { nodes: nodesRef.current, edges: edgesRef.current, viewport: viewportRef.current }, { defer: mediaWritesRef.current.size > 0 || interactionRef.current });
       }
     }
-  }, [addNode, setEdges, persistProject]);
+    if (failure) {
+      if (downloadNodeId && nodesRef.current.find((node) => node.id === downloadNodeId)?.data.downloadStatus === 'failed') {
+        try { await persistProject(); } catch { /* The open page still shows the failure. */ }
+      }
+      throw new Error(publicDownloadError(failure));
+    }
+    return createdId;
+  }, [addNode, setEdges, persistProject, updateNode]);
 
   const changeQwenReferences = useCallback((id, sourceId, direction) => {
     if (switchingRef.current || project.readOnly) return;
@@ -1863,7 +1905,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   useCanvasMcp({
     nodesRef, edgesRef, projectName, projectId: project.id, readOnly: project.readOnly, server,
-    actions: { moveNodes, addNode, createExtensionNode: async (digest, nodeDefinitionId, position, focus) => {
+    actions: { moveNodes, addNode, importVideoReference, isVideoDownloadBusy: () => Boolean(videoImportBusyRef.current), patchNode: (id, patch) => { flushSync(() => updateNode(id, patch)); }, createExtensionNode: async (digest, nodeDefinitionId, position, focus) => {
       if (workflowLibraryOpen || switchingRef.current || project.readOnly) throw new Error('请关闭本地工作流窗口，并确认当前画布可写后再添加节点。');
       const bundle = await getExtension(digest);
       if (switchingRef.current || project.readOnly) throw new Error('当前画布不可写。');

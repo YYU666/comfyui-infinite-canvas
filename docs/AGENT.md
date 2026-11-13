@@ -50,7 +50,7 @@ POST /api/agent/canvas/commands
 GET  /api/agent/canvas/commands/<opId>
 ```
 
-`current` 返回 `epoch/sessionId/projectId`；提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","wait":false}`。实际执行发生在现有页面，修改工具等待正常保存后回执。返回 `done` 后还须检查 `result.ok`。无页或多个可见候选时明确报错，不自动创建页面；页面心跳只由前端发送。
+`current` 返回 `epoch/sessionId/projectId`；提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","wait":false}`。把分享链接下载进画布用 `tool: "canvas_download_video"`、`args: {"url":"https://...","wait":false}`；进度看下载节点的 `downloadStatus` 与 `message`。实际执行发生在现有页面，修改工具等待正常保存后回执。返回 `done` 后还须检查 `result.ok`。无页或多个可见候选时明确报错，不自动创建页面；页面心跳只由前端发送。
 
 命令按 ID 去重，断线后不重发已派发的生成。`unknown/dispatched` 应先核对队列和节点，不换 ID 盲目再生成。服务重启后旧 epoch 被拒绝。新通道需要启动新版后端并重新载入现有网页；不会为升级通道自动中断任务。完整流程与容量边界见 `.agents/skills/comfyui-infinite-canvas/references/canvas-operations.md`。
 
