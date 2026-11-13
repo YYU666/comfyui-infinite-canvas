@@ -570,7 +570,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 },
             }
             if os.environ.get("H3_WORKBENCH_TEST_MODE") == "1":
-                health["projectsRoot"] = str(self.server.project_store.root)
+                project_store = getattr(self.server, "project_store", None)
+                if project_store is not None:
+                    health["projectsRoot"] = str(project_store.root)
             self.send_json(200, health)
             return
         if path == "/api/settings":

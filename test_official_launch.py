@@ -191,6 +191,7 @@ class UiReadyTests(unittest.TestCase):
         self.server.ui_ready_at = None
         self.server.comfy_owned = False
         self.server.comfy_process = None
+        self.server.project_store = type("Store", (), {"root": self.root / "projects"})()
         self.server.queue_manager = QueueManager(self.root / "queue.json", poll_interval=0.01)
         probed = []
 
