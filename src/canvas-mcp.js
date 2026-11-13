@@ -7,6 +7,8 @@ import { isImageProcess, imageProcessSettings } from './image-process-graph.js';
 import { PHOTO_ADJUSTMENTS, DEFAULT_PHOTO_SETTINGS, normalizePhotoAdjustment } from './photo-adjustments.js';
 import { CHANNEL_KEYS, normalizeChannelPackSettings } from './channel-packing.js';
 import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-references.js';
+import { readImageModelInstall } from './image-model-install.js';
+import { planImageModelPick } from './image-model-picker.js';
 import { availableNodePresets } from './local-node-tools.js';
 
 export const NODE_PRESETS = {
@@ -158,6 +160,12 @@ function nodeSummary(node, includeContent = true) {
     selected: Boolean(node.selected),
     pinned: Boolean(node.data.pinned),
     hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath),
+    ...(['image', 'qwenEdit'].includes(node.data.mode) ? {
+      modelLockedByUser: Boolean(node.data.modelLockedByUser),
+      ...(node.data.modelPickNote ? { modelPickNote: node.data.modelPickNote } : {}),
+      ...(node.data.imageTaskType ? { imageTaskType: node.data.imageTaskType } : {}),
+      ...(node.data.imageReview ? { imageReview: node.data.imageReview } : {}),
+    } : {}),
   };
 }
 
@@ -231,7 +239,7 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     if (node.data.status === 'error') throw new Error(node.data.error || '生成提交失败。');
     return node.data.queueJobId && node.data.queueJobId !== before ? node : null;
   }, 30000);
-  if (!wait) return { node: nodeSummary(submitted) };
+  if (!wait) return { node: nodeSummary(submitted), ...(submitted.data.modelPickNote ? { announcement: submitted.data.modelPickNote } : {}) };
   const finished = await waitImpl(() => {
     const node = mcpNode(latest, nodeId);
     if (node.data.queueJobId !== submitted.data.queueJobId) return null;
@@ -242,7 +250,7 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
   const resultEdges = latest.current.edgesRef.current.filter((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
   const resultEdge = resultEdges.find((edge) => mcpNode(latest, edge.target).data.sourcePromptId === submitted.data.promptId) || resultEdges.at(-1);
   const resultNode = resultEdge ? mcpNode(latest, resultEdge.target) : null;
-  return { node: nodeSummary(finished), resultNode: nodeSummary(resultNode) };
+  return { node: nodeSummary(finished), resultNode: nodeSummary(resultNode), ...(finished.data.modelPickNote ? { announcement: finished.data.modelPickNote } : {}) };
 }
 
 export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, waitImpl = waitFor) {
@@ -282,6 +290,16 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         return JSON.stringify({ ok: false, error: error?.message || String(error) });
       }
     };
+    const imagePickInput = (node, prompt) => ({
+      data: node.data,
+      mode: node.data.mode,
+      prompt,
+      referenceCount: node.data.mode === 'qwenEdit' ? qwenCanvasReferences(node, latest.current.nodesRef.current, latest.current.edgesRef.current).length : 0,
+      hasMask: latest.current.edgesRef.current.some((edge) => edge.target === node.id && edge.targetHandle === 'mask'),
+      hasSourceCrop: Boolean(node.data.qwenSourceCrop),
+      hasMaskCrop: Boolean(node.data.qwenMaskCrop),
+      history: latest.current.actions.getImageModelHistory?.() || [],
+    });
     const tools = [
       {
         name:'canvas_move_nodes',description:'仅移动指定的1至30个当前节点，保留其余节点位置。',
@@ -387,12 +405,62 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           if (title !== undefined) patch.title = title;
           if (prompt !== undefined) { patch.prompt = current.data.mode === 'qwenEdit' ? bindQwenPrompt(prompt, qwenCanvasReferences(current, latest.current.nodesRef.current, latest.current.edgesRef.current)) : prompt; patch.outfitPreset = null; }
           if (text !== undefined) patch.text = text;
+          const activeField = current.data.mode === 'image' ? 'imageModel' : current.data.mode === 'qwenEdit' ? 'qwenModel' : null;
+          if (activeField && Object.hasOwn(settings, activeField)) {
+            const decision = planImageModelPick({ ...imagePickInput(current, prompt ?? current.data.prompt), requestedModel: settings[activeField], install: await readImageModelInstall(), data: { ...current.data, modelLockedByUser: false } });
+            if (!decision.ok) throw new Error(decision.error);
+            Object.assign(patch, decision.patch);
+          }
           latest.current.actions.updateNode(nodeId, patch);
           const node = await waitFor(() => {
             const current = getNode(nodeId);
             return Object.entries(patch).every(([key, value]) => current.data[key] === value) ? current : null;
           });
           return { node: nodeSummary(node) };
+        }),
+      },
+      {
+        name: 'canvas_pick_image_model',
+        description: '为文生图或图生图节点自动选择已安装且兼容的模型，并写入现有 imageModel 或 qwenModel。用户点名或该节点已手动锁定时不改下拉。点名的模型未安装时返回缺项，不会换成别的模型。',
+        inputSchema: schema({
+          nodeId: nodeIdProperty,
+          model: { type: 'string', description: '可选。点名 krea2、moss、h3_image、flux3_klein、standard 或 turbo；未安装时失败且不替换。' },
+          prompt: { type: 'string', description: '可选。只用于判断任务类型，不改节点提示词。省略时用节点上的提示词。' },
+        }, ['nodeId']),
+        execute: respond(async ({ nodeId, model, prompt }) => {
+          const node = getNode(nodeId);
+          if (!['image', 'qwenEdit'].includes(node.data.mode)) throw new Error('自动选模只用于文生图或图生图节点。');
+          const decision = planImageModelPick({ ...imagePickInput(node, prompt === undefined ? node.data.prompt || '' : prompt), requestedModel: model, install: await readImageModelInstall() });
+          if (!decision.ok) throw new Error(decision.error);
+          if (decision.patch && Object.keys(decision.patch).length) {
+            latest.current.actions.updateNode(nodeId, decision.patch);
+            await waitFor(() => {
+              const current = getNode(nodeId);
+              return Object.entries(decision.patch).every(([key, value]) => current.data[key] === value) ? current : null;
+            });
+          }
+          const current = getNode(nodeId);
+          return {
+            announcement: decision.announcement, field: decision.field, model: decision.model || current.data[decision.field] || null,
+            taskType: decision.taskType, locked: Boolean(current.data.modelLockedByUser), changed: Boolean(decision.changed), offline: Boolean(decision.offline),
+          };
+        }),
+      },
+      {
+        name: 'canvas_review_image',
+        description: '记录文生图或图生图结果的收下或否掉。写入节点 imageReview，并追加到项目 settings.imageModelHistory，供之后自动选模按 30 天半衰期使用。',
+        inputSchema: schema({
+          nodeId: nodeIdProperty,
+          accepted: { type: 'boolean', description: 'true 为收下，false 为否掉。' },
+        }, ['nodeId', 'accepted']),
+        execute: respond(async ({ nodeId, accepted }) => {
+          if (typeof accepted !== 'boolean') throw new Error('accepted 必须是布尔值。');
+          const reviewed = latest.current.actions.reviewImageNode(nodeId, accepted);
+          const node = await waitFor(() => {
+            const current = getNode(reviewed.id);
+            return current.data.imageReview?.accepted === accepted ? current : null;
+          });
+          return { node: nodeSummary(node), review: reviewed.review, historyCount: (latest.current.actions.getImageModelHistory?.() || []).length };
         }),
       },
       {

@@ -282,6 +282,12 @@
 .param-pill.active { color: #dedee1; background: rgba(255,255,255,.1); }
 .param-pill select { max-width: 67px; border: 0; outline: 0; appearance: none; background: transparent; color: inherit; font-size: 9px; cursor: pointer; }
 .param-pill option { background: #242427; color: #ddd; }
+.image-model-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 6px; }
+.model-pick-note { margin: 0; color: rgba(255,255,255,.72); font-size: 11px; line-height: 1.4; }
+.image-review { display: flex; gap: 6px; flex-shrink: 0; }
+.image-review button { height: 26px; padding: 0 10px; border: 1px solid rgba(255,255,255,.08); border-radius: 13px; background: rgba(255,255,255,.05); color: rgba(255,255,255,.75); font-size: 11px; }
+.image-review button.active { background: rgba(255,255,255,.16); color: #fff; }
+.image-review button:disabled { color: #66666c; }
 .send-button { width: 31px; height: 31px; flex-shrink: 0; display: grid; place-items: center; border-radius: 50%; background: #ededee; color: #171719; transition: transform .15s, background .15s; }
 .send-button:hover { transform: translateY(-1px); background: #fff; }
 .send-button:disabled { background: #444448; color: #77777d; transform: none; }

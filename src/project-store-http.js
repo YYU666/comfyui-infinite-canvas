@@ -97,9 +97,12 @@ export async function closeProject(id) {
   return request(`/${id}/close`, json('POST', {}));
 }
 
-export async function saveProject(id, revision, name, canvas) {
+export async function saveProject(id, revision, name, canvas, extras = {}) {
   const current = await request(`/${id}`);
   const document = { ...current, name: name.trim() || '未命名项目', canvas };
+  if (extras && Object.hasOwn(extras, 'imageModelHistory')) {
+    document.settings = { ...(current.settings || {}), imageModelHistory: extras.imageModelHistory };
+  }
   return editable(await request(`/${id}`, json('PUT', document, { 'If-Match': String(revision) })));
 }
 
