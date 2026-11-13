@@ -3,6 +3,9 @@ Dim shell, fso, root, comfyRoot, pythonw, launcher
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
+' H3_COMFY_ROOT is the directory that contains python_embeded\pythonw.exe.
+' For an official isolated launch that directory is the managed Python runtime,
+' not a ComfyUI portable root. Comfy startup is H3_COMFY_AUTOSTART, not this lookup.
 comfyRoot = shell.Environment("PROCESS").Item("H3_COMFY_ROOT")
 If comfyRoot = "" Then comfyRoot = fso.GetParentFolderName(root)
 pythonw = fso.BuildPath(comfyRoot, "python_embeded\pythonw.exe")

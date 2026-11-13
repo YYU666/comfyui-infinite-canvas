@@ -7,6 +7,7 @@ import math
 import os
 import socket
 import subprocess
+import sys
 import time
 import uuid
 import urllib.error
@@ -14,10 +15,93 @@ import urllib.request
 from pathlib import Path
 
 APP_VERSION = "1.0.13"
+WORKBENCH_PORT_SPAN = range(8790, 8800)
+# Official instances must not take the worktree port span or the ComfyUI port.
+OFFICIAL_FORBIDDEN_PORTS = frozenset(WORKBENCH_PORT_SPAN) | {8188}
+OFFICIAL_ISOLATION_ENVS = ("H3_WORKBENCH_RUNTIME_DIR", "H3_WORKBENCH_DATA_DIR", "H3_PROJECTS_ROOT")
+
+
+def official_port_requested() -> bool:
+    """True when the parent process asked for an official/isolated port."""
+    value = os.environ.get("H3_WORKBENCH_PORT")
+    return isinstance(value, str) and value.strip() != ""
+
+
+def comfy_autostart_enabled() -> bool:
+    """Unset or 1 keeps today's Comfy startup. 0 is the production isolated-launch flag."""
+    raw = os.environ.get("H3_COMFY_AUTOSTART")
+    if raw is None or raw.strip() == "" or raw == "1":
+        return True
+    if raw == "0":
+        return False
+    raise RuntimeError("H3_COMFY_AUTOSTART 只能是未设置、1 或 0。0 表示不启动、不附着、也不探测 ComfyUI。")
+
+
+def require_official_isolation() -> None:
+    """Official mode must not fall back onto the signed-in user's workbench directories."""
+    if not official_port_requested():
+        return
+    missing = []
+    for name in OFFICIAL_ISOLATION_ENVS:
+        value = os.environ.get(name, "").strip()
+        if not value:
+            missing.append(name)
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise RuntimeError(f"{name} 必须是绝对路径。官方隔离启动不会改用 %LOCALAPPDATA%\\H3Workbench。")
+    if missing:
+        raise RuntimeError(
+            "已设置 H3_WORKBENCH_PORT，官方隔离启动必须同时设置 "
+            "H3_WORKBENCH_RUNTIME_DIR、H3_WORKBENCH_DATA_DIR 和 H3_PROJECTS_ROOT。"
+            f"缺少：{'、'.join(missing)}。不会使用 %LOCALAPPDATA%\\H3Workbench，也不会附着到用户现有的 8790 实例。"
+        )
+
+
+def apply_cli_port(argv) -> None:
+    """`--port` is the same contract as H3_WORKBENCH_PORT, including official isolation."""
+    if "--port" not in argv:
+        return
+    index = argv.index("--port")
+    if index + 1 >= len(argv) or str(argv[index + 1]).startswith("-"):
+        raise RuntimeError("--port 需要一个 0–65535 的整数。")
+    value = str(argv[index + 1]).strip()
+    current = os.environ.get("H3_WORKBENCH_PORT", "").strip()
+    if current and current != value:
+        raise RuntimeError("H3_WORKBENCH_PORT 与 --port 不一致。")
+    os.environ["H3_WORKBENCH_PORT"] = value
+
+
+def explicit_workbench_port(argv=None) -> int | None:
+    """None scans 8790–8799. 0 lets the OS assign. Any other value binds only that port."""
+    if argv is not None:
+        apply_cli_port(list(argv))
+    raw = os.environ.get("H3_WORKBENCH_PORT", "").strip()
+    if raw == "":
+        return None
+    if not raw.isdigit() or (len(raw) > 1 and raw.startswith("0")):
+        raise RuntimeError("H3_WORKBENCH_PORT 必须是 0–65535 的十进制整数，不能有前导零。0 表示由操作系统分配。")
+    port = int(raw)
+    if port > 65535:
+        raise RuntimeError("H3_WORKBENCH_PORT 必须是 0–65535 的整数。")
+    if port in OFFICIAL_FORBIDDEN_PORTS:
+        raise RuntimeError("官方隔离启动禁止使用 8188 和 8790–8799。请设置范围外端口，或使用 0 让操作系统分配。")
+    return port
+
+
+def comfy_launch_switches(root: Path) -> tuple[bool, bool]:
+    """Return (enabled, allow_start). Disabled means no start, no attach, and no port 8188 probe."""
+    if not comfy_autostart_enabled():
+        return False, False
+    # A managed runtime root has python_embeded and no ComfyUI tree. Do not treat it as Comfy.
+    if official_port_requested() and not (Path(root) / "ComfyUI" / "main.py").is_file():
+        return False, False
+    return True, os.environ.get("H3_WORKBENCH_TEST_MODE") != "1"
 
 
 def runtime_dir() -> Path:
-    configured = os.environ.get("H3_WORKBENCH_RUNTIME_DIR")
+    require_official_isolation()
+    configured = os.environ.get("H3_WORKBENCH_RUNTIME_DIR", "").strip()
     if configured:
         return Path(configured)
     local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
@@ -104,7 +188,10 @@ def probe_health(instance: dict, timeout: float = 3) -> dict | None:
 
 def workbench_ports(instance: dict | None) -> list[int]:
     """Keep a disconnected page's origin when its previous port is available."""
-    ports = list(range(8790, 8800))
+    explicit = explicit_workbench_port()
+    if explicit is not None:
+        return [explicit]
+    ports = list(WORKBENCH_PORT_SPAN)
     preferred = instance.get("port") if isinstance(instance, dict) else None
     if type(preferred) is not int or preferred not in ports:
         try:
@@ -135,8 +222,29 @@ def instance_process_alive(instance: dict | None) -> bool:
         return True  # Cannot prove it exited; fail closed.
 
 
+def bind_workbench(server_factory, instance: dict | None = None, ports=None):
+    """Bind the explicit port, or the worktree span. Never scan after an explicit port fails."""
+    explicit = explicit_workbench_port()
+    error = None
+    selected = list(workbench_ports(instance) if ports is None else ports)
+    for port in selected:
+        try:
+            return server_factory(("127.0.0.1", port))
+        except OSError as exc:
+            error = exc
+            if explicit is not None:
+                break
+    if explicit == 0:
+        raise RuntimeError("操作系统未能分配工作台端口。") from error
+    if explicit is not None:
+        raise RuntimeError(f"端口 {explicit} 不可用。已指定端口时只绑定该端口，不会改扫 8790–8799。") from error
+    raise RuntimeError("8790–8799 端口均被占用，请查看诊断日志。") from error
+
+
 def request_comfy_start(instance, health, timeout=3):
     """One authenticated hint for managed backends; old backends stay compatible."""
+    if not comfy_autostart_enabled():
+        return False
     comfy = health.get("comfy", {})
     if comfy.get("enabled") is False or comfy.get("state") in {None, "starting", "disabled"}:
         return False
@@ -153,6 +261,12 @@ def request_comfy_start(instance, health, timeout=3):
         return False
 
 
+def _workbench_ready(instance, health, process):
+    return {"ok": True, "url": f"http://127.0.0.1:{instance['port']}/", "pid": health["pid"],
+            "started": process is not None and process.pid == health["pid"],
+            "workbenchReady": True, "comfyReady": False}
+
+
 def ensure_workbench(timeout: float = 120) -> dict:
     """Start the local service if needed and return only after both APIs respond."""
     if not math.isfinite(timeout) or not 0 < timeout <= 600:
@@ -161,6 +275,8 @@ def ensure_workbench(timeout: float = 120) -> dict:
     process = None
     instance = read_instance()
     health = probe_health(instance) if instance else None
+    if health and not comfy_autostart_enabled():
+        return _workbench_ready(instance, health, process)
     if health:
         request_comfy_start(instance, health, timeout=min(3, timeout))
     if not health:
@@ -171,7 +287,7 @@ def ensure_workbench(timeout: float = 120) -> dict:
         settings.load()
         root = Path(settings.data["comfyRoot"])
         python = root / "python_embeded" / "python.exe"
-        if not python.is_file() or not (root / "ComfyUI" / "main.py").is_file():
+        if not python.is_file() or (comfy_autostart_enabled() and not (root / "ComfyUI" / "main.py").is_file()):
             raise RuntimeError("未找到配置的 ComfyUI 便携版 Python 或 main.py；请设置 H3_COMFY_ROOT 或修正工作台设置。")
         here = Path(__file__).resolve().parent
         environment = os.environ.copy()
@@ -186,6 +302,8 @@ def ensure_workbench(timeout: float = 120) -> dict:
     while time.monotonic() < deadline:
         instance = read_instance()
         health = probe_health(instance, timeout=min(0.6, max(0.01, deadline - time.monotonic()))) if instance else None
+        if health and not comfy_autostart_enabled():
+            return _workbench_ready(instance, health, process)
         if health:
             url = f"http://127.0.0.1:{instance['port']}"
             request = urllib.request.Request(url + "/api/comfy/system_stats", headers={"X-H3-Token": instance.get("token", "")})
