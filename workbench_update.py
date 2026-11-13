@@ -323,40 +323,92 @@ class WorkbenchUpdateManager:
         if package.get("version") != tag.lstrip("v") or parse_version(version) != expected:
             raise UpdateError("升级包程序版本与 Release 标签不一致。", code="PACKAGE_INVALID")
 
+    def _load_installed_record(self):
+        if not self.installed_manifest_path.exists():
+            return None
+        try:
+            installed = json.loads(self.installed_manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(installed, dict):
+                raise ValueError("record is not an object")
+            if installed.get("installationRoot") != self.installation_root:
+                raise UpdateError("本机更新记录属于另一个安装目录，已停止升级，当前程序没有被替换。请确认要升级的是这一份工作台。",
+                                  status=409, code="LOCAL_CHANGES", details={"kind": "other-root"})
+            self._validate_manifest(installed, installed.get("version"))
+        except UpdateError:
+            raise
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError, AttributeError, RuntimeError) as exc:
+            raise UpdateError("无法读取本机更新记录，已停止升级，程序文件没有被替换。", status=409, code="LOCAL_CHANGES", details={"kind": "record"}) from exc
+        return installed
+
+    @staticmethod
+    def _change_parts(change):
+        text = change.replace("\r", "")
+        if text.endswith("\n"):
+            text = text[:-1]
+        return text[:3], text[3:]
+
+    @staticmethod
+    def _local_change_details(kind, paths):
+        names = []
+        for path in paths:
+            if not isinstance(path, str):
+                continue
+            cleaned = path.replace("\\", "/").strip()
+            if cleaned and cleaned not in names:
+                names.append(cleaned[:180])
+        shown = names[:12]
+        return shown, {"kind": kind, "paths": shown, "count": len(names)}
+
+    def _refuse_local_changes(self, kind, paths):
+        shown, details = self._local_change_details(kind, paths)
+        if kind == "installed-files":
+            listing = "、".join(shown) if shown else "未能列出具体路径"
+            message = ("官方安装的程序文件与上次更新记录不一致，升级已停止，这些文件没有被覆盖："
+                       f"{listing}。请先把它们备份到安装目录以外。确认没有需要保留的修改后，再恢复或移出这些程序文件并重试。"
+                       "项目、素材和模型不在这份更新记录里。")
+        else:
+            message = "工作台程序有本地代码修改。请先备份或提交修改，再升级。"
+            if shown:
+                message += f" 发现 {details['count']} 处未提交修改，升级没有覆盖它们。"
+        raise UpdateError(message, status=409, code="LOCAL_CHANGES", details=details)
+
+    def _installed_drift(self, installed):
+        from workbench_update_helper import safe_path
+        drifted = []
+        for item in installed["files"]:
+            path = safe_path(self.root, item["path"])
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
+                drifted.append(item["path"])
+        return drifted
+
     def _git_clean(self):
-        installed = None
-        if self.installed_manifest_path.exists():
-            try:
-                installed = json.loads(self.installed_manifest_path.read_text(encoding="utf-8"))
-                if installed.get("installationRoot") != self.installation_root:
-                    raise ValueError("different installation")
-                self._validate_manifest(installed, installed.get("version"))
-                from workbench_update_helper import safe_path
-                for item in installed["files"]:
-                    path = safe_path(self.root, item["path"])
-                    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
-                        raise ValueError("locally modified installed file")
-            except (OSError, ValueError, TypeError, AttributeError, RuntimeError, UpdateError) as exc:
-                raise UpdateError("已安装程序与本机更新记录不一致。请先备份本地修改，再升级。", status=409, code="LOCAL_CHANGES") from exc
+        installed = self._load_installed_record()
+        drifted = self._installed_drift(installed) if installed else []
         if not (self.root / ".git").exists():
+            if drifted:
+                self._refuse_local_changes("installed-files", drifted)
             return
         git = shutil.which("git")
         if not git:
-            raise UpdateError("无法检查本地代码修改，已停止升级。", code="LOCAL_CHANGES")
+            raise UpdateError("无法检查本地代码修改，已停止升级。", code="LOCAL_CHANGES", details={"kind": "git"})
         result = self.runner([git, "-C", str(self.root), "status", "--porcelain", "-z", "--untracked-files=no"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
         if result.returncode:
-            raise UpdateError("无法确认本地代码状态，已停止升级。", code="LOCAL_CHANGES")
-        if result.stdout.strip():
-            owned = {item["path"] for item in installed["files"]} if installed else set()
-            # An updater replaces files without rewriting the user's Git index.
-            # Only exact installed hashes and known removed paths are eligible.
-            changes = result.stdout.rstrip("\0").split("\0")
-            for change in changes:
-                kind, path = change[:3], change[3:]
-                if installed and ((kind == " M " and path in owned)
-                                  or (kind == " D " and path not in owned and not self.root.joinpath(path).exists())):
-                    continue
-                raise UpdateError("工作台程序有本地代码修改。请先备份或提交修改，再升级。", status=409, code="LOCAL_CHANGES")
+            raise UpdateError("无法确认本地代码状态，已停止升级。", code="LOCAL_CHANGES", details={"kind": "git"})
+        owned = {item["path"] for item in installed["files"]} if installed else set()
+        drifted_set = set(drifted)
+        unexpected = []
+        # An updater replaces files without rewriting the user's Git index.
+        # Only exact installed hashes and known removed paths are eligible.
+        for change in result.stdout.rstrip("\0").split("\0"):
+            if not change.strip():
+                continue
+            kind, path = self._change_parts(change)
+            allowed = installed and ((kind == " M " and path in owned and path not in drifted_set)
+                                    or (kind == " D " and path not in owned and not self.root.joinpath(path).exists()))
+            if not allowed:
+                unexpected.append(path or kind.strip() or "未知路径")
+        if unexpected or drifted:
+            self._refuse_local_changes("git", [*unexpected, *drifted])
 
     def _run_stage(self, command, timeout, label):
         try:

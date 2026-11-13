@@ -18,7 +18,7 @@ import {
 import {
   COMFY_ORIGIN, buildWorkflow, buildReferenceWorkflow, buildCharacterSwapWorkflow, buildHdRefineWorkflow,
   buildImageWorkflow, buildImageHdWorkflow, buildIdentityEditWorkflow, buildQwen21EditWorkflow, buildCharacterSheetQueuePlan, buildLocalRealismWorkflow, buildOutfitQueuePlan, resolveOutfitPanels, OUTFIT_PRESETS, cancelGeneration, createClientId, enqueueGeneration, extractImages, extractVideos,
-  freeComfyMemory, getHistory, getMossDependencyStatus, importVideoFromUrl, openProgressSocket, openQueueEvents,
+  comfyFetch, freeComfyMemory, getHistory, getMossDependencyStatus, importVideoFromUrl, openProgressSocket, openQueueEvents,
   openFileLocation as requestFileLocation, optimizePrompt as requestPromptOptimization,
   resolveDimensions, resolveImageDimensions, uploadMedia,
 } from './workbench-api';
@@ -53,6 +53,7 @@ import { readViewport, saveViewport } from './canvas-viewport';
 import { outputFileLocation, selectCompletedVideo } from './canvas-output-selection';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
 import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, resolveCanvasCompletion, shouldReconcileCompletion, takeOutputIdentity } from './generation-queue';
+import { absentPromptPatches, absentQueueJobPatches, canvasHasActiveTask, classifyExportJob, comfyQueuePromptIds, exportJobRequest, exportLookupPatch, isActiveTaskStatus, patchNodes, promptEventTargets, promptExecutingPatch, promptProgressPatch } from './canvas-task-state';
 import { ensureReferenceTags, nextReferenceTag, referenceDescriptors } from './reference-tags';
 import CanvasImage, { clearCanvasThumbnails } from './CanvasImage';
 import { hydrateProjectMedia } from './canvas-thumbnails';
@@ -652,7 +653,15 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     catch (error) { setProjectError(error.message || '项目列表读取失败。'); }
   }, []);
   useEffect(() => { refreshProjects(); }, [refreshProjects]);
-  const hasActiveTask = () => pureRefBusyRef.current || Boolean(videoImportBusyRef.current) || localImageJobsRef.current.size > 0 || nodesRef.current.some((node) => ['uploading', 'queued', 'running', 'finishing', 'optimizing'].includes(node.data.status));
+  const loadedQueueJobIdsRef = useRef(new Set(saved.nodes.flatMap((node) => (
+    node.type === 'generator' && isActiveTaskStatus(node.data?.status) && node.data.queueJobId ? [node.data.queueJobId] : []
+  ))));
+  const seenQueueJobIdsRef = useRef(new Set());
+  const hasActiveTask = () => canvasHasActiveTask(nodesRef.current, {
+    pureRefBusy: pureRefBusyRef.current,
+    videoImportBusy: Boolean(videoImportBusyRef.current),
+    localImageJobs: localImageJobsRef.current.size,
+  });
   const downloadLocalSnapshot = () => {
     const snapshot = { ...projectRef.current, revision: revisionRef.current, name: nameRef.current,
       canvas: canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current) };
@@ -1004,39 +1013,113 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
 
   useEffect(() => {
     const events = openQueueEvents({
-      onSnapshot(snapshot) { snapshot.jobs?.forEach((job) => { void syncQueueJob(job); }); },
-      onJobEvent(job) { void syncQueueJob(job); },
+      onSnapshot(snapshot) {
+        const jobs = Array.isArray(snapshot?.jobs) ? snapshot.jobs : [];
+        jobs.forEach((job) => { void syncQueueJob(job); });
+        const patches = absentQueueJobPatches(nodesRef.current, jobs, {
+          loadedJobIds: loadedQueueJobIdsRef.current, seenJobIds: seenQueueJobIdsRef.current,
+        });
+        for (const job of jobs) if (['queued', 'running', 'finishing'].includes(job.status)) seenQueueJobIdsRef.current.add(job.id);
+        if (!patches.length) return;
+        for (const patch of patches) loadedQueueJobIdsRef.current.delete(patch.jobId);
+        setNodes((items) => patchNodes(items, patches));
+      },
+      onJobEvent(job) {
+        if (job?.id && ['queued', 'running', 'finishing'].includes(job.status)) seenQueueJobIdsRef.current.add(job.id);
+        void syncQueueJob(job);
+      },
       // EventSource reconnects automatically; the next snapshot restores state.
     });
     return () => events.close();
-  }, [syncQueueJob]);
+  }, [syncQueueJob, setNodes]);
+
+  useEffect(() => {
+    const pending = nodesRef.current.filter((node) => node.type === 'generator' && isActiveTaskStatus(node.data?.status) && node.data?.promptId && !node.data?.queueJobId);
+    if (!pending.length) return undefined;
+    const pendingIds = new Map(pending.map((node) => [node.id, node.data.promptId]));
+    let stopped = false;
+    (async () => {
+      const [queue, history] = await Promise.all([
+        comfyFetch('/queue').catch(() => null),
+        getHistory(100).catch(() => null),
+      ]);
+      if (stopped || !queue || !history || typeof history !== 'object') return;
+      const patches = absentPromptPatches(nodesRef.current, {
+        livePromptIds: comfyQueuePromptIds(queue), historyIds: new Set(Object.keys(history)),
+      }).filter((item) => pendingIds.get(item.id) && nodesRef.current.find((node) => node.id === item.id)?.data?.promptId === pendingIds.get(item.id));
+      if (!stopped && patches.length) setNodes((items) => patchNodes(items, patches.filter((item) => items.find((node) => node.id === item.id)?.data?.promptId === pendingIds.get(item.id))));
+    })();
+    return () => { stopped = true; };
+  }, [project.id, setNodes]);
+
+  useEffect(() => {
+    const watch = new Map();
+    for (const node of nodesRef.current) {
+      if (!isActiveTaskStatus(node.data?.status)) continue;
+      const request = exportJobRequest(node);
+      if (request) watch.set(node.id, request);
+    }
+    if (!watch.size) return undefined;
+    let stopped = false;
+    const tick = async () => {
+      const due = [];
+      for (const [id, request] of watch) {
+        const node = nodesRef.current.find((item) => item.id === id);
+        if (!node || !isActiveTaskStatus(node.data?.status) || exportJobRequest(node)?.id !== request.id) { watch.delete(id); continue; }
+        due.push([id, request]);
+      }
+      if (!due.length) return;
+      const patches = [];
+      await Promise.all(due.map(async ([id, request]) => {
+        try {
+          const response = await fetch(request.url, { credentials: 'same-origin', cache: 'no-store' });
+          if (stopped) return;
+          const job = response.ok ? await response.json().catch(() => null) : null;
+          const node = nodesRef.current.find((item) => item.id === id);
+          if (!node || exportJobRequest(node)?.id !== request.id) return;
+          const patch = exportLookupPatch(node, classifyExportJob(response.status, job));
+          if (!patch) return;
+          patches.push({ id, jobId: request.id, patch });
+          watch.delete(id);
+        } catch { /* The export may still be running; retry on the next pass. */ }
+      }));
+      if (!stopped && patches.length) {
+        setNodes((items) => patchNodes(items, patches.filter((item) => {
+          const node = items.find((entry) => entry.id === item.id);
+          return node && isActiveTaskStatus(node.data?.status) && exportJobRequest(node)?.id === item.jobId;
+        })));
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 2000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [project.id, setNodes]);
 
   useEffect(() => {
     const socket = openProgressSocket(clientId, {
       onProgress(data) {
-        for (const node of nodesRef.current) if (node.data.promptId === data.prompt_id && !queueOwnsStage(node)) {
-          const refinePass = String(data.node || '').match(/^refine_sample_(\d+)$/)?.[1];
-          updateNode(node.id, { status: 'running', progress: data.max ? Math.round(data.value / data.max * 100) : 0, stage: `${refinePass ? `第 ${refinePass} 采精修` : '基础采样'} ${data.value}/${data.max} 步` });
+        const patch = promptProgressPatch(data);
+        for (const node of promptEventTargets(nodesRef.current, data?.prompt_id)) {
+          if (['done', 'cancelled'].includes(node.data?.status) || queueOwnsStage(node)) continue;
+          updateNode(node.id, patch);
         }
       },
       onExecuting(data) {
-        for (const node of nodesRef.current) {
-          if (node.data.promptId !== data.prompt_id) continue;
-          const refinePass = String(data.node || '').match(/^refine_sample_(\d+)$/)?.[1];
-          if (data.node) {
-            if (!queueOwnsStage(node)) updateNode(node.id, { status: 'running', stage: refinePass ? `正在第 ${refinePass} 采精修` : data.node === 'sample' ? '正在基础采样' : data.node?.startsWith('save') ? '正在保存 MP4 对照' : data.node === '12' ? '正在生成画面与声音' : data.node === '16' ? '正在保存 MP4' : '正在准备参考素材与模型' });
-          } else {
+        const patch = promptExecutingPatch(data);
+        for (const node of promptEventTargets(nodesRef.current, data?.prompt_id)) {
+          if (['done', 'cancelled'].includes(node.data?.status)) continue;
+          if (patch.done) {
             if (queueOwnsCompletion(node)) continue;
-            updateNode(node.id, { status: 'finishing', stage: '正在读取成片', progress: 100 });
+            updateNode(node.id, { status: patch.status, stage: patch.stage, progress: patch.progress });
             setTimeout(() => completeGeneration(node.id, data.prompt_id), 700);
-          }
+          } else if (!queueOwnsStage(node)) updateNode(node.id, { status: patch.status, stage: patch.stage });
         }
       },
       onExecutionError(data) {
-        for (const node of nodesRef.current) if (node.data.promptId === data.prompt_id) updateNode(node.id, { status: 'error', error: data.exception_message || '生成执行失败', stage: '生成失败' });
+        for (const node of promptEventTargets(nodesRef.current, data?.prompt_id)) updateNode(node.id, { status: 'error', error: data?.exception_message || '生成执行失败', stage: '生成失败' });
       },
       onInterrupted(data) {
-        for (const node of nodesRef.current) if (node.data.promptId === data.prompt_id) updateNode(node.id, { status: 'cancelled', stage: '已取消', progress: 0 });
+        for (const node of promptEventTargets(nodesRef.current, data?.prompt_id)) updateNode(node.id, { status: 'cancelled', stage: '已取消', progress: 0 });
       },
     });
     return () => socket.close();

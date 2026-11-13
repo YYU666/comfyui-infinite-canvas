@@ -261,6 +261,48 @@ class ReleaseTests(UpdateTestCase):
             with self.assertRaises(UpdateError):
                 self.manager._git_clean()
 
+    def test_dirty_git_lists_changes_and_does_not_offer_overwrite(self):
+        (self.root / ".git").mkdir()
+        changes = "".join(f" M src/file-{index}.jsx\0" for index in range(20))
+        result = mock.Mock(returncode=0, stdout=changes)
+        with mock.patch("workbench_update.shutil.which", return_value="git"), mock.patch.object(self.manager, "runner", return_value=result):
+            with self.assertRaises(UpdateError) as caught:
+                self.manager._git_clean()
+        self.assertEqual(caught.exception.code, "LOCAL_CHANGES")
+        self.assertEqual(caught.exception.details["kind"], "git")
+        self.assertEqual(caught.exception.details["count"], 20)
+        self.assertEqual(len(caught.exception.details["paths"]), 12)
+        self.assertIn("请先备份或提交修改", caught.exception.message)
+        self.assertNotIn("仍要升级", caught.exception.message)
+
+    def test_official_install_drift_is_reported_without_replacing_files(self):
+        with zipfile.ZipFile(io.BytesIO(self.archive)) as package:
+            package.extractall(self.root)
+        manifest = json.loads((self.root / "release-files.json").read_text(encoding="utf-8"))
+        manifest["installationRoot"] = self.manager.installation_root
+        self.manager.installed_manifest_path.parent.mkdir(parents=True)
+        self.manager.installed_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        (self.root / "src" / "App.jsx").write_text("local note", encoding="utf-8")
+        original = (self.root / "src" / "App.jsx").read_text(encoding="utf-8")
+        with self.assertRaises(UpdateError) as caught:
+            self.manager._git_clean()
+        self.assertEqual(caught.exception.code, "LOCAL_CHANGES")
+        self.assertEqual(caught.exception.details["kind"], "installed-files")
+        self.assertIn("src/App.jsx", caught.exception.details["paths"])
+        self.assertIn("没有被覆盖", caught.exception.message)
+        self.assertEqual((self.root / "src" / "App.jsx").read_text(encoding="utf-8"), original)
+        self.assertFalse((self.root / ".git").exists())
+
+    def test_update_record_for_another_directory_does_not_rewrite_this_install(self):
+        self.manager.installed_manifest_path.parent.mkdir(parents=True)
+        self.manager.installed_manifest_path.write_text(json.dumps({
+            "version": "v1.0.0", "installationRoot": "D:/other", "files": [{"path": "package.json", "sha256": "a" * 64}],
+        }), encoding="utf-8")
+        with self.assertRaises(UpdateError) as caught:
+            self.manager._git_clean()
+        self.assertEqual(caught.exception.details["kind"], "other-root")
+        self.assertIn("另一个安装目录", caught.exception.message)
+
 
 class PackageSecurityTests(UpdateTestCase):
     def verify(self, archive, checksum=None):

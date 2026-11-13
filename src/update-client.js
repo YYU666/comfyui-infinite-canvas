@@ -14,6 +14,7 @@ async function request(path, options = {}, timeoutMs = 30000) {
         : body.message || `更新请求失败（${response.status}）。`);
       error.code = body.code;
       error.status = response.status;
+      error.details = body.details && typeof body.details === 'object' ? body.details : {};
       throw error;
     }
     return body;
@@ -45,4 +46,24 @@ export function applyUpdate(tag) {
 
 export async function getWorkbenchHealth() {
   return request('/api/health');
+}
+
+function failurePaths(details) {
+  const paths = Array.isArray(details?.paths) ? details.paths.filter((item) => typeof item === 'string' && item.trim()) : [];
+  return paths.slice(0, 12);
+}
+
+export function describeUpdateFailure(error) {
+  const message = error?.message || '升级失败，请查看工作台状态和运行日志。';
+  const paths = failurePaths(error?.details);
+  if (!paths.length || paths.some((path) => message.includes(path))) return message;
+  const count = Number(error.details?.count) || paths.length;
+  return `${message}\n${paths.join('、')}${count > paths.length ? ` 等 ${count} 处` : ''}`;
+}
+
+/** A previous failed apply must not hide a release the check still says is available. */
+export function priorFailureForRelease(status, release) {
+  const failure = status?.lastResult?.phase === 'error' ? status.lastResult : null;
+  if (!failure || !release?.updateAvailable || !release.version || !failure.version) return null;
+  return failure.version === release.version ? failure : null;
 }

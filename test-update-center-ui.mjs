@@ -75,12 +75,20 @@ try {
   await page.getByRole('button', {name: '查看更新', exact: true}).click();
   assert.equal(await page.locator('.update-notes').innerText(), '合成测试发布说明');
   await page.getByRole('button', {name: '稍后', exact: true}).click();
-  await page.reload(); await waitChecks(2); await page.waitForTimeout(100);
-  assert.equal(await banner.count(), 0, 'dismiss survives refresh');
+  assert.equal(await page.getByRole('dialog').count(), 0);
+  assert.equal(await banner.count(), 1, '稍后 only closes the dialog');
+  await page.evaluate(() => localStorage.setItem('refmuse-update-dismissed-versions', JSON.stringify(['v9.9.9'])));
+  await page.reload(); await waitChecks(2); await banner.waitFor();
+  assert.match(await banner.innerText(), /v9.9.9/, 'closing the dialog and an old dismiss key both leave the upgrade visible');
   await manual(); await page.getByRole('heading', {name: '发现新版本 v9.9.9'}).waitFor(); await close();
+  assert.equal(await banner.count(), 1, 'the dialog close button does not hide the upgrade');
   result = {...result, version: 'v9.9.10'};
   await page.reload(); await banner.waitFor(); assert.match(await banner.innerText(), /v9.9.10/);
   await page.getByRole('button', {name: '忽略此版本更新提示'}).click();
+  assert.equal(await banner.count(), 0);
+  const beforeIgnoredReload = checks;
+  await page.reload(); await waitChecks(beforeIgnoredReload + 1);
+  assert.equal(await banner.count(), 0, 'explicit ignore survives refresh');
 
   await page.getByRole('button', {name: '设置', exact: true}).click();
   await page.getByLabel('自动检查 GitHub Release').uncheck();
@@ -168,8 +176,11 @@ try {
   await page.clock.runFor(1600);
   await page.getByText('合成测试：构建失败，旧版尚未替换。', {exact: true}).waitFor();
   assert.equal(await page.getByRole('button', {name: '关闭更新窗口'}).count(), 1, 'definitive status failure safely releases busy state');
+  await close();
+  await banner.waitFor();
+  assert.match(await banner.innerText(), /v9.9.12/, 'a failed apply leaves the upgrade entry in place');
   assert.equal(errors.length, 0, errors.join('\n'));
-  console.log(JSON.stringify({ok: true, syntheticOnly: true, banner: true, dismissPersists: true, newVersion: true, settingsLive: true, manualOptOut: true, noRelease: true, oldBackend: true, quietAutomaticErrors: true, timeoutRecovery: true, inFlightClose: true, inFlightOptOut: true, joinedManual: true, projectGuard: true, confirmedApplyOnly: true, longApplyProgress: true, ambiguousApplyReconciled: true}));
+  console.log(JSON.stringify({ok: true, syntheticOnly: true, banner: true, laterKeepsUpgrade: true, explicitIgnorePersists: true, newVersion: true, settingsLive: true, manualOptOut: true, noRelease: true, oldBackend: true, quietAutomaticErrors: true, timeoutRecovery: true, inFlightClose: true, inFlightOptOut: true, joinedManual: true, projectGuard: true, confirmedApplyOnly: true, longApplyProgress: true, ambiguousApplyReconciled: true, failedApplyKeepsEntry: true}));
 } finally {
   if (browser) await browser.close();
   await server.close();
