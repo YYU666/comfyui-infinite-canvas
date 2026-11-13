@@ -87,7 +87,7 @@ try {
    return result;
  });
  assert.ok(groups['颜色'].includes('图片调色'), '图片调色 belongs to 颜色');
- for (const name of ['视频编辑', '绿幕扣像合成', '图像混合', 'RGBA 通道合并']) assert.ok(groups['剪辑合成'].includes(name), `${name} belongs to 剪辑合成`);
+ for (const name of ['视频编辑', '绿幕扣像合成', '绿幕白模', '图像混合', 'RGBA 通道合并']) assert.ok(groups['剪辑合成'].includes(name), `${name} belongs to 剪辑合成`);
  assert.ok(groups['视频生成'].includes('视频高清二采'));
  const shownLabel = (tool) => ({ character_swap: '角色替换', character_sheet: '角色四视图生成', identity_edit: '母图编辑 V2' })[tool.preset] || tool.label;
  const placed = { '图像生成': [], '视频生成': [], '辅助': [] };

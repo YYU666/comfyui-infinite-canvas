@@ -5,6 +5,7 @@ const NODE_SIZES = {
   videoSpeed: { width: 360, height: 300 },
   videoTimeRemap: { width: 380, height: 420 },
   videoChromaKey: { width: 400, height: 640 },
+  videoWhitePlate: { width: 400, height: 560 },
   media: { width: 310, height: 250 },
   generator: { width: 440, height: 360 },
   prompt: { width: 370, height: 430 },

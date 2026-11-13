@@ -7,6 +7,7 @@ import { isImageProcess, imageProcessSettings } from './image-process-graph.js';
 import { isVideoEdit, normalizeVideoEditDocument, nextVideoEditPort, videoEditSummary } from './video-edit-document.js';
 import { isVideoRhythm, normalizeSpeedDocument, normalizeRemapDocument, videoRhythmSummary, RHYTHM_PORT } from './video-rhythm-document.js';
 import { CHROMA_FIELDS, chromaDocumentFromNode, defaultChromaHandle, isVideoChroma, normalizePreviewTime, videoChromaSummary } from './video-chroma-document.js';
+import { PLATE_FIELDS, PLATE_PORT, defaultPlateSettings, isVideoPlate, plateDocumentFromNode, videoPlateSummary } from './video-plate-document.js';
 import { PHOTO_ADJUSTMENTS, DEFAULT_PHOTO_SETTINGS, normalizePhotoAdjustment } from './photo-adjustments.js';
 import { CHANNEL_KEYS, normalizeChannelPackSettings } from './channel-packing.js';
 import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-references.js';
@@ -30,6 +31,7 @@ export const NODE_PRESETS = {
     { output: 1, source: 1, interpolation: 'linear' },
   ] }],
   video_chroma_key: ['videoChromaKey', { title: '绿幕扣像合成', keyColor: '#00FF00', similarity: 0.2, blend: 0.08, despill: 0.5, choke: 0, feather: 0, secondKey: false, secondKeyColor: '#FFFFFF', secondSimilarity: 0.06, secondBlend: 0.02, scale: 1, offsetX: 0, offsetY: 0, anchor: 'center', backgroundFit: 'cover', outputSize: 'background', chromaAudio: 'preserve', startOffset: 0, previewTime: 0 }],
+  video_white_plate: ['videoWhitePlate', { title: '绿幕白模', ...defaultPlateSettings() }],
   video_download: ['note', { title: '视频链接下载', noteRole: 'videoDownload' }],
   audio_asset: ['audio', {}],
   note: ['note', {}],
@@ -60,7 +62,7 @@ const EDITABLE_SETTINGS = new Set([
   ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
   'adjustmentType', 'hsl', 'hslChannel', 'levels', 'levelsChannel', 'maskChannel', 'maskInvert',
   'brightness', 'contrast', 'saturation', 'hue', 'gamma', 'temperature', 'blendMode', 'opacity', 'fit',
-  'editDocument', 'speed', 'rhythmAudio', 'remapKeyframes', ...CHROMA_FIELDS, 'workflowParameters', 'ratio', 'resolution', 'duration', 'turbo', 'seed', 'randomSeed', 'refImageSize', 'characterSheetAngleSeed',
+  'editDocument', 'speed', 'rhythmAudio', 'remapKeyframes', ...CHROMA_FIELDS, ...PLATE_FIELDS, 'workflowParameters', 'ratio', 'resolution', 'duration', 'turbo', 'seed', 'randomSeed', 'refImageSize', 'characterSheetAngleSeed',
   'qwenSteps', 'qwenRefResolution', 'localRealismSteps', 'localRealismSize', 'localRealismDenoise', 'localMaskMode', 'localMaskExpand', 'localMaskBlend', 'imageModel', 'imageLora', 'loraStrength', 'imageScale',
   'qwenModel', 'qwenCacheDevice', 'qwenSourceCrop', 'qwenMaskCrop', 'outfitModel', 'upscaleModel', 'outfitUpscale', 'outfitHdScale', 'museSteps', 'flux3Resolution',
   'outfitPreset', 'outfitPanel', 'outfitLayout', 'outfitPanels', 'outfitDenoise', 'targetQuery', 'targetDescription', 'targetSelection', 'targetIndex',
@@ -149,6 +151,7 @@ function nodeSummary(node, includeContent = true) {
     ...(isVideoEdit(node) ? videoEditSummary(node.data) : {}),
     ...(isVideoRhythm(node) ? videoRhythmSummary(node.data, node.type) : {}),
     ...(isVideoChroma(node) ? videoChromaSummary(node.data) : {}),
+    ...(isVideoPlate(node) ? videoPlateSummary(node.data) : {}),
     ...(isImageProcess(node) ? { processingSettings: imageProcessSettings(node.data), processedAssetPath: node.data.processedAssetPath, processedTgaAssetPath: node.data.processedTgaAssetPath, processedResultId: node.data.processedResultId } : {}),
     ...(node.data.mode === 'customWorkflow' ? { extensionDigest: node.data.extensionDigest, nodeDefinitionId: node.data.nodeDefinitionId, workflowDefinition: node.data.workflowDefinition, workflowParameters: node.data.workflowParameters } : {}),
     status: node.data.status,
@@ -167,7 +170,7 @@ function nodeSummary(node, includeContent = true) {
     position: node.position,
     selected: Boolean(node.selected),
     pinned: Boolean(node.data.pinned),
-    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.editResultAssetPath || node.data.rhythmResultAssetPath || node.data.chromaResultAssetPath),
+    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.editResultAssetPath || node.data.rhythmResultAssetPath || node.data.chromaResultAssetPath || node.data.plateResultAssetPath),
   };
 }
 
@@ -185,6 +188,7 @@ function defaultTargetHandle(target, source, edges = []) {
   if (isVideoEdit(target)) return 'v1';
   if (isVideoRhythm(target)) return RHYTHM_PORT;
   if (isVideoChroma(target)) return defaultChromaHandle(target, source, edges);
+  if (isVideoPlate(target)) return PLATE_PORT;
   if (target.type === 'artDirector') return 'artwork';
   if (isImageProcess(target)) return target.data.mode === 'channelPack' ? 'red' : target.data.mode === 'imageBlend' ? 'base' : 'guide';
   if (source?.type === 'prompt') return 'prompt';
@@ -193,7 +197,7 @@ function defaultTargetHandle(target, source, edges = []) {
   const mode = target?.data.mode || 'reference';
   if (['reference', 'qwenEdit'].includes(mode)) return 'references';
   if (mode === 'frames') return source?.data.slot === 'last' ? 'last' : 'first';
-  if (['swap', 'upscale'].includes(mode)) return source?.data.kind === 'video' ? 'guide' : 'identity';
+  if (['swap', 'upscale'].includes(mode)) return source?.data.kind === 'video' || isVideoPlate(source) ? 'guide' : 'identity';
   if (['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode)) return 'guide';
   throw new Error('这个生成模式不接受素材连线。');
 }
@@ -231,10 +235,10 @@ async function waitForVideoJob(latest, nodeId, jobKey, jobId, timeoutMs, waitImp
 
 export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
-  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial)) {
+  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoPlate(initial)) {
     const result = await latest.current.actions.generateNode(nodeId);
     if (!result?.ok) throw new Error(result?.error || '视频导出提交失败。');
-    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : 'chromaJobId';
+    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : 'plateJobId';
     if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId };
     return waitForVideoJob(latest, nodeId, jobKey, result.jobId, timeoutMs, waitImpl);
   }
@@ -279,6 +283,7 @@ export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, 
   if (isVideoEdit(initial)) return waitForVideoJob(latest, nodeId, 'videoEditJobId', initial.data.videoEditJobId, timeoutMs, waitImpl);
   if (isVideoRhythm(initial)) return waitForVideoJob(latest, nodeId, 'rhythmJobId', initial.data.rhythmJobId, timeoutMs, waitImpl);
   if (isVideoChroma(initial)) return waitForVideoJob(latest, nodeId, 'chromaJobId', initial.data.chromaJobId, timeoutMs, waitImpl);
+  if (isVideoPlate(initial)) return waitForVideoJob(latest, nodeId, 'plateJobId', initial.data.plateJobId, timeoutMs, waitImpl);
   const promptId = initial.data.promptId;
   const queueJobId = initial.data.queueJobId;
   if (!promptId && !queueJobId) throw new Error('这个节点还没有提交生成任务。');
@@ -406,7 +411,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           title: { type: 'string' },
           prompt: { type: 'string' },
           text: { type: 'string' },
-          settings: { type: 'object', description: '自定义工作流使用 workflowParameters 对象，键来自 workflowDefinition.parameters.properties；仅支持声明的标量参数。内置节点可选参数包含 qwenModel（standard/turbo/flux3_klein）、flux3Resolution（1MP/2K/4K，仅 FLUX 3）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。视频编辑（video_edit）的 settings.editDocument 为 schemaVersion 1。恒定速度（video_speed）用 speed（0.25–4，0.5 为升格慢放，2 为两倍快放）和 rhythmAudio（preserve、stretch、mute）。时间重映射（video_time_remap）用 remapKeyframes，与节点界面是同一数组：output 为成片秒，source 为源素材秒，interpolation 为 linear、easeIn、easeOut 或 easeInOut；水平段是定格。见 docs/VIDEO_RHYTHM_NODES_2026_11_12.md。绿幕扣像合成（video_chroma_key）用 keyColor（#RRGGBB，默认 #00FF00）、similarity、blend、despill、choke、feather、secondKey（布尔，默认 false，第二键色，与绿幕取并集）、secondKeyColor（默认 #FFFFFF）、secondSimilarity（默认 0.06）、secondBlend（默认 0.02）、scale、offsetX、offsetY、anchor、backgroundFit（cover/contain/stretch）、outputSize（background/foreground）、chromaAudio（preserve/mute）、startOffset、previewTime。见 docs/VIDEO_CHROMA_KEY_NODE_2026_11_13.md。' },
+          settings: { type: 'object', description: '自定义工作流使用 workflowParameters 对象，键来自 workflowDefinition.parameters.properties；仅支持声明的标量参数。内置节点可选参数包含 qwenModel（standard/turbo/flux3_klein）、flux3Resolution（1MP/2K/4K，仅 FLUX 3）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。视频编辑（video_edit）的 settings.editDocument 为 schemaVersion 1。恒定速度（video_speed）用 speed（0.25–4，0.5 为升格慢放，2 为两倍快放）和 rhythmAudio（preserve、stretch、mute）。时间重映射（video_time_remap）用 remapKeyframes，与节点界面是同一数组：output 为成片秒，source 为源素材秒，interpolation 为 linear、easeIn、easeOut 或 easeInOut；水平段是定格。见 docs/VIDEO_RHYTHM_NODES_2026_11_12.md。绿幕扣像合成（video_chroma_key）用 keyColor（#RRGGBB，默认 #00FF00）、similarity、blend、despill、choke、feather、secondKey（布尔，默认 false，第二键色，与绿幕取并集）、secondKeyColor（默认 #FFFFFF）、secondSimilarity（默认 0.06）、secondBlend（默认 0.02）、scale、offsetX、offsetY、anchor、backgroundFit（cover/contain/stretch）、outputSize（background/foreground）、chromaAudio（preserve/mute）、startOffset、previewTime。见 docs/VIDEO_CHROMA_KEY_NODE_2026_11_13.md。绿幕白模（video_white_plate）用 keepPrompts（字符串数组或逗号分隔字符串，默认 ["person", "pole"]）、maskGrow（整数 0–64，默认 8）、maskFeather（整数 0–32，默认 2）、shadeMode（flat 或 shaded，默认 flat）、greenColor（#RRGGBB，默认 #00FF00）。导出后 plateResultNodeId 是「绿幕白模成片」视频素材，把该素材连到角色替换的 guide。见 docs/VIDEO_WHITE_PLATE_NODE_2026_11_13.md。' },
         }, ['nodeId']),
         execute: respond(async ({ nodeId, title, prompt, text, settings = {} }) => {
           const current = getNode(nodeId);
@@ -417,6 +422,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           if (('speed' in settings || 'rhythmAudio' in settings) && current.type !== 'videoSpeed') throw new Error('speed 与 rhythmAudio 仅适用于恒定速度节点。');
           if ('remapKeyframes' in settings && current.type !== 'videoTimeRemap') throw new Error('remapKeyframes 仅适用于时间重映射节点。');
           if (CHROMA_FIELDS.some((key) => key in settings) && current.type !== 'videoChromaKey') throw new Error('绿幕参数仅适用于绿幕扣像合成节点。');
+          if (PLATE_FIELDS.some((key) => key in settings) && current.type !== 'videoWhitePlate') throw new Error('绿幕白模参数仅适用于绿幕白模节点。');
           validateModelSettings(settings, current.data.mode ?? '');
           const patch = { ...settings };
           if ('editDocument' in settings) patch.editDocument = normalizeVideoEditDocument(settings.editDocument);
@@ -438,6 +444,10 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
             };
             for (const [key, value] of Object.entries(exported)) if (key in settings) patch[key] = value;
             if ('previewTime' in settings) patch.previewTime = normalizePreviewTime(settings.previewTime);
+          }
+          if (current.type === 'videoWhitePlate' && PLATE_FIELDS.some((key) => key in settings)) {
+            const merged = plateDocumentFromNode({ ...current.data, ...settings });
+            for (const key of PLATE_FIELDS) if (key in settings) patch[key] = merged[key];
           }
           if ('workflowParameters' in settings) patch.workflowParameters = validateWorkflowParameters(current.data, settings.workflowParameters);
           if (title !== undefined) patch.title = title;

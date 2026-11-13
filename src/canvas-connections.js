@@ -5,6 +5,7 @@ import { isImageProcess, acceptsImageProcessConnection } from './image-process-g
 import { isVideoEdit, planVideoEditConnection } from './video-edit-document.js';
 import { isVideoRhythm, planVideoRhythmConnection } from './video-rhythm-document.js';
 import { isVideoChroma, planVideoChromaConnection } from './video-chroma-document.js';
+import { isVideoPlate, planVideoPlateConnection } from './video-plate-document.js';
 import { isVideoProcessor } from './video-stream.js';
 
 const busy = (node) => ['uploading', 'queued', 'running', 'finishing'].includes(node?.data?.status);
@@ -13,6 +14,16 @@ const fail = (error) => ({ error });
 // A generator socket means the visible, already-saved result, never a future run.
 // Resolve to its media node so changing/re-running the generator cannot silently
 // replace an existing reference. Ambiguous custom outputs require explicit choice.
+// The plate's SAM3 input is the registered video asset, not the processor node.
+export function resolvePlateAsset(source, nodes) {
+  if (source?.type !== 'videoWhitePlate') return { source };
+  const media = nodes.find((node) => node.id === source.data?.plateResultNodeId
+    && node.type === 'media' && node.data?.kind === 'video'
+    && node.data.assetPath && node.data.assetPath === source.data.plateResultAssetPath);
+  if (!media) return fail('请先导出绿幕白模。成片会登记为旁边的「绿幕白模成片」视频素材，把该素材连到角色替换上方的源视频端口，身份图连到下方端口。');
+  return { source: media, resolvedFrom: source.id };
+}
+
 export function resolveConnectionSource(source, handle, nodes, edges) {
   if (source?.type !== 'generator') return { source };
   if (!source.data.resultUrl) return fail('此节点还没有生成结果，请先生成，再连接成品素材。');
@@ -31,7 +42,9 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   const target = nodes.find((node) => node.id === connection.target);
   if (!requestedSource || !target) return fail('连接的节点已不存在。');
   if (requestedSource.id === target.id) return fail('不能连接节点自身。');
-  const resolved = resolveConnectionSource(requestedSource, connection.sourceHandle, nodes, edges);
+  const resolved = requestedSource?.type === 'videoWhitePlate' && target?.type === 'generator'
+    ? resolvePlateAsset(requestedSource, nodes)
+    : resolveConnectionSource(requestedSource, connection.sourceHandle, nodes, edges);
   if (resolved.error) return resolved;
   const source = resolved.source;
   if (source.id === target.id) return fail('不能连接当前成品自身。');
@@ -59,6 +72,10 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   }
   if (isVideoChroma(target)) {
     const plan = planVideoChromaConnection(connection, source, target, nodes, edges);
+    return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom };
+  }
+  if (isVideoPlate(target)) {
+    const plan = planVideoPlateConnection(connection, source, target, nodes, edges);
     return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom };
   }
   let targetHandle = connection.targetHandle;
