@@ -1,3 +1,4 @@
+import { normalizeVideoSuperResolutionSettings } from './video-super-resolution.js';
 import { useEffect, useRef } from 'react';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
@@ -44,10 +45,12 @@ export const NODE_PRESETS = {
   outfit_muse_v4: ['generator', { mode: 'outfitEdit', title: 'Muse V4.0 INT8 · 四视图 · 无高清', outfitModel: 'muse_v4', outfitUpscale: 'off', outfitLayout: 'mixedGrid', randomSeed: false, seed: 281306, museSteps: 16 }],
   image_upscale: ['generator', { mode: 'imageUpscale', title: '图片高清', imageScale: 1.5, randomSeed: false }],
   image_upscale_7b: ['generator', { mode: 'imageUpscale', title: 'SeedVR2 7B INT8 · 图片高清', upscaleModel: 'seedvr2_7b', imageScale: 1.5, randomSeed: false }],
+  video_super_resolution: ['generator', { mode: 'videoSuperResolution', title: '视频超分', videoUpscaleModel: 'rtx', videoUpscaleScale: 2, rtxQuality: 'ULTRA', rtxStrength: 1, randomSeed: false }],
   video_upscale: ['generator', { mode: 'upscale', title: '视频高清二采', resolution: '720P', randomSeed: false }],
 };
 
 const EDITABLE_SETTINGS = new Set([
+  'videoUpscaleModel', 'videoUpscaleScale', 'rtxQuality', 'rtxStrength',
   'packChannels', 'packPreview',
   ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
   'adjustmentType', 'hsl', 'hslChannel', 'levels', 'levelsChannel', 'maskChannel', 'maskInvert',
@@ -72,6 +75,10 @@ export function describeNodeModels(data = {}) {
 }
 
 export function validateModelSettings(settings, mode) {
+  if (['videoUpscaleModel', 'videoUpscaleScale', 'rtxQuality', 'rtxStrength'].some(key => key in settings)) {
+    if (mode !== undefined && mode !== 'videoSuperResolution') throw new Error('视频超分参数只适用于视频超分节点。');
+    normalizeVideoSuperResolutionSettings(settings);
+  }
   const choices = { adjustmentType: PHOTO_ADJUSTMENTS.map((item) => item.value), maskChannel: ['luminance', 'red', 'green', 'blue', 'alpha'], hslChannel: HSL_CHANNELS.map((item) => item.value), levelsChannel: LEVEL_CHANNELS.map((item) => item.value), curvesChannel: LEVEL_CHANNELS.map((item) => item.value), colorBalanceRange: ['shadows', 'midtones', 'highlights'], selectiveColorRange: ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'whites', 'neutrals', 'blacks'], channelMixerChannel: ['red', 'green', 'blue'] };
   for (const [key, allowed] of Object.entries(choices)) if (key in settings && !allowed.includes(settings[key])) throw new Error(`不支持的 ${key}。`);
   if ('packPreview' in settings && !['rgb', 'rgba', ...CHANNEL_KEYS].includes(settings.packPreview)) throw new Error('不支持的通道预览。');
@@ -159,6 +166,7 @@ export function nodeSummary(node, includeContent = true) {
     mode: node.data.mode,
     ...(isImageProcess(node) ? { processingSettings: imageProcessSettings(node.data), processedAssetPath: node.data.processedAssetPath, processedTgaAssetPath: node.data.processedTgaAssetPath, processedResultId: node.data.processedResultId } : {}),
     ...(node.data.mode === 'customWorkflow' ? { extensionDigest: node.data.extensionDigest, nodeDefinitionId: node.data.nodeDefinitionId, workflowDefinition: node.data.workflowDefinition, workflowParameters: node.data.workflowParameters } : {}),
+    ...(node.data.mode === 'videoSuperResolution' ? { videoUpscaleModel: node.data.videoUpscaleModel || 'rtx', videoUpscaleScale: node.data.videoUpscaleScale ?? 2, rtxQuality: node.data.rtxQuality || 'ULTRA', rtxStrength: node.data.rtxStrength ?? 1 } : {}),
     status: node.data.status,
     stage: node.data.stage,
     progress: node.data.progress,
@@ -200,6 +208,7 @@ function defaultTargetHandle(target, source) {
   const mode = target?.data.mode || 'reference';
   if (['reference', 'qwenEdit'].includes(mode)) return 'references';
   if (mode === 'frames') return source?.data.slot === 'last' ? 'last' : 'first';
+  if (mode === 'videoSuperResolution') return 'guide';
   if (['swap', 'upscale'].includes(mode)) return source?.data.kind === 'video' ? 'guide' : 'identity';
   if (['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode)) return 'guide';
   throw new Error('这个生成模式不接受素材连线。');

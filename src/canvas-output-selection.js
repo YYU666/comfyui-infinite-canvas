@@ -49,9 +49,20 @@ export function selectFirstPassVideo(files) {
 }
 
 export function selectCompletedVideo(mode, files) {
+  if (mode === 'videoSuperResolution') {
+    return selectVideoSuperResolutionVideo(files);
+  }
   const prefix = SAVED_VIDEO_PREFIX[mode];
   if (!prefix) throw new Error('任务已结束，但未找到工作台保存的成品视频；未将输入视频作为结果。');
   return selectSavedVideo(files, prefix, MISSING_VIDEO[mode]);
+}
+
+export function selectVideoSuperResolutionVideo(files) {
+  const candidates = (Array.isArray(files) ? files : []).filter(file => file?.type === 'output'
+    && /^H3_(RTX_VFX|SeedVR2)_/.test(String(file.filename || '').replace(/\\/g, '/').split('/').pop())
+    && /\.(mp4|webm|mov|mkv)$/i.test(file.filename));
+  if (!candidates.length) throw new Error('视频超分结束，但未找到新保存的成品视频；未将输入片或预览作为结果。');
+  return candidates.at(-1);
 }
 
 /** Same path “打开文件位置” builds from a result node's saved filename and subfolder. */

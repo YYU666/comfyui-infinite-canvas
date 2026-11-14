@@ -77,6 +77,8 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
       // Explicit single-image custom input.
     } else if (mode === 'frames' && ['first', 'last'].includes(targetHandle) && source.data.kind === 'image') {
       // Keyframe inputs replace one existing source.
+    } else if (mode === 'videoSuperResolution' && targetHandle === 'guide' && source.data.kind === 'video') {
+      // Video super-resolution accepts only one source video.
     } else if (['swap', 'upscale'].includes(mode) && ((targetHandle === 'guide' && source.data.kind === 'video') || (targetHandle === 'identity' && source.data.kind === 'image'))) {
       // Video source / optional identity.
     } else if (['imageUpscale', 'identityEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) && targetHandle === 'guide' && source.data.kind === 'image') {
