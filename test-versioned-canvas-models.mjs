@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
 import { NODE_PRESETS, describeNodeModels, validateModelSettings } from './src/canvas-mcp.js';
+assert.equal(NODE_PRESETS.video_super_resolution[1].mode, 'videoSuperResolution');
+validateModelSettings({videoUpscaleModel:'rtx',videoUpscaleScale:2,rtxQuality:'ULTRA',rtxStrength:1},'videoSuperResolution');
+for (const settings of [{videoUpscaleModel:'unknown'},{videoUpscaleScale:8},{rtxQuality:'DENOISE_LOW'},{rtxStrength:-1}]) {
+  assert.throws(() => validateModelSettings(settings,'videoSuperResolution'));
+}
+assert.throws(() => validateModelSettings({videoUpscaleScale:2},'upscale'));
 
 assert.equal(NODE_PRESETS.outfit_edit[1].outfitModel, undefined, 'legacy preset keeps its original defaults');
 assert.equal(describeNodeModels({}).outfitSteps, 40);

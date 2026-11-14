@@ -4,6 +4,11 @@ const media=(id,kind='image',extra={})=>({id,type:'media',data:{kind,url:`/${id}
 const gen=(id,mode='qwenEdit',extra={})=>({id,type:'generator',data:{mode,status:'idle',...extra}});
 const image=media('image'), video=media('video','video'), mask=media('mask','image',{mediaRole:'mask'}), qwen=gen('qwen'), frames=gen('frames','frames');
 const nodes=[image,video,mask,qwen,frames];
+const superResolution=gen('sr','videoSuperResolution');
+assert.equal(planCanvasConnection({source:'video',target:'sr',sourceHandle:'ref',targetHandle:'guide'},[...nodes,superResolution],[]).connection.targetHandle,'guide');
+for (const [source,targetHandle] of [['image','guide'],['mask','guide'],['video','references'],['video','identity']]) {
+  assert.ok(planCanvasConnection({source,target:'sr',sourceHandle:'ref',targetHandle},[...nodes,superResolution],[]).error);
+}
 const conn=(source,target,handle,sourceHandle='ref')=>({source,target,targetHandle:handle,sourceHandle});
 const plan=(c,n=nodes,e=[],o={})=>planCanvasConnection(c,n,e,o);
 assert.equal(plan(conn('image','qwen','references')).source.id,'image');

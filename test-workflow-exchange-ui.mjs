@@ -253,16 +253,30 @@ try {
  await panel.waitFor();
  missing=false;failSave=true;
  const savedNodeCount=project.canvas.nodes.length;
+ const canvasNodeIds=async()=>{
+  const state=await page.evaluate(async()=>JSON.parse(await window.fixtureTools.get('canvas_get_state').execute({})));
+  assert.equal(state.ok,true,'current-page state remains readable during save retry');
+  return state.nodes.map(node=>node.id).sort();
+ };
+ const beforeFailedSave=await canvasNodeIds();
  await remote.evaluate(()=>addNode('save-failure'));
  await remote.waitForFunction(()=>received.some(message=>message.requestId==='save-failure'&&message.ok===false));
  assert.equal(project.canvas.nodes.length,savedNodeCount,'save error never reports a delivered node');
  assert.equal(await remote.evaluate(()=>received.some(message=>message.requestId==='save-failure'&&message.ok===true)),false);
- const visibleAfterFailedSave=await page.locator('.react-flow__node').count();
+ // ReactFlow only renders nodes inside the animated viewport. Its DOM count
+ // changes during focus animation, so compare actual current-page identities.
+ const afterFailedSave=await canvasNodeIds();
+ const retainedIds=afterFailedSave.filter(id=>!beforeFailedSave.includes(id));
+ assert.equal(retainedIds.length,1,'failed save retains exactly one new node in the current canvas');
+ assert.equal(afterFailedSave.length,beforeFailedSave.length+1);
  failSave=false;
  await remote.evaluate(()=>addNode('save-retry-new-request'));
  await remote.waitForFunction(()=>received.some(message=>message.requestId==='save-retry-new-request'&&message.ok===true));
- assert.equal(await page.locator('.react-flow__node').count(),visibleAfterFailedSave,'new request retries original visible node without duplication');
+ assert.deepEqual(await canvasNodeIds(),afterFailedSave,'new request retries the exact original node without adding or replacing nodes');
  assert.equal(project.canvas.nodes.length,savedNodeCount+1);
+ assert.deepEqual(project.canvas.nodes.map(node=>node.id).sort(),afterFailedSave,'successful retry saves the same retained node identities');
+ await focusNode(retainedIds[0]);
+ await page.locator(`.react-flow__node[data-id="${retainedIds[0]}"]`).waitFor({state:'visible'});
  assert.deepEqual(unexpected,[],'no generation or media upload'); assert.deepEqual(errors,[]);
  console.log('Workflow exchange UI passed: saved catalog import, idempotency/origin guards, explicit replacement, download job, cancellation, later dependency repair, Qwen preview, four-view staged share consent and bounded summary.');
  await context.close();

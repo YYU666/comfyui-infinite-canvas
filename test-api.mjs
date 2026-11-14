@@ -85,6 +85,15 @@ const reusedGuide = api.extractVideos({ outputs: {
 assert.equal(selectCompletedVideo('reference', reusedGuide).filename, 'H3_Workbench_00008_.mp4', 'a previous output listed first is not the new first-pass file');
 assert.throws(() => selectFirstPassVideo([{ filename: guideName, subfolder: 'workbench', type: 'input' }]), /未将输入视频作为结果/);
 assert.throws(() => selectCompletedVideo('customWorkflow', hdFiles), /未将输入视频作为结果/);
+for (const prefix of ['H3_RTX_VFX', 'H3_SeedVR2']) {
+  const saved = { filename: `${prefix}_00002_.mp4`, subfolder: 'video', type: 'output' };
+  const input = { filename: `${prefix}_00001_.mp4`, subfolder: 'workbench', type: 'input' };
+  assert.equal(selectCompletedVideo('videoSuperResolution', [input, ...hdFiles, saved]), saved);
+  assert.deepEqual(outputFileLocation(saved), { kind: 'output', name: `video/${saved.filename}` });
+  for (const candidates of [[], [input], hdFiles, [{ ...saved, type: 'temp' }]]) {
+    assert.throws(() => selectCompletedVideo('videoSuperResolution', candidates), /未找到新保存的成品/);
+  }
+}
 const swapOptions = {
   ...base, prompt: 'Female, short black bob hair, oval face, red jacket', preserveBackground: true,
   references: [{ kind: 'video', slot: 'guide', name: 'workbench/guide.mp4' }, { kind: 'image', slot: 'identity', name: 'workbench/identity.png' }],
