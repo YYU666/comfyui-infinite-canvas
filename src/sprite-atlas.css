@@ -1,0 +1,17 @@
+.sprite-atlas-node { width: 430px; background: #202023; border: 1px solid #55555b; border-radius: 12px; color: #dedee3; overflow: hidden; }
+.sprite-atlas-controls { padding: 14px; display: grid; gap: 12px; font-size: 12px; }
+.sprite-atlas-controls p { margin: 0; line-height: 1.6; color: #a6a6b0; }
+.sprite-atlas-controls label { display: grid; gap: 6px; }
+.sprite-atlas-controls input, .sprite-atlas-controls select, .sprite-atlas-controls textarea { box-sizing: border-box; width: 100%; background: #18181b; border: 1px solid #4d4d55; border-radius: 5px; padding: 7px; color: inherit; font: inherit; }
+.sprite-atlas-controls textarea { resize: vertical; min-height: 64px; }
+.sprite-atlas-controls button, .sprite-atlas-controls a { color: #dfdfe8; font: inherit; }
+.sprite-atlas-controls button { border: 1px solid #60606b; border-radius: 5px; padding: 7px 10px; background: #35353e; cursor: pointer; }
+.sprite-atlas-controls button:disabled { opacity: .45; cursor: default; }
+.sprite-atlas-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.sprite-atlas-status, .sprite-atlas-controls footer { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.sprite-atlas-outputs { display: grid; gap: 10px; }
+.sprite-atlas-outputs figure { margin: 0; }
+.sprite-atlas-outputs img { display: block; width: 100%; max-height: 260px; object-fit: contain; background: repeating-conic-gradient(#242429 0% 25%,#3c3c43 0% 50%) 50% / 16px 16px; }
+.sprite-atlas-outputs figcaption { display: flex; justify-content: space-between; padding-top: 5px; }
+.sprite-atlas-controls .sprite-atlas-error { color: #ffada8; overflow-wrap: anywhere; }
+.sprite-atlas-controls .sprite-atlas-hint { color: #c9c3aa; }

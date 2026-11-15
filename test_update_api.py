@@ -93,6 +93,7 @@ class UpdatePreflightTests(unittest.TestCase):
         store.held_project_details.return_value = ([{"id": "prj_open", "name": "打开中", "stale": False, "thisProcess": True, "pid": 1}] if held else [])
         return mock.Mock(
             project_store=store,
+            sprite_atlas_api=None,
             queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": status}]})),
         )
 
@@ -112,7 +113,7 @@ class UpdatePreflightTests(unittest.TestCase):
             store = ProjectStore(Path(temporary), "owner-update")
             document = store.create("场景甲")
             store.open(document["id"])
-            server = mock.Mock(project_store=store, queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": "done"}]})))
+            server = mock.Mock(project_store=store, sprite_atlas_api=None, queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": "done"}]})))
             lock = store._project_path(document["id"]).parent / ".lock"
             with mock.patch("video_workbench_launcher.shutil.disk_usage", return_value=mock.Mock(free=1024 ** 3)):
                 with self.assertRaises(UpdateError) as caught:
@@ -174,6 +175,15 @@ class UpdatePreflightTests(unittest.TestCase):
         with mock.patch("video_workbench_launcher.shutil.disk_usage", return_value=mock.Mock(free=1)):
             with self.assertRaises(UpdateError) as caught: validate_update_ready(self.server())
         self.assertEqual(caught.exception.code, "DISK_SPACE")
+
+    def test_active_sprite_render_blocks_update(self):
+        from video_workbench_launcher import validate_update_ready
+        server = self.server()
+        server.sprite_atlas_api = mock.Mock(active_count=mock.Mock(return_value=1))
+        with self.assertRaises(UpdateError) as caught:
+            validate_update_ready(server)
+        self.assertEqual(caught.exception.code, "QUEUE_BUSY")
+        server.sprite_atlas_api.active_count.assert_called_once_with()
 
 
 if __name__ == "__main__": unittest.main()

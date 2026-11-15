@@ -1,4 +1,4 @@
-const RUNTIME_FIELDS = new Set(['status', 'progress', 'stage', 'runs', 'error', 'promptId', 'queueJobId', 'output', 'resultUrl', 'takePending']);
+const RUNTIME_FIELDS = new Set(['status', 'progress', 'stage', 'runs', 'error', 'promptId', 'queueJobId', 'output', 'resultUrl', 'takePending', 'spriteJobId', 'spriteJobSignature', 'spriteFiles', 'spriteResultSignature']);
 const deferredSave = () => Object.assign(new Error('请等待拖动、调整大小或素材导入完成后再保存。'), { code: 'SAVE_DEFERRED' });
 
 export function persistentCanvas(canvas) {
