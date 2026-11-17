@@ -33,6 +33,8 @@ import { isMaskNode, maskSourceKey, canvasMaskGuide, qwenCanvasMask, validateCan
 import { planCanvasConnection } from './canvas-connections';
 import ImageLightbox from './ImageLightbox';
 import ModelLicenseNotice from './ModelLicenseNotice.jsx';
+import MossPoseNode from './MossPoseNode.jsx';
+import { buildMossPoseWorkflow, getMossPoseDependencyStatus } from './moss-pose.js';
 import { useCanvasMcp, NODE_PRESETS, describeNodeModels } from './canvas-mcp';
 import { LOCAL_NODE_TOOLS } from './local-node-tools';
 import WorkflowInspector from './WorkflowInspector';
@@ -310,6 +312,8 @@ function CustomWorkflowNode({ id, data, selected }) {
 }
 
 function GeneratorNode(props) {
+  const actions = useContext(NodeContext);
+  if (props.data.mode === 'mossPose') return <MossPoseNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} nodeActions={<NodeActions id={props.id} data={props.data} selected={props.selected} generator />} />;
   return props.data.mode === 'customWorkflow' ? <CustomWorkflowNode {...props} /> : <BuiltinGeneratorNode {...props} />;
 }
 
@@ -870,7 +874,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     return edgesRef.current.filter((edge) => edge.target === id).map((edge) => {
       const source = nodesRef.current.find((item) => item.id === edge.source);
       return source?.type === 'media' ? { ...source, data: { ...source.data, slot: edge.targetHandle } } : null;
-    }).filter(Boolean).filter((source) => mode === 'customWorkflow' ? source.data.kind === 'image' && Boolean(customInput(node.data, source.data.slot)) : mode === 'reference' ? source.data.slot === 'references' : mode === 'frames' ? ['first', 'last'].includes(source.data.slot) && source.data.kind === 'image' : ['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) ? source.data.kind === 'image' && (source.data.slot === 'guide' || (['qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && source.data.slot === 'identity')) : ['swap', 'upscale'].includes(mode) ? (source.data.slot === 'guide' && source.data.kind === 'video') || (source.data.slot === 'identity' && source.data.kind === 'image') : false);
+    }).filter(Boolean).filter((source) => mode === 'customWorkflow' ? source.data.kind === 'image' && Boolean(customInput(node.data, source.data.slot)) : mode === 'mossPose' ? source.data.kind === 'image' && ['guide', 'identity'].includes(source.data.slot) : mode === 'reference' ? source.data.slot === 'references' : mode === 'frames' ? ['first', 'last'].includes(source.data.slot) && source.data.kind === 'image' : ['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) ? source.data.kind === 'image' && (source.data.slot === 'guide' || (['qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && source.data.slot === 'identity')) : ['swap', 'upscale'].includes(mode) ? (source.data.slot === 'guide' && source.data.kind === 'video') || (source.data.slot === 'identity' && source.data.kind === 'image') : false);
   }, []);
 
   const getMaskGuide = useCallback((id) => canvasMaskGuide(id, nodesRef.current, edgesRef.current), []);
@@ -925,7 +929,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const history = completedEntry ? { [promptId]: completedEntry } : await getHistory(100);
       const source = nodesRef.current.find((node) => node.id === id);
       const customFiles = source?.data.mode === 'customWorkflow' ? extensionMedia(history?.[promptId], source.data.workflowOutputs || source.data.workflowDefinition?.outputs) : null;
-      const isImage = customFiles ? customFiles[0]?.kind !== 'video' : ['image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(source?.data.mode);
+      const isImage = customFiles ? customFiles[0]?.kind !== 'video' : ['image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism', 'mossPose'].includes(source?.data.mode);
       const outputEntry = source?.data.mode === 'customWorkflow' ? declaredHistory(history?.[promptId], source.data.workflowOutputs || source.data.workflowDefinition?.outputs) : history?.[promptId];
       const files = customFiles || (isImage ? extractImages(outputEntry) : extractVideos(outputEntry));
       if (!files.length) throw new Error(`任务已结束，但没有找到${isImage ? '图片' : '视频'}输出。`);
@@ -1333,7 +1337,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         assertCurrent();
         references.push({ id: mediaNode.id, kind: mediaNode.data.kind, title: mediaNode.data.title, slot: mediaNode.data.slot, name });
       }
-      const seed = node.data.randomSeed ? Math.floor(Math.random() * 2147483647) : Number(isH3Image(node.data) ? node.data.seed ?? 42 : node.data.seed || 42);
+      const seed = node.data.randomSeed ? Math.floor(Math.random() * 2147483647) : Number((isH3Image(node.data) || node.data.mode === 'mossPose') ? node.data.seed ?? 42 : node.data.seed || 42);
       const options = { ...node.data, seed, references };
       updateNode(id, { status: 'queued', stage: '任务已排队', seed });
       let plan = node.data.mode === 'characterSheet' ? buildCharacterSheetQueuePlan(options) : node.data.mode === 'outfitEdit' ? buildOutfitQueuePlan(options) : null;
@@ -1345,7 +1349,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         plan = preparedExtension.plan || null;
         updateNode(id, { workflowOutputs: preparedExtension.outputs });
       }
-      const workflow = preparedExtension ? preparedExtension.workflow || null : plan ? null : node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
+      const workflow = preparedExtension ? preparedExtension.workflow || null : plan ? null : node.data.mode === 'mossPose' ? buildMossPoseWorkflow(options) : node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
           : node.data.mode === 'localRealism' ? buildLocalRealismWorkflow(options)
           : node.data.mode === 'identityEdit' ? buildIdentityEditWorkflow(options)
             : node.data.mode === 'image' ? buildImageWorkflow(options)
@@ -1365,6 +1369,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         const dependencies = await getH3ImageDependencyStatus(workflow);
         assertCurrent();
         if (!dependencies.ready) throw new Error(`H3-Image 还缺少：${dependencies.missing.join('、')}。请在画布连接的 ComfyUI 中安装对应模型，更新到支持 MiniMaxH3ImageConditioning 的版本后再生成；仅在另一个后台安装并不会生效。`);
+      }
+      if (node.data.mode === 'mossPose') {
+        updateNode(id, { stage: '正在检查 MOSS 姿势、DWPose 与可选 Qwen 依赖' });
+        const dependencies = await getMossPoseDependencyStatus(workflow);
+        assertCurrent();
+        if (!dependencies.ready) throw new Error(`MOSS 姿势还缺少：${dependencies.missing.join('、')}。不会自动下载权重；安装节点后需获准重启 ComfyUI。`);
       }
       const job = await enqueueGeneration({ workflow, plan, projectId: project.id, nodeId: id, clientId });
       if (!generationAttemptsRef.current.isCurrent(id, attempt)) {
@@ -2147,6 +2157,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <div className="add-menu-title">付费 API 节点</div>
           <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>云端视觉 API · 按服务商计费 · 上传作品及参考</small></span><Plus size={13} /></button>
           <div className="add-menu-title">第三方工具</div>
+          <button onClick={() => addNode(...NODE_PRESETS.moss_pose, addMenu.flow)}><i><WandSparkles size={17} /></i><span>MOSS 姿势控制<small>Apache-2.0 · OpenPose + 可选 Qwen 身份对齐 · 待本地实测</small></span><Plus size={13} /></button>
           {LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset]).map((tool) => <button key={tool.preset} onClick={() => addNode(...NODE_PRESETS[tool.preset], addMenu.flow)}><i><WandSparkles size={17} /></i><span>{tool.label}<small>{tool.description}</small></span><Plus size={13} /></button>)}
           <button onClick={() => { setAddMenu(null); setWorkflowLibraryOpen(true); }}><i><Library size={17} /></i><span>已安装的节点工具<small>选择从节点库下载或本地导入的工作流</small></span><Plus size={13} /></button>
         </div>}

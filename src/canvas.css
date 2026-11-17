@@ -494,3 +494,12 @@
 .model-license-notice small { display: block; }
 .model-license-notice a, .workflow-dependency a { color: inherit; text-decoration: underline; }
 .model-license-notice p { margin: 5px 0; }
+
+.moss-pose-node { width: 390px; }
+.media-quality-note, .media-quality-ports { padding: 8px 14px; font-size: 12px; line-height: 1.6; color: var(--text-muted, #aaa); }
+.media-quality-ports { display: flex; justify-content: space-between; }
+.media-quality-settings { padding: 8px 14px; display: grid; gap: 9px; }
+.media-quality-settings label { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; align-items: center; }
+.media-quality-settings textarea { width: 75%; }
+.media-quality-settings input[type=number] { width: 110px; }
+.media-quality-settings input[type=number], .media-quality-settings select, .media-quality-settings textarea { background: #20232c; color: #e5e7eb; border: 1px solid #3a3e49; border-radius: 6px; padding: 6px; font: inherit; }
