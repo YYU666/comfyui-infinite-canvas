@@ -8,6 +8,7 @@ than leaking per-window SaveVideo outputs from the loop body.
 import importlib
 
 import torch
+from .moss_pose import H3CheckedDWPose
 
 WEB_DIRECTORY = "./web"
 
@@ -115,12 +116,14 @@ class H3WorkbenchFinishRefinedWindows:
 
 
 NODE_CLASS_MAPPINGS = {
+    "H3CheckedDWPose": H3CheckedDWPose,
     "H3WorkbenchAppendRefinedWindow": H3WorkbenchAppendRefinedWindow,
     "H3WorkbenchFinishRefinedWindows": H3WorkbenchFinishRefinedWindows,
     "H3PortraitSkinMask": H3PortraitSkinMask,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "H3CheckedDWPose": "Refmuse · DWPose Offline SHA-256 Check",
     "H3WorkbenchAppendRefinedWindow": "Refmuse Local Workbench · Append Dual-Pass Window",
     "H3WorkbenchFinishRefinedWindows": "Refmuse Local Workbench · Finish Dual-Pass Windows",
     "H3PortraitSkinMask": "Refmuse Local Workbench · Front Portrait Skin Mask",

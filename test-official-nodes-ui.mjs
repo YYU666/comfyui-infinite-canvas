@@ -90,7 +90,7 @@ try {
  for (const name of ['视频生成', '文生图', '图片高清', '视频高清二采']) assert.ok(groups['本地模型节点'].includes(name), `${name} belongs to local models`);
  assert.match(await menu.innerText(), /Qwen Research License/);
  assert.match(await menu.innerText(), /地域限制：欧盟\/英国\/韩国\/美国/);
- assert.deepEqual(groups['第三方工具'], [...expectedLocalTools.map(tool => tool.label), '已安装的节点工具']);
+ assert.deepEqual(groups['第三方工具'], ['MOSS 姿势控制', ...expectedLocalTools.map(tool => tool.label), '已安装的节点工具']);
  for (const tool of expectedLocalTools) assert.ok(!groups['本地模型节点'].includes(tool.label), `${tool.label} stays in third-party tools`);
  if (!expectedLocalTools.length) {
    const qa = path.resolve('.cache/feature-dev/qa'); await mkdir(qa, {recursive:true});
