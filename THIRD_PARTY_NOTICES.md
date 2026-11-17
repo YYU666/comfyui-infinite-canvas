@@ -8,6 +8,10 @@
 
 M2 的几何、字段、GLB 导出、静态预览、图缓存、任务资产与受限进程适配为本仓库自写代码，沿用 Apache-2.0。未复制第三方实现，未增加依赖或分发外部节点、模型、素材。逐文件来源和宿主运行时边界见 [pcg/SBOM.json](pcg/SBOM.json)；操作系统 API 与宿主已有解释器不属于新增打包的第三方实现。
 
+## PCG 最小只读 3D 演示
+
+独立演示服务、会话适配、GLB 子集解析器、WebGL 展示、工具合同和测试为本仓库自写代码，沿用 Apache-2.0。未复制第三方查看器、未增加依赖、未包含素材或模型。沿用宿主已有浏览器和解释器，不捆绑其实现；逐文件清单见 [pcg/SBOM.json](pcg/SBOM.json)。
+
 ## BFL 提示词扩写指令
 
 `src/flux3-klein-prompts.js` 摘录 Black Forest Labs 的 `t2i` / `i2i` PUP 指令，进行了 JavaScript 模块包装与换行转义适配。

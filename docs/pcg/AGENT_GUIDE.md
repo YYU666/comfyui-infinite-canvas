@@ -144,7 +144,7 @@ const exported=await call('canvas_pcg_export',{...H,format:'glb',port:'geometry'
 
 宿主要求已有匹配标准库 zip 和 windowless 解释器；不安装依赖、不请求管理员权限。几何运行时使用512MiB内存和最大64MiB stdio输出；descriptor 时限通常30秒，CPU上限为墙钟一半。无该能力的平台/解释器返回 ISOLATION_UNAVAILABLE；图仍可读，几何不退化成普通进程。旧协议1固定诊断仍是独立可信诊断，不能称为 OS 沙箱。详见 [ISOLATION_API.md](../../pcg/ISOLATION_API.md)。
 
-M3 游戏资产桥、既有资产导入/质量门、原型碰撞包围体约束，M4实时增量3D展示，M5正式画布/发布验收均未实现。本切片不以 GLB 导出代替这些门。
+M3 游戏资产桥、既有资产导入/质量门、原型碰撞包围体约束、M4完整预览集成和M5正式画布/发布验收均未实现。前置的独立最小只读3D演示页已单独实现，真实加载GLB并按真实任务阶段刷新，使用方法与六个MCP工具见 [DEMO_GUIDE.md](DEMO_GUIDE.md)；它不接正式画布，也不以演示代替后续门禁。
 
 ## 常见错误决策
 
