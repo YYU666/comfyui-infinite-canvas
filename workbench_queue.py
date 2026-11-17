@@ -141,7 +141,7 @@ class ComfyQueueAdapter:
 
     def upload_image(self, filename, content):
         boundary = f"----H3Workbench{uuid.uuid4().hex}"
-        fields = {"type": "input", "subfolder": "workbench", "overwrite": "true"}
+        fields = {"type": "input", "subfolder": "workbench", "overwrite": "false"}
         body = bytearray()
         for key, value in fields.items():
             body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n".encode("utf-8"))

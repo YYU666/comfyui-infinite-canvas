@@ -7,6 +7,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const suites = {
   node: [
     'test-image-inline-output.mjs',
+    'browser_video_validation.test.mjs',
     'test-canvas-file-location.mjs',
     'test-image-export.mjs',
     'test-model-licenses.mjs',
@@ -25,6 +26,7 @@ const suites = {
     'test-image-process-graph.mjs',
     'test-image-process-runtime.mjs',
     'test-api.mjs',
+    'test-upload-identity.mjs',
     'test-browser-public-network.mjs',
     'test-auto-save.mjs',
     'test-canvas-clipboard.mjs',
