@@ -7,6 +7,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const suites = {
   node: [
     'test-image-inline-output.mjs',
+    'test-canvas-file-location.mjs',
     'test-image-export.mjs',
     'test-model-licenses.mjs',
     'test-sprite-atlas.mjs',
