@@ -95,7 +95,7 @@ try {
   assert.equal(thumbnails.length, 3, 'offscreen nodes must not request thumbnails');
   assert.equal(thumbnailPeak, 2, 'cold visible images queue instead of overloading the two backend slots');
   assert.equal(await page.getByRole('button', { name: '缩略图未加载 · 重试', exact: true }).count(), 0);
-  assert.equal(await page.locator('[data-id="output"] .media-download').getAttribute('href'), '/api/comfy/view?filename=generated.png&type=output', 'download link keeps original');
+  assert.equal(await page.locator('[data-id="output"] .media-download').getAttribute('aria-label'), '导出图片', 'image export opens the metadata-aware viewer');
   await page.reload();
   await page.waitForFunction(() => [...document.querySelectorAll('.media-preview img')].filter((image) => image.naturalWidth === 640).length === 3);
   assert.equal(originals.length, 0, 'reload also fetches zero originals');
@@ -103,10 +103,16 @@ try {
   await page.waitForFunction(() => document.querySelector('.image-lightbox img')?.naturalWidth === 1600);
   assert.equal(originals.length, 1, 'double-click lazily retrieves full resolution');
   await page.keyboard.press('Escape');
+  await page.locator('[data-id="output"] .media-download').click();
+  await page.waitForFunction(() => document.querySelector('.image-lightbox img')?.naturalWidth === 1600);
+  assert.equal(await page.locator('.image-lightbox img').getAttribute('src'), '/api/comfy/view?filename=generated.png&type=output', 'export viewer uses the exact original instead of a thumbnail');
+  assert.equal(await page.getByLabel('去除元数据（PNG）').isChecked(), true);
+  assert.equal(originals.length, 2);
+  await page.keyboard.press('Escape');
   thumbnailFailure = true;
   await focus('far-0');
   await page.getByRole('button', { name: '缩略图未加载 · 重试', exact: true }).first().waitFor();
-  assert.equal(originals.length, 1, 'cache failure must not silently fetch original');
+  assert.equal(originals.length, 2, 'cache failure must not silently fetch original');
   thumbnailFailure = false;
   await page.getByRole('button', { name: '缩略图未加载 · 重试', exact: true }).first().click();
   await page.waitForFunction(() => document.querySelector('[data-id="far-0"] img')?.naturalWidth === 640);
