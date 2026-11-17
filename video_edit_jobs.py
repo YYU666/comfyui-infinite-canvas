@@ -46,6 +46,15 @@ class VideoEditJobs:
         self.worker = None
         self.closed = False
 
+    def replace_store(self, store):
+        with self.lock:
+            if self.active_count():
+                raise StoreError("VIDEO_EDIT_BUSY", "视频仍在导出，无法切换素材存储。", 409)
+            # Completed jobs also belong to the old root and must never commit
+            # into another root containing an identically named project.
+            self.jobs.clear()
+            self.store = store
+
     def active_count(self):
         with self.lock:
             return sum(job["status"] not in TERMINAL for job in self.jobs.values())
