@@ -163,6 +163,8 @@ M4新增 `pcg_demo_wait`、`pcg_demo_tune`、`pcg_demo_preview` 与原六工具�
 
 机器权威为 `pcg/viewport-tools.json`；UI页桥与MCP注册同一schema。`canvas_pcg_describe`列出面板工具；`canvas_pcg_preview_describe`单独发现能力、版本、工具例子及边界。所有带projectId的调用仅接受当前可操作项目；普通只读/切换页拒绝修改。
 
+节点位置整理保存也会推进项目revision。自动模式会在该保存版本重新预检/求值并更新产物身份；显式模式只标为stale，需用当前保存版本显式运行。面板自身拖动/缩放仅保存展示布局，不修改计算图；不要给旧产物handle改revision或绕过409校验。
+
 | 工具 | 用途与输入 | 输出 / 最小例子 | 错误与恢复 |
 |---|---|---|---|
 | `canvas_pcg_preview_describe` | 无参数，发现画布内面板schema与能力，不生成 | `{}` → contract、inCanvas、realWebGL、aiCallsPerFrame=0、性能门状态 | PREVIEW_UNAVAILABLE：宿主缺挂钩，停止，不用独立页冒充 |

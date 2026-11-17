@@ -9,7 +9,7 @@ export function pcgGraphSignature(graph) {
 export function createPcgViewportController({getContext,getNode,getGraph,runtime,persistProject,onChange=()=>{},storage=globalThis.localStorage,debounceMs=180}) {
   const projectId=getContext().projectId,key=`refmuse.pcg.viewport.v1:${projectId}`;
   let saved={};try{const value=JSON.parse(storage?.getItem(key)||'{}');if(value&&typeof value==='object'&&!Array.isArray(value))saved=value;}catch{}
-  let disposed=false,timer=null,signature=pcgGraphSignature(getGraph()),epoch=0,monitorKey=null,cancelling=null,expectedRunId=null;
+  let disposed=false,timer=null,signature=pcgGraphSignature(getGraph()),observedRevision=getContext().revision,savingEpoch=null,epoch=0,monitorKey=null,cancelling=null,expectedRunId=null;
   let state={contractVersion:1,projectId,open:saved.open===true,nodeId:typeof saved.nodeId==='string'?saved.nodeId:null,autoRun:saved.autoRun!==false,layout:{x:32,y:60,width:440,height:360,...saved.layout},generation:0,run:null,desired:null,displayed:null,error:null,stage:null,metrics:null,resources:null,graphRevision:getContext().revision};
   function current(){const context=getContext();if(disposed||context.projectId!==projectId)throw pcgError('PROJECT_MISMATCH','Preview belongs to a different or closed project.');if(context.readOnly||context.switching)throw pcgError('READ_ONLY','Current project is not writable.');return context;}
   function publish(patch,persist=false){if(disposed)return;state={...state,...patch};if(persist)try{storage?.setItem(key,JSON.stringify({open:state.open,nodeId:state.nodeId,autoRun:state.autoRun,layout:state.layout}));}catch{}onChange();}
@@ -55,7 +55,9 @@ export function createPcgViewportController({getContext,getNode,getGraph,runtime
     try{
       await cancelOwned();if(disposed||ownEpoch!==epoch)return;
       current();const descriptor=pcgNodeDescriptor(getNode(target));
-      await persistProject();if(disposed||ownEpoch!==epoch)return;const context=current();
+      savingEpoch=ownEpoch;
+      try{await persistProject();}finally{if(savingEpoch===ownEpoch){if(ownEpoch===epoch)observedRevision=getContext().revision;savingEpoch=null;}}
+      if(disposed||ownEpoch!==epoch)return;const context=current();
       const identity={projectId,nodeId:target,revision:context.revision,descriptorVersion:descriptor.descriptorVersion,operationVersion:descriptor.operationVersion,runId:crypto.randomUUID()};
       publish({graphRevision:context.revision,error:null,stage:{phase:'preflight',nodeId:target,revision:context.revision}});
       const preflight=await runtime.invoke('preflight',identity);
@@ -67,14 +69,14 @@ export function createPcgViewportController({getContext,getNode,getGraph,runtime
       accept(result.task,ownEpoch);await monitor(result.task,ownEpoch);
     }catch(error){if(!disposed&&ownEpoch===epoch)publish({error:{code:error.code||'PREFLIGHT_FAILED',message:error.message,phase:'preflight/run',nodeId:target},stage:{phase:'failed',nodeId:target,revision:getContext().revision}});}
   }
-  function schedule(){expectedRunId=null;clearTimeout(timer);const ownEpoch=++epoch;publish({generation:ownEpoch,stage:{phase:'pending',nodeId:state.nodeId,revision:getContext().revision}});void cancelOwned().catch(()=>{});timer=setTimeout(()=>void evaluate(ownEpoch),debounceMs);}
+  function schedule(){expectedRunId=null;clearTimeout(timer);const ownEpoch=++epoch;publish({generation:ownEpoch,graphRevision:getContext().revision,stage:{phase:'pending',nodeId:state.nodeId,revision:getContext().revision}});void cancelOwned().catch(()=>{});timer=setTimeout(()=>void evaluate(ownEpoch),debounceMs);}
   const controller={
     snapshot:()=>clone(state),
     open(){current();publish({open:true},true);void controller.restore();return controller.snapshot();},
     close(){current();clearTimeout(timer);epoch++;publish({open:false,generation:epoch,displayed:null},true);void cancelOwned().catch(()=>{});return controller.snapshot();},
     bind(nodeId,autoRun=true){current();pcgNodeDescriptor(getNode(nodeId));clearTimeout(timer);expectedRunId=null;epoch++;void cancelOwned().catch(()=>{});publish({nodeId,autoRun,error:null,generation:epoch},true);if(autoRun)schedule();else sync();return controller.snapshot();},
     layout(layout){current();for(const [k,v] of Object.entries(layout))if(!['x','y','width','height'].includes(k)||!Number.isFinite(v)||Math.abs(v)>100000)throw pcgError('INVALID_CONTRACT','Invalid viewport layout.');publish({layout:{...state.layout,...layout}},true);return controller.snapshot();},
-    observeGraph(){if(disposed)return;const next=pcgGraphSignature(getGraph());if(next===signature)return;signature=next;if(state.open&&state.nodeId){if(state.autoRun)schedule();else{clearTimeout(timer);epoch++;publish({generation:epoch,stage:{phase:'stale',nodeId:state.nodeId,revision:getContext().revision}});void cancelOwned().catch(()=>{});}}},
+    observeGraph(){if(disposed)return;const next=pcgGraphSignature(getGraph()),revision=getContext().revision,changed=next!==signature;if(!changed&&revision===observedRevision)return;signature=next;observedRevision=revision;if(!changed&&savingEpoch===epoch)return;if(state.open&&state.nodeId){if(state.autoRun)schedule();else{clearTimeout(timer);epoch++;publish({generation:epoch,graphRevision:revision,stage:{phase:'stale',nodeId:state.nodeId,revision}});void cancelOwned().catch(()=>{});}}},
     sync,
     async restore(){if(!state.open||!state.nodeId||disposed)return;try{await runtime.listTasks({projectId,nodeId:state.nodeId});sync();}catch(error){if(!disposed)publish({error:{code:error.code||'RESTORE_FAILED',message:error.message,phase:'restore',nodeId:state.nodeId}});}},
     rendered(report){

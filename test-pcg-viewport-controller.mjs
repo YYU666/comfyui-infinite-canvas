@@ -4,17 +4,36 @@ import {createPcgViewportController,pcgGraphSignature} from './src/pcg-viewport-
 import {pcgNodeData} from './src/pcg-registry.js';
 const tick=ms=>new Promise(r=>setTimeout(r,ms));
 const defer=()=>{let resolve;return {promise:new Promise(r=>resolve=r),resolve:(v)=>resolve(v)};};
-function fixture(){
+function fixture(options={}){
  const context={projectId:'prj_a',revision:2,readOnly:false,switching:false},graph={nodes:[{id:'shape',type:'pcg',data:pcgNodeData('refmuse.pcg.primitive'),position:{x:0,y:0}}],edges:[]},disk=new Map(),calls=[];
  let task=null,controller,waiter=defer();
  const make=(overrides={})=>({projectId:context.projectId,nodeId:'shape',revision:context.revision,descriptorVersion:1,operationVersion:1,runId:'run-1',jobId:'pcg_'+'1'.repeat(32),inputHash:'a'.repeat(64),status:'running',stale:false,...overrides});
  const done=t=>({...t,status:'succeeded',result:{assets:[{projectId:t.projectId,revision:t.revision,jobId:t.jobId,runId:t.runId,inputHash:t.inputHash,producerNodeId:t.nodeId,artifactId:'pcga_'+'b'.repeat(64),sha256:'c'.repeat(64),bytes:120,role:'model',format:'glb',url:'/native'}],report:{computedNodes:['shape'],cacheHits:[]}}});
  const runtime={getState:()=>({task}),listTasks:async()=>{controller.sync();return {tasks:task?[task]:[]};},invoke:async(action,args)=>{calls.push({action,args});if(action==='preflight')return {executionOrder:['shape']};return waiter.promise;},runNode:async(_id,args)=>{calls.push({action:'run',args});task=make({runId:args.runId});controller.sync();return {task};},cancelObsolete:async t=>{calls.push({action:'cancel',task:t});task={...t,status:'cancelled'};waiter.resolve({task});return {task};}};
- controller=createPcgViewportController({getContext:()=>context,getNode:id=>graph.nodes.find(n=>n.id===id),getGraph:()=>graph,runtime,persistProject:async()=>calls.push({action:'save'}),storage:{getItem:k=>disk.get(k),setItem:(k,v)=>disk.set(k,v)},debounceMs:5});
+ controller=createPcgViewportController({getContext:()=>context,getNode:id=>graph.nodes.find(n=>n.id===id),getGraph:()=>graph,runtime,persistProject:async()=>{calls.push({action:'save'});await options.persist?.({context,controller});},storage:{getItem:k=>disk.get(k),setItem:(k,v)=>disk.set(k,v)},debounceMs:5});
  return {context,graph,calls,controller,disk,make,done,setTask:t=>{task=t;},resolve:t=>waiter.resolve({task:t})};
 }
 test('visible graph signature ignores layout/selection and preserves actual typed edges and parameters',()=>{
  const f=fixture(),before=pcgGraphSignature(f.graph);f.graph.nodes[0].position.x=400;f.graph.nodes[0].selected=true;assert.equal(pcgGraphSignature(f.graph),before);f.graph.nodes[0].data.parameters.size=[2,2,2];assert.notEqual(pcgGraphSignature(f.graph),before);f.controller.dispose();
+});
+
+test('saved layout revision invalidates managed artifact even with identical computation graph',async()=>{
+ const f=fixture();f.controller.open();f.controller.bind('shape',false);f.setTask(f.done(f.make()));f.controller.sync();const before=f.controller.snapshot();
+ f.context.revision++;f.graph.nodes[0].position.x=400;f.controller.observeGraph();await tick(15);
+ const after=f.controller.snapshot();assert.ok(after.generation>before.generation);assert.equal(after.stage.phase,'stale');assert.equal(after.stage.revision,f.context.revision);assert.equal(f.calls.filter(c=>c.action==='run').length,0);
+ f.controller.rendered({identity:{...before.desired.handle,artifactId:before.desired.artifactId,generation:before.generation},rendered:true});assert.equal(f.controller.snapshot().displayed,null);f.controller.dispose();
+});
+
+test('own save revision does not schedule an endless replacement run',async()=>{
+ const f=fixture({persist:({context,controller})=>{context.revision++;controller.observeGraph();}});f.controller.open();f.controller.bind('shape',true);await tick(30);
+ assert.equal(f.calls.filter(c=>c.action==='run').length,1);assert.equal(f.calls.find(c=>c.action==='preflight').args.revision,f.context.revision);f.controller.observeGraph();await tick(15);assert.equal(f.calls.filter(c=>c.action==='run').length,1);f.controller.dispose();
+});
+
+test('invalidated pending save cannot consume revision after switching to explicit mode',async()=>{
+ const pending=defer(),f=fixture({persist:async({context})=>{await pending.promise;context.revision++;}});f.controller.open();f.controller.bind('shape',true);await tick(15);
+ assert.equal(f.calls.filter(c=>c.action==='save').length,1);f.controller.bind('shape',false);f.setTask(f.done(f.make()));f.controller.sync();const before=f.controller.snapshot();pending.resolve();await tick(10);f.controller.observeGraph();
+ const after=f.controller.snapshot();assert.ok(after.generation>before.generation);assert.equal(after.stage.phase,'stale');assert.equal(after.graphRevision,f.context.revision);assert.equal(f.calls.filter(c=>c.action==='run').length,0);
+ f.controller.rendered({identity:{...before.desired.handle,artifactId:before.desired.artifactId,generation:before.generation},rendered:true});assert.equal(f.controller.snapshot().displayed,null);f.controller.dispose();
 });
 test('manual run follows same project/revision and only real matching rendered identity publishes',async()=>{
  const f=fixture();f.controller.open();f.controller.bind('shape',false);let t=f.make();f.setTask(t);f.controller.sync();const generation=f.controller.snapshot().generation;f.resolve(f.done(t));await tick(5);let s=f.controller.snapshot();assert.equal(s.desired.handle.runId,t.runId);assert.equal(s.displayed,null);

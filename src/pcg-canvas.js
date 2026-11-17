@@ -23,7 +23,8 @@ export function usePcgCanvas({ project, revisionRef, switchingRef, nodes, nodesR
     runtime: runtime.current, persistProject: () => latest.current.persistProject(),
     onChange: () => refresh(value => value + 1),
   });
-  useEffect(() => { viewport.current.observeGraph(); }, [nodes, edges]);
+  const savedRevision = revisionRef.current;
+  useEffect(() => { viewport.current.observeGraph(); }, [nodes, edges, savedRevision]);
   useEffect(() => { void viewport.current.restore(); return () => viewport.current.dispose(); }, []);
   const panelState = viewport.current.snapshot();
   const pcgPreviewPanel = React.createElement(React.Fragment, null,
