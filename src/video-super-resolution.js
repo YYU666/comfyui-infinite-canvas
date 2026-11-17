@@ -5,7 +5,15 @@ export const RTX_SUPER_RESOLUTION_QUALITIES = Object.freeze([
   'LOW', 'MEDIUM', 'HIGH', 'ULTRA',
   'HIGHBITRATE_LOW', 'HIGHBITRATE_MEDIUM', 'HIGHBITRATE_HIGH', 'HIGHBITRATE_ULTRA',
   'STREAMING_MEDIUM', 'STREAMING_ULTRA',
+  'DENOISE_LOW', 'DENOISE_MEDIUM', 'DENOISE_HIGH', 'DENOISE_ULTRA',
+  'DEBLUR_LOW', 'DEBLUR_MEDIUM', 'DEBLUR_HIGH', 'DEBLUR_ULTRA',
 ]);
+
+export function rtxVideoProcessKind(quality = 'ULTRA') {
+  if (quality.startsWith('DENOISE_')) return 'denoise';
+  if (quality.startsWith('DEBLUR_')) return 'deblur';
+  return 'upscale';
+}
 
 const SEEDVR_MODELS = Object.freeze({
   seedvr2_3b: 'seedvr2_3b_int8_convrot.safetensors',
@@ -23,9 +31,12 @@ function numberInRange(value, fallback, min, max, label) {
 export function normalizeVideoSuperResolutionSettings(options = {}) {
   const videoUpscaleModel = options.videoUpscaleModel ?? 'rtx';
   if (!VIDEO_SUPER_RESOLUTION_MODELS.includes(videoUpscaleModel)) throw new Error('未知的视频超分模型。');
-  const videoUpscaleScale = numberInRange(options.videoUpscaleScale, 2, 1, 4, '视频超分倍率');
+  const requestedScale = numberInRange(options.videoUpscaleScale, 2, 1, 4, '视频超分倍率');
   const rtxQuality = options.rtxQuality ?? 'ULTRA';
   if (!RTX_SUPER_RESOLUTION_QUALITIES.includes(rtxQuality)) throw new Error('未知的 RTX 超分质量档位。');
+  // The SDK's cleanup families never resize. Normalize stale saved multipliers
+  // too, so the visible 1x policy also holds for page-bridge submissions.
+  const videoUpscaleScale = videoUpscaleModel === 'rtx' && rtxVideoProcessKind(rtxQuality) !== 'upscale' ? 1 : requestedScale;
   const rtxStrength = numberInRange(options.rtxStrength, 1, 0, 1, 'RTX 超分强度');
   return { videoUpscaleModel, videoUpscaleScale, rtxQuality, rtxStrength };
 }

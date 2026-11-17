@@ -16,7 +16,7 @@ const objectInfo = () => ({
   ...(missingRtx ? {} : { RTXVideoSuperResolution: { input: { required: {
     images: ['IMAGE', {}],
     resize_type: ['COMFY_DYNAMICCOMBO_V3', { options: [{ key: 'scale by multiplier', inputs: { required: { scale: ['FLOAT', { min: 1, max: 4 }] } } }] }],
-    quality: ['COMBO', { options: ['LOW', 'MEDIUM', 'HIGH', 'ULTRA'] }],
+    quality: ['COMBO', { options: ['LOW', 'MEDIUM', 'HIGH', 'ULTRA', 'DENOISE_HIGH', 'DEBLUR_HIGH'] }],
     strength: ['FLOAT', { min: 0, max: 1 }],
     image_encoding: ['COMBO', { options: ['8-bit RGB'] }],
   } }, output: ['IMAGE'] } }),
@@ -140,6 +140,17 @@ try {
   assert.equal(await page.getByLabel('RTX 超分质量').count(), 0);
   await page.getByText('时间分块采样；视频帧仍占用主内存。', { exact: false }).waitFor();
   await page.getByLabel('视频超分模型').selectOption('rtx');
+  for (const [quality, action] of [['DENOISE_HIGH', '降噪'], ['DEBLUR_HIGH', '去模糊']]) {
+    await page.getByLabel('RTX 超分质量').selectOption(quality);
+    assert.equal(await page.getByLabel('视频超分倍率').inputValue(), '1');
+    assert.equal(await page.getByLabel('视频超分倍率').isDisabled(), true);
+    assert.equal(await node.getByRole('button', { name: `开始${action}` }).count(), 1);
+    assert.equal((await f.state()).nodes.find(n => n.id === 'upscale').videoUpscaleScale, 1);
+  }
+  await call('canvas_update_node', { nodeId: 'upscale', settings: { rtxQuality: 'DEBLUR_HIGH', videoUpscaleScale: 4 } });
+  assert.equal(await page.getByLabel('视频超分倍率').inputValue(), '1', 'stale bridge scale is displayed as native resolution');
+  await page.getByLabel('RTX 超分质量').selectOption('HIGH');
+  assert.equal(await page.getByLabel('视频超分倍率').isDisabled(), false);
   await page.getByLabel('视频超分倍率').selectOption('3');
   await page.getByLabel('RTX 超分质量').selectOption('HIGH');
   await page.getByLabel('RTX 超分强度').fill('0.7');
@@ -184,10 +195,19 @@ try {
   await node.getByRole('alert').filter({ hasText: 'Synthetic GPU failure' }).waitFor();
   state = await f.state();
   assert.deepEqual(state.nodes.map(n => n.id).sort(), retainedIds, 'runtime failure keeps source, processor and completed output');
+  await call('canvas_update_node', { nodeId: 'upscale', settings: { rtxQuality: 'DEBLUR_HIGH', videoUpscaleScale: 4 } });
+  await node.getByRole('button', { name: '开始去模糊' }).click();
+  await f.waitState(s => s.nodes.find(n => n.id === 'upscale')?.queueJobId === 'job-3');
+  assert.equal(f.queued[2].workflow.rtx.inputs.quality, 'DEBLUR_HIGH');
+  assert.equal(f.queued[2].workflow.rtx.inputs['resize_type.scale'], 1, 'submission overrides stale saved or bridge cleanup scale');
+  await f.emit('job.done', { job: { ...job, id: 'job-3', comfyPromptId: 'prompt-3' } });
+  await f.waitState(s => s.nodes.find(n => n.id === 'upscale')?.status === 'done');
   await call('canvas_update_node', { nodeId: 'upscale', title: '视频超分' });
   await page.reload(); await page.waitForFunction(() => window.fixtureTools.has('canvas_get_state'));
   state = await f.state();
-  assert.equal(state.nodes.find(n => n.id === 'upscale').videoUpscaleScale, 3);
+  assert.equal(state.nodes.find(n => n.id === 'upscale').rtxQuality, 'DEBLUR_HIGH');
+  assert.equal(await page.getByLabel('视频超分倍率').inputValue(), '1');
+  assert.equal(await page.getByLabel('视频超分倍率').isDisabled(), true);
   assert.ok(state.nodes.some(n => n.media?.filename === finishedFile.filename), 'saved output binding survives reload');
   assert.deepEqual(failures, []);
   await f.context.close();

@@ -3,6 +3,8 @@ import {
   buildVideoSuperResolutionWorkflow,
   getVideoSuperResolutionDependencyStatus,
   normalizeVideoSuperResolutionSettings,
+  RTX_SUPER_RESOLUTION_QUALITIES,
+  rtxVideoProcessKind,
   videoSuperResolutionOutputPrefix,
 } from './src/video-super-resolution.js';
 
@@ -69,7 +71,23 @@ assert.throws(() => buildVideoSuperResolutionWorkflow({ references: [{ kind: 'im
 assert.throws(() => buildVideoSuperResolutionWorkflow({ references: [{ kind: 'video', slot: 'guide', name: '' }] }), /连接一段本地视频/);
 for (const value of [0, 0.5, 4.01, NaN, Infinity, 'invalid']) assert.throws(() => normalizeVideoSuperResolutionSettings({ videoUpscaleScale: value }), /倍率/);
 for (const value of [-0.1, 1.1, NaN, Infinity, 'invalid']) assert.throws(() => normalizeVideoSuperResolutionSettings({ rtxStrength: value }), /强度/);
-for (const rtxQuality of ['BICUBIC', 'DENOISE_HIGH', 'DEBLUR_HIGH', 'unknown']) assert.throws(() => normalizeVideoSuperResolutionSettings({ rtxQuality }), /质量档位/, 'non-upscale modes cannot masquerade as RTX super resolution');
+for (const rtxQuality of ['BICUBIC', 'DENOISE_UNKNOWN', 'DEBLUR_UNKNOWN', 'unknown']) assert.throws(() => normalizeVideoSuperResolutionSettings({ rtxQuality }), /质量档位/);
+for (const family of ['DENOISE', 'DEBLUR']) {
+  for (const level of ['LOW', 'MEDIUM', 'HIGH', 'ULTRA']) {
+    const rtxQuality = `${family}_${level}`;
+    assert.ok(RTX_SUPER_RESOLUTION_QUALITIES.includes(rtxQuality));
+    assert.equal(rtxVideoProcessKind(rtxQuality), family.toLowerCase());
+    const cleanup = buildVideoSuperResolutionWorkflow({ ...options, rtxQuality, videoUpscaleScale: 4, rtxStrength: 0.5 });
+    assert.equal(cleanup.rtx.inputs['resize_type.scale'], 1, 'cleanup normalizes stale saved and page-bridge scale values');
+    assert.equal(cleanup.rtx.inputs.quality, rtxQuality);
+    assert.equal(cleanup.rtx.inputs.strength, 0.5);
+    assert.deepEqual(cleanup.video.inputs.audio, ['components', 1]);
+    assert.deepEqual(cleanup.video.inputs.fps, ['components', 2]);
+    assert.deepEqual(cleanup.save.inputs.video, ['video', 0]);
+    const seed = buildVideoSuperResolutionWorkflow({ ...options, videoUpscaleModel: 'seedvr2_3b', rtxQuality, videoUpscaleScale: 3 });
+    assert.equal(seed.resize.inputs['resize_type.multiplier'], 3, 'inactive RTX cleanup setting must not restrict SeedVR2');
+  }
+}
 assert.throws(() => normalizeVideoSuperResolutionSettings({ videoUpscaleModel: 'cloud' }), /未知/);
 assert.throws(() => videoSuperResolutionOutputPrefix('cloud'), /未知/);
 for (const seed of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN]) assert.throws(() => buildVideoSuperResolutionWorkflow({ ...options, videoUpscaleModel: 'seedvr2_3b', seed }), /种子/);
@@ -90,6 +108,11 @@ const rtxDefinitions = { ...classFixture(rtx), RTXVideoSuperResolution: rtxDefin
 const requestedPaths = [];
 assert.deepEqual(await getVideoSuperResolutionDependencyStatus(rtx, async (path) => { requestedPaths.push(path); return rtxDefinitions; }), { ready: true, missing: [] });
 assert.deepEqual(requestedPaths, ['/object_info'], 'one read-only JSON request; no prompt, install or model download');
+const cleanup = buildVideoSuperResolutionWorkflow({ ...options, rtxQuality: 'DEBLUR_HIGH' });
+assert.equal((await getVideoSuperResolutionDependencyStatus(cleanup, async () => rtxDefinitions)).ready, false, 'an SDK without the selected cleanup mode must block');
+const cleanupDefinitions = structuredClone(rtxDefinitions);
+cleanupDefinitions.RTXVideoSuperResolution.input.required.quality[1].options.push('DEBLUR_HIGH');
+assert.equal((await getVideoSuperResolutionDependencyStatus(cleanup, async () => cleanupDefinitions)).ready, true);
 const noRtx = structuredClone(rtxDefinitions); delete noRtx.RTXVideoSuperResolution;
 assert.deepEqual(await getVideoSuperResolutionDependencyStatus(rtx, async () => noRtx), { ready: false, missing: ['ComfyUI 节点 RTXVideoSuperResolution'] });
 for (const mutate of [

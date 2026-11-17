@@ -2161,7 +2161,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={() => addNode('audio', {}, addMenu.flow)}><i><Music2 size={17} /></i><span>音频素材<small>音色、配乐或声音参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('note', {}, addMenu.flow)}><i><Type size={17} /></i><span>文本备注<small>分镜与创作设定</small></span><Plus size={13} /></button>
           <div className="add-menu-title">视频增强 · 本地模型</div>
-          <button onClick={() => addNode('generator', { mode: 'videoSuperResolution', title: '视频超分', videoUpscaleModel: 'rtx', videoUpscaleScale: 2, rtxQuality: 'ULTRA', rtxStrength: 1, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>视频超分<small>RTX VFX / SeedVR2 · 完整时长与原声</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'videoSuperResolution', title: '视频超分', videoUpscaleModel: 'rtx', videoUpscaleScale: 2, rtxQuality: 'ULTRA', rtxStrength: 1, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>视频超分<small>RTX 超分 / 降噪 / 去模糊 · SeedVR2</small></span><Plus size={13} /></button>
           <button disabled title="官方 HyperFlow 必需双时间模型与逐步终点条件；本机尚无经过验证的兼容运行时。普通 LoRA 转换不能替代。"><i><Sparkles size={17} /></i><span>2K 精修 · Open-H3 IC<small>兼容适配未完成 · 暂不可运行</small></span></button>
           <div className="add-menu-title">第三方工具</div>
           {LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset]).map((tool) => <button key={tool.preset} onClick={() => addNode(...NODE_PRESETS[tool.preset], addMenu.flow)}><i><WandSparkles size={17} /></i><span>{tool.label}<small>{tool.description}</small></span><Plus size={13} /></button>)}
