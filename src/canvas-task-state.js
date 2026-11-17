@@ -9,12 +9,13 @@ export const ACTIVE_TASK_STATUSES = Object.freeze(['uploading', 'queued', 'runni
 const ACTIVE = new Set(ACTIVE_TASK_STATUSES);
 const LOCAL_TASK_TYPES = new Set(['prompt', 'imageProcess', 'artDirector']);
 const PASSIVE_TYPES = new Set(['media', 'note', 'image', 'video']);
-const EXPORT_TYPES = new Set(['videoEdit', 'videoSpeed', 'videoTimeRemap', 'videoChromaKey', 'videoWhitePlate']);
+const EXPORT_TYPES = new Set(['videoEdit', 'videoSpeed', 'videoTimeRemap', 'videoChromaKey', 'videoWhitePlate', 'videoLocalRepair']);
 const TASK_TYPES = new Set(['generator', 'spriteAtlas', ...LOCAL_TASK_TYPES, ...EXPORT_TYPES]);
-const EXPORT_JOB_ID = /^(?:ved|vry|vck|vwp)_[a-f0-9]{32}$/;
+const EXPORT_JOB_ID = /^(?:ved|vry|vck|vwp|vrp)_[a-f0-9]{32}$/;
 const GENERATOR_STAGE = /基础采样|采精修|准备参考素材与模型|生成画面与声音|保存 MP4|读取成片|读取生成结果|本地 GPU 生成中|正在提交 ComfyUI/;
 
 const EXPORT_JOB_SOURCES = [
+  { types: ['videoLocalRepair'], field: 'repairJobId', route: '/api/video-repair/jobs/' },
   { types: ['videoEdit'], field: 'videoEditJobId', route: '/api/video-edit/jobs/' },
   { types: ['videoSpeed', 'videoTimeRemap'], field: 'rhythmJobId', route: '/api/video-rhythm/jobs/' },
   { types: ['videoChromaKey'], field: 'chromaJobId', route: '/api/video-chroma/jobs/' },

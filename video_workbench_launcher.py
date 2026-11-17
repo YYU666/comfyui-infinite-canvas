@@ -36,6 +36,8 @@ from video_rhythm_api import VideoRhythmAPI
 from video_rhythm_jobs import VideoRhythmJobs
 from video_chroma_api import VideoChromaAPI
 from video_chroma_jobs import VideoChromaJobs
+from video_repair_api import VideoRepairAPI
+from video_repair_jobs import VideoRepairJobs
 from video_edit_api import VideoEditAPI
 from video_edit_jobs import VideoEditJobs
 from art_director import ArtDirectorAPI
@@ -250,6 +252,8 @@ def shutdown_workbench(server, *, preserve_comfy=False):
         server.video_rhythm_api.jobs.close()
     if server is not None and getattr(server, "video_chroma_api", None):
         server.video_chroma_api.jobs.close()
+    if server is not None and getattr(server, "video_repair_api", None):
+        server.video_repair_api.jobs.close()
     if server is not None and getattr(server, "video_edit_api", None):
         try:
             server.video_edit_api.jobs.close()
@@ -626,6 +630,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if getattr(self.server, "video_rhythm_api", None) and self.server.video_rhythm_api.handle_get(self, path): return
         if getattr(self.server, "video_chroma_api", None) and self.server.video_chroma_api.handle_get(self, path): return
+        if getattr(self.server, "video_repair_api", None) and self.server.video_repair_api.handle_get(self, path): return
         video_edit_api = getattr(self.server, "video_edit_api", None)
         if video_edit_api and video_edit_api.handle_get(self, path):
             return
@@ -747,6 +752,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if getattr(self.server, "video_rhythm_api", None) and self.server.video_rhythm_api.handle_post(self, path): return
         if getattr(self.server, "video_chroma_api", None) and self.server.video_chroma_api.handle_post(self, path): return
+        if getattr(self.server, "video_repair_api", None) and self.server.video_repair_api.handle_post(self, path): return
         video_edit_api = getattr(self.server, "video_edit_api", None)
         if video_edit_api and video_edit_api.handle_post(self, path):
             return
@@ -907,6 +913,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 
 
 def validate_update_ready(server):
+    if getattr(server, "video_repair_api", None) and server.video_repair_api.jobs.active_count():
+        raise UpdateError("视频处理仍在导出，请完成或取消后重试。", status=409, code="QUEUE_BUSY")
     if getattr(server, "video_chroma_api", None) and server.video_chroma_api.jobs.active_count():
         raise UpdateError("视频处理仍在导出，请完成或取消后重试。", status=409, code="QUEUE_BUSY")
     if getattr(server, "video_rhythm_api", None) and server.video_rhythm_api.jobs.active_count():
@@ -944,6 +952,8 @@ def validate_update_ready(server):
 
 
 def validate_settings_change(server, candidate):
+    if getattr(server, "video_repair_api", None) and server.video_repair_api.jobs.active_count():
+        raise SettingsError("视频处理仍在导出，请完成或取消后重试。", status=409, code="QUEUE_BUSY")
     if Path(candidate["projectsRoot"]).resolve() == server.project_store.root:
         return
     if getattr(server, "video_chroma_api", None) and server.video_chroma_api.jobs.active_count():
@@ -977,6 +987,7 @@ def apply_server_settings(server):
             server.sprite_atlas_api.store = replacement
         if getattr(server, "video_edit_api", None):
             server.video_edit_api.jobs.replace_store(replacement)
+        if getattr(server, "video_repair_api", None): server.video_repair_api.jobs.replace_store(replacement)
         if getattr(server, "video_chroma_api", None): server.video_chroma_api.jobs.replace_store(replacement)
         if getattr(server, "video_rhythm_api", None): server.video_rhythm_api.jobs.replace_store(replacement)
         if getattr(server, "art_director_api", None):
@@ -1058,6 +1069,7 @@ def main(argv=None):
             server.project_api = ProjectAPI(server.project_store)
             server.video_rhythm_api = VideoRhythmAPI(VideoRhythmJobs(runtime_dir() / "video-rhythm-jobs", server.project_store))
             server.video_chroma_api = VideoChromaAPI(VideoChromaJobs(runtime_dir() / "video-chroma-jobs", server.project_store))
+            server.video_repair_api = VideoRepairAPI(VideoRepairJobs(runtime_dir() / "video-repair-jobs", server.project_store))
             server.video_edit_api = VideoEditAPI(VideoEditJobs(runtime_dir() / "video-edit-jobs", server.project_store))
             server.pureref_sessions = PureRefSessions(server.project_store)
             server.sprite_atlas_api = SpriteAtlasAPI(server.project_store, runtime_dir() / "sprite-atlas")
