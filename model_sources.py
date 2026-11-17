@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 import re
 from urllib.parse import quote, urlsplit
@@ -43,3 +44,31 @@ def locked_sources():
             raise ValueError("模型来源锁包含重复文件。")
         result[source["path"]] = source
     return result
+
+
+@lru_cache(maxsize=1)
+def _license_records():
+    root = Path(__file__).parent / 'models'
+    records = {row['path']: row for row in json.loads((root / 'licenses.json').read_text(encoding='utf-8'))['files']}
+    for row in locked_sources().values():
+        records.setdefault(row['path'], row)
+    notices = json.loads((root / 'license-notices.json').read_text(encoding='utf-8'))
+    h3_image = json.loads((root / 'h3-image-sources.json').read_text(encoding='utf-8'))
+    for row in h3_image['files']:
+        records[row['path']] = {**row, **notices['h3Image']}
+    klein = json.loads((root / 'flux3-klein.json').read_text(encoding='utf-8'))
+    for row in klein['files']:
+        records[row['path']] = {**row, 'license': klein['license']['name'], 'licenseUrl': klein['license']['url']}
+    for row in records.values():
+        if 'H3' in row.get('license', ''):
+            notice = notices['h3Image' if 'H3-Image' in row['license'] else 'h3Video']
+            row.update({key: notice[key] for key in ('restriction', 'excludedTerritories')})
+            row['territoryLicenseUrl'] = notice['licenseUrl']
+            if row['license'].startswith(('MiniMax H3', 'MiniMax-H3')):
+                row['licenseUrl'] = notice['licenseUrl']
+    return records
+
+
+def model_license(path):
+    row = _license_records().get(path.replace('\\', '/'), {})
+    return {key: row[key] for key in ('license', 'licenseUrl', 'restrictions', 'restriction', 'excludedTerritories', 'territoryLicenseUrl') if key in row} or {'license': '许可待核实', 'restrictions': '精确权重的许可尚未核实，请查作者原文。'}

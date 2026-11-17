@@ -487,3 +487,10 @@
 
 .qwen-mask-crop { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer; }
 .qwen-mask-crop input { margin: 0; accent-color: #b0a9da; }
+
+.model-license-notice { margin: 5px 12px; font-size: 11px; color: var(--text-muted, #aaa); overflow-wrap: anywhere; }
+.model-license-notice summary { cursor: pointer; }
+.model-license-notice > div { margin: 8px 0; }
+.model-license-notice small { display: block; }
+.model-license-notice a, .workflow-dependency a { color: inherit; text-decoration: underline; }
+.model-license-notice p { margin: 5px 0; }

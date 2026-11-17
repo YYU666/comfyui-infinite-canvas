@@ -41,6 +41,12 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual(report["models"][0]["name"], "other.safetensors")
         self.assertTrue(report["ready"])
 
+    def test_installed_models_still_report_their_license(self):
+        row = dependency_report(self.bundle, self.payload, info_fixture())['models'][0]
+        self.assertEqual(row['status'], 'installed')
+        self.assertEqual(row['licenseInfo']['license'], '许可待核实')
+        self.assertIsNone(row['download'])
+
     def test_missing_class_is_reported_and_model_is_unknown(self):
         info = info_fixture()
         del info["MixThree"]
