@@ -295,7 +295,12 @@ try {
  evidence.rpcTrace=await collectTrace();await writeFile(evidencePath,JSON.stringify(evidence,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify({ok:evidence.ok,integrationOk:true,performanceGates:evidence.performanceGates,evidenceFile:evidencePath}));
  if(evidence.strictLatency&&!evidence.performanceOk)process.exitCode=1;
 }catch(error){
- const diagnostic={firstRpcFailure,rpcTrace:await collectTrace()};try{diagnostic.state=await read();}catch{try{diagnostic.lastBrowserState=await page.evaluate(()=>window.pcgDemo?.getState());}catch{}}
+ const diagnostic={firstRpcFailure,rpcTrace:await collectTrace()};
+ // Export only the bounded, payload-free ledger; CI does not retain temp files.
+ const traceText=JSON.stringify({firstRpcFailure:diagnostic.firstRpcFailure,rpcTrace:diagnostic.rpcTrace});console.error('PCG_RPC_PHASE_BEGIN');
+ for(let offset=0;offset<traceText.length;offset+=4000)console.error('PCG_RPC_PHASE_CHUNK '+traceText.slice(offset,offset+4000));
+ console.error('PCG_RPC_PHASE_END');
+ try{diagnostic.state=await read();}catch{try{diagnostic.lastBrowserState=await page.evaluate(()=>window.pcgDemo?.getState());}catch{}}
  try{diagnostic.viewer=await viewer();}catch{}try{diagnostic.app=await diagnostics();}catch{}
  diagnostic.server={exitCode:server?.exitCode,signalCode:server?.signalCode};
  await writeFile(evidencePath,JSON.stringify({ok:false,error:error.message,evidence,diagnostic,pageErrors,externalRequests,failedRequests,serverLog:logs},null,2)+'\n',{flag:'wx'});console.error(JSON.stringify({ok:false,error:error.message,evidenceFile:evidencePath,run:(diagnostic.state||diagnostic.lastBrowserState)?.run,server:diagnostic.server,failedRequests,serverLog:logs}));throw error;
