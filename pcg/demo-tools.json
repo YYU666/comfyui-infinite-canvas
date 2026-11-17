@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "namespace": "refmuse.pcg.demo",
+  "tools": [
+    {
+      "name": "pcg_demo_describe",
+      "description": "发现隔离只读3D演示的工具、预算、实例与错误恢复；不启动生成。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {}
+        }
+      ],
+      "recovery": "先发现实际工具和实例，再读取状态；不使用正式画布端点。"
+    },
+    {
+      "name": "pcg_demo_open",
+      "description": "取得当前隔离演示页的URL和实例身份。客户端在浏览器打开URL即可；此工具不控制正式画布，也不自行重复打开窗口。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {}
+        }
+      ],
+      "recovery": "若服务未启动，使用独立运行目录和空闲端口启动本服务；不重启现有服务。"
+    },
+    {
+      "name": "pcg_demo_read_state",
+      "description": "读回真实运行阶段、受管产物、期望选择与浏览器实际绘制身份；须同时核对viewer.loaded、selectionEpoch及displayed.assetId与desired一致，不能把保留的旧模型当成新结果。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {}
+        }
+      ],
+      "recovery": "没有viewer回执时先打开页面；失败时读取run.error及保留模型的身份，不重复提交。"
+    },
+    {
+      "name": "pcg_demo_select",
+      "description": "按已发现assetId切换受管GLB。递增selectionEpoch；浏览器成功加载前保留上一模型，旧加载不能覆盖新选择。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "assetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "assetId"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "assetId": "从catalog复制实际assetId"
+          }
+        }
+      ],
+      "recovery": "ASSET_NOT_FOUND时重读catalog；不提交路径或URL。加载失败保留上次模型并读取viewer.error。"
+    },
+    {
+      "name": "pcg_demo_run",
+      "description": "在本服务自己的合成项目逐节点执行真实M2图并同步显示产物。仅本地CPU受限worker；不调用AI，不接现有生成端点。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "recipe": {
+            "type": "string",
+            "enum": [
+              "rock",
+              "scatter"
+            ],
+            "default": "rock"
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "default": 0
+          },
+          "roughness": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.4,
+            "default": 0.2
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "minDistance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "recipe": "rock",
+            "seed": 22,
+            "roughness": 0.3
+          }
+        },
+        {
+          "arguments": {
+            "recipe": "scatter",
+            "seed": 17,
+            "count": 100,
+            "minDistance": 0.6
+          }
+        }
+      ],
+      "recovery": "SESSION_BUSY时读回/等待已有run；ISOLATION_UNAVAILABLE时保留失败并修复宿主能力；INSUFFICIENT_PLACEMENT时显式降低数量/间距后新运行。"
+    },
+    {
+      "name": "pcg_demo_cancel",
+      "description": "只取消本实例拥有且runId精确匹配的活动演示；保留已有模型和记录。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "runId": "从state.run复制实际runId"
+          }
+        }
+      ],
+      "recovery": "身份不符先读回当前run；取消后等待终态再启动新演示，不中断其他服务。"
+    }
+  ]
+}

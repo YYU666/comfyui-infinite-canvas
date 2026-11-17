@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "name": "PCG M2 original-source inventory",
-  "scope": "M2 feature source, retained contract compatibility, fixtures and documentation; not a complete repository or interpreter distribution SBOM",
+  "name": "PCG M2 and isolated 3D demo original-source inventory",
+  "scope": "M2 feature source and isolated read-only 3D demo, fixtures and documentation; not a complete repository or interpreter distribution SBOM",
   "license": "Apache-2.0",
   "licenseFile": "LICENSE",
   "sourcePolicy": {
@@ -266,6 +266,114 @@
     },
     {
       "path": "docs/pcg/M2_REVIEW.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_demo_server.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_demo_session.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_demo_viewer/index.html",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_demo_viewer/app.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_demo_viewer/style.css",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_demo_viewer/glb.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_demo_viewer/renderer.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg/demo-tools.json",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg/DEMO_SESSION_API.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg/DEMO_VIEWER_API.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/DEMO_GUIDE.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/DEMO_STEPS.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_demo_server.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_demo_session.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test-pcg-demo-viewer.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test-pcg-demo-ui.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "scripts/run_node_tests.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/DEMO_REVIEW.md",
       "license": "Apache-2.0",
       "origin": "repository-original",
       "thirdPartyCopied": false
