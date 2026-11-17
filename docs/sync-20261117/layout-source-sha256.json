@@ -113,6 +113,14 @@
       "deployedSourceSha256": "86aa2b2835f0b949b5b4ba6d374278320f3c3750bd24085f5cb03c0b74565c90",
       "normalizedEqual": false,
       "reason": "Integrate this feature on current main, retain sprite-atlas and main safety fixes; add isolated synthetic regression coverage. Completed multi-input ports receive distinct offsets, fixing an issue found during integration review."
+    },
+    {
+      "path": "test-canvas-interaction-ui.mjs",
+      "gitNormalizedSha256": "344534e2490160e785b06bf7bff6ca23950131578963c8a4ff4e3125aded0b45",
+      "worktreeSha256": "344534e2490160e785b06bf7bff6ca23950131578963c8a4ff4e3125aded0b45",
+      "deployedSourceSha256": null,
+      "normalizedEqual": false,
+      "reason": "Adapt isolated fixture geometry for 440x550 media cards; original 240-unit spacing overlapped cards and the selected-node toolbar. Keep real pointer hit-testing and all assertions, without forced clicks."
     }
   ]
 }
