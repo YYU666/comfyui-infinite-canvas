@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -71,9 +72,10 @@ def evaluate_graph(request):
             result = cached; hits.append(node['nodeId'])
         outputs = {p['name']: p for p in descriptor['outputs']}; exact(result, {p['name'] for p in descriptor['outputs'] if p['required']}, outputs)
         for name, value in result.items(): validate_engine_value(value, outputs[name]['type'])
-        require(len(canonical(result)) <= descriptor['budget']['maxOutputBytes'], 'Node outputs exceed budget.', 'BUDGET_EXCEEDED')
+        output_bytes = canonical(result)
+        require(len(output_bytes) <= descriptor['budget']['maxOutputBytes'], 'Node outputs exceed budget.', 'BUDGET_EXCEEDED')
         values[node['nodeId']] = result
-        records.append({'nodeId': node['nodeId'], 'key': key, 'outputs': result, 'outputHash': __import__('pcg_contracts').content_hash(result), 'cacheHit': cached is not None, 'elapsedMs': (time.perf_counter() - started) * 1000})
+        records.append({'nodeId': node['nodeId'], 'key': key, 'outputs': result, 'outputHash': hashlib.sha256(output_bytes).hexdigest(), 'cacheHit': cached is not None, 'elapsedMs': (time.perf_counter() - started) * 1000})
         require(len(canonical(values)) <= MAX_GRAPH_BYTES, 'Graph outputs exceed budget.', 'BUDGET_EXCEEDED')
     require(plan['target'] in values, 'Missing graph target.')
     return {'outputs': values[plan['target']], 'records': records, 'computedNodes': computed, 'cacheHits': hits, 'inputHash': request['inputHash']}

@@ -1,6 +1,7 @@
 """Pure saved-graph planning, schema and bounded cache fixtures."""
 import copy
 import unittest
+from unittest import mock
 from pcg_contracts import PCGError, validate_parameters, validate_schema
 from pcg_graph import GraphCache, computation_key, dirty_nodes, plan_graph
 
@@ -32,6 +33,50 @@ class GraphTests(unittest.TestCase):
         self.assertEqual([n['nodeId'] for n in plan['nodes']], ['a', 'b'])
         plan, _ = plan_graph(self.document, 'join', self.registry)
         self.assertEqual([n['nodeId'] for n in plan['nodes']], ['a', 'b', 'c', 'join'])
+
+    def test_worker_output_bytes_match_hash_budget_and_cached_values(self):
+        from pcg_contracts import canonical, content_hash, load_registry
+        import pcg_worker
+        registry = load_registry()
+        document = {'canvas': {'nodes': [node('source', 'primitive'), node('move', 'transform')],
+                               'edges': [edge('source', 'move')]}}
+        plan, _ = plan_graph(document, 'move', registry)
+        request = {'protocolVersion': 2, 'projectId': 'prj_fixture', 'inputHash': 'a' * 64,
+                   'plan': plan, 'cache': {}}
+        encoded_values = []
+        def observed(value):
+            encoded_values.append(value)
+            return canonical(value)
+        with mock.patch('pcg_worker.canonical', side_effect=observed):
+            result = pcg_worker.evaluate_graph(request)
+        for record in result['records']:
+            self.assertEqual(record['outputHash'], content_hash(record['outputs']))
+            self.assertEqual(sum(value is record['outputs'] for value in encoded_values), 1)
+        request['cache'] = {r['key']: copy.deepcopy(r['outputs']) for r in result['records']}
+        before = copy.deepcopy(request)
+        cached = pcg_worker.evaluate_graph(request)
+        self.assertEqual(request, before)
+        self.assertEqual(cached['outputs'], result['outputs'])
+        self.assertEqual(cached['computedNodes'], [])
+        self.assertEqual(cached['cacheHits'], ['source', 'move'])
+
+    def test_worker_output_byte_limit_exact_and_one_byte_over(self):
+        from pcg_contracts import canonical, load_registry
+        from pcg_worker import evaluate_graph
+        registry = load_registry()
+        plan, _ = plan_graph({'canvas': {'nodes': [node('source', 'primitive')], 'edges': []}}, 'source', registry)
+        request = {'protocolVersion': 2, 'projectId': 'prj_fixture', 'inputHash': 'b' * 64,
+                   'plan': plan, 'cache': {}}
+        expected = evaluate_graph(request)
+        size = len(canonical(expected['outputs']))
+        primitive = next(d for d in registry['nodes'] if d['id'] == 'refmuse.pcg.primitive')
+        primitive['budget']['maxOutputBytes'] = size
+        with mock.patch('pcg_worker.load_registry', return_value=registry):
+            self.assertEqual(evaluate_graph(request)['outputs'], expected['outputs'])
+            primitive['budget']['maxOutputBytes'] = size - 1
+            with self.assertRaises(PCGError) as caught:
+                evaluate_graph(request)
+        self.assertEqual(caught.exception.code, 'BUDGET_EXCEEDED')
 
     def test_cycles_missing_duplicate_unknown_and_wrong_type(self):
         for changes, code in [([edge('b', 'a')], 'INPUT_UNAVAILABLE'), ([edge('a', 'b'), edge('c', 'b')], 'PORT_UNKNOWN')]:

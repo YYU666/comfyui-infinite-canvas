@@ -111,3 +111,14 @@ PR/push CI在59f3fad均失败：前者测试宿主0xC0000005后断网，后者ic
 最新真实画布canvas-66268-1794954446594.json通过12checks、90条命令全部done、8本机截图，实际端口3465测试结束已回收。逐步1/0→3/3→6/6，128面→256面→30共享实例7680面，改参50实例12800面，最终42实例；布局revision21→22、generation38→39、displayed handle22。刷新产生新session，多项目隔离、失败保留/恢复、迟到结果拒绝与context-loss恢复保留。关闭5buffer/1VAO/10776bytes全释放，live全0，外部请求/页面异常0。独立只读证据QA ACCEPT，未把该QA当人工审图或重新运行。
 
 原规模五样本m4-88576-1794954332367.json：integrationOk=true，performanceOk=false，overall ok=false；实例p50=2886.53/p95=2949.24ms（目标300），同拓扑p50=1349.93/p95=1367.65ms（目标1000）。不同解释器/负载轮次不用于推断优化因果。当前源码独立审查ACCEPT；本提交自己的CI另核。M4仍为REVISE，不进入M5。
+
+
+## 请求内输出编码复用后的验收
+
+worker对本节点已验证输出规范化一次，用同一局部字节计算SHA和原maxOutputBytes；宿主同一收到的输出编码复用于SHA、原预算与timing字节数。无跨请求缓存、全图累计预算替换或隔离更改。host在key错误时现在会先编码再拒绝，保留原错误代码与fail-closed；不宣称所有失败分支执行顺序完全相同。三项新测试覆盖真实几何/hash、cache及请求不变、worker/host恰好预算通过和超1字节拒绝。9项聚焦独立复跑通过，源码独立ACCEPT；完整PCG149项OK/2权限skip，CANONICAL_REUSE_PCG_FULL.log。
+
+真实画布canvas-29680-1794955604734.json：ok=true，12checks、94命令全done、8本机截图；实际端口2588测试结束回收。形状→组合→散布仍1/0→3/3→6/6、128→256面→30共享实例，改参/失败保留/断连/迟到/刷新/项目隔离与GPU恢复门全保留。layout22→23、generation35→36、displayed handle23，5buffer/1VAO/10776bytes全部释放，外网/页面异常0。命令数差异是轮询次数，未删断言或验收。
+
+m4-84652-1794955453176.json每档5样本，功能通过、性能与整体false：实例p50=3098.46/p95=3487.43ms，同拓扑p50=1566.62/p95=1617.10ms，仍不达300/1000ms门。确定性编码次数减少不等于端到端加速；不从不同负载轮次推断性能因果。无前端源变更，沿用已通过的Node65文件/构建；当前提交自身CI必须另核。M4保持REVISE，不进入M5。
+
+3a1c969的PR run44191401092另外失败于RPC236：read_state的fetch在11.5ms以TypeError失败，同上下文POST/mcp为ERR_NO_BUFFER_SPACE；rock/publish run已成功、error=null，服务进程未报告退出。账本保留RPC235结束而无236已绑定记录，窗口内28对锁申请即时取得并释放；无本请求锁等待或模型失败证据。源码中的ACK缺失轮询/失败后帧重试是条件放大路径，不足以证明本次网络错误根因。后续提交不能用旧CI绿替代。

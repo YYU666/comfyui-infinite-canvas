@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -261,10 +262,11 @@ class PCGRuntime:
                 require(record['nodeId'] == node['nodeId'] and type(record['cacheHit']) is bool and type(record['elapsedMs']) in (float, int) and 0 <= record['elapsedMs'] <= 60000, 'Invalid node trace.', 'WORKER_PROTOCOL')
                 inputs = {name: values[ref['nodeId']][ref['port']] for name, ref in node['inputs'].items()}
                 key = computation_key(node, inputs)
-                require(key == record['key'] and content_hash(record['outputs']) == record['outputHash'], 'Node hash differs.', 'WORKER_PROTOCOL')
+                output_bytes = canonical(record['outputs'])
+                require(key == record['key'] and hashlib.sha256(output_bytes).hexdigest() == record['outputHash'], 'Node hash differs.', 'WORKER_PROTOCOL')
                 d = find_descriptor(self.registry, node['descriptorId']); ports = {p['name']: p for p in d['outputs']}
                 exact(record['outputs'], {p['name'] for p in d['outputs'] if p['required']}, ports)
-                require(len(canonical(inputs)) <= d['budget']['maxInputBytes'] and len(canonical(record['outputs'])) <= d['budget']['maxOutputBytes'], 'Node byte budget exceeded.', 'BUDGET_EXCEEDED')
+                require(len(canonical(inputs)) <= d['budget']['maxInputBytes'] and len(output_bytes) <= d['budget']['maxOutputBytes'], 'Node byte budget exceeded.', 'BUDGET_EXCEEDED')
                 from pcg_fields import binding, validate_field
                 for name, value in record['outputs'].items():
                     validate_engine_value(value, ports[name]['type'])
@@ -283,7 +285,7 @@ class PCGRuntime:
                     require(key in request['cache'] and record['outputs'] == request['cache'][key], 'Worker cache claim differs.', 'WORKER_PROTOCOL'); hits.append(node['nodeId'])
                 else: computed.append(node['nodeId'])
                 values[node['nodeId']] = record['outputs']; accepted.append((key, record['outputs']))
-                timings.append({'nodeId': node['nodeId'], 'elapsedMs': record['elapsedMs'], 'cacheHit': record['cacheHit'], 'outputBytes': len(canonical(record['outputs']))})
+                timings.append({'nodeId': node['nodeId'], 'elapsedMs': record['elapsedMs'], 'cacheHit': record['cacheHit'], 'outputBytes': len(output_bytes)})
             require(result['computedNodes'] == computed and result['cacheHits'] == hits and result['outputs'] == values[request['plan']['target']], 'Execution set differs.', 'WORKER_PROTOCOL')
             from pcg_preview import render_preview_svg
             stage_bodies, preview_bytes = {}, 0
