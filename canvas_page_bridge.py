@@ -13,7 +13,8 @@ from project_store import StoreError
 TOOLS = frozenset({"canvas_move_nodes", "canvas_retry_save", "canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
                    "canvas_generate_node", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset",
                    "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
-                   "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node"})
+                   "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node",
+                   "canvas_publish_extension", "canvas_get_extension_publish_status"})
 LAUNCHER_TOOLS = frozenset({"canvas_get_state", "canvas_create_project", "canvas_open_project"})
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}")
 # A page-bridge wait holds the single command slot (heartbeats still run). Cap it
@@ -98,6 +99,21 @@ class CanvasPageBridge:
                 raise StoreError("BAD_REQUEST", "当前页通道只提交生成（wait:false），请用 canvas_get_state 或完成事件查询结果。")
             if tool == "canvas_wait_for_node":
                 args = self._bounded_wait_args(args)
+            if tool in {"canvas_publish_extension", "canvas_get_extension_publish_status"}:
+                publishing = tool == "canvas_publish_extension"
+                expected = {"requestId", "digest", "packageId", "version"} if publishing else {"requestId"}
+                if set(args) - ({"mode"} if publishing else set()) != expected:
+                    raise StoreError("BAD_REQUEST", "Invalid publication request fields.")
+                self._id(args, "requestId")
+                if publishing:
+                    if (not isinstance(args["digest"], str) or not re.fullmatch(r"[a-f0-9]{64}", args["digest"])
+                            or not isinstance(args["packageId"], str) or len(args["packageId"]) > 128
+                            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*", args["packageId"])
+                            or not isinstance(args["version"], str) or len(args["version"]) > 128
+                            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?", args["version"])
+                            or not isinstance(args.get("mode", "update"), str) or args.get("mode", "update") not in ("update", "publish")):
+                        raise StoreError("BAD_REQUEST", "Invalid publication package identity.")
+                    args = {**args, "mode": args.get("mode", "update")}
             identity = {"sessionId": session_id, "projectId": project_id, "tool": tool, "args": args}
             encoded = json.dumps(identity, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
             if len(encoded) > 32768:
