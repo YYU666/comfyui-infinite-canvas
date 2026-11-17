@@ -5,7 +5,9 @@ import copy
 import os
 from pathlib import Path
 import stat
+import threading
 import urllib.parse
+from collections import OrderedDict
 from pcg_contracts import PCGError, canonical, require, safe_components, token
 
 MAX_ASSET_BYTES = 64 * 1024 * 1024
@@ -15,6 +17,37 @@ class GeometryAssetBroker:
     def __init__(self, store):
         self.store = store
         self.records = {}
+        self._summaries = OrderedDict()
+        self._summary_bytes = 0
+        self._summary_lock = threading.Lock()
+
+    def summary(self, project_id, value):
+        from pcg_geometry import validate_geometry, summarize
+        token(project_id)
+        validate_geometry(value)
+        key = (project_id, hashlib.sha256(canonical(value)).hexdigest())
+        with self._summary_lock:
+            cached = self._summaries.get(key)
+            if cached is not None:
+                self._summaries.move_to_end(key)
+                return copy.deepcopy(cached[0])
+        report = summarize(value)
+        size = len(canonical(report))
+        with self._summary_lock:
+            if size <= 4 * 1024 * 1024:
+                previous = self._summaries.pop(key, None)
+                if previous is not None: self._summary_bytes -= previous[1]
+                self._summaries[key] = (copy.deepcopy(report), size)
+                self._summary_bytes += size
+                while len(self._summaries) > 32 or self._summary_bytes > 4 * 1024 * 1024:
+                    _, (_, removed) = self._summaries.popitem(last=False)
+                    self._summary_bytes -= removed
+        return copy.deepcopy(report)
+
+    def clear_summary_cache(self):
+        with self._summary_lock:
+            self._summaries.clear()
+            self._summary_bytes = 0
 
     @staticmethod
     def _handle(task):
@@ -22,7 +55,7 @@ class GeometryAssetBroker:
         return {k: task[k] for k in HANDLE}
 
     def publish(self, task, port, value, format, producer_node_id=None, prepared_body=None):
-        from pcg_geometry import validate_geometry, summarize
+        from pcg_geometry import validate_geometry
         from pcg_export import export_glb
         validate_geometry(value)
         producer_node_id = producer_node_id or task['nodeId']; token(producer_node_id)
@@ -64,7 +97,7 @@ class GeometryAssetBroker:
                   'mime': {'glb': 'model/gltf-binary', 'json': 'application/json', 'svg': 'image/svg+xml'}[format],
                   'role': {'glb': 'model', 'json': 'data', 'svg': 'preview'}[format],
                   'producerNodeId': producer_node_id, 'port': port, 'jobId': task['jobId'], 'runId': task['runId'], 'inputHash': task['inputHash'],
-                  'projectId': task['projectId'], 'revision': task['revision'], 'summary': summarize(value),
+                  'projectId': task['projectId'], 'revision': task['revision'], 'summary': self.summary(task['projectId'], value),
                   'url': '/api/pcg/artifacts/' + artifact_id + '?' + query}
         self.records[artifact_id] = {'public': public, 'handle': self._handle(task), 'path': target}
         return copy.deepcopy(public)

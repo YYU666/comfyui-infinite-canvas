@@ -303,7 +303,7 @@ class PCGRuntime:
                     require(retained + len(canonical(outputs)) <= 64 * 1024 * 1024, 'Retained geometry capacity reached.', 'TASK_CAPACITY', 503)
                     for name, value in outputs.items():
                         if value.get('type') in {'Mesh', 'PointSet', 'InstanceSet'}:
-                            summaries[name] = summarize(value)
+                            summaries[name] = self.assets.summary(task['projectId'], value)
                             artifacts.append(self.assets.publish(task, name, value, 'glb'))
                             artifacts.append(self.assets.publish(task, name, value, 'json'))
                             artifacts.append(self.assets.publish(task, name, value, 'svg'))
@@ -316,7 +316,7 @@ class PCGRuntime:
                         stage = {'nodeId': record['nodeId'], 'runId': task['runId'], 'jobId': task['jobId'], 'inputHash': task['inputHash'], 'outputHash': record['outputHash'], 'cacheHit': record['cacheHit'], 'elapsedMs': record['elapsedMs'], 'outputs': {}, 'assets': []}
                         for port, value in record['outputs'].items():
                             if value.get('type') in {'Mesh', 'PointSet', 'InstanceSet'}:
-                                stage['outputs'][port] = summarize(value)
+                                stage['outputs'][port] = self.assets.summary(task['projectId'], value)
                                 stage['assets'].append(self.assets.publish(task, port, value, 'svg', producer_node_id=record['nodeId'], prepared_body=stage_bodies[(record['nodeId'], port)]))
                             elif value.get('type') == 'DiagnosticReport': stage['outputs'][port] = copy.deepcopy(value)
                             else:
@@ -459,3 +459,4 @@ class PCGRuntime:
         for task in tasks:
             thread = task['_thread']
             if thread: thread.join(timeout=6)
+        self.assets.clear_summary_cache()

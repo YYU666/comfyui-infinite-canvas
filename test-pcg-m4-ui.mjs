@@ -22,7 +22,7 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const terminal=new Set(['succeeded','failed','cancelled']);
 const evidence={contract:'M4 real MCP/browser acceptance',startedAt:new Date().toISOString(),hardware:{platform:platform(),release:release(),cpu:cpus()[0]?.model,cpuLogical:cpus().length,ramBytes:totalmem()},checks:[],activeFramedStages:[],samples:{instance:[],mesh:[],mesh100k:[]},performanceGates:{},limitations:['Headless Chromium uses SwiftShader; logical GPU counters are not physical VRAM measurements.','100k fixture is self-authored test geometry, not an M2 recipe performance claim.']};
 let browser,page,server,instance,logs='',requestId=0;
-const pageErrors=[],externalRequests=[];
+const pageErrors=[],externalRequests=[],failedRequests=[];
 const stagePython=String.raw`
 import json,os,pathlib,shutil,sys,sysconfig,zipfile
 assert os.name == 'nt', 'Real AppContainer browser acceptance requires Windows.'
@@ -175,6 +175,7 @@ try {
  assert.equal(instance.pid,server.pid);assert.ok(instance.port>0&&![8188,8189,8790].includes(instance.port));evidence.port=instance.port;
  browser=await chromium.launch({headless:true,args:['--use-angle=swiftshader','--enable-unsafe-swiftshader','--disable-dev-shm-usage','--enable-precise-memory-info']});
  const context=await browser.newContext({viewport:{width:1360,height:960}});
+ context.on('requestfailed',request=>failedRequests.push({method:request.method(),path:new URL(request.url()).pathname,error:request.failure()?.errorText}));
  await context.route('**/*',async route=>{if(!route.request().url().startsWith(instance.url)){externalRequests.push(route.request().url());await route.abort();}else await route.continue();});
  page=await context.newPage();page.on('pageerror',e=>pageErrors.push(e.message));await page.addInitScript(()=>performance.setResourceTimingBufferSize(3000));await page.goto(instance.url,{waitUntil:'domcontentloaded'});await page.waitForFunction(()=>!!window.pcgDemo?.getState());
  evidence.hardware.browser=await browser.version();evidence.hardware.webgl=await page.evaluate(()=>{const gl=document.getElementById('model').getContext('webgl2'),e=gl.getExtension('WEBGL_debug_renderer_info');return {vendor:gl.getParameter(e?.UNMASKED_VENDOR_WEBGL||gl.VENDOR),renderer:gl.getParameter(e?.UNMASKED_RENDERER_WEBGL||gl.RENDERER)};});
@@ -253,8 +254,10 @@ try {
  await writeFile(evidencePath,JSON.stringify(evidence,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify({ok:evidence.ok,integrationOk:true,performanceGates:evidence.performanceGates,evidenceFile:evidencePath}));
  if(evidence.strictLatency&&!evidence.performanceOk)process.exitCode=1;
 }catch(error){
- let diagnostic=null;try{diagnostic={state:await read(),viewer:await viewer(),app:await diagnostics()};}catch{}
- await writeFile(evidencePath,JSON.stringify({ok:false,error:error.message,evidence,diagnostic,pageErrors,externalRequests,serverLog:logs},null,2)+'\n',{flag:'wx'});console.error(JSON.stringify({ok:false,error:error.message,evidenceFile:evidencePath,run:diagnostic?.state?.run,serverLog:logs}));throw error;
+ const diagnostic={};try{diagnostic.state=await read();}catch{try{diagnostic.lastBrowserState=await page.evaluate(()=>window.pcgDemo?.getState());}catch{}}
+ try{diagnostic.viewer=await viewer();}catch{}try{diagnostic.app=await diagnostics();}catch{}
+ diagnostic.server={exitCode:server?.exitCode,signalCode:server?.signalCode};
+ await writeFile(evidencePath,JSON.stringify({ok:false,error:error.message,evidence,diagnostic,pageErrors,externalRequests,failedRequests,serverLog:logs},null,2)+'\n',{flag:'wx'});console.error(JSON.stringify({ok:false,error:error.message,evidenceFile:evidencePath,run:(diagnostic.state||diagnostic.lastBrowserState)?.run,server:diagnostic.server,failedRequests,serverLog:logs}));throw error;
 }finally{
  await browser?.close();if(server&&server.exitCode===null){server.stdin.end();await Promise.race([new Promise(resolve=>server.once('exit',resolve)),sleep(10000)]);if(server.exitCode===null){server.kill('SIGTERM');await new Promise(resolve=>server.once('exit',resolve));}}
  assert.ok(path.resolve(temporary).startsWith(path.resolve(tmpdir())+path.sep)&&path.basename(temporary).startsWith('pcg-m4-ui-'),'Owned temporary cleanup only.');await rm(temporary,{recursive:true,force:true,maxRetries:4,retryDelay:100});
