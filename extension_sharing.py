@@ -131,9 +131,12 @@ def share_extension(store, payload, object_info):
     # Rebuild descriptions from the public contract; imported metadata may contain private paths.
     definition["name"] = name
     definition["description"] = description
+    port_fields = {"id", "type", "required", "list"}
+    if staged and definition["execution"]["version"] >= 3:
+        port_fields |= {"label", "fallback"}
     for port in definition["inputs"]:
         for key in list(port):
-            if key not in {"id", "type", "required", "list"}:
+            if key not in port_fields:
                 port.pop(key)
     for output in definition["outputs"]:
         for key in list(output):
@@ -161,7 +164,7 @@ def share_extension(store, payload, object_info):
                 "licenses": {"workflow": license_id}, "verification": {"environments": [], "examples": []},
                 "nodes": [{"nodeDefinitionId": definition["nodeDefinitionId"], "definition": "nodes/workflow.json", "workflow": "workflows/workflow.json"}]}
     if staged:
-        manifest["compatibility"]["workbenchVersion"] = ">=1.0.2"
+        manifest["compatibility"]["workbenchVersion"] = ">=1.0.6" if definition["execution"]["version"] >= 2 else ">=1.0.2"
     if thumbnail:
         manifest["preview"] = thumbnail
     report = dependency_report({"manifest": manifest, "nodes": [{"definition": definition, "workflow": workflow}]},
