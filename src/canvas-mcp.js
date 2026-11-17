@@ -9,8 +9,12 @@ import { CHANNEL_KEYS, normalizeChannelPackSettings } from './channel-packing.js
 import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-references.js';
 import { availableNodePresets } from './local-node-tools.js';
 import { DEFAULT_SPRITE_OPTIONS, spriteSnapshot } from './sprite-atlas.js';
+import { PCG_PRESETS, isPcgNode, pcgNodeDescriptor, validatePcgSchema } from './pcg-registry.js';
+import { pcgTaskHandle } from './pcg-runtime.js';
+import { createPcgTools } from './pcg-mcp.js';
 
 export const NODE_PRESETS = {
+  ...PCG_PRESETS,
   sprite_atlas: ['spriteAtlas', { title: '3D 角色转多方向图集', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS } }],
   art_director: ['artDirector', { title: '电子主美 · 图解分析', brief: '', preserve: '', referencePurposes: {} }],
   color_adjust: ['imageProcess', { ...DEFAULT_ADJUSTMENTS, mode: 'colorAdjust', title: '颜色调整' }],
@@ -158,6 +162,7 @@ export function nodeSummary(node, includeContent = true) {
     type: node.type,
     title: node.data.title || '',
     kind: node.data.kind,
+    ...(isPcgNode(node) ? { descriptorId: node.data.descriptorId, descriptorVersion: node.data.descriptorVersion, operationVersion: node.data.operationVersion, parameters: node.data.parameters } : {}),
     ...(node.type === 'spriteAtlas' ? { spriteInputPath: node.data.spriteInputPath, spriteOptions: node.data.spriteOptions, spriteJobId: node.data.spriteJobId, spriteFiles: node.data.spriteFiles } : {}),
     ...(node.data.mediaRole === 'mask' ? { mediaRole: 'mask', maskSourceId: node.data.maskSourceId } : {}),
     mode: node.data.mode,
@@ -233,6 +238,7 @@ function mcpNode(latest, id) {
 
 export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
+  if (isPcgNode(initial)) return latest.current.actions.pcg.runNode(nodeId, { wait, timeoutMs: Math.min(20000, timeoutMs) });
   if (['uploading', 'queued', 'running', 'finishing'].includes(initial.data.status)) throw new Error('节点已经在生成，请使用 canvas_wait_for_node 等待，避免重复提交。');
   if (initial.type === 'spriteAtlas') {
     const result = await latest.current.actions.generateNode(nodeId);
@@ -282,6 +288,12 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
 
 export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
+  if (isPcgNode(initial)) {
+    const task = latest.current.actions.getPcgState(nodeId).task;
+    if (!task) throw new Error('PCG 节点尚无任务；请用 canvas_pcg_list_tasks 恢复，或先提交运行。');
+    const result = await latest.current.actions.pcg.invoke('wait', { ...pcgTaskHandle(task), timeoutMs: Math.min(20000, timeoutMs) });
+    return { ...result, pending: ['queued', 'running'].includes(result.task.status), node: nodeSummary(initial), resultNode: null };
+  }
   if (initial.type === 'spriteAtlas') {
     if (!initial.data.spriteJobId) throw new Error('精灵图节点尚未提交任务。');
     try {
@@ -359,10 +371,13 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           const ids = new Set(nodes.map((node) => node.id));
           return {
             projectName: latest.current.projectName,
+            projectId: latest.current.projectId,
+            ...(latest.current.actions.getPcgContext ? { revision: latest.current.actions.getPcgContext().revision } : {}),
             server: latest.current.server,
             nodeCount: latest.current.nodesRef.current.length,
             nodes: nodes.map((node) => {
               const summary = nodeSummary(node, includePrompt);
+              if (isPcgNode(node)) return { ...summary, ...latest.current.actions.getPcgState?.(node.id) };
               if (node.data.mode !== 'qwenEdit') return summary;
               const references = qwenCanvasReferences(node, latest.current.nodesRef.current, latest.current.edgesRef.current);
               return { ...summary, maskNodeId: latest.current.edgesRef.current.find((edge) => edge.target === node.id && edge.targetHandle === 'mask')?.source || null, referenceNodeIds: references.map((ref) => ref.id), referenceCount: references.length,
@@ -436,6 +451,14 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         }, ['nodeId']),
         execute: respond(async ({ nodeId, title, prompt, text, settings = {} }) => {
           const current = getNode(nodeId);
+          if (isPcgNode(current)) {
+            const descriptor = pcgNodeDescriptor(current);
+            if (prompt !== undefined || text !== undefined || Object.keys(settings).some(key => key !== 'parameters')) throw new Error('PCG 节点仅支持标题与 settings.parameters；参数 schema 请读 canvas_pcg_describe。');
+            if (Object.hasOwn(settings, 'parameters')) validatePcgSchema(settings.parameters, descriptor.parameters, 'parameters');
+            const patch = { ...settings, ...(title !== undefined ? { title } : {}) };
+            latest.current.actions.updateNode(nodeId, patch);
+            return { node: nodeSummary(await waitFor(() => { const node = getNode(nodeId); return Object.entries(patch).every(([key, value]) => node.data[key] === value) ? node : null; })) };
+          }
           if (['uploading', 'queued', 'running', 'finishing'].includes(current.data.status)) throw new Error('节点正在生成，请先完成或取消后再修改。');
           const unknown = Object.keys(settings).filter((key) => !EDITABLE_SETTINGS.has(key));
           if (unknown.length) throw new Error(`不支持的参数：${unknown.join(', ')}`);
@@ -463,13 +486,15 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         inputSchema: schema({
           sourceId: nodeIdProperty,
           targetId: nodeIdProperty,
+          sourceHandle: { type: 'string', description: 'PCG 必须明确指定共享 descriptor 中的输出端口名称。' },
           targetHandle: { type: 'string', description: '目标端口。自定义工作流必须指定定义中的输入 id；内置节点通常留空自动判断。' },
         }, ['sourceId', 'targetId']),
-        execute: respond(async ({ sourceId, targetId, targetHandle }) => {
+        execute: respond(async ({ sourceId, targetId, sourceHandle, targetHandle }) => {
           const source = getNode(sourceId);
           const target = getNode(targetId);
-          const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || defaultTargetHandle(target, source);
-          const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
+          const pcg = isPcgNode(source) || isPcgNode(target);
+          const handle = pcg ? targetHandle : target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || defaultTargetHandle(target, source);
+          const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: pcg ? sourceHandle : source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
           if (connected?.error) throw new Error(connected.error);
           const edge = await waitFor(() => {
             return latest.current.edgesRef.current.find((item) => connected?.edgeId ? item.id === connected.edgeId : item.source === sourceId && item.target === targetId && item.targetHandle === handle) || null;
@@ -540,6 +565,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         }),
       },
     ];
+    tools.push(...createPcgTools(latest, { connectionTool: tools.find(tool => tool.name === 'canvas_connect_nodes'), summarize: nodeSummary, waitForNode: (id, predicate = () => true) => waitFor(() => { const node = latest.current.nodesRef.current.find(item => item.id === id); return node && predicate(node) ? node : null; }) }));
     tools.push({
       name: 'canvas_retry_save',
       description: '显式重试当前页面保存，保留未保存修改及版本冲突保护；不会重新生成或刷新页面。',
@@ -569,7 +595,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
     for (const tool of tools) {
       const original = tool.execute;
       tool.execute = async (args = {}, executionOptions) => {
-        const mutation = !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
+        const mutation = !tool.annotations?.readOnlyHint && !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
         const result = JSON.parse(await original(args, executionOptions));
         if (mutation && result.ok && !['canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {

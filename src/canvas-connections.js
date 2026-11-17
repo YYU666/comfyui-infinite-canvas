@@ -2,6 +2,7 @@ import { ART_PORTS } from './art-director.js';
 import { isMaskNode } from './canvas-mask.js';
 import { qwenCanvasReferences } from './qwen-references.js';
 import { isImageProcess, acceptsImageProcessConnection } from './image-process-graph.js';
+import { isPcgNode, planPcgConnection } from './pcg-registry.js';
 
 const busy = (node) => ['uploading', 'queued', 'running', 'finishing'].includes(node?.data?.status);
 const fail = (error) => ({ error });
@@ -27,6 +28,7 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   const target = nodes.find((node) => node.id === connection.target);
   if (!requestedSource || !target) return fail('连接的节点已不存在。');
   if (requestedSource.id === target.id) return fail('不能连接节点自身。');
+  if (isPcgNode(requestedSource) || isPcgNode(target)) return planPcgConnection(connection, nodes, edges);
   const resolved = resolveConnectionSource(requestedSource, connection.sourceHandle, nodes, edges);
   if (resolved.error) return resolved;
   const source = resolved.source;

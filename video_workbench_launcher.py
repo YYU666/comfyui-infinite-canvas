@@ -32,6 +32,7 @@ from workflow_extensions import ExtensionStore
 from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_websocket
 from thumbnail_cache import ThumbnailCache
 from project_api import ProjectAPI
+from pcg_api import PCGAPI
 from art_director import ArtDirectorAPI
 from pureref_sessions import PureRefSessions
 from sprite_atlas import SpriteAtlasAPI
@@ -235,6 +236,11 @@ def shutdown_workbench(server, *, preserve_comfy=False):
             server.pureref_sessions.close()
         except Exception:
             LOGGER.exception("关闭 PureRef 会话失败。")
+    if server is not None and getattr(server, "pcg_api", None):
+        try:
+            server.pcg_api.close()
+        except Exception:
+            LOGGER.exception("关闭 PCG 诊断任务失败。")
     if server is not None and hasattr(server, "sprite_atlas_api"):
         try:
             server.sprite_atlas_api.close()
@@ -609,6 +615,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request():
             return
         path = urllib.parse.urlparse(self.path).path
+        if getattr(self.server, 'pcg_api', None) and self.server.pcg_api.handle(self, 'GET', path):
+            return
         if path.startswith('/api/sprite-atlas/') and getattr(self.server, 'sprite_atlas_api', None) and self.server.sprite_atlas_api.handle(self, "GET", path):
             return
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "GET", path):
@@ -725,6 +733,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if getattr(self.server, 'pcg_api', None) and self.server.pcg_api.handle(self, 'POST', path):
+            return
         if path.startswith('/api/sprite-atlas/') and getattr(self.server, 'sprite_atlas_api', None) and self.server.sprite_atlas_api.handle(self, "POST", path):
             return
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "POST", path):
@@ -884,6 +894,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 def validate_update_ready(server):
     if getattr(server, "sprite_atlas_api", None) and server.sprite_atlas_api.active_count():
         raise UpdateError("精灵图仍有活动渲染任务，完成或取消后才能升级。", status=409, code="QUEUE_BUSY")
+    if getattr(server, "pcg_api", None) and server.pcg_api.active_count():
+        raise UpdateError("PCG 仍有活动诊断任务，完成后才能升级。", status=409, code="QUEUE_BUSY")
     store = server.project_store
     reclaimed = store.reclaim_dead_locks() if hasattr(store, "reclaim_dead_locks") else []
     held = store.held_project_details() if hasattr(store, "held_project_details") else ([{"id": None, "name": None, "stale": False}] if store._held else [])
@@ -917,6 +929,8 @@ def validate_settings_change(server, candidate):
         return
     if getattr(server, "sprite_atlas_api", None) and server.sprite_atlas_api.active_count():
         raise SettingsError("精灵图仍有活动渲染任务，完成或取消后才能切换项目根目录。", status=409, code="QUEUE_BUSY")
+    if getattr(server, "pcg_api", None) and server.pcg_api.active_count():
+        raise SettingsError("PCG 仍有活动诊断任务，完成后才能切换项目根目录。", status=409, code="QUEUE_BUSY")
     if server.project_store._held:
         raise SettingsError("仍有项目处于打开或编辑状态，请关闭项目后再切换项目根目录。", status=409, code="LOCKED")
     active = [job for job in server.queue_manager.snapshot()["jobs"] if job.get("status") in {"queued", "running", "finishing"}]
@@ -935,6 +949,8 @@ def apply_server_settings(server):
         replacement = ProjectStore(projects_root, previous.owner_id, defaults)
         server.project_store = replacement
         server.project_api.store = replacement
+        if getattr(server, 'pcg_api', None):
+            server.pcg_api.store = replacement
         if getattr(server, 'pureref_sessions', None):
             server.pureref_sessions.store = replacement
         if getattr(server, 'sprite_atlas_api', None):
@@ -1016,6 +1032,7 @@ def main(argv=None):
             logging.getLogger().setLevel(server.settings.data["logLevel"])
             server.project_store = ProjectStore(server.settings.data["projectsRoot"], defaults=server.settings.data["defaults"])
             server.project_api = ProjectAPI(server.project_store)
+            server.pcg_api = PCGAPI(server.project_store)
             server.pureref_sessions = PureRefSessions(server.project_store)
             server.sprite_atlas_api = SpriteAtlasAPI(server.project_store, runtime_dir() / "sprite-atlas")
             server.art_director_api = ArtDirectorAPI(server.project_store)
