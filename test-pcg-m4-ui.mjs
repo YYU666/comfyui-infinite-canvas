@@ -21,7 +21,7 @@ assert.ok(Number.isInteger(iterations)&&iterations>=3&&iterations<=20);
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const terminal=new Set(['succeeded','failed','cancelled']);
 const evidence={contract:'M4 real MCP/browser acceptance',startedAt:new Date().toISOString(),hardware:{platform:platform(),release:release(),cpu:cpus()[0]?.model,cpuLogical:cpus().length,ramBytes:totalmem()},checks:[],activeFramedStages:[],samples:{instance:[],mesh:[],mesh100k:[]},performanceGates:{},limitations:['Headless Chromium uses SwiftShader; logical GPU counters are not physical VRAM measurements.','100k fixture is self-authored test geometry, not an M2 recipe performance claim.']};
-let browser,page,server,instance,logs='',requestId=0;
+let browser,page,server,instance,logs='',requestId=0,firstRpcFailure=null;
 const pageErrors=[],externalRequests=[],failedRequests=[];
 const stagePython=String.raw`
 import json,os,pathlib,shutil,sys,sysconfig,zipfile
@@ -98,35 +98,56 @@ for variant,y in enumerate([.125,.375]):
 (target/'EVIDENCE.json').write_bytes(canonical({'runs':runs}))
 print(json.dumps({'triangles':len(triangles),'vertices':(nx+1)*(nz+1),'assets':[{'label':r['name'],'bytes':r['assetsLocal'][0]['bytes'],'sha256':r['assetsLocal'][0]['sha256']} for r in runs]}))
 `;
-const bootstrap=String.raw`import atexit,faulthandler,json,runpy,sys,threading,time
+const bootstrap=String.raw`import atexit,faulthandler,json,pathlib,sys,threading,time
 faulthandler.enable(all_threads=True)
+sys.path.extend(json.loads(sys.argv[2]));sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[3:]
+import pcg_demo_server
+from scripts.pcg_m4_rpc_trace import install,write_once
+ledger=install(pcg_demo_server)
+trace_root=pathlib.Path(sys.argv[sys.argv.index('--runtime-dir')+1])
 stop_diagnostics=threading.Event()
 def diagnostic_samples():
-    for index in range(2):
-        if stop_diagnostics.wait(120): return
-        print('PCG_STACK_SAMPLE_BEGIN', index+1, time.monotonic(), file=sys.stderr, flush=True)
-        faulthandler.dump_traceback(all_threads=True)
-        print('PCG_STACK_SAMPLE_END', index+1, time.monotonic(), file=sys.stderr, flush=True)
+    index=0;next_sample=time.monotonic()+120;exported=False
+    while not stop_diagnostics.wait(.1):
+        if not exported and (trace_root/'rpc-trace-request').exists():
+            write_once(ledger,trace_root/'rpc-trace.json');exported=True
+        if index<2 and time.monotonic()>=next_sample:
+            index+=1;next_sample+=120
+            print('PCG_STACK_SAMPLE_BEGIN', index, time.monotonic(), file=sys.stderr, flush=True)
+            faulthandler.dump_traceback(all_threads=True)
+            print('PCG_STACK_SAMPLE_END', index, time.monotonic(), file=sys.stderr, flush=True)
 diagnostics_thread=threading.Thread(target=diagnostic_samples,daemon=True)
 diagnostics_thread.start()
 def stop_samples():
     stop_diagnostics.set()
     diagnostics_thread.join(2)
 atexit.register(stop_samples)
-sys.path.extend(json.loads(sys.argv[2]));sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[3:]
 try:
-    runpy.run_path(sys.argv[0],run_name='__main__')
+    pcg_demo_server.main()
 finally:
     stop_samples()
 `;
 async function rpc(method,params={}) {
  const id=++requestId;
  const answer=await page.evaluate(async({id,method,params})=>{
-  const response=await fetch('/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id,method,params}),signal:AbortSignal.timeout(30000)});
-  return {status:response.status,value:await response.json()};
+  const timing={dispatchMs:performance.now()};
+  try{
+   const response=await fetch('/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id,method,params}),signal:AbortSignal.timeout(30000)});
+   timing.headersMs=performance.now()-timing.dispatchMs;const value=await response.json();timing.bodyMs=performance.now()-timing.dispatchMs;
+   return {status:response.status,value,timing};
+  }catch(error){timing.abortMs=performance.now()-timing.dispatchMs;return {failure:error.name,timing};}
  },{id,method,params});
+ if(answer.failure){firstRpcFailure??={id,method,tool:params.name||null,...answer};try{await requestTrace();}catch{firstRpcFailure.traceSignalFailed=true;}throw new Error('M4 MCP RPC failed: '+answer.failure+' requestId='+id);}
  assert.equal(answer.status,200,JSON.stringify(answer.value));assert.equal(answer.value.id,id);assert.equal(answer.value.error,undefined);
  return answer.value.result;
+}
+async function requestTrace(){try{await writeFile(path.join(runtime,'rpc-trace-request'),'1',{flag:'wx'});return true;}catch(error){if(error.code==='EEXIST')return true;if(error.code==='ENOENT')return false;throw error;}}
+async function collectTrace(){
+ try{
+  if(!await requestTrace())return {unavailable:true,reason:'runtime-not-created'};const deadline=performance.now()+2000;
+  do{try{const body=await readFile(path.join(runtime,'rpc-trace.json'));assert.ok(body.length<=65536);return JSON.parse(body);}catch(error){if(error.code!=='ENOENT')throw error;}await sleep(50);}while(performance.now()<deadline);
+  return {unavailable:true,reason:'no-diagnostic-reply'};
+ }catch{return {unavailable:true,reason:'diagnostic-read-failed'};}
 }
 async function call(name,args={},errorCode=null) {
  const response=await rpc('tools/call',{name,arguments:args});
@@ -271,10 +292,10 @@ try {
  evidence.mesh100kLatency=quantiles(evidence.samples.mesh100k.map(s=>s.selectToFrameAckMs));
  for(const gate of Object.values(evidence.performanceGates))assert.ok(gate.n>=3&&Number.isFinite(gate.p50)&&Number.isFinite(gate.p95),'No empty or nonfinite performance evidence.');
  evidence.integrationOk=true;evidence.performanceOk=Object.values(evidence.performanceGates).every(g=>g.passed);evidence.ok=evidence.integrationOk&&evidence.performanceOk;evidence.strictLatency=process.env.PCG_M4_STRICT_LATENCY==='1';
- await writeFile(evidencePath,JSON.stringify(evidence,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify({ok:evidence.ok,integrationOk:true,performanceGates:evidence.performanceGates,evidenceFile:evidencePath}));
+ evidence.rpcTrace=await collectTrace();await writeFile(evidencePath,JSON.stringify(evidence,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify({ok:evidence.ok,integrationOk:true,performanceGates:evidence.performanceGates,evidenceFile:evidencePath}));
  if(evidence.strictLatency&&!evidence.performanceOk)process.exitCode=1;
 }catch(error){
- const diagnostic={};try{diagnostic.state=await read();}catch{try{diagnostic.lastBrowserState=await page.evaluate(()=>window.pcgDemo?.getState());}catch{}}
+ const diagnostic={firstRpcFailure,rpcTrace:await collectTrace()};try{diagnostic.state=await read();}catch{try{diagnostic.lastBrowserState=await page.evaluate(()=>window.pcgDemo?.getState());}catch{}}
  try{diagnostic.viewer=await viewer();}catch{}try{diagnostic.app=await diagnostics();}catch{}
  diagnostic.server={exitCode:server?.exitCode,signalCode:server?.signalCode};
  await writeFile(evidencePath,JSON.stringify({ok:false,error:error.message,evidence,diagnostic,pageErrors,externalRequests,failedRequests,serverLog:logs},null,2)+'\n',{flag:'wx'});console.error(JSON.stringify({ok:false,error:error.message,evidenceFile:evidencePath,run:(diagnostic.state||diagnostic.lastBrowserState)?.run,server:diagnostic.server,failedRequests,serverLog:logs}));throw error;
