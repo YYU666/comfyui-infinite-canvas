@@ -25,6 +25,7 @@ const suites = {
     'test-image-process-graph.mjs',
     'test-image-process-runtime.mjs',
     'test-api.mjs',
+    'test-upload-identity.mjs',
     'test-browser-public-network.mjs',
     'test-auto-save.mjs',
     'test-canvas-clipboard.mjs',
