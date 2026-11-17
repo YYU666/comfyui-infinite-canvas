@@ -238,7 +238,7 @@ try {
   await page.unroute(oldUrl,delayed);evidence.checks.push('late GLB discarded / stale ACK rejected');
   const corrupt=route=>route.fulfill({status:200,contentType:'model/gltf-binary',body:Buffer.from('invalid owned test response')});
   await page.route(oldUrl,corrupt);await api('pcg_demo_select',{assetId:firstAsset.assetId});
-  await page.waitForFunction(()=>window.pcgDemo.getDiagnostics().localError.includes('GLB'));
+  await page.waitForFunction(()=>window.pcgDemo.getDiagnostics().localError.includes('加载失败'));
   assert.equal((await page.evaluate(()=>window.pcgDemo.getViewerState())).loadedIdentity.assetId,latestAsset.assetId);
   const loadFailure=await read();assert.equal(loadFailure.viewer.displayed.assetId,latestAsset.assetId);await pixels('retainedAfterLoadFailure');
   await page.unroute(oldUrl,corrupt);await select(latestAsset);evidence.checks.push('damaged response rejected / previous displayed GPU scene retained');

@@ -35,3 +35,23 @@ A failed parse or upload preserves the previous scene, loaded identity, framing 
 ## Local verification
 
 `node --test test-pcg-demo-viewer.mjs` generates actual Mesh, rock, PointSet and shared-instance GLBs in memory through the existing Python exporter. It tests strict decode/budgets/transforms and lifecycle/ownership/races with a WebGL API double. It does not claim real GPU pixels: the integrating browser test must independently check visible geometry, turntable changes, camera framing and active identity. No model or screenshot payload is sent to a network or model.
+
+## M4 finite update contract
+
+`update(arrayBuffer, identity, kind)` accepts `mesh-delta` or `instance-delta`
+after transport reconstruction. It independently parses/validates topology,
+indices, UVs, stable instance identities and unchanged prototype as appropriate.
+Mesh updates reuse index buffers; instance updates reuse prototype buffers.
+Allocation/upload/draw/stale failure rolls back identity and scene atomically;
+shared buffers use reference counts so rollback cannot delete the old scene.
+`getState().resources` reports logical allocation/deletion/live byte counters,
+VAOs and reuse counts; these are not physical device-memory telemetry.
+`updateKind` identifies the last committed path.
+
+`reconstructPreview(baseArrayBuffer, descriptor, transportArrayBuffer)` in
+preview-stream.js validates version, bounded fields, lengths, canonical base64,
+nonoverlapping positive ranges, and transport/base/reconstructed SHA256. Its
+result is independent bytes, never mutating the retained base. The integrating
+application also binds descriptor target ID/hash/bytes to the selected managed
+asset, and base ID/hash to its captured retained base. A self-consistent descriptor
+alone does not establish that binding. See preview-stream-v1.json schemas.

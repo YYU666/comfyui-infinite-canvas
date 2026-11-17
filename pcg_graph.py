@@ -47,7 +47,7 @@ def plan_graph(document, target, registry, permit_unavailable=False):
             inputs[name] = {'nodeId': source['id'], 'port': output['name']}
             visit(source['id'])
         for name, port in ports.items():
-            require(not port['required'] or name in inputs, 'Required input is missing.', 'INPUT_UNAVAILABLE', 409)
+            require(not port['required'] or name in inputs, f'Required input {name} is missing at node {node_id}.', 'INPUT_UNAVAILABLE', 409)
         if not permit_unavailable:
             require(descriptor['readiness']['state'] == 'ready', 'Geometry executor is unavailable.', descriptor['readiness']['code'] or 'EXECUTOR_UNAVAILABLE', 409)
         active.remove(node_id); done.add(node_id)

@@ -1,0 +1,228 @@
+{
+  "contractVersion": 1,
+  "name": "refmuse.pcg.preview-stream",
+  "maximumPatchBytes": 8388608,
+  "maximumChanges": 65536,
+  "descriptorFields": [
+    "contractVersion",
+    "kind",
+    "baseAssetId",
+    "targetAssetId",
+    "baseSha256",
+    "targetSha256",
+    "targetBytes",
+    "bytes",
+    "sha256",
+    "url",
+    "reason"
+  ],
+  "patchFields": [
+    "contractVersion",
+    "kind",
+    "baseSha256",
+    "targetSha256",
+    "targetBytes",
+    "changes"
+  ],
+  "changeFields": [
+    "offset",
+    "base64"
+  ],
+  "kinds": [
+    "snapshot",
+    "mesh-delta",
+    "instance-delta"
+  ],
+  "rules": [
+    "Descriptors contain no geometry or byte arrays. Snapshot reason is required; delta reason is absent.",
+    "Descriptor bytes and sha256 authenticate transport. targetBytes and targetSha256 authenticate reconstructed GLB.",
+    "Patch payload is canonical sorted compact UTF-8 JSON, at most 8 MiB and strictly smaller than target GLB.",
+    "Changes contain sorted nonoverlapping positive-length canonical base64 replacements at byte offsets; no resizing.",
+    "Base and target must have equal total length and JSON chunk layout, decoded topology, indices, UVs and stable instance ids.",
+    "Mesh changes are limited to POSITION and NORMAL bytes and POSITION accessor min/max. Instance changes are limited to node translation, rotation and scale; prototype bytes are identical.",
+    "Client must verify transport hash, base hash and target hash before atomically replacing visible geometry. Any mismatch preserves prior model and requests snapshot.",
+    "Snapshot url references the complete immutable managed GLB; it is not embedded or limited to 8 MiB."
+  ],
+  "descriptorSchema": {
+    "type": "object",
+    "properties": {
+      "contractVersion": {
+        "const": 1
+      },
+      "kind": {
+        "enum": [
+          "snapshot",
+          "mesh-delta",
+          "instance-delta"
+        ]
+      },
+      "baseAssetId": {
+        "anyOf": [
+          {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "targetAssetId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "baseSha256": {
+        "anyOf": [
+          {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "targetSha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "targetBytes": {
+        "type": "integer",
+        "minimum": 20,
+        "maximum": 67108864
+      },
+      "bytes": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 67108864
+      },
+      "sha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "url": {
+        "type": "string",
+        "maxLength": 256,
+        "pattern": "^/api/(assets/[A-Za-z0-9_-]+\\.glb|previews/[a-f0-9]{64}\\.json)$"
+      },
+      "reason": {
+        "type": "string",
+        "maxLength": 256
+      }
+    },
+    "required": [
+      "contractVersion",
+      "kind",
+      "baseAssetId",
+      "targetAssetId",
+      "baseSha256",
+      "targetSha256",
+      "targetBytes",
+      "bytes",
+      "sha256",
+      "url"
+    ],
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "kind": {
+              "const": "snapshot"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "reason"
+          ]
+        },
+        "else": {
+          "not": {
+            "required": [
+              "reason"
+            ]
+          },
+          "properties": {
+            "baseAssetId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "baseSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "bytes": {
+              "maximum": 8388608
+            }
+          }
+        }
+      }
+    ]
+  },
+  "patchSchema": {
+    "type": "object",
+    "properties": {
+      "contractVersion": {
+        "const": 1
+      },
+      "kind": {
+        "enum": [
+          "mesh-delta",
+          "instance-delta"
+        ]
+      },
+      "baseSha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "targetSha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "targetBytes": {
+        "type": "integer",
+        "minimum": 20,
+        "maximum": 67108864
+      },
+      "changes": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 65536,
+        "items": {
+          "type": "object",
+          "properties": {
+            "offset": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 67108863
+            },
+            "base64": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 11184812,
+              "pattern": "^[A-Za-z0-9+/]*={0,2}$"
+            }
+          },
+          "required": [
+            "offset",
+            "base64"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "contractVersion",
+      "kind",
+      "baseSha256",
+      "targetSha256",
+      "targetBytes",
+      "changes"
+    ],
+    "additionalProperties": false
+  }
+}

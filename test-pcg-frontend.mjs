@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PCG_REGISTRY, PCG_PRESETS, pcgNodeData, pcgPreview, validatePcgSchema } from './src/pcg-registry.js';
 import { planCanvasConnection } from './src/canvas-connections.js';
-import { createPcgRuntime, pcgTaskHandle, pcgRequest } from './src/pcg-runtime.js';
+import { createPcgRuntime, pcgTaskHandle, pcgRequest, pcgAgentState } from './src/pcg-runtime.js';
 import { registerCanvasMcp, generateNodeForMcp, waitForNodeForMcp } from './src/canvas-mcp.js';
 
 const node = (id = 'pcg-1', descriptorId = 'refmuse.pcg.diagnostic') => ({ id, type: 'pcg', position: { x: 0, y: 0 }, data: pcgNodeData(descriptorId) });
@@ -11,6 +11,22 @@ const task = (args = identity, overrides = {}) => ({ ...args, jobId: `pcg_${'1'.
 const done = args => task(args, { status: 'succeeded', progress: 1, resultHash: 'b'.repeat(64), result: { report: { contractVersion: 1, type: 'DiagnosticReport', operation: 'refmuse.pcg.diagnostic', workerPid: 123, inputHash: 'a'.repeat(64) } } });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+// Discovery keeps exact task identities without multiplying large stage samples.
+{
+  const full = done(identity);
+  full.result.assets = Array.from({ length: 20 }, () => ({ url: '/asset', data: 'x'.repeat(3000) }));
+  full.result.stagePreviews = Array.from({ length: 20 }, () => ({ sample: 'x'.repeat(3000) }));
+  full.result.outputs = { geometry: { sample: 'x'.repeat(3000) } };
+  const summary = pcgAgentState({ task: full });
+  assert.deepEqual(pcgTaskHandle(summary.task), pcgTaskHandle(full));
+  assert.equal(summary.task.result.assetCount, 20);
+  assert.equal(summary.task.result.stageCount, 20);
+  assert.equal(summary.task.result.detailsTool, 'canvas_pcg_read');
+  assert.equal(summary.task.result.stagePreviews, undefined);
+  assert.ok(JSON.stringify(summary).length < 1600);
+  assert.equal(full.result.stagePreviews.length, 20);
+}
 
 // Shared registry, exact typed ports, closed parameters and no guessed geometry.
 assert.equal(Object.keys(PCG_PRESETS).length, 25);
@@ -145,10 +161,16 @@ function runtimeFixture(request) {
   const call = async (name, args = {}) => JSON.parse(await registered.get(name).execute(args));
   const catalog = await call('canvas_pcg_describe');
   assert.deepEqual(catalog.registry, PCG_REGISTRY);
-  assert.equal(catalog.tools.length, 12);
+  assert.equal(catalog.tools.length, 19);
   for (const tool of catalog.tools) {
     assert.equal(tool.inputSchema.additionalProperties, false);
     for (const example of tool.examples) validatePcgSchema(example.arguments, tool.inputSchema);
+  }
+  const viewportContract = JSON.parse(await readFile(new URL('./pcg/viewport-tools.json', import.meta.url), 'utf8'));
+  const agentGuide = await readFile(new URL('./docs/pcg/AGENT_GUIDE.md', import.meta.url), 'utf8');
+  for (const tool of viewportContract.tools) {
+    assert.deepEqual(catalog.tools.find(item => item.name === tool.name).inputSchema, tool.inputSchema);
+    assert.ok(agentGuide.includes(tool.name), `Agent guide must describe ${tool.name}`);
   }
   assert.equal((await call('canvas_pcg_describe', { extra: true })).code, 'INVALID_CONTRACT');
   assert.equal((await call('canvas_pcg_create_node', { projectId: 'prj_wrong', descriptorId: 'refmuse.pcg.diagnostic', descriptorVersion: 1, operationVersion: 1 })).code, 'PROJECT_MISMATCH');
@@ -174,6 +196,14 @@ function runtimeFixture(request) {
   const state = await call('canvas_get_state', { nodeId: created.node.id });
   assert.equal(state.projectId, 'prj_tools'); assert.equal(state.revision, 2);
   assert.equal(state.nodes[0].task.jobId, started.task.jobId);
+  const fullPreviewTask = done(fullHandle);
+  fullPreviewTask.result.stagePreviews = Array.from({ length: 100 }, () => ({ sample: 'x'.repeat(3000) }));
+  actions.pcgViewport = { snapshot: () => ({ projectId: 'prj_tools', open: true, run: fullPreviewTask }) };
+  const previewState = await call('canvas_pcg_preview_state', { projectId: 'prj_tools' });
+  assert.deepEqual(pcgTaskHandle(previewState.panel.run), fullHandle);
+  assert.equal(previewState.panel.run.result.stageCount, 100);
+  assert.ok(JSON.stringify(previewState).length < 2000);
+  assert.equal(fullPreviewTask.result.stagePreviews.length, 100);
   assert.equal(nodes[0].data.pcgTask, undefined);
   await call('canvas_update_node', { nodeId: created.node.id, settings: { parameters: { label: 'Generic alias' } } });
   assert.equal(nodes[0].data.parameters.label, 'Generic alias');

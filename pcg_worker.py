@@ -62,7 +62,11 @@ def evaluate_graph(request):
         key = computation_key(node, inputs); started = time.perf_counter()
         cached = request['cache'].get(key)
         if cached is None:
-            result = evaluate(descriptor['id'], parameters, inputs); computed.append(node['nodeId'])
+            try:
+                result = evaluate(descriptor['id'], parameters, inputs)
+            except PCGError as exc:
+                raise PCGError(exc.code, f"Node {node['nodeId']} ({descriptor['id']}): {exc.message}", exc.status) from exc
+            computed.append(node['nodeId'])
         else:
             result = cached; hits.append(node['nodeId'])
         outputs = {p['name']: p for p in descriptor['outputs']}; exact(result, {p['name'] for p in descriptor['outputs'] if p['required']}, outputs)

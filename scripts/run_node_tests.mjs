@@ -7,6 +7,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const suites = {
   node: [
     'test-pcg-demo-viewer.mjs',
+    'test-pcg-preview-stream.mjs',
+    'test-pcg-viewport-layout.mjs',
+    'test-pcg-viewport-controller.mjs',
+    'test-pcg-viewport-panel.mjs',
     'test-pcg-frontend.mjs',
     'test-pcg-preview.mjs',
     'test-image-inline-output.mjs',
@@ -70,6 +74,8 @@ const suites = {
   ],
   browser: [
     'test-pcg-demo-ui.mjs',
+    'test-pcg-m4-ui.mjs',
+    'test-pcg-canvas-viewport-ui.mjs',
     'test-image-inline-compact-ui.mjs',
     'test-image-export-ui.mjs',
     'test-sprite-atlas-ui.mjs',

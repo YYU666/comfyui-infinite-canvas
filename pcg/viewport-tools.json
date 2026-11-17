@@ -1,0 +1,193 @@
+{
+  "contractVersion": 1,
+  "namespace": "refmuse.pcg.canvas-preview",
+  "tools": [
+    {
+      "name": "canvas_pcg_preview_describe",
+      "description": "发现当前画布内悬浮真实3D面板及工具schema；不新开网页，不提交任务。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {}
+        }
+      ],
+      "recovery": "读取当前canvas_get_state与canvas_pcg_preview_state；错误保留已有模型，不操作其他项目或正式服务。"
+    },
+    {
+      "name": "canvas_pcg_preview_open",
+      "description": "打开当前项目画布内3D面板，恢复该项目布局和绑定。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9_-]+$",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "projectId"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "projectId": "prj_example"
+          }
+        }
+      ],
+      "recovery": "读取当前canvas_get_state与canvas_pcg_preview_state；错误保留已有模型，不操作其他项目或正式服务。"
+    },
+    {
+      "name": "canvas_pcg_preview_close",
+      "description": "关闭当前项目面板，取消本面板活动任务并释放展示资源；不删除节点。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9_-]+$",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "projectId"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "projectId": "prj_example"
+          }
+        }
+      ],
+      "recovery": "读取当前canvas_get_state与canvas_pcg_preview_state；错误保留已有模型，不操作其他项目或正式服务。"
+    },
+    {
+      "name": "canvas_pcg_preview_bind",
+      "description": "绑定当前可见PCG节点的实际保存图；autoRun默认true，连接/参数变更节流后预检并求值；false只跟随显式运行。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9_-]+$",
+            "maxLength": 128
+          },
+          "nodeId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "autoRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "projectId",
+          "nodeId"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "projectId": "prj_example",
+            "nodeId": "pcg-1",
+            "autoRun": true
+          }
+        }
+      ],
+      "recovery": "读取当前canvas_get_state与canvas_pcg_preview_state；错误保留已有模型，不操作其他项目或正式服务。"
+    },
+    {
+      "name": "canvas_pcg_preview_layout",
+      "description": "设置画布内面板位置尺寸；按可用区域限制边界并按项目记忆；不编辑几何。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9_-]+$",
+            "maxLength": 128
+          },
+          "x": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "y": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "width": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "height": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        },
+        "required": [
+          "projectId",
+          "x",
+          "y",
+          "width",
+          "height"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "projectId": "prj_example",
+            "x": 40,
+            "y": 60,
+            "width": 440,
+            "height": 360
+          }
+        }
+      ],
+      "recovery": "读取当前canvas_get_state与canvas_pcg_preview_state；错误保留已有模型，不操作其他项目或正式服务。"
+    },
+    {
+      "name": "canvas_pcg_preview_state",
+      "description": "读回绑定项目/图revision/目标节点/实际任务及期望、实际绘制身份、布局、资源和错误；不把旧模型当新结果。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9_-]+$",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "projectId"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "projectId": "prj_example"
+          }
+        }
+      ],
+      "recovery": "读取当前canvas_get_state与canvas_pcg_preview_state；错误保留已有模型，不操作其他项目或正式服务。"
+    }
+  ]
+}

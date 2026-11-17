@@ -168,6 +168,7 @@ class DemoSession:
         self.root = Path(root).absolute(); self.root.mkdir(parents=True, exist_ok=True); safe_components(self.root)
         self.instance_id = 'demo_' + uuid.uuid4().hex
         self.lock = threading.RLock(); self.revision = 1; self.selection_epoch = 0
+        self.changed = threading.Condition(self.lock)
         self.closed = False; self.auto_follow = True; self.run = None; self.desired = None
         self.catalog = {}; self.records = {}; self.unique_bytes = {}; self.events = []; self.event_sequence = 0
         self.graph = {'nodes': [], 'edges': []}; self._thread = None; self._cancel = threading.Event(); self._last_geometry = None
@@ -181,6 +182,9 @@ class DemoSession:
         projects = self.root / 'projects'; projects.mkdir(exist_ok=True); safe_components(projects)
         self.store = ProjectStore(projects / self.instance_id)
         self.document = self.store.create('Independent PCG Demo')
+        self.graph_binding = {'projectId': self.document['id'], 'graphRevision': self.document['revision'],
+                              'graphHash': content_hash(self.graph)}
+        self.previews = {}; self.preview_bytes = 0; self.preview_descriptors = {}
         self.runtime = PCGRuntime(self.store)
         try:
             if samples_root is not None: self._import_samples(Path(samples_root))
@@ -188,16 +192,66 @@ class DemoSession:
             self.runtime.close(); self.store.close(); raise
 
     def _event(self, kind, **details):
-        self.event_sequence += 1; self.revision += 1
-        self.events.append({'sequence': self.event_sequence, 'kind': kind, 'time': time.time(), **details})
-        self.events = self.events[-256:]
+        with self.changed:
+            self.event_sequence += 1; self.revision += 1
+            self.events.append({'sequence': self.event_sequence, 'kind': kind, 'time': time.time(), **self.graph_binding, **details})
+            self.events = self.events[-256:]
+            self.changed.notify_all()
 
     def snapshot(self):
         with self.lock:
             return copy.deepcopy({'contractVersion': 1, 'instanceId': self.instance_id, 'revision': self.revision,
+                                  **self.graph_binding, 'eventCursor': self.event_sequence,
                                   'selectionEpoch': self.selection_epoch, 'autoFollow': self.auto_follow, 'closed': self.closed,
                                   'run': self.run, 'desired': self.desired, 'catalog': list(self.catalog.values()),
                                   'graph': self.graph, 'events': self.events})
+
+    def wait(self, afterSequence=0, timeoutMs=1000):
+        """Cursor wait; any truncated/future cursor resets to the current bounded snapshot."""
+        cursor = afterSequence
+        integer(cursor, 0, 2**53 - 1); integer(timeoutMs, 0, 20000)
+        deadline = time.monotonic() + timeoutMs / 1000
+        with self.changed:
+            while cursor == self.event_sequence and not self.closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0: break
+                self.changed.wait(remaining)
+            oldest = self.events[0]['sequence'] if self.events else self.event_sequence + 1
+            reset = cursor < oldest - 1 or cursor > self.event_sequence
+            return {'contractVersion': 1, 'cursor': self.event_sequence, 'reset': reset,
+                    'events': copy.deepcopy(self.events if reset else [e for e in self.events if e['sequence'] > cursor]),
+                    'snapshot': self.snapshot()}
+
+    def preview(self, targetAssetId, baseAssetId=None):
+        from pcg_preview_stream import build_preview
+        with self.lock:
+            target, target_meta = self.read_asset(targetAssetId)
+            base, base_meta = self.read_asset(baseAssetId) if baseAssetId is not None else (None, None)
+            pair = (targetAssetId, baseAssetId)
+            cached = self.preview_descriptors.get(pair)
+            if (cached is not None and cached['targetSha256'] == target_meta['sha256'] and
+                    cached['targetBytes'] == target_meta['bytes'] and
+                    cached['baseSha256'] == (base_meta['sha256'] if base_meta else None)):
+                # File path/link, length and full SHA checks above still run on every read.
+                return copy.deepcopy(cached)
+            descriptor, payload = build_preview(target, target_meta, base, base_meta)
+            if payload is not None:
+                key = descriptor['sha256']
+                if key not in self.previews:
+                    require(len(self.previews) < MAX_CATALOG and self.preview_bytes + len(payload) <= MAX_CACHE_BYTES,
+                            'Preview cache capacity reached.', 'CATALOG_CAPACITY', 409)
+                    self.previews[key] = (payload, copy.deepcopy(descriptor)); self.preview_bytes += len(payload)
+            if len(self.preview_descriptors) >= MAX_CATALOG:
+                self.preview_descriptors.pop(next(iter(self.preview_descriptors)))
+            self.preview_descriptors[pair] = copy.deepcopy(descriptor)
+            return descriptor
+
+    def read_preview(self, preview_id):
+        digest(preview_id)
+        with self.lock:
+            require(preview_id in self.previews, 'Managed preview not found.', 'PREVIEW_NOT_FOUND', 404)
+            body, _ = self.previews[preview_id]
+            return body
 
     def _choose(self, metadata):
         self.desired = copy.deepcopy(metadata); self.selection_epoch += 1
@@ -247,6 +301,9 @@ class DemoSession:
                     'boundsKind': summary.get('boundsKind', decoded['boundsKind']), 'producerNodeId': producer_node,
                     'runId': run_id, 'jobId': job_id, 'inputHash': input_hash, 'sourceIdentity': copy.deepcopy(source), 'label': label,
                     'url': '/api/assets/' + asset_id + '.glb'}
+        handle = source.get('handle', {})
+        metadata.update(self.graph_binding if source.get('kind') == 'm2-demo-stage' else
+                        {'projectId': handle.get('projectId'), 'graphRevision': handle.get('revision'), 'graphHash': None})
         self.catalog[asset_id] = metadata; self.records[asset_id] = target; self.unique_bytes[sha] = len(body)
         self._event('asset-published', assetId=asset_id, producerNodeId=producer_node, runId=run_id, jobId=job_id)
         return metadata
@@ -294,22 +351,52 @@ class DemoSession:
 
     def start(self, recipe='rock', seed=0, roughness=.2, count=100, minDistance=0):
         require(type(recipe) is str and recipe in {'rock', 'scatter'}, 'Unknown demo recipe.', 'INVALID_RECIPE')
-        integer(seed, 0, 2**31 - 1); integer(count, 0, 10000)
-        require(type(roughness) in (int, float) and math.isfinite(roughness) and 0 <= roughness <= .9, 'Roughness must be 0 through .9.')
-        require(type(minDistance) in (int, float) and math.isfinite(minDistance) and 0 <= minDistance <= 1e6, 'Invalid minimum distance.')
+        integer(seed, 0, 2**31 - 1); integer(count, 1, 1000)
+        require(type(roughness) in (int, float) and math.isfinite(roughness) and 0 <= roughness <= .4, 'Roughness must be 0 through .4.')
+        require(type(minDistance) in (int, float) and math.isfinite(minDistance) and 0 <= minDistance <= 1000, 'Invalid minimum distance.')
         with self.lock:
             require(not self.closed, 'Demo session is closed.', 'SESSION_CLOSED', 409)
             require(self.run is None or self.run['status'] in TERMINAL, 'Cancel and wait for the current demo run.', 'SESSION_BUSY', 409)
             canvas = _graph(recipe, seed, roughness, count, minDistance)
+            return self._start_saved(canvas, recipe, {'seed': seed, 'roughness': roughness, 'count': count,
+                                                     'minDistance': minDistance, 'translateY': .3}, canvas['nodes'])
+
+    def tune(self, runId, parameters):
+        token(runId)
+        require(isinstance(parameters, dict) and bool(parameters) and
+                set(parameters) <= {'seed', 'roughness', 'count', 'minDistance', 'translateY'},
+                'Unknown or empty recipe parameters.', 'INVALID_PARAMETERS')
+        with self.lock:
+            require(not self.closed, 'Demo session is closed.', 'SESSION_CLOSED', 409)
+            require(self.run is not None and self.run['runId'] == runId, 'Run identity is stale.', 'STALE_RUN', 409)
+            require(self.run['status'] in TERMINAL, 'Cancel and wait for the current demo run.', 'SESSION_BUSY', 409)
+            recipe = self.run['recipe']; values = {**self.run['parameters'], **parameters}
+            require(recipe == 'scatter' or not (set(parameters) & {'count', 'minDistance', 'translateY'}),
+                    'Parameter does not affect this recipe.', 'INVALID_PARAMETERS')
+            integer(values['seed'], 0, 2**31 - 1); integer(values['count'], 1, 1000)
+            for key, lo, hi in (('roughness', 0, .4), ('minDistance', 0, 1000), ('translateY', -100, 100)):
+                value = values[key]
+                require(type(value) in (int, float) and math.isfinite(value) and lo <= value <= hi,
+                        'Recipe parameter is out of bounds.', 'INVALID_PARAMETERS')
+            canvas = _graph(recipe, values['seed'], values['roughness'], values['count'], values['minDistance'])
+            if recipe == 'scatter':
+                canvas['nodes'][-1]['data']['parameters']['translation'][1] = values['translateY']
+            # M2 plans only this target's dependency closure, preserving its actual cache/dirty calculation.
+            return self._start_saved(canvas, recipe, values, [canvas['nodes'][-1]])
+
+    def _start_saved(self, canvas, recipe, parameters, targets):
+        with self.lock:
             document = self.store.get(self.document['id']); document['canvas'] = canvas
             self.document = self.store.save(document['id'], document, document['revision'])
             self.graph = {'nodes': copy.deepcopy(canvas['nodes']), 'edges': copy.deepcopy(canvas['edges'])}
+            self.graph_binding = {'projectId': document['id'], 'graphRevision': self.document['revision'], 'graphHash': content_hash(self.graph)}
             run_id = 'demorun_' + uuid.uuid4().hex; self._cancel = threading.Event(); self.auto_follow = True; self.selection_epoch += 1
-            self.run = {'runId': run_id, 'recipe': recipe, 'parameters': {'seed': seed, 'roughness': roughness, 'count': count, 'minDistance': minDistance},
-                        'status': 'running', 'stageIndex': 0, 'stageCount': len(canvas['nodes']), 'currentNodeId': None, 'currentTask': None,
-                        'completedStages': [], 'error': None, 'projectId': document['id'], 'projectRevision': self.document['revision'], 'graphHash': content_hash(self.graph)}
+            self._event('graph-saved', runId=run_id)
+            self.run = {'runId': run_id, 'recipe': recipe, 'parameters': copy.deepcopy(parameters),
+                        'status': 'running', 'stageIndex': 0, 'stageCount': len(targets), 'currentNodeId': None, 'currentTask': None,
+                        'completedStages': [], 'error': None, **self.graph_binding, 'projectRevision': self.document['revision']}
             self._event('run-started', runId=run_id, recipe=recipe)
-            self._thread = threading.Thread(target=self._execute, args=(run_id, canvas['nodes']), daemon=True, name='pcg-demo-session')
+            self._thread = threading.Thread(target=self._execute, args=(run_id, targets), daemon=True, name='pcg-demo-session')
             self._thread.start(); return self.snapshot()
 
     def cancel(self, run_id):
@@ -332,14 +419,17 @@ class DemoSession:
                     self.run.update(stageIndex=index + 1, currentNodeId=node['id'], currentTask=None)
                     self._event('stage-started', runId=run_id, nodeId=node['id'], stageIndex=index + 1)
                     identity = {'projectId': self.document['id'], 'nodeId': node['id'], 'revision': self.document['revision'], 'descriptorVersion': 1, 'operationVersion': 1, 'runId': run_id + '-' + str(index)}
+                plan = self.runtime.preflight(identity)
                 task = self.runtime.run(identity); handle = {k: task[k] for k in HANDLE}
                 with self.lock:
-                    self.run['currentTask'] = handle; self._event('task-admitted', runId=run_id, nodeId=node['id'], jobId=task['jobId'])
+                    self.run['currentTask'] = handle
+                    self._event('task-admitted', runId=run_id, nodeId=node['id'], jobId=task['jobId'],
+                                dirtyNodes=plan.get('dirtyNodes', []), cacheHits=plan.get('cacheHits', []))
                 while task['status'] not in TERMINAL:
                     if self._cancel.is_set() or self.closed:
                         try: self.runtime.cancel(handle)
                         except (PCGError, StoreError): pass
-                    task = self.runtime.wait({**handle, 'timeoutMs': 100})['task']
+                    task = self.runtime.wait({**handle, 'timeoutMs': 1000})['task']
                 error = task.get('error') or {}
                 require(task['status'] == 'succeeded', error.get('message', 'M2 stage failed.'), error.get('code', 'STAGE_FAILED'), 409)
                 self.runtime.verify(handle)
@@ -354,6 +444,7 @@ class DemoSession:
                         stage_assets.append(metadata['assetId']); self._last_geometry = metadata['assetId']
                         if self.auto_follow: self._choose(metadata)
                     self.run['completedStages'].append({'nodeId': node['id'], 'stageIndex': index + 1, 'handle': handle, 'outputs': copy.deepcopy(task['result']['outputs']),
+                                                       **self.graph_binding, 'runId': run_id, 'dirtyNodes': plan.get('dirtyNodes', []),
                                                        'assetIds': stage_assets, 'associatedAssetId': self._last_geometry,
                                                        'computedNodes': task['result']['report']['computedNodes'], 'cacheHits': task['result']['report']['cacheHits']})
                     self._event('stage-completed', runId=run_id, nodeId=node['id'], assetIds=stage_assets, stageIndex=index + 1)

@@ -1922,7 +1922,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
   const artDirector = useArtDirector({ project, projectRef, switchingRef, nodes, edges, nodesRef, edgesRef, setNodes, setEdges, updateNode, addNode, chooseMedia, saveCanvasAsset, persistProject, localImageJobsRef, setLocalImageJobsVersion, mediaWritesRef, assetUrl, findFreePosition, uid, onConnect });
   const spriteAtlas = useSpriteAtlas({ project, projectRef, revisionRef, switchingRef, nodes, nodesRef, updateNode, persistProject, localImageJobsRef, setLocalImageJobsVersion });
-  const pcgCanvas = usePcgCanvas({ project, revisionRef, switchingRef, nodes, nodesRef, persistProject });
+  const pcgCanvas = usePcgCanvas({ project, revisionRef, switchingRef, nodes, nodesRef, edges, edgesRef, persistProject });
   pcgRunRef.current = pcgCanvas.pcg;
   spriteRunRef.current = spriteAtlas;
   artRunRef.current = (id) => { const state = artDirector.getArtDirectorState(id); return state.node?.data.analysis?.sourceVersion === state.signature ? artDirector.exportArtBoard(id) : artDirector.runArtAnalysis(id); };
@@ -1963,7 +1963,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const bundle = await getExtension(digest);
       if (switchingRef.current || project.readOnly) throw new Error('当前画布不可写。');
       return addNode('generator', extensionNodeData(bundle, nodeDefinitionId), position, focus);
-    }, updateNode, removeNode, onConnect, generateNode, cancelNode, tidyCanvas, focusNode, inspectNode, openReferenceLibrary, persistProject, retryProjectSave,
+    }, updateNode, removeNode, onConnect, disconnectEdge, generateNode, cancelNode, tidyCanvas, focusNode, inspectNode, openReferenceLibrary, persistProject, retryProjectSave,
       prepareProjectSwitch, commitProjectSwitch, abandonProjectSwitch,
       importAsset: async (nodeId, assetPath, name, sourceProjectId) => {
         if (switchingRef.current || project.readOnly) throw new Error('当前项目无法导入素材。');
@@ -2033,10 +2033,10 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       <main className={`neo-canvas-wrap canvas-view-${viewTier}${connecting ? ' canvas-connecting' : ''}`} style={{ '--canvas-handle-size': `${Math.min(72, Math.max(24, 24 / (zoom / 100)))}px` }} inert={projectBusy || libraryModalOpen ? true : undefined}
         onDragOver={(e) => e.preventDefault()}
         onPointerDownCapture={(event) => { if (event.button === 0 && !event.target.closest('.add-node-menu,.node-context-menu')) { setAddMenu(null); setNodeMenu(null); } }}
-        onContextMenuCapture={openContextMenu}
+        onContextMenuCapture={event => { if (!event.target.closest('[data-pcg-viewport-panel]')) openContextMenu(event); }}
         onDropCapture={event => { if ([...(event.dataTransfer.files || [])].some(file => /\.pur$/i.test(file.name))) { event.stopPropagation(); dropCanvasFiles(event); } }}
         onDrop={dropCanvasFiles}
-        onDoubleClickCapture={openAddMenu}>
+        onDoubleClickCapture={event => { if (!event.target.closest('[data-pcg-viewport-panel]')) openAddMenu(event); }}>
         <ReactFlow
           nodes={imageView.nodes} edges={imageView.edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onlyRenderVisibleElements
           nodesDraggable={!project.readOnly} nodesConnectable={!project.readOnly} edgesFocusable={!project.readOnly}
@@ -2067,6 +2067,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           {gridVisible && <Background variant={BackgroundVariant.Dots} gap={22} size={1.15} color="#3a3a3e" />}
           {miniMapVisible && <MiniMap pannable zoomable nodeColor={(node) => node.type === 'generator' ? '#9999a5' : node.data?.kind === 'audio' ? '#9c83a8' : '#65656d'} maskColor="#111113dc" />}
         </ReactFlow>
+        {pcgCanvas.pcgPreviewPanel}
         {connectionNotice && <div className="canvas-connection-notice" role="status">{connectionNotice}</div>}
         {!nodes.length && !project.readOnly && <button className="empty-canvas" onClick={(e) => setAddMenu({ x: e.clientX, y: e.clientY, flow: screenToFlowPosition({ x: e.clientX, y: e.clientY }) })}><Plus size={28} /><strong>双击画布开始创作</strong><span>或点击右下角添加节点</span></button>}
         <div className="canvas-bottom-left">

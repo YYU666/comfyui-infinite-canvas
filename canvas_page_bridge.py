@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import uuid
+from pathlib import Path
 
 from project_store import StoreError
 
@@ -15,6 +16,9 @@ TOOLS = frozenset({"canvas_move_nodes", "canvas_retry_save", "canvas_get_state",
                    "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
                    "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node", "canvas_image_compact"})
 LAUNCHER_TOOLS = frozenset({"canvas_get_state", "canvas_create_project", "canvas_open_project"})
+PCG_VIEWPORT_TOOLS = json.loads((Path(__file__).resolve().parent / 'pcg' / 'viewport-tools.json').read_text(encoding='utf-8'))
+TOOLS = TOOLS | frozenset(tool['name'] for tool in PCG_VIEWPORT_TOOLS['tools']) | frozenset(
+    'canvas_pcg_' + action for action in ('describe', 'create_node', 'set_parameters', 'preflight', 'run', 'wait', 'read', 'verify', 'cancel', 'export', 'list_tasks', 'disconnect'))
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}")
 # A page-bridge wait holds the single command slot (heartbeats still run). Cap it
 # so a long read cannot stall later commands for the tool's 25 minute maximum.

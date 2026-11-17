@@ -77,9 +77,9 @@ class PCGAPI:
                         except ValueError as exc: raise PCGError('BAD_REQUEST', 'Invalid task query version.') from exc
                     result = self.runtime.read({**query, 'jobId': job_id})
                 handler.send_json(200, result)
-            elif method == 'POST' and path in {'/api/pcg/preflight', '/api/pcg/run', '/api/pcg/wait', '/api/pcg/read', '/api/pcg/verify', '/api/pcg/cancel', '/api/pcg/export'}:
+            elif method == 'POST' and path in {'/api/pcg/preflight', '/api/pcg/run', '/api/pcg/wait', '/api/pcg/read', '/api/pcg/verify', '/api/pcg/cancel', '/api/pcg/cancel-obsolete', '/api/pcg/export'}:
                 payload = self._json(handler)
-                operation = path.rsplit('/', 1)[-1]
+                operation = path.rsplit('/', 1)[-1].replace('-', '_')
                 if operation == 'run':
                     task = self.runtime.run(payload)
                     if task['error']:

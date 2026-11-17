@@ -108,5 +108,27 @@ class DemoServerTests(unittest.TestCase):
         with self.assertRaises(PCGError): DemoApplication(self.root / 'service')
         self.assertNotIn(self.app.token, json.dumps(self.app.state()))
 
+    def test_cursor_preview_mcp_routes_authentication_and_schema_bounds(self):
+        asset = self.app.state()['desired']
+        def call(name, arguments):
+            status, data, _ = self.json('/mcp', {'jsonrpc':'2.0', 'id':9, 'method':'tools/call',
+                                                   'params':{'name':name, 'arguments':arguments}})
+            self.assertEqual(status, 200)
+            return data['result']
+        answer = call('pcg_demo_preview', {'targetAssetId':asset['assetId']})
+        self.assertFalse(answer['isError'])
+        preview = json.loads(answer['content'][0]['text'])
+        self.assertEqual(preview['kind'], 'snapshot')
+        self.assertEqual(self.request(preview['url'])[0], 200)
+        self.assertEqual(self.request(preview['url'], auth=False)[0], 401)
+        waited = call('pcg_demo_wait', {'afterSequence':1000000000000, 'timeoutMs':0})
+        waited = json.loads(waited['content'][0]['text'])
+        self.assertTrue(waited['reset']); self.assertIn('viewer', waited['state'])
+        self.assertEqual(waited['cursor'], waited['state']['eventCursor'])
+        self.assertTrue(call('pcg_demo_wait', {'timeoutMs':20001})['isError'])
+        self.assertTrue(call('pcg_demo_tune', {'runId':'missing', 'parameters':{'code':'x'}})['isError'])
+        self.assertEqual(self.request('/api/previews/' + 'a'*64 + '.json', auth=False)[0],401)
+        self.assertEqual(self.request('/api/previews/' + 'a'*64 + '.json')[0],404)
+
 
 if __name__=='__main__': unittest.main()

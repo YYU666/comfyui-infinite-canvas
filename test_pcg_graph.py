@@ -61,6 +61,27 @@ class GraphTests(unittest.TestCase):
         field = {'binding': {'topologyHash': 'a', 'contentHash': 'b'}, 'values': [1]}
         self.assertNotEqual(computation_key(root, {'field': field}), computation_key(root, {'field': {**field, 'binding': {'topologyHash': 'c', 'contentHash': 'b'}}}))
 
+    def test_worker_error_names_actual_upstream_stage_and_missing_port(self):
+        from pcg_contracts import load_registry
+        from pcg_worker import evaluate_graph
+        ground = node('ground', 'primitive'); ground['data']['parameters'] = {'kind': 'plane'}
+        scatter = node('scatter-stage', 'scatter_points')
+        scatter['data']['parameters'] = {'count': 20, 'minDistance': 1000}
+        final = node('result', 'instance_on_points')
+        point_edge = {**edge('scatter-stage', 'result', 'points'), 'sourceHandle': 'points'}
+        document = {'canvas': {'nodes': [ground, scatter, final], 'edges': [edge('ground', 'scatter-stage'), point_edge, edge('ground', 'result', 'prototype')]}}
+        registry = load_registry()
+        plan, _ = plan_graph(document, 'result', registry)
+        with self.assertRaises(PCGError) as caught:
+            evaluate_graph({'protocolVersion': 2, 'projectId': 'prj_fixture', 'inputHash': 'a' * 64, 'plan': plan, 'cache': {}})
+        self.assertEqual(caught.exception.code, 'INSUFFICIENT_PLACEMENT')
+        self.assertIn('scatter-stage (refmuse.pcg.scatter_points)', caught.exception.message)
+        document['canvas']['edges'] = []
+        with self.assertRaises(PCGError) as caught:
+            plan_graph(document, 'scatter-stage', registry)
+        self.assertIn('geometry', caught.exception.message)
+        self.assertIn('scatter-stage', caught.exception.message)
+
     def test_strict_schema_defaults_numbers_arrays_objects_enums(self):
         schema = {'type': 'object', 'additionalProperties': False, 'required': [], 'properties': {
             'vector': {'type': 'array', 'items': {'type': 'number', 'minimum': -5, 'maximum': 5}, 'minItems': 3, 'maxItems': 3, 'default': [1, 2, 3]},

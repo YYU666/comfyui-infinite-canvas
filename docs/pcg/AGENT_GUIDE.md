@@ -1,6 +1,6 @@
-# PCG M2：Agent 开发与使用手册
+# PCG：Agent 开发与使用手册
 
-当前切片提供自写标准库几何、保存图求值、受限 worker、真实 GLB/JSON 和只读 SVG。M2 正在集成验收；本手册描述代码接口，不代表 CI、正式画布或发布验收完成。M3–M5 未开始，`game_asset` 是明确不可运行的 M3 占位。旧 `diagnostic` 与 `geometry_stub` 保留 M1 合同，不能替代几何输出。
+当前切片提供自写标准库几何、保存图求值、受限 worker、真实 GLB/JSON，以及画布内只读 WebGL 面板。M1、M2 和最小演示已分别交付未合并；M4 按 21:54 修订验收，M3 冻结桥未开始，M5 尚未开始。本手册描述代码接口，不代表正式画布或发布验收完成。`game_asset` 是明确不可运行的 M3 占位；旧 `diagnostic` 与 `geometry_stub` 保留 M1 合同，不能替代几何输出。
 
 先调用 `canvas_pcg_describe {}`，以返回的 `pcg/registry.json` 描述、schema、示例和错误恢复为准。namespace=`refmuse.pcg`，descriptorVersion=1、operationVersion=1、pluginVersion=1.0.0。`ready` 表示固定操作已实现；本机 OS 隔离仍须 preflight 通过。未知版本、额外字段、自由表达式、脚本、路径、URL、可执行文件参数全部拒绝。
 
@@ -144,8 +144,47 @@ const exported=await call('canvas_pcg_export',{...H,format:'glb',port:'geometry'
 
 宿主要求已有匹配标准库 zip 和 windowless 解释器；不安装依赖、不请求管理员权限。几何运行时使用512MiB内存和最大64MiB stdio输出；descriptor 时限通常30秒，CPU上限为墙钟一半。无该能力的平台/解释器返回 ISOLATION_UNAVAILABLE；图仍可读，几何不退化成普通进程。旧协议1固定诊断仍是独立可信诊断，不能称为 OS 沙箱。详见 [ISOLATION_API.md](../../pcg/ISOLATION_API.md)。
 
-M3 游戏资产桥、既有资产导入/质量门、原型碰撞包围体约束、M4完整预览集成和M5正式画布/发布验收均未实现。前置的独立最小只读3D演示页已单独实现，真实加载GLB并按真实任务阶段刷新，使用方法与六个MCP工具见 [DEMO_GUIDE.md](DEMO_GUIDE.md)；它不接正式画布，也不以演示代替后续门禁。
+M3 游戏资产桥、既有资产导入/质量门、原型碰撞包围体约束、M5正式画布/发布验收均未实现；M4插件侧完整只读预览正在独立PR补齐。前置的独立最小只读3D演示页已单独实现，真实加载GLB并按真实任务阶段刷新，使用方法与九个MCP工具见 [DEMO_GUIDE.md](DEMO_GUIDE.md)；它不接正式画布，也不以演示代替后续门禁。
 
 ## 常见错误决策
 
 REVISION_CONFLICT/STALE_RUN：读当前保存图，新 runId；IDEMPOTENCY_CONFLICT：旧 runId 不代表新输入。PORT_UNKNOWN/PORT_TYPE_MISMATCH/GRAPH_CYCLE：修真实边。FIELD_BINDING_MISMATCH：从当前几何重建 Field；FIELD_DOMAIN_MISMATCH：保持 Point/Corner/Instance 的实际域，set_position 只能 Point vector3。INSUFFICIENT_PLACEMENT：明确减少数量/间距或放宽高度/坡度，不接受部分结果。BUDGET_EXCEEDED：降低细分/数量/图规模。ISOLATION_UNAVAILABLE：保留失败，修宿主能力；M3_BRIDGE_UNAVAILABLE/EXECUTOR_UNAVAILABLE：保持占位，不能伪造输出。WORKER_TIMEOUT/CRASH/PROTOCOL：保留错误后显式新 run；WORKER_CANCELLED 为取消终态。资产哈希或链接异常直接拒绝。权限/项目/锁冲突停止修改，不开第二页面或直提任务绕过。
+
+M4新增 `pcg_demo_wait`、`pcg_demo_tune`、`pcg_demo_preview` 与原六工具共同闭环；每工具用途、输入输出、可直接执行例子及恢复见 [DEMO_GUIDE.md](DEMO_GUIDE.md)。schema唯一权威仍为pcg/demo-tools.json；只操作独立演示实例。
+
+21:54正式入口修订：M4使用当前画布内悬浮3D面板；独立DEMO_GUIDE只用于测试，不作为最终入口/正式验收。面板工具及完整画布案例见下节。
+
+
+## 画布内 3D 面板（M4，21:54验收修订）
+
+最终入口是同一画布页面中的“PCG · 3D 预览”悬浮面板。它使用真实WebGL，不新开网页/iframe；标题栏拖动、八方向边角缩放，按项目保存布局，关闭/重开。面板不提供点面编辑、拖动几何或手动DCC视口。独立演示页继续作为测试工具，不能代替此入口验收。
+
+机器权威为 `pcg/viewport-tools.json`；UI页桥与MCP注册同一schema。`canvas_pcg_describe`列出面板工具；`canvas_pcg_preview_describe`单独发现能力、版本、工具例子及边界。所有带projectId的调用仅接受当前可操作项目；普通只读/切换页拒绝修改。
+
+| 工具 | 用途与输入 | 输出 / 最小例子 | 错误与恢复 |
+|---|---|---|---|
+| `canvas_pcg_preview_describe` | 无参数，发现画布内面板schema与能力，不生成 | `{}` → contract、inCanvas、realWebGL、aiCallsPerFrame=0、性能门状态 | PREVIEW_UNAVAILABLE：宿主缺挂钩，停止，不用独立页冒充 |
+| `canvas_pcg_preview_open` | projectId，打开或恢复当前项目面板 | `{"projectId":"prj_example"}` → panel | PROJECT_MISMATCH/READ_ONLY：回读当前项目，不操作其他页 |
+| `canvas_pcg_preview_close` | projectId，关闭、取消面板自有活动任务、释放GPU/监听器 | 同open输入 → panel.open=false；resources在清理回执后归零 | 保留节点/任务，关闭不是删除；可重新open |
+| `canvas_pcg_preview_bind` | projectId、nodeId；autoRun可选默认true | `{"projectId":"prj_example","nodeId":"pcg-1","autoRun":true}` → panel；跟随同图真实目标 | 节点/输入缺失先修可见连线；autoRun=false只跟随显式提交，不偷偷生成 |
+| `canvas_pcg_preview_layout` | projectId、x/y、width/height，有限数字；位置≥0，尺寸>0，均≤100000 | `{"projectId":"prj_example","x":40,"y":60,"width":440,"height":360}` → panel；实际区域限制并回存 | 超范围拒绝；最小300×240，窄窗口取可用大小。布局操作不改图revision |
+| `canvas_pcg_preview_state` | projectId，只读状态 | 同open输入 → panel（见下） | displayed不是desired，需核对generation、项目、任务、产物身份 |
+| `canvas_pcg_disconnect` | projectId、edgeId，删除一条实际可见PCG边并保存 | `{"projectId":"prj_example","edgeId":"实际边ID"}` → edgeId、revision | EDGE_NOT_FOUND重读当前图；错误保留旧模型。重连沿用canvas_connect_nodes |
+
+每工具输出和schema由当前页面发现，示例中的ID必须替换为真实发现值。页桥 `POST /api/agent/canvas/commands` 与原工具使用同一执行页面；不直接覆盖project.json，不用隐藏计算图。命令done表示工具返回；自动求值还须读真实run终态、verify及绘制回执。等待既有任务用canvas_wait_for_node/canvas_pcg_wait，不重新提交。
+
+最小闭环（每步都在同一可见项目）：
+
+1. `canvas_pcg_create_node`创建primitive，参数通过`canvas_pcg_set_parameters`；调用preview_open和preview_bind(autoRun=false)。
+2. `canvas_generate_node({nodeId,wait:false})`显式提交；`canvas_wait_for_node({nodeId,timeoutMs:20000})`等待终态；preview_state确认实际displayed。
+3. 创建transform/compose，按descriptor端口以`canvas_connect_nodes`连真实边；bind compose(autoRun=true)。缺边时显示具体预检错误，补最后一条边后自动求值，不另造配方。
+4. 创建地面/散布点/instance_on_points，连原型与points；bind实例目标。上游参数改变时合并180ms内变更，取消过期任务，保存当前图、preflight后只求目标依赖闭包。
+5. preview_state核对同projectId、nodeId、graphRevision、generation，run.status=succeeded，desired/displayed的artifactId和完整handle一致；canvas_pcg_verify仍单独校验真实资产。错误/取消保留上次成功模型并显示它的旧身份。
+
+panel.run为真实任务，stage为pending/preflight/真实任务状态及目标nodeId；不会把内部节点事后播放成正在运行。已完成任务的computedNodes/cacheHits来自实际执行报告。任务还在运行时保留旧模型，不承诺逐顶点或60帧几何重建。用户可看AI逐步创建/连接，并按每次实际图改变看到真实模型更新；转台渲染、刷新和图反馈不调用AI。
+
+`canvas_get_state` 对 PCG、面板工具对 panel.run 返回紧凑任务摘要：完整八字段 handle、status/stale/resultHash/error，以及 result 的 assetCount/stageCount/outputPorts/elapsedMs/detailsTool。整图发现不重复传输每个目标的所有阶段样本和产物元数据，避免超过页桥 128 KiB 回执预算；UI 内部完整状态不受影响。用摘要中的完整 handle 调用 `canvas_pcg_read` 获取执行轨迹和资产，调用 `canvas_pcg_verify` 验证。缺输入错误包含实际节点和端口；执行器业务失败包含实际失败原子节点和操作名，面板保留上一次真实模型并显示错误，不把目标节点误称为已成功阶段。
+
+panel.desired包含原artifact元数据、完整task handle、graphRevision与generation；displayed只在同一身份GLB通过字节/SHA、GPU上传、真实绘制后发布。新run/连接变化使旧回执失效；所有权清楚的cancel-obsolete仅取消精确旧handle，不影响其他任务。资源报告是逻辑buffer/VAO字节，非物理显存；GLB经认证同源下载，端口/路径/身份不符拒绝。刷新同一项目恢复布局与绑定并查询原任务，不重跑恢复。切换项目销毁面板与监听、取消其任务，另一项目不能读回旧模型。
+
+运行时无有效隔离依赖则保留可读图并报ISOLATION_UNAVAILABLE，不改走普通进程。M3冻结桥仍未授权；game_asset不可伪造accepted。性能目标尚未通过，慢求值展示真实状态，不能写“实时性能已达标”。

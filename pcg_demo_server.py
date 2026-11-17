@@ -26,6 +26,7 @@ STATIC = {'/': ('index.html', 'text/html; charset=utf-8'),
           '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
           '/glb.js': ('glb.js', 'text/javascript; charset=utf-8'),
           '/renderer.js': ('renderer.js', 'text/javascript; charset=utf-8'),
+          '/preview-stream.js': ('preview-stream.js', 'text/javascript; charset=utf-8'),
           '/style.css': ('style.css', 'text/css; charset=utf-8')}
 
 
@@ -75,8 +76,16 @@ class DemoApplication:
                                      'liveM2Stages':True, 'modelEditing':False, 'externalResources':False}}
         if name == 'pcg_demo_open': return {'url': self.url, 'instanceId': self.session.snapshot()['instanceId'], 'readOnly': True}
         if name == 'pcg_demo_read_state': return self.state()
+        if name == 'pcg_demo_wait':
+            result = self.session.wait(**args)
+            result['state'] = result.pop('snapshot')
+            with self.lock: result['state']['viewer'] = copy.deepcopy(self.viewer)
+            result['state'].update(url=self.url, readOnly=True)
+            return result
+        if name == 'pcg_demo_preview': return self.session.preview(**args)
         if name == 'pcg_demo_select': self.session.select(args['assetId'])
         elif name == 'pcg_demo_run': self.session.start(**args)
+        elif name == 'pcg_demo_tune': self.session.tune(**args)
         elif name == 'pcg_demo_cancel': self.session.cancel(args['runId'])
         return self.state()
 
@@ -180,6 +189,9 @@ class DemoHandler(BaseHTTPRequestHandler):
                 self.send(200, (BASE / 'pcg_demo_viewer' / name).read_bytes(), mime, cookie=path == '/')
             elif not post and path == '/api/state': self.send(200, canonical(app.state()))
             elif not post and path == '/api/tools': self.send(200, canonical(app.tools))
+            elif not post and path.startswith('/api/previews/') and path.endswith('.json'):
+                body = app.session.read_preview(path[len('/api/previews/'):-5])
+                self.send(200, body)
             elif not post and path.startswith('/api/assets/') and path.endswith('.glb'):
                 asset_id = path[len('/api/assets/'):-4]
                 body, _ = app.session.read_asset(asset_id)

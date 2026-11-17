@@ -349,6 +349,23 @@ class PCGRuntime:
                     if process is not None and process.poll() is None: process.kill()
                 return {'task': self._public(task)}
 
+    def cancel_obsolete(self, handle):
+        """Cancel only this host's exact task, even after its saved graph changed.
+
+        Viewport invalidation can race the save or remove the original node. The
+        complete runtime-owned handle remains the cancellation capability; it
+        grants no result validation, artifact reads, or execution at an old revision.
+        """
+        validate_identity(handle, handle=True)
+        with self.store._guard(self.store._project_path(handle['projectId'])):
+            task, stale = self._owned(handle)
+            with self.lock:
+                if task['status'] in {'queued', 'running'}:
+                    task['_cancel'].set()
+                    process = task['_process']
+                    if process is not None and process.poll() is None: process.kill()
+                return {'task': self._public(task, stale)}
+
     def export(self, payload):
         validate_identity(payload, handle=True, optional={'format', 'port'})
         handle = {k: payload[k] for k in HANDLE}
