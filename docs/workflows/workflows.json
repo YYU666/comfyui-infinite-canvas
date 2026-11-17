@@ -1,0 +1,254 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "977faf9795b70be2e68137015bd9a2f1fd89532f",
+  "purpose": "Generic interface and provenance inventory only; no menu changes or executable workflows.",
+  "workflows": [
+    {
+      "id": "krea-moss-two-pass",
+      "title": "Krea2 → MOSS dual-pass structural comparison",
+      "publicationStatus": "blocked-upstream-workflow-license",
+      "officialMenuEligible": false,
+      "interface": {
+        "inputs": [
+          "Text prompt, seed and dimensions; MOSS stage also takes the Krea stage image"
+        ],
+        "outputs": [
+          "Krea first-pass image",
+          "MOSS refined image"
+        ]
+      },
+      "modelRefs": [
+        "diffusion_models/krea2_turbo_fp8_scaled.safetensors",
+        "text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+        "vae/qwen_image_vae.safetensors",
+        "diffusion_models/Moss_image/moss_image_sft_int8_convrot.safetensors",
+        "text_encoders/qwen3.5_9b_int8_convrot.safetensors",
+        "vae/flux2-vae.safetensors"
+      ],
+      "manualPrerequisites": [],
+      "notes": [
+        "Two independent stages decode/re-encode through their own VAEs; latent tensors are not passed across models.",
+        "Local baseline uses explicitly named alternate quantizations and omits seven author style LoRAs; it is not the original author effect or an identity-preservation guarantee.",
+        "No pack, prompt, author source JSON, historical remote metadata, media or credentials is redistributed.",
+        "Author-exact version remains blocked by nine unresolved exact weights and incompatible rebalance preset/renormalize inputs."
+      ],
+      "sources": [
+        {
+          "url": "https://www.bilibili.com/video/BV1yAxM6YEmo/",
+          "kind": "author-explanation"
+        },
+        {
+          "url": "https://www.runninghub.cn/post/2112477072856801281/",
+          "kind": "original-workflow",
+          "sourceCommit": null,
+          "sha256": "da9da8feafe057e0edb9644f428ad2351b2bea4e3def93740685084c8fee739d",
+          "bytes": 130689,
+          "redistribution": "unconfirmed; hash/reference only"
+        }
+      ]
+    },
+    {
+      "id": "character-sheet-generic",
+      "title": "Four-view character sheet interface",
+      "publicationStatus": "blocked-private-recipe-cleanup",
+      "officialMenuEligible": false,
+      "interface": {
+        "inputs": [
+          "Reference image; selected view; proportions and style settings"
+        ],
+        "outputs": [
+          "Front and three-quarter portraits; front and back full-body images"
+        ]
+      },
+      "modelRefs": [
+        "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+        "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+        "vae/qwen_image_2.1_vae_bf16.safetensors",
+        "loras/Qwen2.1_Anything2RealCharacters.safetensors"
+      ],
+      "manualPrerequisites": [],
+      "notes": [
+        "Only the generic interface is documented. Subject-specific approved recipes and prompts are excluded.",
+        "Existing implementation must be decoupled from private recipes before any public runtime synchronization."
+      ],
+      "sources": []
+    },
+    {
+      "id": "sam-white-plate",
+      "title": "SAM3.1 white-plate extraction",
+      "publicationStatus": "feature-review-required",
+      "officialMenuEligible": false,
+      "interface": {
+        "inputs": [
+          "Source video; keep-object text; mask grow/feather; plate shade/background"
+        ],
+        "outputs": [
+          "White subject/object plate video"
+        ]
+      },
+      "modelRefs": [
+        "checkpoints/sam3.1_multiplex_fp16.safetensors"
+      ],
+      "manualPrerequisites": [],
+      "notes": [
+        "New VFX behavior requires feature review; this documentation does not add a menu entry or certify full-duration tracking."
+      ],
+      "sources": []
+    },
+    {
+      "id": "sam-normal-map-swap",
+      "title": "SAM3.1 normal-map character replacement",
+      "publicationStatus": "feature-review-required",
+      "officialMenuEligible": false,
+      "interface": {
+        "inputs": [
+          "Source video; chosen subject; inspected colored-normal guide; identity reference"
+        ],
+        "outputs": [
+          "Guide preview; generated replacement video"
+        ]
+      },
+      "modelRefs": [
+        "checkpoints/sam3.1_multiplex_fp16.safetensors",
+        "geometry_estimation/moge_3_vitl_fp16.safetensors",
+        "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+        "loras/minimax_h3_DMAD_8step_full_lora_avg_rank_58_bf16.safetensors",
+        "loras/minimax_h3_character_swap_v1.0_preprocessor_map_fro099.safetensors"
+      ],
+      "manualPrerequisites": [
+        "Compatible BFSNodes and the workflow-specific bridge; exact node interfaces need separate runtime preflight."
+      ],
+      "notes": [
+        "Guide and generation are separate stages; guide inspection is required.",
+        "Single-subject interface only; multi-character behavior, cuts and automatic occlusion protection are not certified.",
+        "New animation/VFX feature remains subject to owner decision."
+      ],
+      "sources": [
+        {
+          "url": "https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/blob/95fc24e424fb788828ccc92abf972b3155bdd458/workflows/minimax_h3_character_swap_preprocessor_map_workflow_v1.0.json",
+          "kind": "official-workflow-reference",
+          "sourceCommit": "95fc24e424fb788828ccc92abf972b3155bdd458",
+          "sha256": "699990a6250de6b33a18abc1c5eef0cb26839910f1fa501787c95d333fff3339",
+          "bytes": 70687,
+          "hashScope": "Exact bytes verified against pinned official source JSON.",
+          "redistribution": "reference only"
+        }
+      ]
+    },
+    {
+      "id": "video-super-resolution",
+      "title": "RTX VFX / SeedVR2 video super resolution",
+      "publicationStatus": "existing-pr-review-required",
+      "officialMenuEligible": false,
+      "interface": {
+        "inputs": [
+          "Video; upscale engine; target scale and engine settings"
+        ],
+        "outputs": [
+          "Upscaled video with duration and original audio retained"
+        ]
+      },
+      "modelRefs": [
+        "diffusion_models/seedvr2_3b_int8_convrot.safetensors",
+        "diffusion_models/seedvr2_7b_int8_convrot.safetensors",
+        "vae/seedvr2_ema_vae_fp16.safetensors"
+      ],
+      "manualPrerequisites": [
+        "RTX branch: compatible NVIDIA RTX Video SDK, supported hardware and its own terms."
+      ],
+      "notes": [
+        "RTX uses the independently installed NVIDIA SDK; it is not a safetensors/GGUF model.",
+        "Source implementation commit db8826a98e49baae4b1a73c7559991b2a216fe31; this catalog does not include that runtime change.",
+        "Full duration, frame count and original audio must be reviewed in the separate implementation PR."
+      ],
+      "sources": []
+    },
+    {
+      "id": "local-overlay-repair",
+      "title": "Local video overlay repair",
+      "publicationStatus": "implementation-review-required",
+      "officialMenuEligible": false,
+      "interface": {
+        "inputs": [
+          "Video; bounded normalized rectangle; time range"
+        ],
+        "outputs": [
+          "Locally repaired video"
+        ]
+      },
+      "modelRefs": [],
+      "manualPrerequisites": [],
+      "notes": [
+        "CPU neighborhood pixel fill; no model weights.",
+        "Small-overlay repair can blur moving textures; it is not AI reconstruction or a temporal-detail guarantee.",
+        "Private source media, rectangle coordinates and result receipts are excluded."
+      ],
+      "sources": []
+    },
+    {
+      "id": "moss-pose",
+      "title": "MOSS pose control",
+      "publicationStatus": "blocked-model-format-policy",
+      "officialMenuEligible": false,
+      "interface": {
+        "inputs": [
+          "Pose-reference image; target prompt"
+        ],
+        "outputs": [
+          "Pose-conditioned generated image"
+        ]
+      },
+      "modelRefs": [
+        "diffusion_models/Moss_image/moss_image_sft_int8_convrot.safetensors",
+        "text_encoders/qwen3.5_9b_int8_convrot.safetensors",
+        "vae/flux2-vae_small.safetensors",
+        "loras/moss_image_sft_pose_control_lora.safetensors"
+      ],
+      "manualPrerequisites": [
+        "Manual prerequisite only: dw-ll_ucoco_384.onnx and yolox_l.onnx with a compatible DWPose preprocessor; ONNX files are not catalog entries or bundled binaries."
+      ],
+      "notes": [
+        "Official DWPose preparation requires two ONNX auxiliaries. These are excluded from this model catalog, so the workflow is not represented as complete under the safetensors/GGUF-only policy.",
+        "Local text encoder quantization differs from the upstream example; no equivalence is claimed."
+      ],
+      "sources": [
+        {
+          "url": "https://huggingface.co/thedeoxen/MOSS-Image-pose-controlnet/blob/e7d16fcb8eb81b4a0ab3d3a5bb3b17119d834307/moss_image_pose_control.json",
+          "kind": "official-workflow-reference",
+          "sourceCommit": "e7d16fcb8eb81b4a0ab3d3a5bb3b17119d834307",
+          "sha256": "f6f19bfd69be592d229b080e2a5b8388724f939795dac7233a454b08985d80ef",
+          "bytes": 14921,
+          "redistribution": "reference only; upstream Apache-2.0 terms apply",
+          "hashScope": "Exact bytes verified against pinned official source JSON."
+        }
+      ]
+    },
+    {
+      "id": "relight-research",
+      "title": "Relighting through the existing image editor",
+      "publicationStatus": "existing-interface-only",
+      "officialMenuEligible": false,
+      "interface": {
+        "inputs": [
+          "Reference image; generic lighting-edit instruction"
+        ],
+        "outputs": [
+          "Edited image"
+        ]
+      },
+      "modelRefs": [
+        "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+        "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+        "vae/qwen_image_2.1_vae_bf16.safetensors"
+      ],
+      "manualPrerequisites": [],
+      "notes": [
+        "Research receipts used the existing standard Qwen image-edit interface; no separate IC-Light implementation is evidenced.",
+        "Private instructions and media are excluded."
+      ],
+      "sources": []
+    }
+  ]
+}

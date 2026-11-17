@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "unresolvedAuthorDependencies": [
+    {
+      "filename": "KR2-电影胶片2-TJFilmStyleKrea2_V2.safetensors",
+      "reason": "Exact author dependency lacks verified repository, fixed revision, bytes, SHA-256 and/or license; not a model catalog entry."
+    },
+    {
+      "filename": "Krea_2_zidiusArt_Melancholy.safetensors",
+      "reason": "Exact author dependency lacks verified repository, fixed revision, bytes, SHA-256 and/or license; not a model catalog entry."
+    },
+    {
+      "filename": "TJFilmMoss_V1.safetensors",
+      "reason": "Exact author dependency lacks verified repository, fixed revision, bytes, SHA-256 and/or license; not a model catalog entry."
+    },
+    {
+      "filename": "feverdream-epoch-07.safetensors",
+      "reason": "Exact author dependency lacks verified repository, fixed revision, bytes, SHA-256 and/or license; not a model catalog entry."
+    },
+    {
+      "filename": "krea2-Cc-MJ-影视柔光.safetensors",
+      "reason": "Exact author dependency lacks verified repository, fixed revision, bytes, SHA-256 and/or license; not a model catalog entry."
+    },
+    {
+      "filename": "krea2-Cc-MJ-风格滤镜.safetensors",
+      "reason": "Exact author dependency lacks verified repository, fixed revision, bytes, SHA-256 and/or license; not a model catalog entry."
+    },
+    {
+      "filename": "krea2_turbo_fp8.safetensors",
+      "reason": "Exact author dependency lacks verified repository, fixed revision, bytes, SHA-256 and/or license; not a model catalog entry."
+    },
+    {
+      "filename": "qwen3.5_9b_bf16.safetensors",
+      "reason": "Exact author dependency lacks verified repository, fixed revision, bytes, SHA-256 and/or license; not a model catalog entry."
+    },
+    {
+      "filename": "realism_engine_krea2_v3.1_new.safetensors",
+      "reason": "Exact author dependency lacks verified repository, fixed revision, bytes, SHA-256 and/or license; not a model catalog entry."
+    }
+  ],
+  "otherIncompleteModelRecords": [
+    {
+      "filename": "Krea2-MuseByStable_v30Turbo_fp8.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    },
+    {
+      "filename": "Krea2-realism_engine_v2.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    },
+    {
+      "filename": "Krea2-亚洲asianMix_v1-bf16.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    },
+    {
+      "filename": "Krea2-奇幻现实FantasyRealism.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    },
+    {
+      "filename": "krea2_紫调复古旧动漫retroanime.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    },
+    {
+      "filename": "krea2_装饰艺术柔和水彩softwatercolor.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    },
+    {
+      "filename": "h3_character_swap_v1.5.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    },
+    {
+      "filename": "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    },
+    {
+      "filename": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    },
+    {
+      "filename": "minimax_h3_video_vae_fp16.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    },
+    {
+      "filename": "museByStableYogi_v40INT8Extended.safetensors",
+      "reason": "Incomplete exact provenance or license metadata; omitted from models.lock.json."
+    }
+  ],
+  "excludedAuxiliaries": [
+    {
+      "filename": "dw-ll_ucoco_384.onnx",
+      "reason": "ONNX is outside the allowed model catalog formats; manual prerequisite only."
+    },
+    {
+      "filename": "yolox_l.onnx",
+      "reason": "ONNX is outside the allowed model catalog formats; manual prerequisite only."
+    }
+  ],
+  "licenseGaps": [
+    {
+      "scope": "Krea2-to-MOSS upstream workflow",
+      "reason": "Workflow redistribution permission is unconfirmed. No original JSON or adapted h3pack is redistributed."
+    },
+    {
+      "scope": "QuadView custom author license",
+      "reason": "Original Civitai listing controls usage; the catalog records the named license and source reference, not a redistribution/commercial-use approval."
+    },
+    {
+      "scope": "All model derivatives",
+      "reason": "Base-model licenses apply independently; pinned metadata does not waive territorial, hosting, attribution or commercial restrictions."
+    }
+  ]
+}
