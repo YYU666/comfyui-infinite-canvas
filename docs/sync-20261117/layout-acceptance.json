@@ -1,0 +1,14 @@
+{
+  "baselineCommit": "977faf9795b70be2e68137015bd9a2f1fd89532f",
+  "evidenceType": "saved production snapshots; private snapshots intentionally excluded",
+  "beforeRevision": 1682,
+  "afterRevision": 1683,
+  "nodes": 406,
+  "edges": 431,
+  "contentUnchanged": true,
+  "beforeSnapshotSha256": "c185e1600686528c6b74a13525f82da072a7d23d23a4bbd48eb5546b1e7af441",
+  "reloadedSnapshotSha256": "5c6d4d97af203c7d68e564daa0a293cbfac27ee6f998827f00a4744ff96135af",
+  "contentSha256": "f17383c21e830fbcd049242ae8d6aff4a086a3f957711b5a601797a10f30ea78",
+  "moved": 405,
+  "limits": "Production source snapshot was previously deployed and reloaded; current main integration uses isolated synthetic UI/roundtrip verification, without replacing the running service. Runtime measured sizes are not persisted; future tidy may adjust complex-tool gaps."
+}

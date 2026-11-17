@@ -7,6 +7,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const suites = {
   node: [
     'test-canvas-file-location.mjs',
+    'test-image-export.mjs',
     'test-model-licenses.mjs',
     'test-sprite-atlas.mjs',
     'test-comfy-connectivity.mjs',
@@ -28,6 +29,7 @@ const suites = {
     'test-canvas-clipboard.mjs',
     'test-canvas-history.mjs',
     'test-canvas-layout.mjs',
+    'test-canvas-layout-roundtrip.mjs',
     'test-canvas-connections.mjs',
     'test-canvas-mcp-queue.mjs',
     'test-canvas-current-page.mjs',
@@ -61,6 +63,7 @@ const suites = {
     'test-update-offer.mjs',
   ],
   browser: [
+    'test-image-export-ui.mjs',
     'test-sprite-atlas-ui.mjs',
     'test-pureref-import-ui.mjs',
     'test-art-director-ui.mjs',
@@ -84,6 +87,7 @@ const suites = {
     'test-canvas-save-ui.mjs',
     'test-project-resume-ui.mjs',
     'test-canvas-thumbnails-ui.mjs',
+    'test-canvas-media-preview-ui.mjs',
     'test-canvas-clipboard-ui.mjs',
     'test-canvas-projects.mjs',
     'test-launcher-ui.mjs',
