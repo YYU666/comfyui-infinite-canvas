@@ -122,7 +122,7 @@ finally:
 async function rpc(method,params={}) {
  const id=++requestId;
  const answer=await page.evaluate(async({id,method,params})=>{
-  const response=await fetch('/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id,method,params})});
+  const response=await fetch('/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id,method,params}),signal:AbortSignal.timeout(30000)});
   return {status:response.status,value:await response.json()};
  },{id,method,params});
  assert.equal(answer.status,200,JSON.stringify(answer.value));assert.equal(answer.value.id,id);assert.equal(answer.value.error,undefined);
