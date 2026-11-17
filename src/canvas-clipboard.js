@@ -5,6 +5,8 @@ const NODE_SIZES = {
   spriteAtlas: { width: 430, height: 1100 },
   artDirector: { width: 540, height: 1700 },
   imageProcess: { width: 370, height: 1000 },
+  videoSpeed: { width: 360, height: 420 },
+  videoTimeRemap: { width: 380, height: 620 },
   videoEdit: { width: 400, height: 420 },
   media: { width: 310, height: 250 },
   generator: { width: 440, height: 360 },
@@ -125,6 +127,10 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
       delete data.error;
     }
     if (data.sourceArtDirectorId) data.sourceArtDirectorId = idMap.get(data.sourceArtDirectorId) || null;
+    if (['videoSpeed', 'videoTimeRemap'].includes(source.type)) {
+      Object.assign(data, { status: 'idle', stage: '', progress: 0 });
+      ['rhythmJobId', 'rhythmSubmittedSettings', 'rhythmResultAssetPath', 'rhythmResult', 'rhythmResultSettings', 'rhythmResultJobId', 'rhythmInputCache', 'error'].forEach(key => delete data[key]);
+    }
     if (source.type === 'videoEdit') {
       Object.assign(data, { status: 'idle', stage: '', progress: 0 });
       ['videoEditJobId', 'editResultAssetPath', 'editResult', 'editResultDocument', 'editSubmittedDocument', 'editResultJobId', 'editInputCache', 'error'].forEach(key => delete data[key]);
