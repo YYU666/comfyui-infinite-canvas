@@ -6,6 +6,8 @@
 
 固定来源锁保留 19 项权重的精确来源记录。登记不代表对应节点已安装、兼容或通过推理验收，也不开放新工作流。DWPose 的 `dw-ll_ucoco_384.onnx` 和 `yolox_l.onnx` 属于辅助预处理文件，不进入此下载器；需要时先按 [作者说明](https://huggingface.co/yzd-v/DWPose) 核实版本、字节数、哈希及许可，经用户确认后手动安装，不用相似文件替代。
 
+权重许可展示复用 [licenses.json](licenses.json)、H3-Image/FLUX 独立记录和 [license-notices.json](license-notices.json)。H3 视频与 H3-Image 分别链接官方固定版本原文，定义 3/5 排除欧盟、英国、韩国、美国；其他商用和分发条件以原文为准，不能继承工作台代码许可。
+
 以下来源表中的移动链接仅用于人工查阅作者材料；未进入来源锁的文件不会启用自动下载。
 
 可选 FLUX 3 Image Klein 的四项依赖、固定官方来源和校验信息见 [FLUX3_KLEIN.md](FLUX3_KLEIN.md)；它不属于下列 33 项安装清单，也不会随默认安装下载。

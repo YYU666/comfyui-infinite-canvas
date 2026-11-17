@@ -24,7 +24,7 @@ MODEL_FIELDS = {
     "clip_name": "text_encoders", "clip_name1": "text_encoders", "clip_name2": "text_encoders", "clip_name3": "text_encoders",
     "control_net_name": "controlnet", "upscale_model": "upscale_models",
 }
-from model_sources import locked_sources, validate_source
+from model_sources import locked_sources, validate_source, model_license
 
 
 def canonical_sources():
@@ -114,7 +114,7 @@ def dependency_report(bundle, payload, object_info, sources=None):
                            "parameterId": parameter_id, "name": name, "category": category, "status": status,
                            "installedEvidence": "loader-enumeration" if status == "installed" else None,
                            "candidates": candidates[:1000], "candidatesTruncated": len(candidates) > 1000,
-                           "download": source if status != "installed" else None})
+                           "source": source, "licenseInfo": model_license(path), "download": source if status != "installed" else None})
     classes = [{"classType": value, "installed": value in object_info} for value in sorted({node["class_type"] for node in workflow.values()})]
     missing = sum(row["status"] != "installed" for row in models)
     missing_nodes = sum(not row["installed"] for row in classes)
