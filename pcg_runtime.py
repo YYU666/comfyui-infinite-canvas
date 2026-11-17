@@ -333,6 +333,13 @@ class PCGRuntime:
             with self.lock: task.update(status='failed', error={'code': exc.code, 'message': exc.message})
         except (OSError, ValueError, TypeError, KeyError, ImportError, RecursionError):
             with self.lock: task.update(status='failed', error={'code': 'WORKER_PROTOCOL', 'message': 'Geometry worker response could not be validated.'})
+        except Exception as exc:
+            # An unexpected host exception must still complete the task as failed.
+            # Expose its type, never exception arguments containing request data.
+            with self.lock:
+                task.update(status='cancelled' if task['_cancel'].is_set() else 'failed',
+                            error={'code': 'WORKER_CANCELLED' if task['_cancel'].is_set() else 'WORKER_CRASH',
+                                   'message': 'Geometry host failed: ' + type(exc).__name__})
         finally:
             if geometry_owned: self.geometry_slot.release()
             self.slots.release(); task['_event'].set()

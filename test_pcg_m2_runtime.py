@@ -224,6 +224,18 @@ class M2RuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.active_count(), 0)
         self.assert_slots_released()
 
+    def test_unexpected_host_exception_is_terminal_and_releases_slots(self):
+        with mock.patch.object(self.runtime, '_isolation', return_value={'available': True}), \
+                mock.patch('pcg_isolation.execute', side_effect=RuntimeError('private request text')):
+            task = self.execute()
+        self.assertEqual(task['status'], 'failed', task)
+        self.assertEqual(task['error']['code'], 'WORKER_CRASH')
+        self.assertIn('RuntimeError', task['error']['message'])
+        self.assertNotIn('private request text', task['error']['message'])
+        self.assertTrue(self.runtime.tasks[task['jobId']]['_event'].is_set())
+        self.assertEqual(self.runtime.active_count(), 0)
+        self.assert_slots_released()
+
     def test_retained_graph_errors_timeout_crash_budget_protocol(self):
         self.require_boundary()
         from pcg_isolation import IsolationError

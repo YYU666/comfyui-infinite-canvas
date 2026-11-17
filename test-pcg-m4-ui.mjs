@@ -98,7 +98,7 @@ for variant,y in enumerate([.125,.375]):
 (target/'EVIDENCE.json').write_bytes(canonical({'runs':runs}))
 print(json.dumps({'triangles':len(triangles),'vertices':(nx+1)*(nz+1),'assets':[{'label':r['name'],'bytes':r['assetsLocal'][0]['bytes'],'sha256':r['assetsLocal'][0]['sha256']} for r in runs]}))
 `;
-const bootstrap='import runpy,sys,json;sys.path.extend(json.loads(sys.argv[2]));sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[3:];runpy.run_path(sys.argv[0],run_name="__main__")';
+const bootstrap='import runpy,sys,json,faulthandler;faulthandler.enable();faulthandler.dump_traceback_later(120,repeat=True);sys.path.extend(json.loads(sys.argv[2]));sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[3:];runpy.run_path(sys.argv[0],run_name="__main__")';
 async function rpc(method,params={}) {
  const id=++requestId;
  const answer=await page.evaluate(async({id,method,params})=>{
@@ -254,7 +254,7 @@ try {
  if(evidence.strictLatency&&!evidence.performanceOk)process.exitCode=1;
 }catch(error){
  let diagnostic=null;try{diagnostic={state:await read(),viewer:await viewer(),app:await diagnostics()};}catch{}
- await writeFile(evidencePath,JSON.stringify({ok:false,error:error.message,evidence,diagnostic,pageErrors,externalRequests,serverLog:logs},null,2)+'\n',{flag:'wx'});console.error(JSON.stringify({ok:false,error:error.message,evidenceFile:evidencePath}));throw error;
+ await writeFile(evidencePath,JSON.stringify({ok:false,error:error.message,evidence,diagnostic,pageErrors,externalRequests,serverLog:logs},null,2)+'\n',{flag:'wx'});console.error(JSON.stringify({ok:false,error:error.message,evidenceFile:evidencePath,run:diagnostic?.state?.run,serverLog:logs}));throw error;
 }finally{
  await browser?.close();if(server&&server.exitCode===null){server.stdin.end();await Promise.race([new Promise(resolve=>server.once('exit',resolve)),sleep(10000)]);if(server.exitCode===null){server.kill('SIGTERM');await new Promise(resolve=>server.once('exit',resolve));}}
  assert.ok(path.resolve(temporary).startsWith(path.resolve(tmpdir())+path.sep)&&path.basename(temporary).startsWith('pcg-m4-ui-'),'Owned temporary cleanup only.');await rm(temporary,{recursive:true,force:true,maxRetries:4,retryDelay:100});
