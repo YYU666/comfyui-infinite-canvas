@@ -30,7 +30,7 @@ class VideoRepairJobs:
     def __init__(self, root, store, *, runner_factory=Runner, max_jobs=16):
         self.root, self.store = Path(root), store
         self.runner_factory, self.max_jobs = runner_factory, max_jobs
-        self.jobs, self.runners = {}, {}
+        self.jobs, self.runners, self.previews = {}, {}, {}
         self.lock = threading.RLock()
         self.preview_slot = threading.BoundedSemaphore(1)
         self.closed = False
@@ -47,7 +47,7 @@ class VideoRepairJobs:
 
     def active_count(self):
         with self.lock:
-            return sum(job["status"] not in TERMINAL for job in self.jobs.values())
+            return len(self.previews) + sum(job["status"] not in TERMINAL for job in self.jobs.values())
 
     def _request(self, payload, preview=False):
         allowed = {"projectId", "nodeId", "source", "settings"} | ({"time", "mode"} if preview else set())
@@ -109,28 +109,33 @@ class VideoRepairJobs:
             raise StoreError("DISK_FULL", "局部修复缓存配额或磁盘空间不足。", 507)
 
     def submit(self, payload):
-        document, source, _ = self._request(payload)
+        # Bind source resolution and admission to one project-store epoch.
         with self.lock:
-            if self.closed: raise StoreError("VIDEO_REPAIR_CLOSED", "视频修补服务正在关闭。", 503)
-            if any(j["projectId"] == payload["projectId"] and j["nodeId"] == payload["nodeId"]
-                   and j["status"] not in TERMINAL for j in self.jobs.values()):
-                raise StoreError("VIDEO_REPAIR_BUSY", "此节点已有修复作业。", 409)
-            self._capacity()
-            job_id = "vrp_" + uuid.uuid4().hex
-            self.jobs[job_id] = {"id": job_id, "projectId": payload["projectId"], "nodeId": payload["nodeId"],
-                                 "source": payload["source"], "status": "queued", "stage": "排队中", "progress": 0,
-                                 "error": None, "result": None, "createdAt": time.time(),
-                                 "_document": document, "_source": source}
-            self.pool.submit(self._run, job_id)
-        return self.get(job_id)
+            document, source, _ = self._request(payload)
+            with self.lock:
+                if self.closed: raise StoreError("VIDEO_REPAIR_CLOSED", "视频修补服务正在关闭。", 503)
+                if any(j["projectId"] == payload["projectId"] and j["nodeId"] == payload["nodeId"]
+                       and j["status"] not in TERMINAL for j in self.jobs.values()):
+                    raise StoreError("VIDEO_REPAIR_BUSY", "此节点已有修复作业。", 409)
+                self._capacity()
+                job_id = "vrp_" + uuid.uuid4().hex
+                self.jobs[job_id] = {"id": job_id, "projectId": payload["projectId"], "nodeId": payload["nodeId"],
+                                     "source": payload["source"], "status": "queued", "stage": "排队中", "progress": 0,
+                                     "error": None, "result": None, "createdAt": time.time(),
+                                     "_document": document, "_source": source}
+                self.pool.submit(self._run, job_id)
+            return self.get(job_id)
 
     def preview(self, payload):
-        document, source, request = self._request(payload, preview=True)
         if not self.preview_slot.acquire(blocking=False):
             raise StoreError("VIDEO_REPAIR_BUSY", "已有预览正在处理。", 429)
         runner = None
         try:
-            runner = self.runner_factory()
+            with self.lock:
+                if self.closed: raise StoreError("VIDEO_REPAIR_CLOSED", "视频修补服务正在关闭。", 503)
+                document, source, request = self._request(payload, preview=True)
+                runner = self.runner_factory()
+                self.previews[id(runner)] = runner
             rendered = render_preview(runner, document, source, **request)
             rendered["pngBase64"] = base64.b64encode(rendered.pop("png")).decode("ascii")
             return rendered
@@ -139,6 +144,8 @@ class VideoRepairJobs:
         finally:
             if runner:
                 runner.cancel()
+            with self.lock:
+                if runner: self.previews.pop(id(runner), None)
             self.preview_slot.release()
 
     def cancel(self, job_id, project_id):
@@ -249,6 +256,7 @@ class VideoRepairJobs:
     def close(self):
         with self.lock:
             self.closed = True
+            for runner in self.previews.values(): runner.cancel()
             for job in self.jobs.values():
                 if job["status"] not in TERMINAL:
                     self.cancel(job["id"], job["projectId"])

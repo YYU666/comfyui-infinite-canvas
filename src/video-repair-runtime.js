@@ -26,6 +26,9 @@ export function createVideoRepairRunner(deps) {
   const register = (id, controller) => { deps.jobs.set(id, controller); deps.onJobsChange?.(); };
   const unregister = (id, controller) => { if (deps.jobs.get(id) === controller) { deps.jobs.delete(id); deps.onJobsChange?.(); } };
   async function resolveSource(id, signal) {
+    const projectId = deps.getProjectId();
+    const assertCurrent = () => { signal?.throwIfAborted(); if (deps.getProjectId() !== projectId || !canWrite() || !node(id)) throw new Error('当前画布已改变。'); };
+    assertCurrent();
     const inputs = deps.getEdges().filter(item => item.target === id && item.targetHandle === REPAIR_PORT);
     const source = deps.getNodes().find(item => item.id === inputs[0]?.source);
     if (inputs.length !== 1 || videoStreamKind(source) !== 'video') throw new Error('请连接一个视频素材或视频处理成片。');
@@ -36,12 +39,13 @@ export function createVideoRepairRunner(deps) {
     const response = await fetch(source.data.url, { credentials: 'same-origin', signal });
     if (!response.ok) throw new Error('无法读取输入视频。');
     const blob = await response.blob();
+    assertCurrent();
     const extension = String(source.data.name || source.data.filename || source.data.url).split('?')[0].match(/\.(mp4|mov|webm)$/i)?.[0] || (blob.type.includes('webm') ? '.webm' : '.mp4');
     const file = new File([blob], `repair-input${extension}`, { type: blob.type || 'video/mp4' });
     signal?.throwIfAborted();
-    const saved = await deps.saveCanvasMedia((revision, storageId) => deps.saveProjectFile(storageId, file, revision), result => ({ ok: true, assetPath: result.asset.path }));
+    const saved = await deps.saveCanvasMedia((revision, storageId) => { assertCurrent(); return deps.saveProjectFile(storageId, file, revision); }, result => ({ ok: true, assetPath: result.asset.path }));
     if (!saved?.ok) throw new Error(saved?.error?.message || '输入素材保存失败。');
-    signal?.throwIfAborted();
+    assertCurrent();
     deps.updateNode(id, { repairInputCache: { ...(node(id)?.data.repairInputCache || {}), [source.id]: { url: source.data.url, assetPath: saved.assetPath } } });
     return saved.assetPath;
   }
@@ -130,13 +134,17 @@ export function createVideoRepairRunner(deps) {
       if (!canWrite()) return { ok: false, error: '当前画布不可编辑。' };
       const current = node(id);
       if (!isVideoRepair(current) || deps.jobs.has(id)) return { ok: false, error: '节点不存在或正在处理。' };
-      const controller = new AbortController(); register(id, controller);
+      const controller = new AbortController(), projectId = deps.getProjectId(); register(id, controller);
       try {
         if (!REPAIR_PREVIEW_MODES.includes(mode)) throw new Error('无效的预览模式。');
         const settings = repairDocumentFromNode(current.data), previewTime = normalizeRepairPreviewTime(time ?? current.data.previewTime);
         const source = await resolveSource(id, controller.signal);
         controller.signal.throwIfAborted();
-        return { ok: true, ...await request('/preview', { projectId: deps.getProjectId(), nodeId: id, source, settings, time: previewTime, mode }, controller.signal) };
+        if (deps.getProjectId() !== projectId || !canWrite()) throw new Error('当前画布已改变。');
+        const frame = await request('/preview', { projectId, nodeId: id, source, settings, time: previewTime, mode }, controller.signal);
+        controller.signal.throwIfAborted();
+        if (deps.getProjectId() !== projectId || !canWrite()) throw new Error('当前画布已改变。');
+        return { ok: true, ...frame };
       } catch (error) { return { ok: false, error: controller.signal.aborted ? '已取消预览。' : error.message }; }
       finally { unregister(id, controller); }
     },

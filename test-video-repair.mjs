@@ -40,3 +40,6 @@ const pending = runner.run('repair'); while (!sent) await new Promise(resolve =>
 assert.equal((await pending).ok, false); assert.deepEqual(cancelled, [{ projectId: 'prj_test' }]); assert.equal(jobs.size, 0);
 writable = false; assert.equal((await runner.run('repair')).ok, false); assert.equal((await runner.preview('repair')).ok, false); assert.equal(runner.resume('repair'), false); globalThis.fetch = fetchBefore;
 console.log('VIDEO_REPAIR_OK schema parity graph stale-source blocking MCP settings late-cancel readonly');
+
+const { verifyVideoImportGuard } = await import('./test-video-import-guard.mjs');
+await verifyVideoImportGuard(createVideoRepairRunner, 'videoLocalRepair', {repairSettings:settings}, 'video');
