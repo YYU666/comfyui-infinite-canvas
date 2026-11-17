@@ -98,7 +98,27 @@ for variant,y in enumerate([.125,.375]):
 (target/'EVIDENCE.json').write_bytes(canonical({'runs':runs}))
 print(json.dumps({'triangles':len(triangles),'vertices':(nx+1)*(nz+1),'assets':[{'label':r['name'],'bytes':r['assetsLocal'][0]['bytes'],'sha256':r['assetsLocal'][0]['sha256']} for r in runs]}))
 `;
-const bootstrap='import runpy,sys,json,faulthandler;faulthandler.enable();faulthandler.dump_traceback_later(120,repeat=True);sys.path.extend(json.loads(sys.argv[2]));sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[3:];runpy.run_path(sys.argv[0],run_name="__main__")';
+const bootstrap=String.raw`import atexit,faulthandler,json,runpy,sys,threading,time
+faulthandler.enable(all_threads=True)
+stop_diagnostics=threading.Event()
+def diagnostic_samples():
+    for index in range(2):
+        if stop_diagnostics.wait(120): return
+        print('PCG_STACK_SAMPLE_BEGIN', index+1, time.monotonic(), file=sys.stderr, flush=True)
+        faulthandler.dump_traceback(all_threads=True)
+        print('PCG_STACK_SAMPLE_END', index+1, time.monotonic(), file=sys.stderr, flush=True)
+diagnostics_thread=threading.Thread(target=diagnostic_samples,daemon=True)
+diagnostics_thread.start()
+def stop_samples():
+    stop_diagnostics.set()
+    diagnostics_thread.join(2)
+atexit.register(stop_samples)
+sys.path.extend(json.loads(sys.argv[2]));sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[3:]
+try:
+    runpy.run_path(sys.argv[0],run_name='__main__')
+finally:
+    stop_samples()
+`;
 async function rpc(method,params={}) {
  const id=++requestId;
  const answer=await page.evaluate(async({id,method,params})=>{

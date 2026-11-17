@@ -58,3 +58,9 @@ CI捕获了布局整理推进项目revision后，面板仍取旧handle导致GLB 
 ## 原生失败路径补丁复验
 
 PR/push CI在59f3fad均失败：前者测试宿主0xC0000005后断网，后者icacls10秒超时并fail-closed。独立审查发现两项可复现清理缺口，现仅成功初始化的属性列表才析构，SID字符串转换失败释放已创建SID，三项全mock故障注入通过。源码复审accept；完整PCG Python124项OK/2跳过，实际AppContainer零能力/私有读写/网络/子进程拒绝及取消预算门保留。40轮Python3.12原生会话探针通过；同版本Python3.12加PYTHONMALLOC=debug的完整M4用例m4-90756-1794943722611.json为integrationOk=true、performanceOk=false、overall ok=false，退出0仅因默认CI功能模式，不能算性能通过。实例p95=4732.90ms、网格p95=2078.01ms，调试分配器下不与旧样本比较优化幅度。最新修复提交CI另行核对；不宣称已定位/修复原生访问异常根因。IPC线程限时join后的清理风险仍单列，未借本补丁改变隔离语义。
+
+## 同步栈诊断后的实际画布复验
+
+两测试bootstrap保留真实崩溃捕获，将原生无GIL定时栈转储换成普通Python线程同步取栈（120秒、至多2次、begin/end时钟、finally/atexit停止）；其它测试代码及断言/超时/规模/性能门不变。独立审查accept。上游栈转储已知缺陷与本轮两次转储中AV具有相关性，但尚无本次原生故障栈/模块/地址，不能认定唯一根因或宣布已修复所有访问异常。永久占GIL时同步诊断无法取栈，外部超时仍会失败。
+
+同Python3.12完整压力m4-81296-1794944563839.json功能通过、性能仍FAILED：实例p50=3637.57/p95=3792.92ms，同拓扑p50=1771.37/p95=1837.69ms，每档5样本。真实完整画布canvas-89400-1794944768060.json为ok=true，91条命令全部done、12checks、8本机截图；布局保存revision23→24、generation36→37、displayed handle24。命令数与旧93轮差异仅状态轮询次数，12检查与原断言未删。临时URL http://127.0.0.1:5611/ 已结束回收，不代表持续在线；关闭5buffer/1VAO/10776bytes全部归零。最新提交CI须另核，整体M4仍未全项通过、M5未开始。

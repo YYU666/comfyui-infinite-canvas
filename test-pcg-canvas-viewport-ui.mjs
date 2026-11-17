@@ -72,7 +72,27 @@ else:
     (target/(version+'._pth')).write_text(version+'.zip\n.\n',encoding='ascii')
     print(json.dumps({'executable':str(target/'python.exe'),'mode':'staged-existing-install','hostPackages':host_packages,'version':sys.version.split()[0],'stdlibFiles':count,'stdlibBytes':size,'binaries':len(binaries)}))
 `;
-const bootstrap='import runpy,sys,json,faulthandler;faulthandler.enable();faulthandler.dump_traceback_later(120,repeat=True);sys.path.extend(json.loads(sys.argv[2]));sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[3:];runpy.run_path(sys.argv[0],run_name="__main__")';
+const bootstrap=String.raw`import atexit,faulthandler,json,runpy,sys,threading,time
+faulthandler.enable(all_threads=True)
+stop_diagnostics=threading.Event()
+def diagnostic_samples():
+    for index in range(2):
+        if stop_diagnostics.wait(120): return
+        print('PCG_STACK_SAMPLE_BEGIN', index+1, time.monotonic(), file=sys.stderr, flush=True)
+        faulthandler.dump_traceback(all_threads=True)
+        print('PCG_STACK_SAMPLE_END', index+1, time.monotonic(), file=sys.stderr, flush=True)
+diagnostics_thread=threading.Thread(target=diagnostic_samples,daemon=True)
+diagnostics_thread.start()
+def stop_samples():
+    stop_diagnostics.set()
+    diagnostics_thread.join(2)
+atexit.register(stop_samples)
+sys.path.extend(json.loads(sys.argv[2]));sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[3:]
+try:
+    runpy.run_path(sys.argv[0],run_name='__main__')
+finally:
+    stop_samples()
+`;
 const env={...process.env,H3_WORKBENCH_RUNTIME_DIR:runtime,H3_PROJECTS_ROOT:projects,H3_WORKBENCH_DATA_DIR:path.join(temporary,'data'),H3_WORKBENCH_PORT:'0',H3_WORKBENCH_NO_BROWSER:'1',H3_WORKBENCH_TEST_MODE:'1',H3_COMFY_AUTOSTART:'0',H3_WORKBENCH_DIST_DIR:process.env.H3_TEST_DIST_DIR||path.join(root,'dist'),PYTHONIOENCODING:'utf-8'};
 async function until(read,label='condition',timeout=30000){const end=Date.now()+timeout;for(;;){const value=await read();if(value)return value;assert.ok(Date.now()<end,`Timed out: ${label}`);await sleep(100);}}
 async function request(route,payload,method=payload?'POST':'GET'){
