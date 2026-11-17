@@ -1220,7 +1220,7 @@ export async function uploadMedia(file, kind = 'image') {
   form.append('image', file, file.name);
   form.append('type', 'input');
   form.append('subfolder', 'workbench');
-  form.append('overwrite', 'true');
+  form.append('overwrite', 'false');
   const result = await comfyFetch('/upload/image', { method: 'POST', body: form });
   if (!result?.name) throw new Error(`${kind === 'video' ? '视频' : kind === 'audio' ? '音频' : '图片'}上传失败，请重试。`);
   return result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
