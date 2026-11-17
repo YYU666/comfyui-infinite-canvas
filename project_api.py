@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import stat
 import subprocess
 import urllib.parse
 import uuid
@@ -14,6 +15,64 @@ from project_store import ProjectStore, StoreError, default_projects_root, updat
 
 
 logger = logging.getLogger(__name__)
+
+
+def reveal_asset_in_windows(file_path):
+    """Select the validated item with Unicode Shell APIs, without command parsing."""
+    import ctypes
+    from ctypes import wintypes
+
+    if not hasattr(ctypes, "WinDLL"):
+        raise StoreError("REVEAL_UNAVAILABLE", "当前系统不支持 Windows 文件定位。", 503)
+    ole = ctypes.WinDLL("ole32")
+    shell = ctypes.WinDLL("shell32")
+    ole.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    ole.CoInitializeEx.restype = ctypes.c_long
+    ole.CoUninitialize.argtypes = []
+    ole.CoUninitialize.restype = None
+    ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole.CoTaskMemFree.restype = None
+    shell.SHParseDisplayName.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), wintypes.DWORD, ctypes.c_void_p]
+    shell.SHParseDisplayName.restype = ctypes.c_long
+    shell.SHOpenFolderAndSelectItems.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p, wintypes.DWORD]
+    shell.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+    initialized = ole.CoInitializeEx(None, 2)
+    if initialized < 0 and initialized != -2147417850:  # RPC_E_CHANGED_MODE
+        raise StoreError("REVEAL_FAILED", "无法初始化 Windows 文件定位服务。", 500)
+    pidl = ctypes.c_void_p()
+    try:
+        if shell.SHParseDisplayName(str(file_path), None, ctypes.byref(pidl), 0, None) < 0:
+            raise StoreError("REVEAL_FAILED", "Windows 无法解析素材位置。", 500)
+        if shell.SHOpenFolderAndSelectItems(pidl, 0, None, 0) < 0:
+            raise StoreError("REVEAL_FAILED", "Windows 无法打开素材所在文件夹。", 500)
+    finally:
+        if pidl.value:
+            ole.CoTaskMemFree(pidl)
+        if initialized >= 0:
+            ole.CoUninitialize()
+
+
+def project_asset_to_reveal(store, project_id, relative):
+    """Validate the lexical path before resolving, so links cannot hide aliases."""
+    if not isinstance(relative, str) or not re.fullmatch(r"assets/[a-f0-9]{64}\.[a-z0-9]+", relative):
+        raise StoreError("BAD_REQUEST", "素材路径无效。")
+    try:
+        project = store._project_path(project_id)
+        candidate = project.parent / relative
+        for component in (project, *project.parents, candidate.parent, candidate):
+            info = component.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+                raise StoreError("BAD_REQUEST", "素材定位不支持链接或重解析目录。")
+        if project.stat().st_size > 32 * 1024 * 1024:
+            raise StoreError("BAD_REQUEST", "项目文件无效。")
+        document = json.loads(project.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or document.get("id") != project_id:
+            raise StoreError("NOT_FOUND", "项目不存在或尚未打开。", 404)
+        return store.asset_file(project_id, relative)
+    except FileNotFoundError as error:
+        raise StoreError("NOT_FOUND", "素材或项目不存在。", 404) from error
+    except (OSError, ValueError) as error:
+        raise StoreError("REVEAL_FAILED", "无法核对素材位置。", 400) from error
 
 
 class LimitedStream:
@@ -226,6 +285,18 @@ class ProjectAPI:
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/close", path)
             if match:
                 handler.send_json(200, self.store.release(match.group(1)))
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/assets/reveal", path)
+            if match:
+                try:
+                    payload = self._json(handler, maximum=4096)
+                    if set(payload) != {"assetPath"}:
+                        raise StoreError("BAD_REQUEST", "素材定位请求字段无效。")
+                    file_path = project_asset_to_reveal(self.store, match.group(1), payload["assetPath"])
+                    reveal_asset_in_windows(file_path)
+                except (OSError, ValueError, AttributeError) as error:
+                    raise StoreError("REVEAL_FAILED", "无法打开素材所在文件夹。", 400) from error
+                handler.send_json(200, {"ok": True})
                 return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/reveal", path)
             if match:
