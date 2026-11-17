@@ -17,6 +17,18 @@ from workbench_update import UpdateError
 
 
 class ExportTests(TestCase):
+    def test_root_replacement_invalidates_completed_job_identity(self):
+        with TemporaryDirectory() as temporary:
+            old_store, new_store = mock.Mock(), mock.Mock()
+            jobs = VideoEditJobs(Path(temporary), old_store)
+            job_id = 'ved_' + 'a' * 32
+            jobs.jobs[job_id] = {'id': job_id, 'projectId': 'prj_same', 'nodeId': 'edit', 'status': 'completed'}
+            jobs.replace_store(new_store)
+            with self.assertRaises(StoreError):
+                jobs.commit(job_id, {'projectId': 'prj_same', 'revision': 1})
+            new_store.put_asset.assert_not_called()
+            jobs.close()
+
     def test_audio_only_probe_uses_optional_video_map(self):
         runner = mock.Mock()
         runner.run.return_value = b'#tb 0: 1/48000\n#media_type 0: audio\n#sample_rate 0: 48000\n0, 0, 0, 48000, 192000, 0x00000000\n'
