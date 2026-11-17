@@ -44,7 +44,7 @@ class VideoChromaJobs:
         self.store = store
         self.runner_factory = runner_factory
         self.max_jobs = max_jobs
-        self.jobs, self.runners = {}, {}
+        self.jobs, self.runners, self.previews = {}, {}, {}
         self.lock = threading.RLock()
         self.wake = threading.Condition(self.lock)
         self.worker = None
@@ -59,7 +59,7 @@ class VideoChromaJobs:
 
     def active_count(self):
         with self.lock:
-            return sum(job["status"] not in TERMINAL for job in self.jobs.values())
+            return len(self.previews) + sum(job["status"] not in TERMINAL for job in self.jobs.values())
 
     def close(self):
         with self.lock:
@@ -67,7 +67,7 @@ class VideoChromaJobs:
             for job in self.jobs.values():
                 if job["status"] == "queued":
                     job.update(status="cancelled", stage="已取消")
-            for runner in self.runners.values():
+            for runner in list(self.runners.values()) + list(self.previews.values()):
                 runner.cancel()
             self.wake.notify_all()
             worker = self.worker
@@ -140,14 +140,24 @@ class VideoChromaJobs:
             request = normalize_preview_request(payload.get("time"), payload.get("mode"))
         except ChromaDocumentError as error:
             raise _document_error(error) from error
-        foreground, background, background_is_image = self._sources(project_id, payload)
-        runner = self.runner_factory()
+        # Register while holding the same lock as root replacement and shutdown.
+        with self.lock:
+            if self.closed:
+                raise StoreError("VIDEO_CHROMA_CLOSED", "视频处理服务正在关闭。", 503)
+            if self.previews:
+                raise StoreError("VIDEO_CHROMA_BUSY", "已有预览正在处理。", 429)
+            foreground, background, background_is_image = self._sources(project_id, payload)
+            runner = self.runner_factory()
+            preview_id = uuid.uuid4().hex
+            self.previews[preview_id] = runner
         try:
             rendered = render_preview(runner, document, foreground, background, background_is_image, request["time"], request["mode"])
         except (ChromaDocumentError, EditDocumentError, FFmpegError) as error:
             raise StoreError("CHROMA_PREVIEW_FAILED", str(error)[:600], 400) from error
         finally:
             runner.cancel()
+            with self.lock:
+                self.previews.pop(preview_id, None)
         return {
             "width": rendered["width"], "height": rendered["height"], "frame": rendered["frame"],
             "time": rendered["time"], "mode": rendered["mode"],

@@ -24,7 +24,7 @@ export const submitVideoChromaJob = (payload) => request('/jobs', payload);
 export const getVideoChromaJob = (jobId, options) => request(`/jobs/${encodeURIComponent(jobId)}`, undefined, options);
 export const cancelVideoChromaJob = (jobId, projectId) => request(`/jobs/${encodeURIComponent(jobId)}/cancel`, { projectId });
 export const commitVideoChromaJob = (jobId, projectId, revision) => request(`/jobs/${encodeURIComponent(jobId)}/commit`, { projectId, revision });
-export const previewVideoChroma = (payload) => request('/preview', payload);
+export const previewVideoChroma = (payload, options) => request('/preview', payload, options);
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
   const abort = () => { clearTimeout(timer); reject(signal.reason || new DOMException('Aborted', 'AbortError')); };
@@ -73,6 +73,9 @@ export function createVideoChromaRunner(deps) {
   const unregister = (id, controller) => { if (deps.jobs.get(id) === controller) { deps.jobs.delete(id); deps.onJobsChange?.(); } };
 
   async function resolvePort(id, handle, signal, { quiet = false } = {}) {
+    const projectId = deps.getProjectId();
+    const assertCurrent = () => { signal?.throwIfAborted(); if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。'); };
+    assertCurrent();
     const edge = deps.getEdges().find((item) => item.target === id && item.targetHandle === handle);
     const source = deps.getNodes().find((item) => item.id === edge?.source);
     const label = handle === CHROMA_FG ? '前景 fg' : '背景 bg';
@@ -87,10 +90,11 @@ export function createVideoChromaRunner(deps) {
     const response = await fetch(resolved.pendingUrl.data.url, { credentials: 'same-origin', signal });
     if (!response.ok) throw new Error(`无法读取「${resolved.pendingUrl.data.title || label}」。`);
     const blob = await response.blob();
+    assertCurrent();
     const file = new File([blob], fileNameFor(resolved.pendingUrl, handle, kind), { type: blob.type || (kind === 'image' ? 'image/png' : 'video/mp4') });
-    const saved = await deps.saveCanvasMedia((revision, storageId) => deps.saveProjectFile(storageId, file, revision), (result) => ({ ok: true, assetPath: result.asset.path }));
+    const saved = await deps.saveCanvasMedia((revision, storageId) => { assertCurrent(); return deps.saveProjectFile(storageId, file, revision); }, (result) => ({ ok: true, assetPath: result.asset.path }));
     if (!saved?.ok) throw new Error(saved?.error?.message || '输入素材保存失败。');
-    signal?.throwIfAborted();
+    assertCurrent();
     deps.updateNode(id, { chromaInputCache: { ...(node(id)?.data.chromaInputCache || {}), [resolved.pendingUrl.id]: { url: resolved.pendingUrl.data.url, assetPath: saved.assetPath } } });
     return saved.assetPath;
   }
@@ -190,17 +194,24 @@ export function createVideoChromaRunner(deps) {
       } catch (error) {
         return { ok: false, error: error.message };
       }
+      if (deps.jobs.has(id)) return { ok: false, error: '此节点正在处理。' };
+      const controller = new AbortController();
+      register(id, controller);
+      const assertCurrent = () => { controller.signal.throwIfAborted(); if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。'); };
       try {
-        const foreground = await resolvePort(id, CHROMA_FG, undefined, { quiet: true });
-        const background = await resolvePort(id, CHROMA_BG, undefined, { quiet: true });
+        const foreground = await resolvePort(id, CHROMA_FG, controller.signal, { quiet: true });
+        assertCurrent();
+        const background = await resolvePort(id, CHROMA_BG, controller.signal, { quiet: true });
+        assertCurrent();
         const frame = await previewVideoChroma({
           projectId, nodeId: id, foreground, background,
           settings: settingsPayload(document), time: previewTime, mode,
-        });
+        }, { signal: controller.signal });
+        assertCurrent();
         return { ok: true, ...frame };
       } catch (error) {
-        return { ok: false, error: error.message };
-      }
+        return { ok: false, error: controller.signal.aborted ? '已取消预览。' : error.message };
+      } finally { unregister(id, controller); }
     },
     cancel(id) { deps.jobs.get(id)?.abort(); },
     resume(id) {
