@@ -39,7 +39,16 @@ export function ExchangeDialog({ title, onClose, busy, children }) {
 
 export function DependencyList({ report }) {
   if (!report) return null;
-  return <><h3>模型与 LoRA</h3>{!report.models?.length && <p>没有识别到模型依赖。</p>}{report.models?.map((model) => <div className="workflow-dependency" key={model.id}><strong>{model.name}</strong><small>{model.category} · {model.status === 'installed' ? '本机已安装' : model.status === 'missing' ? '缺少模型' : '状态待确认'}</small></div>)}<h3>ComfyUI 节点</h3><p className="workflow-node-types">{report.comfyNodes?.map((node) => `${node.classType}${node.installed ? '' : '（未安装）'}`).join(' · ') || '未识别到节点'}</p></>;
+  return <><h3>本地模型与 LoRA</h3><p>本地节点在连接的 ComfyUI 运行，需要安装权重；付费 API 节点使用服务商账户，按其价格计费，无需下载同名模型。</p>{!report.models?.length && <p>没有识别到模型依赖。</p>}{report.models?.map((model) => {
+    const license = model.licenseInfo || model.source || {};
+    return <div className="workflow-dependency" key={model.id}><strong>{model.name}</strong><small>{model.category} · {model.status === 'installed' ? '本机已安装' : model.status === 'missing' ? '缺少模型' : '状态待确认'}</small>
+      {license.licenseUrl ? <a href={license.licenseUrl} target="_blank" rel="noreferrer">权重许可：{license.license}</a> : <small>权重许可：{license.license || '待核实，请查作者原文'}</small>}
+      {license.restriction && <p className="workflow-warning">{license.restriction}</p>}
+      {license.territoryLicenseUrl && license.territoryLicenseUrl !== license.licenseUrl && <a href={license.territoryLicenseUrl} target="_blank" rel="noreferrer">组合使用的 H3 地域条款原文</a>}
+      {license.restrictions && <small>{license.restrictions}</small>}
+      {model.source && <small>官方/作者源：{model.source.repository} · revision {model.source.revision}<br />SHA-256：{model.source.sha256}</small>}
+    </div>;
+  })}<h3>本地 ComfyUI 节点</h3><p className="workflow-node-types">{report.comfyNodes?.map((node) => `${node.classType}${node.installed ? '' : '（未安装）'}`).join(' · ') || '未识别到节点'}</p></>;
 }
 
 export default function WorkflowDependencies({ request, onClose, onAdd }) {
@@ -100,7 +109,7 @@ export default function WorkflowDependencies({ request, onClose, onAdd }) {
     {downloadJob && <p>模型正在后台下载，可关闭此窗口继续使用画布。再次检查此节点时会恢复下载进度。</p>}
     <DependencyList report={report} />
     {report?.models?.filter((model) => model.status !== 'installed').map((model) => <div className="workflow-dependency-resolution" key={model.id}><strong>{model.name}</strong>
-      {model.download ? <p>可从已核实来源下载 · {(model.download.bytes / 1024 ** 3).toFixed(2)} GiB{model.download.sha256 ? ' · SHA256 校验' : ' · 仅校验大小，内容哈希待核实'}</p> : <p>暂无已核实的直接下载来源，请按作者说明安装此模型。</p>}
+      {model.download ? <p>官方/作者固定版本 · {(model.download.bytes / 1024 ** 3).toFixed(2)} GiB · 强制 SHA-256 校验，不符即停止</p> : <p>暂无固定版本及 SHA-256 均已核实的官方直接下载来源，自动下载未开放；请按作者说明安装此模型。</p>}
       {model.parameterId && model.candidates?.length > 0 && <><label>本地候选<select aria-label={`替换 ${model.name}`} disabled={busy} value={choices[model.id] || ''} onChange={(event) => setChoices((previous) => ({ ...previous, [model.id]: event.target.value }))}><option value="">选择本地模型</option>{model.candidates.map((candidate) => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}</select></label><p>候选来自同一加载器，不保证架构或生成效果兼容，请核对模型系列后确认。</p><button disabled={busy || !choices[model.id]} onClick={() => applyReplacement(model)}>确认使用此替换</button></>}
     </div>)}
     {downloadable.length > 0 && <button disabled={busy} onClick={download}>一键补齐可下载模型（{downloadable.length} 项 · {(downloadable.reduce((total, model) => total + model.download.bytes, 0) / 1024 ** 3).toFixed(2)} GiB）</button>}

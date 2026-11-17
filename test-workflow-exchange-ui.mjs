@@ -36,7 +36,7 @@ project.canvas.nodes.find(node=>node.id==='sheet').data.error='当前节点是�
 project.canvas.nodes.find(node=>node.id==='qwen').data.error='CUDA out of memory';
 project.canvas.nodes.find(node=>node.id==='qwen').data.shareError='旧的节点上传失败';
 const imported = []; const reports = []; const shares = []; const downloads = []; const writes = []; const unexpected = []; const errors = [];
-const model = (parameters = {}) => ({ id: 'model:unet_name', nodeId: 'model', inputName: 'unet_name', parameterId: 'model_name', category: 'diffusion_models', name: parameters.model_name || 'required.safetensors', status: missing && !downloaded && !parameters.model_name ? 'missing' : 'installed', candidates: [{ name: 'local.safetensors', compatibility: 'loader-option', reason: 'same loader' }], download: { path: 'diffusion_models/required.safetensors', bytes: 1024, sha256: null, url: 'https://example.invalid/trusted-fixture' } });
+const model = (parameters = {}) => ({ id: 'model:unet_name', nodeId: 'model', inputName: 'unet_name', parameterId: 'model_name', category: 'diffusion_models', name: parameters.model_name || 'required.safetensors', status: missing && !downloaded && !parameters.model_name ? 'missing' : 'installed', candidates: [{ name: 'local.safetensors', compatibility: 'loader-option', reason: 'same loader' }], licenseInfo: { license: 'MiniMax H3 Community License', licenseUrl: 'https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/' + 'a'.repeat(40) + '/LICENSE', restriction: '地域限制：欧盟、英国、韩国、美国' }, source: { repository: 'fixture/author', revision: 'a'.repeat(40), sha256: 'b'.repeat(64) }, download: { path: 'diffusion_models/required.safetensors', bytes: 1024, revision: 'a'.repeat(40), sha256: 'b'.repeat(64), url: 'https://huggingface.co/fixture/author/resolve/' + 'a'.repeat(40) + '/model' } });
 const report = (parameters = {}) => ({ models: [model(parameters)], comfyNodes: [{ classType: 'UNETLoader', installed: true }, { classType: 'SaveImage', installed: true }], ready: model(parameters).status === 'installed', summary: {} });
 const browser = await chromium.launch({ headless: true });
 try {
@@ -95,6 +95,11 @@ try {
  await remote.evaluate(()=>addNode('missing'));
  const dialog=page.getByRole('dialog',{name:'添加工作流到画布'});await dialog.waitFor();
  assert.match(await dialog.innerText(),/不保证架构/);
+ assert.match(await dialog.innerText(),/本地节点在连接的 ComfyUI 运行/);
+ assert.match(await dialog.innerText(),/地域限制：欧盟、英国、韩国、美国/);
+ assert.match(await dialog.innerText(),/强制 SHA-256 校验，不符即停止/);
+ assert.match(await dialog.innerText(),/revision a{40}/);
+ assert.equal(await dialog.getByRole('link',{name:'权重许可：MiniMax H3 Community License'}).count(),1);
  assert.equal(downloads.length,0,'does not auto-download');
  const selectsBefore=reports.length;
  await dialog.getByLabel('替换 required.safetensors').selectOption('local.safetensors');

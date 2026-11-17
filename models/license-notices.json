@@ -1,0 +1,16 @@
+{
+  "h3Video": {
+    "license": "MiniMax H3 Community License",
+    "licenseUrl": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/0919fb684102ef115126612f3fbb84d1027e7317/LICENSE",
+    "excludedTerritories": ["欧盟", "英国", "韩国", "美国"],
+    "restriction": "地域限制：许可适用地域不包括欧盟、英国、韩国、美国；另有商用、分发和使用条件。",
+    "evidence": "Definitions 3/5: Applicable Territory means worldwide, excluding the Excluded Territories. Excluded Territories means the European Union, the United Kingdom, the Republic of Korea and the United States of America."
+  },
+  "h3Image": {
+    "license": "MiniMax-H3-Image Community License Agreement",
+    "licenseUrl": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/blob/5f90473023975e6271b0ed1dd84c4e88e4bbc6d3/LICENSE",
+    "excludedTerritories": ["欧盟", "英国", "韩国", "美国"],
+    "restriction": "地域限制：许可适用地域不包括欧盟、英国、韩国、美国；向第三方提供托管服务或达到营收门槛需事先书面授权，详见原文。",
+    "evidence": "Definitions 3/5: Applicable Territory means worldwide, excluding the Excluded Territories. Excluded Territories means the European Union, the United Kingdom, the Republic of Korea and the United States of America."
+  }
+}
