@@ -103,31 +103,33 @@ class VideoChromaJobs:
         return foreground, background, PurePosixPath(str(background_path)).suffix.lower() in IMAGE_SUFFIXES
 
     def submit(self, payload):
-        if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "foreground", "background", "settings"}:
-            raise _bad("绿幕扣像作业字段无效。")
-        project_id, node_id = self._identity(payload)
-        document = self._settings(payload)
-        foreground, background, background_is_image = self._sources(project_id, payload)
-        self.root.mkdir(parents=True, exist_ok=True)
-        if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
-            raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-        job_id = f"vck_{uuid.uuid4().hex}"
-        job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
-               "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
-               "foreground": payload.get("foreground"), "background": payload.get("background")}
+        # Bind source resolution and admission to one project-store epoch.
         with self.lock:
-            active = [item for item in self.jobs.values() if item["nodeId"] == node_id and item["projectId"] == project_id and item["status"] not in TERMINAL]
-            if self.closed:
-                raise StoreError("VIDEO_CHROMA_CLOSED", "视频处理服务正在关闭。", 503)
-            if active:
-                raise StoreError("VIDEO_CHROMA_BUSY", "此绿幕节点已有导出作业，请等待或取消。", 409, {"jobId": active[0]["id"]})
-            self._trim()
-            self.jobs[job_id] = {**job, "_document": document, "_foreground": foreground, "_background": background, "_background_is_image": background_is_image}
-            self.wake.notify_all()
-            if not self.worker or not self.worker.is_alive():
-                self.worker = threading.Thread(target=self._loop, name="video-chroma-jobs", daemon=True)
-                self.worker.start()
-        return self.get(job_id)
+            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "foreground", "background", "settings"}:
+                raise _bad("绿幕扣像作业字段无效。")
+            project_id, node_id = self._identity(payload)
+            document = self._settings(payload)
+            foreground, background, background_is_image = self._sources(project_id, payload)
+            self.root.mkdir(parents=True, exist_ok=True)
+            if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
+                raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
+            job_id = f"vck_{uuid.uuid4().hex}"
+            job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
+                   "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
+                   "foreground": payload.get("foreground"), "background": payload.get("background")}
+            with self.lock:
+                active = [item for item in self.jobs.values() if item["nodeId"] == node_id and item["projectId"] == project_id and item["status"] not in TERMINAL]
+                if self.closed:
+                    raise StoreError("VIDEO_CHROMA_CLOSED", "视频处理服务正在关闭。", 503)
+                if active:
+                    raise StoreError("VIDEO_CHROMA_BUSY", "此绿幕节点已有导出作业，请等待或取消。", 409, {"jobId": active[0]["id"]})
+                self._trim()
+                self.jobs[job_id] = {**job, "_document": document, "_foreground": foreground, "_background": background, "_background_is_image": background_is_image}
+                self.wake.notify_all()
+                if not self.worker or not self.worker.is_alive():
+                    self.worker = threading.Thread(target=self._loop, name="video-chroma-jobs", daemon=True)
+                    self.worker.start()
+            return self.get(job_id)
 
     def preview(self, payload):
         """Synchronous single-frame PNG. Not queued, and it does not write project.json."""
