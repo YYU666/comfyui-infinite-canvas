@@ -19,9 +19,9 @@ const original = png(1600, 900), thumbnail = png(640, 360);
 let project = { id: 'prj_thumbnail_fixture', name: 'Thumbnail fixture', revision: 1, shots: [], canvas: {
   viewport: { x: 0, y: 0, zoom: 1 }, nodes: [
     { id: 'source', type: 'media', position: { x: 40, y: 120 }, data: { title: 'Original source', kind: 'image', localFile: true, assetPath: 'assets/source.png', name: 'source.png' } },
-    { id: 'output', type: 'media', position: { x: 430, y: 120 }, data: { title: 'Comfy output', kind: 'image', output: true, url: '/api/comfy/view?filename=generated.png&type=output', name: 'generated.png' } },
-    { id: 'third', type: 'media', position: { x: 40, y: 470 }, data: { title: 'Queued cold preview', kind: 'image', localFile: true, assetPath: 'assets/third.png' } },
-    { id: 'generator', type: 'generator', position: { x: 850, y: 380 }, data: { title: 'Synthetic generator', mode: 'qwenEdit', qwenVersion: 'flux3_klein', prompt: 'Keep 图1 then 图2.', ratio: '16:9', seed: 42, randomSeed: false } },
+    { id: 'output', type: 'media', position: { x: 550, y: 120 }, data: { title: 'Comfy output', kind: 'image', output: true, url: '/api/comfy/view?filename=generated.png&type=output', name: 'generated.png' } },
+    { id: 'third', type: 'media', position: { x: 40, y: 760 }, data: { title: 'Queued cold preview', kind: 'image', localFile: true, assetPath: 'assets/third.png' } },
+    { id: 'generator', type: 'generator', position: { x: 1080, y: 580 }, data: { title: 'Synthetic generator', mode: 'qwenEdit', qwenVersion: 'flux3_klein', prompt: 'Keep 图1 then 图2.', ratio: '16:9', seed: 42, randomSeed: false } },
     ...Array.from({ length: 99 }, (_, index) => ({ id: `far-${index}`, type: 'media', position: { x: 8000 + index * 400, y: 120 }, data: { title: `Offscreen ${index}`, kind: 'image', localFile: true, assetPath: `assets/far-${index}.png` } })),
   ], edges: [
     { id: 'first', source: 'source', sourceHandle: 'ref', target: 'generator', targetHandle: 'references' },
@@ -29,7 +29,7 @@ let project = { id: 'prj_thumbnail_fixture', name: 'Thumbnail fixture', revision
   ],
 } };
 const browser = await chromium.launch({ headless: true });
-const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
+const context = await browser.newContext({ viewport: { width: 1800, height: 1100 }, serviceWorkers: 'block' });
 const thumbnails = [], originals = [], uploads = [], queued = [], errors = [];
 let thumbnailFailure = false;
 let thumbnailActive = 0, thumbnailPeak = 0;

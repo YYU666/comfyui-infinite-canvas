@@ -153,7 +153,7 @@ try {
  await page.waitForFunction(()=>!document.querySelector('.neo-canvas-wrap').inert);
  // Share Qwen from its node footer: local preview first, no remote upload and no image upload.
  await focusNode('qwen');
- await page.locator('.react-flow__node[data-id="qwen"]').click();
+ await page.locator('.react-flow__node[data-id="qwen"] .neo-node-title > svg').click();
  await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
  const share=page.getByRole('dialog',{name:'上传节点到节点库'});await share.waitFor();
  assert.equal(await page.locator('.react-flow__node[data-id="qwen"]').getByText('旧的节点上传失败',{exact:false}).count(),0,'successful retry clears only the share failure');
@@ -217,7 +217,7 @@ try {
  await panel.getByRole('button',{name:'关闭节点库'}).click();
  await panel.waitFor({state:'hidden'});
  await focusNode('sheet');
- await page.locator('.react-flow__node[data-id="sheet"]').click();
+ await page.locator('.react-flow__node[data-id="sheet"] .neo-node-title > svg').click();
  await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
  await share.waitFor();
  assert.match(await share.innerText(),/逐张生成、最后拼接/);
@@ -243,7 +243,7 @@ try {
  await share.getByRole('button',{name:'关闭上传节点到节点库'}).click();
  await share.waitFor({state:'hidden'});
  await focusNode('bad-cover');
- await page.locator('.react-flow__node[data-id="bad-cover"]').click();
+ await page.locator('.react-flow__node[data-id="bad-cover"] .neo-node-title > svg').click();
  await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
  await share.waitFor();
  await share.getByText(/封面图片读取失败/).waitFor();
@@ -262,11 +262,16 @@ try {
  await remote.waitForFunction(()=>received.some(message=>message.requestId==='save-failure'&&message.ok===false));
  assert.equal(project.canvas.nodes.length,savedNodeCount,'save error never reports a delivered node');
  assert.equal(await remote.evaluate(()=>received.some(message=>message.requestId==='save-failure'&&message.ok===true)),false);
- const visibleAfterFailedSave=await page.locator('.react-flow__node').count();
+ const canvasNodeIds=()=>page.evaluate(async()=>{
+  const state=JSON.parse(await window.fixtureTools.get('canvas_get_state').execute({}));
+  if(!state.ok)throw new Error(state.error);
+  return state.nodes.map(node=>node.id).sort();
+ });
+ const idsAfterFailedSave=await canvasNodeIds();
  failSave=false;
  await remote.evaluate(()=>addNode('save-retry-new-request'));
  await remote.waitForFunction(()=>received.some(message=>message.requestId==='save-retry-new-request'&&message.ok===true));
- assert.equal(await page.locator('.react-flow__node').count(),visibleAfterFailedSave,'new request retries original visible node without duplication');
+ assert.deepEqual(await canvasNodeIds(),idsAfterFailedSave,'new request retries the exact original nodes without duplication, including culled nodes');
  assert.equal(project.canvas.nodes.length,savedNodeCount+1);
  assert.deepEqual(unexpected,[],'no generation or media upload'); assert.deepEqual(errors,[]);
  console.log('Workflow exchange UI passed: saved catalog import, idempotency/origin guards, explicit replacement, download job, cancellation, later dependency repair, Qwen preview, four-view staged share consent and bounded summary.');
