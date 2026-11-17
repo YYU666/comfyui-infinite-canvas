@@ -100,43 +100,45 @@ class VideoEditJobs:
 
     # ------------------------------------------------------------ lifecycle
     def submit(self, payload):
-        if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "inputs", "document", "signature"}:
-            raise _bad("视频编辑作业字段无效。")
-        project_id, node_id = self._identity(payload)
-        try:
-            document = normalize_document(payload.get("document"))
-        except EditDocumentError as error:
-            raise StoreError("EDIT_DOCUMENT_INVALID", str(error), 400) from error
-        inputs = payload.get("inputs")
-        if not isinstance(inputs, dict) or not inputs or any(slot not in INPUT_SLOTS for slot in inputs):
-            raise _bad("inputs 必须把输入端口映射到项目素材路径。")
-        missing = [slot for slot in used_slots(document) if slot not in inputs]
-        if missing:
-            raise StoreError("EDIT_INPUT_MISSING", f"编辑文档引用了未连接的输入：{', '.join(missing)}。", 400)
-        files = {slot: self._asset(project_id, inputs[slot]) for slot in used_slots(document)}
-        signature = payload.get("signature")
-        if signature is not None and (not isinstance(signature, str) or len(signature) > 200_000):
-            raise _bad("signature 无效。")
-        self.root.mkdir(parents=True, exist_ok=True)
-        if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
-            raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-        job_id = f"ved_{uuid.uuid4().hex}"
-        job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
-               "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
-               "inputs": {slot: inputs[slot] for slot in files}, "signature": signature}
+        # Bind source resolution and admission to one project-store epoch.
         with self.lock:
-            active = [item for item in self.jobs.values() if item["nodeId"] == node_id and item["projectId"] == project_id and item["status"] not in TERMINAL]
-            if self.closed:
-                raise StoreError("VIDEO_EDIT_CLOSED", "视频编辑服务正在关闭。", 503)
-            if active:
-                raise StoreError("VIDEO_EDIT_BUSY", "此视频编辑节点已有导出作业，请等待或取消。", 409, {"jobId": active[0]["id"]})
-            self._trim()
-            self.jobs[job_id] = {**job, "_document": document, "_files": files}
-            self.wake.notify_all()
-            if not self.worker or not self.worker.is_alive():
-                self.worker = threading.Thread(target=self._loop, name="video-edit-jobs", daemon=True)
-                self.worker.start()
-        return self.get(job_id)
+            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "inputs", "document", "signature"}:
+                raise _bad("视频编辑作业字段无效。")
+            project_id, node_id = self._identity(payload)
+            try:
+                document = normalize_document(payload.get("document"))
+            except EditDocumentError as error:
+                raise StoreError("EDIT_DOCUMENT_INVALID", str(error), 400) from error
+            inputs = payload.get("inputs")
+            if not isinstance(inputs, dict) or not inputs or any(slot not in INPUT_SLOTS for slot in inputs):
+                raise _bad("inputs 必须把输入端口映射到项目素材路径。")
+            missing = [slot for slot in used_slots(document) if slot not in inputs]
+            if missing:
+                raise StoreError("EDIT_INPUT_MISSING", f"编辑文档引用了未连接的输入：{', '.join(missing)}。", 400)
+            files = {slot: self._asset(project_id, inputs[slot]) for slot in used_slots(document)}
+            signature = payload.get("signature")
+            if signature is not None and (not isinstance(signature, str) or len(signature) > 200_000):
+                raise _bad("signature 无效。")
+            self.root.mkdir(parents=True, exist_ok=True)
+            if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
+                raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
+            job_id = f"ved_{uuid.uuid4().hex}"
+            job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
+                   "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
+                   "inputs": {slot: inputs[slot] for slot in files}, "signature": signature}
+            with self.lock:
+                active = [item for item in self.jobs.values() if item["nodeId"] == node_id and item["projectId"] == project_id and item["status"] not in TERMINAL]
+                if self.closed:
+                    raise StoreError("VIDEO_EDIT_CLOSED", "视频编辑服务正在关闭。", 503)
+                if active:
+                    raise StoreError("VIDEO_EDIT_BUSY", "此视频编辑节点已有导出作业，请等待或取消。", 409, {"jobId": active[0]["id"]})
+                self._trim()
+                self.jobs[job_id] = {**job, "_document": document, "_files": files}
+                self.wake.notify_all()
+                if not self.worker or not self.worker.is_alive():
+                    self.worker = threading.Thread(target=self._loop, name="video-edit-jobs", daemon=True)
+                    self.worker.start()
+            return self.get(job_id)
 
     def _trim(self):
         finished = sorted((job for job in self.jobs.values() if job["status"] in TERMINAL), key=lambda job: job["createdAt"])

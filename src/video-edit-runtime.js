@@ -42,6 +42,9 @@ export function createVideoEditRunner(deps) {
   const unregister = (id, controller) => { if (deps.jobs.get(id) === controller) { deps.jobs.delete(id); deps.onJobsChange?.(); } };
 
   async function resolveInputs(id, needed, signal) {
+    const projectId = deps.getProjectId();
+    const assertCurrent = () => { signal?.throwIfAborted(); if (deps.getProjectId() !== projectId || !canWrite() || !node(id)) throw new Error('当前画布已改变。'); };
+    assertCurrent();
     const { inputs, pending } = videoEditInputs(id, deps.getNodes(), deps.getEdges());
     const missing = needed.filter((slot) => !inputs[slot] && !pending[slot]);
     if (missing.length) throw new Error(`请先把素材连接到端口：${missing.join('、')}。`);
@@ -53,10 +56,11 @@ export function createVideoEditRunner(deps) {
       const response = await fetch(source.data.url, { credentials: 'same-origin', signal });
       if (!response.ok) throw new Error(`无法读取「${source.data.title || slot}」。`);
       const blob = await response.blob();
+    assertCurrent();
       const file = new File([blob], source.data.name || `${slot}.mp4`, { type: blob.type || 'video/mp4' });
-      const saved = await deps.saveCanvasMedia((revision, storageId) => deps.saveProjectFile(storageId, file, revision), (result) => ({ ok: true, assetPath: result.asset.path }));
+      const saved = await deps.saveCanvasMedia((revision, storageId) => { assertCurrent(); return deps.saveProjectFile(storageId, file, revision); }, (result) => ({ ok: true, assetPath: result.asset.path }));
       if (!saved?.ok) throw new Error(saved?.error?.message || '输入素材保存失败。');
-      signal.throwIfAborted();
+      assertCurrent();
       inputs[slot] = saved.assetPath;
       deps.updateNode(id, { editInputCache: { ...(node(id)?.data.editInputCache || {}), [source.id]: { url: source.data.url, assetPath: saved.assetPath } } });
     }

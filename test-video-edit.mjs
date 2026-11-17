@@ -230,3 +230,6 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
   globalThis.fetch = originalFetch;
 }
 console.log('VIDEO_EDIT_OK schema parity with Python, connections, agent tools, runner commit/cancel/late-response/save-failure, readonly, copy/history identities');
+
+const { verifyVideoImportGuard } = await import('./test-video-import-guard.mjs');
+await verifyVideoImportGuard(createVideoEditRunner, 'videoEdit', {editDocument:defaultVideoEditDocument()}, 'v1');
