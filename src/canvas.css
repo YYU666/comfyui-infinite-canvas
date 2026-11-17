@@ -487,3 +487,5 @@
 
 .qwen-mask-crop { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer; }
 .qwen-mask-crop input { margin: 0; accent-color: #b0a9da; }
+
+.image-export-controls{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:8px 16px;border-bottom:1px solid #343943;font-size:12px}.image-export-controls label{display:flex;gap:6px;align-items:center}.image-export-controls small{color:#9ca3af}.image-export-controls button{display:flex;gap:6px;align-items:center}.image-export-controls [role=alert]{color:#fb923c}

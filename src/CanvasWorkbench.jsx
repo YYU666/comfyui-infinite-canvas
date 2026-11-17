@@ -270,7 +270,9 @@ function MediaNode({ id, data, selected }) {
       </> : <div className="media-empty"><Icon size={26} /><strong>{maskNode || maskGuide ? '局部遮罩修改' : `添加${KIND_LABEL[kind]}素材`}</strong><span>{maskGuide ? '单击绘制 · 白色修改 / 黑色保留' : maskNode ? '连接底图后绘制遮罩' : '单击添加 · 按住拖动节点'}</span><MediaDragSurface onActivate={maskNode || maskGuide ? openMaskEditor : () => input.current?.click()} /></div>}
       {maskGuide && <button className="media-mask-edit nodrag" onClick={openMaskEditor}>绘制遮罩</button>}
       <button className="media-replace nodrag" disabled={readOnly || (maskNode && !maskGuide)} onClick={() => input.current?.click()} title={maskGuide ? '从文件导入黑白遮罩' : '替换素材'}><RefreshCw size={12} /><span>{maskGuide ? '导入' : '替换'}</span></button>
-      {data.output && <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>}
+      {data.output && (kind === 'image'
+        ? <button className="media-download nodrag" title="导出图片" aria-label="导出图片" onClick={() => openImagePreview({ url: data.url, title: data.title, name: data.name })}><ArrowDownToLine size={13} /></button>
+        : <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>)}
     </div>
     <div className="media-caption"><span>{data.artDirectorStale ? `旧版解析 · ${data.artDirectorStaleReason || '待重新输出'}` : maskNode || maskGuide ? '局部遮罩' : data.output ? '生成结果' : KIND_LABEL[kind]}</span><b title={showResolution ? '原始图片分辨率（像素）' : data.name}>{showResolution ? resolutionLabel : data.name || (data.url ? data.title : maskGuide ? '尚未绘制' : '未上传')}</b></div>
     {kind === 'image' && data.url && !maskNode && <button className="nodrag art-image-shortcut" disabled={readOnly} onClick={() => createArtDirector(id)}>电子主美 · 图解分析</button>}
