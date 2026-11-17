@@ -138,7 +138,12 @@ class ThumbnailCache:
 
     def _comfy(self, query):
         filename = _relative(query.get("filename"))
-        subfolder = _relative(query.get("subfolder", ""), nested=True, empty=True)
+        subfolder = query.get("subfolder", "")
+        # Only Comfy's relative subfolder supports Windows separators. Validate
+        # after normalization so absolute paths and traversal remain forbidden.
+        if isinstance(subfolder, str):
+            subfolder = subfolder.replace("\\", "/")
+        subfolder = _relative(subfolder, nested=True, empty=True)
         kind = query.get("type", "output")
         if kind not in {"input", "output", "temp"}:
             raise StoreError("BAD_REQUEST", "ComfyUI 素材类型无效。", 400)
