@@ -1,5 +1,8 @@
+import CanvasImage from './CanvasImage';
+import { useResultPresentation, ResultSettingsToggle, openResultImage } from './result-node-presentation.jsx';
+import './result-node-presentation.css';
 import React, { useEffect, useRef, useState } from 'react';
-import { Handle, Position } from '@xyflow/react';
+import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import { RotateCcw, ArrowDownToLine, LoaderCircle } from 'lucide-react';
 import { BLEND_MODES, DEFAULT_ADJUSTMENTS, DEFAULT_HSL_SETTINGS, DEFAULT_LEVELS_SETTINGS } from './image-compositing';
 import PhotoAdjustmentControls from './PhotoAdjustmentControls';
@@ -31,11 +34,16 @@ export default function ImageProcessNode({ id, data, actions, title, toolbar }) 
   const [previewBusy, setPreviewBusy] = useState(false);
   const [before, setBefore] = useState(false);
   const signature = state.signature;
+  const current = !state.error && data.processedSignature === signature && data.processedAssetPath;
+  const presentation = useResultPresentation(data, data.processedUrl, !current || running);
+  const updateInternals = useUpdateNodeInternals();
+  useEffect(() => { updateInternals(id); }, [id, presentation.compact, updateInternals]);
+
   useEffect(() => {
     const controller = new AbortController();
     let previewUrl;
     setPreview(null); setPreviewError('');
-    if (state.error) { setPreviewBusy(false); return; }
+    if (state.error || presentation.compact) { setPreviewBusy(false); return; }
     setPreviewBusy(true);
     const timer = setTimeout(async () => {
       try {
@@ -46,26 +54,25 @@ export default function ImageProcessNode({ id, data, actions, title, toolbar }) 
       } catch (error) { if (error.name !== 'AbortError') { setPreviewError(error.message); setPreviewBusy(false); } }
     }, 140);
     return () => { clearTimeout(timer); controller.abort(); if (previewUrl) URL.revokeObjectURL(previewUrl); };
-  }, [signature, state.error, data.packPreview]);
+  }, [signature, state.error, data.packPreview, presentation.compact]);
   const patch = (settings) => actions.updateNode(id, { ...settings, error: null });
   const disabled = running || maskBusy || actions.readOnly;
   const mask = blend ? actions.getImageProcessMask(id) : null;
   const base = state.refs?.find((ref) => ref.data.slot === (blend ? 'base' : 'guide'));
-  const current = !state.error && data.processedSignature === signature && data.processedAssetPath;
-  return <div className="image-process-node" data-process-mode={data.mode}>
-    {title}{toolbar}
+  return <div className={`image-process-node ${presentation.compact ? 'result-compact' : ''}`} data-process-mode={data.mode}>
+    {title}{toolbar}<ResultSettingsToggle presentation={presentation} />
     {(pack ? [['red', 'R · 红色通道', 85], ['green', 'G · 绿色通道', 113], ['blue', 'B · 蓝色通道', 141], ['alpha', 'A · 透明通道', 169]] : blend ? [['base', '底图', 85], ['overlay', '叠加图', 118], ['mask', '混合遮罩（可选）', 151]] : [['guide', '原图', 88]]).map(([port, label, top]) => <React.Fragment key={port}>
       <Handle type="target" id={port} position={Position.Left} style={{ top }} isConnectable={!disabled} />
       <span className="image-process-port" style={{ top: top - 7 }}>{label}</span>
     </React.Fragment>)}
     <Handle type="source" id="ref" position={Position.Right} style={{ top: 88 }} isConnectable={!disabled} />
     <div className="image-process-heading"><span>{pack ? 'RGBA 贴图通道打包' : blend ? '图层与材质混合' : '非破坏式颜色调整'}</span><b>本地处理</b></div>
-    <div className="image-process-preview nodrag nopan" style={{ marginTop: pack ? 108 : blend ? 82 : 30 }}>
-      {preview ? <img src={before ? base?.data.url : preview.url} alt={before ? '原图' : '处理预览'} /> : <span>{state.error || previewError || '正在准备预览…'}</span>}
-      {previewBusy && <div className="image-process-preview-busy"><LoaderCircle size={15} />更新预览</div>}
-      {preview && !pack && <button className="image-process-compare" aria-pressed={before} onClick={() => setBefore(!before)}>{before ? '查看效果' : '查看原图'}</button>}
+    <div className={`image-process-preview${presentation.compact ? "" : " nodrag nopan"}`} onDoubleClick={event => { if (current) openResultImage(event, data.processedUrl, data.title, false, actions.openImagePreview); }} style={{ marginTop: pack ? 108 : blend ? 82 : 30 }}>
+      {presentation.compact ? <CanvasImage source={data.processedUrl} alt={data.title} draggable={false} onLoad={() => updateInternals(id)} /> : preview ? <img src={before ? base?.data.url : preview.url} alt={before ? '原图' : '处理预览'} /> : <span>{state.error || previewError || '正在准备预览…'}</span>}
+      {!presentation.compact && previewBusy && <div className="image-process-preview-busy"><LoaderCircle size={15} />更新预览</div>}
+      {!presentation.compact && preview && !pack && <button className="image-process-compare" aria-pressed={before} onClick={() => setBefore(!before)}>{before ? '查看效果' : '查看原图'}</button>}
     </div>
-    <div className="image-process-controls nodrag nopan">
+    {!presentation.compact && <div className="image-process-controls nodrag nopan">
       {pack ? <ChannelPackControls id={id} data={data} refs={state.refs} patch={patch} disabled={disabled} actions={actions} onBusy={setMaskBusy} /> : blend ? <>
         <label className="image-process-select">混合模式<select aria-label="混合模式" value={data.blendMode || 'normal'} disabled={disabled} onChange={(e) => patch({ blendMode: e.target.value })}>{BLEND_MODES.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="image-process-range"><span>混合强度<output>{data.opacity ?? 100}%</output></span><input aria-label="混合强度" type="range" min="0" max="100" value={data.opacity ?? 100} disabled={disabled} onChange={(e) => patch({ opacity: Number(e.target.value) })} /></label>
@@ -88,7 +95,7 @@ export default function ImageProcessNode({ id, data, actions, title, toolbar }) 
         {adjustmentType === 'basic' ? CONTROLS.map(([key, label, min, max, step]) => <label className="image-process-range" key={key}><span>{label}<input type="number" aria-label={`${label}数值`} min={min} max={max} step={step} value={data[key] ?? DEFAULT_ADJUSTMENTS[key]} disabled={disabled} onChange={(e) => { if (e.target.value !== '') patch({ [key]: Math.max(min, Math.min(max, Number(e.target.value))) }); }} /></span><input aria-label={label} type="range" min={min} max={max} step={step} value={data[key] ?? DEFAULT_ADJUSTMENTS[key]} disabled={disabled} onChange={(e) => patch({ [key]: Number(e.target.value) })} /></label>) : <PhotoAdjustmentControls data={data} patch={patch} disabled={disabled} baseUrl={base?.data.url} />}
         <p>每个节点应用一种调整，可串联多个节点叠加效果；切换类型会保留各自参数。</p>
       </>}
-    </div>
+    </div>}
     {data.error && <p className="image-process-error" role="alert">{data.error}</p>}
     <div className="image-process-tga-row nodrag"><span>32 位 TGA · 保留 Alpha</span>{current && state.tgaUrl ? <a href={state.tgaUrl} download={`${data.title || 'image'}.tga`}>下载 TGA</a> : <button disabled={disabled || Boolean(state.error) || Boolean(previewError)} onClick={() => actions.runImageProcess(id, { tga: true, download: true })}>导出 TGA</button>}</div>
     <footer className="image-process-footer nodrag"><button disabled={disabled} title="重置当前调整" onClick={() => patch(pack ? { packChannels: DEFAULT_CHANNEL_PACK.channels } : blend ? { blendMode: 'normal', opacity: 100, fit: 'cover', maskChannel: 'luminance', maskInvert: false } : adjustmentType === 'hsl' ? { hsl: DEFAULT_HSL_SETTINGS } : adjustmentType === 'levels' ? { levels: DEFAULT_LEVELS_SETTINGS } : adjustmentType === 'basic' ? { ...DEFAULT_ADJUSTMENTS } : { [adjustmentType]: DEFAULT_PHOTO_SETTINGS[adjustmentType] })}><RotateCcw size={13} />重置</button><span>{running ? data.stage || '处理中…' : current ? '结果已输出' : data.processedAssetPath ? '参数已更新 · 待输出' : preview ? `${preview.originalWidth} × ${preview.originalHeight}` : '连接图片开始'}</span><button className="image-process-output" disabled={disabled || Boolean(state.error) || Boolean(previewError)} onClick={() => actions.runImageProcess(id)}>{running ? <LoaderCircle size={14} /> : <ArrowDownToLine size={14} />}{running ? '处理中' : pack ? '输出 PNG + TGA' : '输出 PNG'}</button></footer>

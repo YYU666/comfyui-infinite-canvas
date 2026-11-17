@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { imageProcessSnapshot } from './src/image-process-graph.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { deflateSync } from 'node:zlib';
@@ -33,6 +34,30 @@ let project = { id: 'prj_thumbnail_fixture', name: 'Thumbnail fixture', revision
     { id: 'second', source: 'output', sourceHandle: 'ref', target: 'generator', targetHandle: 'references' },
   ],
 } };
+const processed = { id:'processed', type:'imageProcess', position:{x:51000,y:200}, data:{title:'Completed adjustment',mode:'colorAdjust',status:'done',brightness:10,processedAssetPath:'assets/processed.png',processedUrl:`/api/projects/${project.id}/assets/processed.png`} };
+project.canvas.nodes.push(processed);
+project.canvas.edges.push({id:'source-processed',source:'source',sourceHandle:'ref',target:'processed',targetHandle:'guide'});
+processed.data.processedSignature=imageProcessSnapshot(processed.id,project.canvas.nodes,project.canvas.edges).signature;
+// Each completed mode has separate offscreen originals so a prior preview or
+// browser cache cannot hide a histogram/mask read while its settings are closed.
+function completedProcess(id, x, settings, slots) {
+  const node = { id, type: 'imageProcess', position: { x, y: 200 }, data: {
+    title: `Completed ${id}`, mode: 'colorAdjust', status: 'done', ...settings,
+    processedAssetPath: `assets/${id}-result.png`, processedUrl: `/api/projects/${project.id}/assets/${id}-result.png`,
+  } };
+  project.canvas.nodes.push(node);
+  for (const slot of slots) {
+    const sourceId = `${id}-${slot}`;
+    project.canvas.nodes.push({ id: sourceId, type: 'media', position: { x: -10000, y: -10000 }, data: {
+      kind: 'image', title: sourceId, localFile: true, assetPath: `assets/${sourceId}.png`,
+    } });
+    project.canvas.edges.push({ id: `${sourceId}-input`, source: sourceId, sourceHandle: 'ref', target: id, targetHandle: slot });
+  }
+  node.data.processedSignature = imageProcessSnapshot(id, project.canvas.nodes, project.canvas.edges).signature;
+}
+completedProcess('processed-levels', 53000, { adjustmentType: 'levels' }, ['guide']);
+completedProcess('processed-curves', 55000, { adjustmentType: 'curves' }, ['guide']);
+completedProcess('processed-blend', 57000, { mode: 'imageBlend' }, ['base', 'overlay', 'mask']);
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1800, height: 1100 }, serviceWorkers: 'block' });
 const thumbnails = [], originals = [], uploads = [], queued = [], errors = [];
@@ -158,6 +183,45 @@ try {
   await page.waitForFunction(()=>document.querySelector('.reference-chip.video .canvas-video-preview'));
   const chip = await page.locator('.reference-chip.video .canvas-video-preview').evaluate(el=>({w:el.offsetWidth,h:el.offsetHeight,parent:el.parentElement.offsetWidth}));
   assert.equal(chip.w,21);assert.equal(chip.h,21);assert.ok(chip.parent<=170,'video chip leaves room for title and remove button');
+  for (const [id, slots] of [
+    ['processed-levels', ['guide']], ['processed-curves', ['guide']], ['processed-blend', ['base', 'overlay', 'mask']],
+  ]) {
+    const originalCount = originals.length;
+    await focus(id);
+    const node = page.locator(`[data-id="${id}"]`);
+    await page.waitForFunction(nodeId => document.querySelector(`[data-id="${nodeId}"] .result-compact .image-process-preview img`)?.naturalWidth === 640, id);
+    await page.waitForTimeout(200);
+    assert.equal(originals.length, originalCount, `${id}: compact settings do not read histogram, preview or mask originals`);
+    assert.equal(await node.locator('.image-process-controls').count(), 0, `${id}: compact controls are unmounted`);
+    const ports = await node.locator('.react-flow__handle.target').evaluateAll(handles => handles.map(handle => ({ id: handle.dataset.handleid, y: handle.getBoundingClientRect().y })));
+    assert.deepEqual(ports.map(port => port.id), slots, `${id}: compact target port identities remain available`);
+    assert.equal(new Set(ports.map(port => port.y)).size, slots.length, `${id}: compact target ports remain distinct`);
+    assert.equal(await node.locator('.react-flow__handle.source[data-handleid="ref"]').count(), 1);
+    await node.getByRole('button', { name: '调整设置', exact: true }).click();
+    await node.locator('.image-process-controls').waitFor();
+    await page.waitForFunction(nodeId => document.querySelector(`[data-id="${nodeId}"] .image-process-preview img`)?.src.startsWith('blob:'), id);
+    for (const slot of slots) assert.ok(originals.slice(originalCount).some(url => url.endsWith(`/${id}-${slot}.png`)), `${id}: ${slot} original becomes available when settings open`);
+    await node.getByRole('button', { name: '调整设置', exact: true }).click();
+    await page.waitForFunction(nodeId => document.querySelector(`[data-id="${nodeId}"] .result-compact .image-process-preview img`)?.naturalWidth === 640, id);
+    assert.equal(await node.locator('.image-process-controls').count(), 0);
+    const collapsedCount = originals.length;
+    await page.waitForTimeout(300);
+    assert.equal(originals.length, collapsedCount, `${id}: closing settings starts no further original reads`);
+  }
+  const originalCount=originals.length;
+  await focus('processed');
+  await page.waitForFunction(()=>document.querySelector('[data-id="processed"] .result-compact .image-process-preview img')?.naturalWidth===640);
+  assert.equal(originals.length,originalCount,'completed adjustments do not rerender original bitmaps');
+  assert.equal(await page.locator('[data-id="processed"] .image-process-controls').isVisible(),false);
+  await page.locator('[data-id="processed"] .image-process-preview').dblclick();
+  await page.waitForFunction(()=>document.querySelector('.image-lightbox img')?.naturalWidth===1600);
+  assert.ok(originals.at(-1).includes('processed.png'),'double click opens the saved result original');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-id="processed"]').getByRole('button',{name:'调整设置',exact:true}).click();
+  await page.locator('[data-id="processed"]').getByLabel('亮度数值').waitFor();
+  await page.waitForFunction(()=>document.querySelector('[data-id="processed"] .image-process-preview img')?.src.startsWith('blob:'));
+  await page.locator('[data-id="processed"]').getByLabel('亮度数值').fill('11');
+  assert.equal(await page.locator('[data-id="processed"] .result-settings-toggle').count(),0,'stale parameters remain expanded until output is regenerated');
   const client=await context.newCDPSession(page);await client.send('Performance.enable');
   const metrics=await client.send('Performance.getMetrics');
   console.log(JSON.stringify({pass:true,standardCard:mediaSize,overviewVideos:0,overviewDecodedImages:0,thumbnailPeak,thumbnailRequests:thumbnails.length,lightboxOriginals:1,heap:metrics.metrics.find(m=>m.name==='JSHeapUsedSize')?.value}));
