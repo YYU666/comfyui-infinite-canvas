@@ -83,7 +83,7 @@ const pageErrors=[],externalRequests=[];
 const terminal=new Set(['succeeded','failed','cancelled']);
 async function api(name,args={}) {
   const answer=await page.evaluate(async({name,args})=>{
-    const response=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,arguments:args})});
+    const response=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,arguments:args}),signal:AbortSignal.timeout(30000)});
     return {status:response.status,value:await response.json()};
   },{name,args});
   assert.equal(answer.status,200,JSON.stringify(answer.value));return answer.value.result;

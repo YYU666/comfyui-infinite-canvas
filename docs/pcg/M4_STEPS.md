@@ -87,3 +87,5 @@ CI模型下载409另行处理：纯节点布局保存也推进项目revision；�
 ### RPC有界失败门
 
 当前PR浏览器job超过既往17分钟成功时长；代码核实M4测试RPC的page.evaluate(fetch)无自身deadline，外层done循环无法在请求不返回时检查180秒截止。仅给测试RPC加30秒AbortSignal deadline（覆盖响应JSON读取），不延长任何原超时、不跳过阶段，失败仍记录宿主状态和最后运行；同版本本地完整M4后独立复审。此补丁使等待有界，不声称修复宿主卡住或worker超时；先前CI无最终结果不计通过。
+
+取消7efce7c旧PR后取到日志：最后进入的是test-pcg-demo-ui.mjs，尚未进入M4压力，不可把整段等待认定为M4 RPC根因。该旧回归api helper同样存在无deadline fetch，本轮仅同样补30秒HTTP/响应体界限，不重做旧演示功能。以同3.12完整旧demo回归验证；取消记录不得算通过。
