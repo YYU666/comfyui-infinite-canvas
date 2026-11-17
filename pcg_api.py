@@ -49,6 +49,19 @@ class PCGAPI:
         try:
             if method == 'GET' and path == '/api/pcg/registry':
                 handler.send_json(200, self.runtime.registry)
+            elif method == 'GET' and path.startswith('/api/pcg/artifacts/'):
+                pairs = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query, keep_blank_values=True, max_num_fields=16)
+                require(all(len(v) == 1 for v in pairs.values()), 'Duplicate query fields.', 'BAD_REQUEST')
+                query = {k: v[0] for k, v in pairs.items()}; exact(query, HANDLE)
+                for name in ('revision', 'descriptorVersion', 'operationVersion'): query[name] = int(query[name])
+                body, artifact = self.runtime.download(query, path.removeprefix('/api/pcg/artifacts/'))
+                handler.send_response(200)
+                handler.send_header('Content-Type', artifact['mime'])
+                handler.send_header('Content-Length', str(len(body)))
+                handler.send_header('Cache-Control', 'no-store')
+                handler.send_header('X-Content-Type-Options', 'nosniff')
+                if artifact['format'] != 'svg': handler.send_header('Content-Disposition', 'attachment; filename="' + artifact['artifactId'] + '.' + artifact['format'] + '"')
+                handler.end_headers(); handler.wfile.write(body)
             elif method == 'GET' and path.startswith('/api/pcg/tasks'):
                 pairs = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query, keep_blank_values=True, max_num_fields=16)
                 require(all(len(v) == 1 for v in pairs.values()), 'Duplicate query fields.', 'BAD_REQUEST')
@@ -64,7 +77,7 @@ class PCGAPI:
                         except ValueError as exc: raise PCGError('BAD_REQUEST', 'Invalid task query version.') from exc
                     result = self.runtime.read({**query, 'jobId': job_id})
                 handler.send_json(200, result)
-            elif method == 'POST' and path in {'/api/pcg/preflight', '/api/pcg/run', '/api/pcg/wait', '/api/pcg/read', '/api/pcg/verify'}:
+            elif method == 'POST' and path in {'/api/pcg/preflight', '/api/pcg/run', '/api/pcg/wait', '/api/pcg/read', '/api/pcg/verify', '/api/pcg/cancel', '/api/pcg/export'}:
                 payload = self._json(handler)
                 operation = path.rsplit('/', 1)[-1]
                 if operation == 'run':

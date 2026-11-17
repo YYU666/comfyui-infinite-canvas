@@ -1,94 +1,102 @@
-# PCG M1 interface
+# PCG v1 host interface, M2 saved geometry graphs
 
-`pcg/registry.json` is the sole NodeDescriptor v1 source for the browser, tools,
-host and fixed stdio worker. Root keys are `descriptorVersion`, `namespace`,
-`pluginVersion`, `nodes`. Each descriptor has `id`, `descriptorVersion`,
-`pluginVersion`, `operationVersion`, `label`, `category`, `parameters` (closed
-JSON schema), `inputs`, `outputs`, `budget`, `permissions`, `readiness`,
-`examples`, `errors`. Ports use `{name,type,required}`. No runtime permissions
-are granted. Geometry is deliberately unavailable in M1.
+`pcg/registry.json` is the shared NodeDescriptor v1 source. Descriptor and
+operation versions remain 1. The fixed diagnostic and legacy `geometry_stub`
+retain their M1 contracts. The stub remains unavailable and readable. M2
+introduces five task entries and eighteen fixed atomic operations; game_asset
+requires the future bridge and is explicitly unavailable. Registry descriptions,
+parameter schemas, ports, examples, readiness and budgets are machine-readable.
 
-Canvas nodes use `type: "pcg"`, with `data` containing `descriptorId`,
-`descriptorVersion: 1`, `operationVersion: 1`, and `parameters`. Edges use the
-literal output/input port name in `sourceHandle`/`targetHandle`; optional
-`data.pcgType` must agree. Save the graph before preflight/run. `revision`
-means the saved project revision. No API accepts code, executable or a path
-outside the managed artifact contract.
+Descriptors use closed parameter schemas: finite number/integer, boolean,
+bounded string, bounded typed arrays, closed objects, enums and defaults.
+Unknown keywords/parameters and dynamic code are rejected. A port type may be a
+known type string or an array of known types. `Geometry` expands to Mesh,
+PointSet or InstanceSet. Protocol 1 GeometryArtifact and its Field expression
+DAG stay separate from protocol 2 evaluated engine values. See
+[ENGINE_API.md](ENGINE_API.md) for engine data and all atomic operations.
 
-All routes live under `/api/pcg`; existing host, origin, token and JSON content
-guards apply. All project operations require a writable project lock. Errors
-use HTTP 400/403/409/423/503 with `{code,message,details?}`. Unknown JSON fields,
-versions, parameters, ports and types are rejected. Request bodies are at most
-64 KiB. No PCG endpoint mutates project JSON or attaches a result to a node.
-The page owns its ordinary revision-aware graph saves and preview status.
+Canvas nodes have `type:"pcg"`, `data.descriptorId`, `descriptorVersion:1`,
+`operationVersion:1` and `parameters`. Edges name literal output/input ports in
+`sourceHandle`/`targetHandle`; optional `data.pcgType` must agree. Save first:
+preflight and run read only the exact saved project/revision, traversing all
+upstream dependencies. They reject cycles, missing/duplicate ports, incompatible
+types, unknown operations and unavailable executors. No route accepts a path,
+expression, executable, script or alternative request graph. Project JSON and
+revision are never changed by execution; the page owns ordinary graph saves.
 
-* `GET /registry` returns the registry directly.
-* `POST /preflight` and `POST /run` accept the identity below. Parameters and
-  input edges come from the saved graph, never from a parallel request graph.
-* `POST /wait`, `/read`, `/verify` accept the complete task handle below;
-  `/wait` additionally accepts `timeoutMs` from 0 through 20000 (default 1000).
-* `GET /tasks/{jobId}` accepts the remaining handle fields in its query.
-* `GET /tasks?projectId=...&nodeId=...` lists this node's retained tasks newest
-  first for reload recovery, including full handles and a `stale` flag.
+All routes use the existing host/origin/authentication guards. Project access
+requires its writable lock. POST JSON bodies are at most 64 KiB. Errors return
+`{code,message,details?}` with HTTP 400/403/409/423/503 as appropriate.
 
-Identity example:
+- `GET /api/pcg/registry`: registry directly.
+- `POST /api/pcg/preflight`: identity below; returns
+  `{ok,identity,descriptorId,inputHash,readiness}` and for geometry graphs also
+  `executionOrder`, `dirtyNodes`, `cacheHits`, `isolation`.
+- `POST /api/pcg/run`: same identity; HTTP 202 `{task}`. An unavailable executor
+  or OS boundary retains a failed task and returns HTTP 409 `{code,message,task}`.
+- `POST /api/pcg/wait`: full handle plus optional `timeoutMs` 0..20000,
+  default 1000. Returns `{task}`.
+- `POST /api/pcg/read`: full handle, returns `{task}`.
+- `POST /api/pcg/verify`: full handle, returns
+  `{ok,verified,jobId,inputHash,resultHash}` only for a successful current run
+  with matching saved input identity, result hashes and immutable files.
+- `POST /api/pcg/cancel`: full handle, cancels only that task's owned OS job;
+  returns `{task}`. Terminal tasks are unchanged. Stale mutations are refused.
+- `POST /api/pcg/export`: full handle plus optional `format:"glb"|"json"`
+  (default glb) and `port` (default first geometry output). Returns
+  `{ok,artifact}`. A preview is never substituted for the model.
+- `GET /api/pcg/tasks/{jobId}`: remaining full handle fields in query.
+- `GET /api/pcg/tasks?projectId=...&nodeId=...`: retained tasks, newest first.
+- `GET /api/pcg/artifacts/{artifactId}`: complete handle in query. Authenticated
+  read of that exact task's managed bytes, with MIME, nosniff and no-store.
+  Model/data use attachment disposition. No arbitrary file query exists.
+
+Identity:
 
 ```json
 {"projectId":"prj_example","nodeId":"pcg-1","revision":2,"descriptorVersion":1,"operationVersion":1,"runId":"run-001"}
 ```
 
-Preflight succeeds with `{ok:true,identity,descriptorId,inputHash,readiness}`.
-Run returns HTTP 202 `{task}`. Task fields are the identity above, `jobId`,
-`inputHash`, `descriptorId`, `status`, `progress`, `result`, `error`,
-`resultHash`, `stale`. `status` is queued/running/succeeded/failed. A geometry run returns
-HTTP 409 `{code:"EXECUTOR_UNAVAILABLE",message,task}` and retains the failed
-task. All terminal failures are retained for the lifetime of this host.
-
-Complete task handle example (copy values from run):
+Complete handle (copy every actual field from run):
 
 ```json
 {"projectId":"prj_example","nodeId":"pcg-1","revision":2,"descriptorVersion":1,"operationVersion":1,"runId":"run-001","jobId":"pcg_0123456789abcdef0123456789abcdef","inputHash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 ```
 
-Wait/read return `{task}`. Verify succeeds only for an actual successful worker
-report, with `{ok:true,verified:true,jobId,inputHash,resultHash}`. A current
-project revision change marks read/wait results stale and rejects verification.
-Preflight/run reject obsolete revisions. Handles
-cannot cross project, node, run, version or input identities. A repeated
-project/runId with the same full input returns the same job; any changed
-identity/input is `IDEMPOTENCY_CONFLICT`. Restarting the host invalidates old
-handles. Capacity exhaustion is explicit; no retained task is silently evicted.
+Task fields are identity, jobId/inputHash/descriptorId, status, progress,
+result/resultHash/error and stale. Status is queued/running/succeeded/failed/
+cancelled. `runId` is idempotent only for exactly matching identity and inputs.
+A changed revision or newer run for the same node makes old handles stale;
+old tasks remain readable, but cannot verify, export or publish over a newer run.
+Failures are retained. Capacity is 256 retained tasks and four admitted tasks. M2 geometry executes
+one task at a time per runtime; other admitted geometry tasks remain queued
+and can be cancelled without affecting the active task. Host close cancels both
+active and waiting tasks. The M1 diagnostic admission behavior is preserved.
+Storage limits are
+64 MiB retained full final values and a separate 32 MiB/256-entry LRU cache.
 
-Diagnostic output is `{report:{contractVersion:1,type:"DiagnosticReport",
-operation:"refmuse.pcg.diagnostic",label,inputCount,inputTypes,workerPid,
-inputHash}}`. It reports actual contract checks from a separate process. It
-contains no geometry, preview mesh, export or implied modeling result.
+Geometry `task.result` contains `outputs` (counts, bounds, attribute domains,
+source bindings and at most 64 deterministic samples per value), `assets` and
+`report` and `stagePreviews`. Every evaluated step has bounded output summaries,
+run/job/input/output identity and timing. Every geometry step has an actual SVG
+asset with `producerNodeId`. All stage previews are rendered and checked against
+a 16 MiB aggregate budget before any publication; over-budget graphs fail
+explicitly rather than dropping stages. Full arrays never appear in read/wait/list by default. Report includes
+actual `computedNodes`, `cacheHits`, per-node `elapsedMs`, output byte sizes and
+worker/host elapsed time and `queueWaitMs`. Artifact records contain artifactId, SHA256, byte
+count, format/MIME, port, job/run/input/project/revision identity, bounded summary
+and an authenticated API URL. GLB has `role:"model"`, native JSON `role:"data"`,
+and a fixed-camera SVG `role:"preview"`. SVG is only a static read-only preview.
 
-Connected inputs require an available, successful, current upstream result
-of the exact port type. Stub connections remain visible but preflight reports
-`EXECUTOR_UNAVAILABLE`; missing output is `INPUT_UNAVAILABLE`. Recover by
-disconnecting the unavailable input or using the diagnostic without inputs.
-For revision/identity errors save/read the current graph and start a new runId.
-For worker failures inspect the retained error and explicitly start a new run.
+Graph worker protocol 2 receives bounded approved values through stdio in the
+verified OS boundary. There is no ordinary-process geometry fallback. Worker
+values, types, Field source/topology/domain bindings, trace sets and hashes are
+validated again by the host. Only the host writes immutable job-owned outputs;
+files are SHA256 checked on download and verification. Protocol 1 remains the
+separate trusted fixed diagnostic worker.
 
-Strict value contracts and asset identity are defined by `pcg_contracts.py`.
-All values use contractVersion 1. Geometry has metre/right-handed/Y-up
-coordinates, topology identity, and separate Point/Face/Corner counts.
-Attributes/Selection bind artifact/hash/topology, exact domain and value type.
-Fields are finite typed DAGs (constant/attribute/add/multiply), never expressions.
-Geometry and instance envelopes require ordered min/max bounds; producer plugin,
-version and commit; node/job/run/revision plus recipe/input SHA256 provenance;
-UV set names, normal domain, material IDs and strictly diagnostic-only quality.
-Artifact IDs are `pcg_<sha256>`. Instances have unique stable `instanceIds`, their
-own ordering `topologyId`, the same explicit coordinates, and bounded row-major
-affine 4x4 transforms. `instance_context` binds Instance-domain attributes to
-that instance artifact and ordering rather than a geometry Point domain.
-Assets are immutable SHA256 identities registered in the same project's assets
-list, flat content-addressed `assets/<sha256>.pcg.json`, with bounded byte size;
-links, reparse points, hard links, unknown formats and hash changes are refused.
-Stored PCG JSON containers are closed `{contractVersion:1,format,payload}`;
-`format` must match the artifact and `payload` must be a bounded object. M1
-checks storage and envelope contracts without interpreting geometry payloads.
-
-M1 provides process separation, not OS sandbox isolation. The worker has a
-fixed command, no listener, no dynamic loading or geometry implementation.
+Pure cache keys include operation/version, normalized parameters, full explicit
+input content and Field/Selection bindings. Project revision is excluded from
+pure keys, so unrelated saves reuse work. Each host cache isolates projects and
+returns copies. Preflight predicts dirty dependencies; execution reports actual
+sets. Cache reuse never supplies assets from another project or run.

@@ -11,7 +11,14 @@ const exampleHandle = { ...exampleIdentity, jobId: `pcg_${'0'.repeat(32)}`, inpu
 const recovery = {
   INVALID_CONTRACT: 'Read canvas_pcg_describe and retry with the declared schema and exact ports.',
   VERSION_UNSUPPORTED: 'Read the descriptor and create a node with supported explicit versions.',
-  EXECUTOR_UNAVAILABLE: 'Geometry execution is unavailable in M1. Keep the readable graph or run an unconnected diagnostic.',
+  EXECUTOR_UNAVAILABLE: 'The legacy placeholder cannot execute. Discover the M2 task and atomic descriptors.',
+  M3_BRIDGE_UNAVAILABLE: 'The game asset bridge awaits M3 approval. Keep the readable node; do not invent an output.',
+  ISOLATION_UNAVAILABLE: 'Use a supported local restricted runtime. Keep the graph readable; never fall back to an unrestricted process.',
+  BUDGET_EXCEEDED: 'Reduce subdivision, scatter count or graph size, then preflight with a new runId.',
+  INSUFFICIENT_PLACEMENT: 'Reduce count or spacing, or relax slope/height constraints explicitly.',
+  FIELD_BINDING_MISMATCH: 'Recompute the field from the current source geometry; do not reuse a field after content/topology changes.',
+  FIELD_DOMAIN_MISMATCH: 'Read the declared domain. Position offsets require Point vector3; normals and UV samples use Corner.',
+  CANCELLED: 'The retained task was cancelled. Use a new runId for an explicit rerun.',
   REVISION_CONFLICT: 'Read canvas_get_state for the saved revision, then preflight/run with a new runId.',
   INPUT_UNAVAILABLE: 'Read the upstream task. Disconnect unavailable inputs before running a diagnostic.',
   IDEMPOTENCY_CONFLICT: 'Use a new runId for a changed node, version, revision or input.',
@@ -40,7 +47,7 @@ export function createPcgTools(latest, { summarize = node => node, waitForNode =
       } };
     tools.push(tool);
   };
-  define('canvas_pcg_describe', 'Discover shared PCG NodeDescriptor v1, exact port types, readiness, tool schemas, examples and error recovery. M1 diagnostic produces a real report; geometry has no executor.', object(), {}, async () => ({
+  define('canvas_pcg_describe', 'Discover shared PCG NodeDescriptor v1, five task entries and eighteen atomic operations, exact ports, budgets, readiness, tool schemas, examples and recovery. M2 executes geometry in a restricted local worker; game_asset awaits M3.', object(), {}, async () => ({
     registry: PCG_REGISTRY, tools: [...tools, ...(connectionTool ? [{ ...connectionTool, examples: [{ arguments: { sourceId: 'pcg-stub', targetId: 'pcg-1', sourceHandle: 'geometry', targetHandle: 'geometry' } }] }] : [])].map(({ name, description, inputSchema, examples }) => ({ name, description, inputSchema, examples })), errors: recovery,
   }), true);
   define('canvas_pcg_create_node', 'Create and save a visible PCG node through the current page. Returns its actual saved revision for preflight/run.', object({ projectId, descriptorId: { type: 'string', enum: PCG_REGISTRY.nodes.map(node => node.id) }, ...versions, x: { type: 'number' }, y: { type: 'number' }, focus: { type: 'boolean' } }, ['projectId', 'descriptorId', ...Object.keys(versions)]),
@@ -73,10 +80,10 @@ export function createPcgTools(latest, { summarize = node => node, waitForNode =
     if (action === 'wait') properties.timeoutMs = { type: 'integer', minimum: 0, maximum: 20000 };
     const descriptions = {
       preflight: 'Validate the current saved PCG node, typed input identities, budgets and readiness. Does not run a worker.',
-      run: 'Submit the current saved PCG node to the fixed diagnostic worker. Geometry returns EXECUTOR_UNAVAILABLE and a retained failed task. Reuse runId only for the identical request.',
+      run: 'Evaluate the saved dependency DAG in the restricted worker, reusing bounded project-scoped content cache. Publish real task-bound GLB/JSON/static preview assets. Reuse runId only for the identical request.',
       wait: 'Wait at most 20000 ms for an exact existing PCG task. Never resubmits; pending reflects actual backend status.',
-      read: 'Read an exact PCG task and its real diagnostic report. Original handles remain readable with stale:true after graph changes.',
-      verify: 'Verify the real worker result and content hashes for the exact task. Stale or failed reports cannot be accepted.',
+      read: 'Read an exact task: bounded geometry samples, counts, bounds, domains, actual computed/cache-hit trace and managed assets. Original handles remain readable with stale:true after graph changes.',
+      verify: 'Verify real result bindings and exported file hashes for the exact task. Stale or failed results cannot be accepted.',
     };
     define(`canvas_pcg_${action}`, descriptions[action], object(properties, Object.keys(taskAction ? handle : identity)), action === 'wait' ? { ...exampleHandle, timeoutMs: 1000 } : taskAction ? exampleHandle : exampleIdentity, async args => {
       current(args);
@@ -84,6 +91,12 @@ export function createPcgTools(latest, { summarize = node => node, waitForNode =
       return action === 'wait' ? { ...result, pending: ['queued', 'running'].includes(result.task?.status) } : result;
     }, action !== 'run');
   }
+  define('canvas_pcg_cancel', 'Cancel only the exact owned PCG task. Retain its node and task record; never touches other services.', object(handle), exampleHandle, args => {
+    current(args); return latest.current.actions.pcg.invoke('cancel', args);
+  });
+  define('canvas_pcg_export', 'Export a verified successful task geometry output to a real GLB or JSON managed asset. GLB retains shared instance prototypes; JSON preserves internal domains. Returns task-bound artifact identity, hash and authenticated local URL.', object({ ...handle, format: { type: 'string', enum: ['glb', 'json'] }, port: { type: 'string', minLength: 1, maxLength: 32, pattern: '^[A-Za-z0-9_]+$' } }, [...Object.keys(handle), 'format']), { ...exampleHandle, format: 'glb', port: 'geometry' }, args => {
+    current(args); return latest.current.actions.pcg.invoke('export', args);
+  });
   define('canvas_pcg_list_tasks', 'Discover retained PCG tasks for a saved node after reload. Tasks are newest first and include complete handles and stale markers.', object({ projectId, nodeId: token }), { projectId: 'prj_example', nodeId: 'pcg-1' }, args => {
     current(args); return latest.current.actions.pcg.listTasks(args);
   }, true);

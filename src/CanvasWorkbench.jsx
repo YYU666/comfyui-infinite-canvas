@@ -1404,7 +1404,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
 
   const cancelNode = useCallback(async (id) => {
     const node = nodesRef.current.find((item) => item.id === id);
-    if (node?.type === 'pcg') throw new Error('PCG 固定诊断有执行时限；M1 未声明取消接口，请读取任务终态。');
+    if (node?.type === 'pcg') return pcgRunRef.current.cancelNode(id);
     if (node?.type === 'spriteAtlas') return spriteRunRef.current?.cancelSpriteAtlas(id);
     if (localImageJobsRef.current.has(id)) { localImageJobsRef.current.get(id).abort(); return; }
     const cancelledAttempt = generationAttemptsRef.current.cancel(id);
@@ -2143,7 +2143,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={() => addNode('note', {}, addMenu.flow)}><i><Type size={17} /></i><span>文本备注<small>分镜与创作设定</small></span><Plus size={13} /></button>
           <div className="add-menu-title">付费 API 节点</div>
           <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>云端视觉 API · 按服务商计费 · 上传作品及参考</small></span><Plus size={13} /></button>
-          <div role="group" aria-label="3D与游戏资产 / 程序化建模〔PCG插件〕"><strong>3D与游戏资产 · 程序化建模</strong><small>PCG插件 / M1</small>{PCG_REGISTRY.nodes.map(descriptor => <button key={descriptor.id} onClick={() => addNode('pcg', pcgNodeData(descriptor.id), addMenu.flow)}><i><Layers3 size={17} /></i><span>{descriptor.label}<small>{descriptor.readiness.state === 'ready' ? '固定合同诊断 · 独立进程报告' : '可读占位 · 几何执行器尚未提供'}</small></span><Plus size={13} /></button>)}</div>
+          <div role="group" aria-label="3D与游戏资产 / 程序化建模〔PCG插件〕"><strong>3D与游戏资产 · 程序化建模</strong><small>PCG插件 / M2</small>{PCG_REGISTRY.nodes.filter(descriptor => descriptor.category === 'task').map(descriptor => <button key={descriptor.id} onClick={() => addNode('pcg', pcgNodeData(descriptor.id), addMenu.flow)}><i><Layers3 size={17} /></i><span>{descriptor.label}<small>{descriptor.description}</small></span><Plus size={13} /></button>)}</div>
           <div className="add-menu-title">第三方工具</div>
           {LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset]).map((tool) => <button key={tool.preset} onClick={() => addNode(...NODE_PRESETS[tool.preset], addMenu.flow)}><i><WandSparkles size={17} /></i><span>{tool.label}<small>{tool.description}</small></span><Plus size={13} /></button>)}
           <button onClick={() => { setAddMenu(null); setWorkflowLibraryOpen(true); }}><i><Library size={17} /></i><span>已安装的节点工具<small>选择从节点库下载或本地导入的工作流</small></span><Plus size={13} /></button>

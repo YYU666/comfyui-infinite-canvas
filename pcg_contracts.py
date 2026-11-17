@@ -11,7 +11,7 @@ import stat
 
 MAX_ITEMS = 1024
 MAX_VALUE_BYTES = 1024 * 1024
-TYPES = {'GeometryArtifact', 'InstanceSet', 'Field', 'Attribute', 'Selection', 'DiagnosticReport'}
+TYPES = {'Geometry', 'Mesh', 'PointSet', 'Image', 'GeometryArtifact', 'InstanceSet', 'Field', 'Attribute', 'Selection', 'DiagnosticReport'}
 DOMAINS = {'Point', 'Face', 'Corner', 'Instance', 'Detail'}
 VALUE_TYPES = {'float', 'integer', 'boolean', 'vector3'}
 REGISTRY_PATH = Path(__file__).resolve().parent / 'pcg' / 'registry.json'
@@ -246,33 +246,26 @@ def load_registry(path=REGISTRY_PATH):
     require(isinstance(value['nodes'], list) and 1 <= len(value['nodes']) <= 32, 'Registry node limit exceeded.')
     ids = set()
     for descriptor in value['nodes']:
-        exact(descriptor, {'id', 'descriptorVersion', 'pluginVersion', 'operationVersion', 'label', 'category', 'parameters', 'inputs', 'outputs', 'budget', 'permissions', 'readiness', 'examples', 'errors'})
+        exact(descriptor, {'id', 'descriptorVersion', 'pluginVersion', 'operationVersion', 'label', 'category', 'parameters', 'inputs', 'outputs', 'budget', 'permissions', 'readiness', 'examples', 'errors'}, {'description'})
+        if 'description' in descriptor: require(isinstance(descriptor['description'], str) and 1 <= len(descriptor['description']) <= 500, 'Invalid descriptor description.')
         token(descriptor['id']); require(descriptor['id'] not in ids, 'Duplicate descriptor.')
         ids.add(descriptor['id'])
         require(type(descriptor['descriptorVersion']) is int and descriptor['descriptorVersion'] == 1 and type(descriptor['operationVersion']) is int and descriptor['operationVersion'] == 1 and descriptor['pluginVersion'] == value['pluginVersion'], 'Unsupported operation version.', 'VERSION_UNSUPPORTED')
         require(descriptor['permissions'] == [], 'Unknown permissions are forbidden.', 'PERMISSION_FORBIDDEN')
         exact(descriptor['readiness'], {'state', 'code'})
-        require(descriptor['readiness'] in ({'state': 'ready', 'code': None}, {'state': 'unavailable', 'code': 'EXECUTOR_UNAVAILABLE'}), 'Unknown readiness state.')
+        require(descriptor['readiness'] in ({'state': 'ready', 'code': None}, {'state': 'unavailable', 'code': 'EXECUTOR_UNAVAILABLE'}) or (descriptor['id'] == 'refmuse.pcg.game_asset' and descriptor['readiness'] == {'state': 'unavailable', 'code': 'M3_BRIDGE_UNAVAILABLE'}), 'Unknown readiness state.')
         for direction in ('inputs', 'outputs'):
             ports = descriptor[direction]
             require(isinstance(ports, list) and len(ports) <= 16, 'Invalid ports.')
             names = set()
             for port in ports:
                 exact(port, {'name', 'type', 'required'}); token(port['name'], 32)
-                require(port['name'] not in names and isinstance(port['type'], str) and port['type'] in TYPES and type(port['required']) is bool, 'Unknown or duplicate port type/name.')
+                require(port['name'] not in names and valid_port_type(port['type']) and type(port['required']) is bool, 'Unknown or duplicate port type/name.')
                 names.add(port['name'])
         exact(descriptor['budget'], {'timeoutMs', 'maxInputBytes', 'maxOutputBytes', 'maxItems'})
-        integer(descriptor['budget']['timeoutMs'], 1, 5000); integer(descriptor['budget']['maxInputBytes'], 1, MAX_VALUE_BYTES)
-        integer(descriptor['budget']['maxOutputBytes'], 1, 65536); integer(descriptor['budget']['maxItems'], 1, MAX_ITEMS)
-        schema = descriptor['parameters']
-        exact(schema, {'type', 'additionalProperties', 'properties', 'required'})
-        require(schema['type'] == 'object' and schema['additionalProperties'] is False and isinstance(schema['properties'], dict) and isinstance(schema['required'], list), 'Invalid closed parameter schema.')
-        require(set(schema['required']) <= set(schema['properties']), 'Invalid required parameters.')
-        for name, field in schema['properties'].items():
-            token(name, 32); exact(field, {'type', 'maxLength', 'default'})
-            require(field['type'] == 'string', 'Unknown parameter type.')
-            integer(field['maxLength'], 1, 80)
-            require(isinstance(field['default'], str) and len(field['default']) <= field['maxLength'], 'Invalid parameter default.')
+        integer(descriptor['budget']['timeoutMs'], 1, 30000); integer(descriptor['budget']['maxInputBytes'], 1, 32 * MAX_VALUE_BYTES)
+        integer(descriptor['budget']['maxOutputBytes'], 1, 64 * MAX_VALUE_BYTES); integer(descriptor['budget']['maxItems'], 1, 100000)
+        validate_schema(descriptor['parameters'])
         require(isinstance(descriptor['label'], str) and len(descriptor['label']) <= 80 and isinstance(descriptor['category'], str) and len(descriptor['category']) <= 32, 'Invalid descriptor display text.')
         require(isinstance(descriptor['examples'], list) and len(descriptor['examples']) <= 8 and isinstance(descriptor['errors'], list) and len(descriptor['errors']) <= 32, 'Invalid examples/errors.')
         for code in descriptor['errors']: token(code, 64)
@@ -288,15 +281,70 @@ def find_descriptor(registry, descriptor_id, descriptor_version=1, operation_ver
     return match
 
 
+def valid_port_type(kind):
+    return (isinstance(kind, str) and kind in TYPES) or (isinstance(kind, list) and 1 <= len(kind) <= len(TYPES) and all(isinstance(k, str) and k in TYPES for k in kind) and len(set(kind)) == len(kind))
+
+
+def port_types(kind):
+    values = set(kind if isinstance(kind, list) else [kind])
+    if 'Geometry' in values:
+        values.remove('Geometry'); values.update({'Mesh', 'PointSet', 'InstanceSet'})
+    return values
+
+
+def validate_schema(schema, depth=0):
+    require(depth <= 8 and isinstance(schema, dict), 'Parameter schema exceeds nesting budget.')
+    kind = schema.get('type')
+    allowed = {'type', 'default', 'enum'}
+    if kind == 'object': allowed |= {'properties', 'required', 'additionalProperties'}
+    elif kind == 'array': allowed |= {'items', 'minItems', 'maxItems'}
+    elif kind in ('number', 'integer'): allowed |= {'minimum', 'maximum'}
+    elif kind == 'string': allowed |= {'minLength', 'maxLength'}
+    else: require(kind == 'boolean', 'Unknown parameter type.')
+    require(set(schema) <= allowed, 'Unsupported parameter schema keyword.')
+    if kind == 'object':
+        require(schema.get('additionalProperties') is False and isinstance(schema.get('properties'), dict) and isinstance(schema.get('required'), list), 'Expected closed object schema.')
+        require(len(schema['properties']) <= 64 and len(set(schema['required'])) == len(schema['required']) and set(schema['required']) <= set(schema['properties']), 'Invalid required parameters.')
+        for name, child in schema['properties'].items(): token(name, 32); validate_schema(child, depth + 1)
+    elif kind == 'array':
+        require('items' in schema and 'maxItems' in schema, 'Arrays need explicit limits.')
+        integer(schema.get('minItems', 0), 0, 1024); integer(schema['maxItems'], schema.get('minItems', 0), 1024)
+        validate_schema(schema['items'], depth + 1)
+    elif kind == 'string':
+        integer(schema.get('minLength', 0), 0, 1024); integer(schema.get('maxLength', 1024), schema.get('minLength', 0), 1024)
+    elif kind in ('number', 'integer'):
+        for name in ('minimum', 'maximum'):
+            if name in schema: require(finite(schema[name]), 'Invalid numeric schema bound.')
+        require(schema.get('minimum', -1e12) <= schema.get('maximum', 1e12), 'Reversed schema bounds.')
+    if 'enum' in schema:
+        require(isinstance(schema['enum'], list) and 1 <= len(schema['enum']) <= 64, 'Invalid enum.')
+        for item in schema['enum']: _parameter(item, {k:v for k,v in schema.items() if k not in {'enum', 'default'}}, depth)
+    if 'default' in schema: _parameter(schema['default'], schema, depth)
+
+
+def _parameter(item, spec, depth=0):
+    import copy
+    require(depth <= 8, 'Parameter exceeds nesting budget.')
+    kind = spec['type']
+    if kind == 'object':
+        exact(item, spec['required'], spec['properties']); result = {}
+        for name, child in spec['properties'].items():
+            if name in item: result[name] = _parameter(item[name], child, depth + 1)
+            elif 'default' in child: result[name] = _parameter(copy.deepcopy(child['default']), child, depth + 1)
+        item = result
+    elif kind == 'array':
+        require(isinstance(item, list) and spec.get('minItems', 0) <= len(item) <= spec['maxItems'], 'Invalid array parameter.')
+        item = [_parameter(v, spec['items'], depth + 1) for v in item]
+    elif kind == 'string': require(isinstance(item, str) and spec.get('minLength', 0) <= len(item) <= spec.get('maxLength', 1024) and '\x00' not in item, 'Invalid string parameter.')
+    elif kind == 'boolean': require(type(item) is bool, 'Invalid boolean parameter.')
+    else:
+        require(finite(item) and (kind != 'integer' or type(item) is int) and spec.get('minimum', -1e12) <= item <= spec.get('maximum', 1e12), 'Invalid numeric parameter.')
+    if 'enum' in spec: require(any(type(item) is type(v) and item == v for v in spec['enum']), 'Parameter is outside enum.')
+    return item
+
+
 def validate_parameters(descriptor, parameters):
-    schema = descriptor['parameters']
-    exact(parameters, schema['required'], schema['properties'])
-    result = {}
-    for name, spec in schema['properties'].items():
-        item = parameters.get(name, spec['default'])
-        require(isinstance(item, str) and len(item) <= spec['maxLength'] and '\x00' not in item, 'Invalid parameter value.')
-        result[name] = item
-    return result
+    return _parameter(parameters, descriptor['parameters'])
 
 
 def safe_components(path):
@@ -339,3 +387,11 @@ class AssetBroker:
             return value
         except (OSError, ValueError, RecursionError) as exc:
             raise PCGError('ASSET_INVALID', 'Managed asset could not be read safely.') from exc
+
+
+def validate_engine_value(value, kind):
+    """Protocol 2 engine data; never reinterpret the protocol 1 asset/Field DAG."""
+    from pcg_geometry import validate_value as validate_engine
+    require(isinstance(value, dict) and value.get('type') in port_types(kind), 'Engine value differs from declared port type.', 'PORT_TYPE_MISMATCH')
+    require(len(canonical(value)) <= 32 * MAX_VALUE_BYTES, 'Engine value exceeds byte budget.', 'BUDGET_EXCEEDED')
+    return validate_engine(value)

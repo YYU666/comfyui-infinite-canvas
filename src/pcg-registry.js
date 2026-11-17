@@ -83,8 +83,9 @@ export function pcgPreview(data, task, error) {
   let descriptor;
   try { descriptor = pcgNodeDescriptor({ type: 'pcg', data }); } catch (failure) { return { label: data.title || 'PCG', status: 'invalid', message: `${failure.code}: ${failure.message}`, inputs: [], outputs: [] }; }
   const stale = Boolean(task?.stale || (task && (task.descriptorId !== descriptor.id || task.descriptorVersion !== descriptor.descriptorVersion || task.operationVersion !== descriptor.operationVersion)));
+  const ownedAsset = asset => asset.jobId === task?.jobId && asset.runId === task?.runId && asset.projectId === task?.projectId && asset.inputHash === task?.inputHash && typeof asset.url === 'string' && asset.url.startsWith(`/api/pcg/artifacts/${asset.artifactId}?`) && /^pcga_[a-f0-9]{64}$/.test(asset.artifactId);
   return { label: descriptor.label, inputs: descriptor.inputs, outputs: descriptor.outputs, readiness: descriptor.readiness,
     status: task?.status || 'idle', stale, progress: task && Number.isFinite(task.progress) ? Math.max(0, Math.min(1, task.progress)) : null,
-    message: error ? `${error.code || 'REQUEST_FAILED'}: ${error.message}` : task?.error ? `${task.error.code}: ${task.error.message}` : descriptor.readiness.state === 'unavailable' ? `${descriptor.readiness.code}: 几何执行器尚未提供` : '固定合同诊断 · 独立进程',
-    report: task?.result?.report || null, task: task || null };
+    message: error ? `${error.code || 'REQUEST_FAILED'}: ${error.message}` : task?.error ? `${task.error.code}: ${task.error.message}` : descriptor.readiness.state === 'unavailable' ? `${descriptor.readiness.code}: ${descriptor.description || '几何执行器尚未提供'}` : descriptor.description || '固定合同诊断 · 独立进程',
+    report: task?.result?.report || null, assets: (task?.result?.assets || []).filter(ownedAsset), stages: (task?.result?.stagePreviews || []).filter(stage => stage.jobId === task.jobId && stage.runId === task.runId && stage.inputHash === task.inputHash).map(stage => ({ ...stage, assets: (stage.assets || []).filter(asset => ownedAsset(asset) && asset.producerNodeId === stage.nodeId) })), task: task || null };
 }

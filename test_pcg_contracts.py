@@ -48,7 +48,7 @@ class ContractsTests(unittest.TestCase):
 
     def test_registry_closed_and_versions_permissions_types(self):
         registry = load_registry()
-        self.assertEqual(len(registry['nodes']), 2)
+        self.assertEqual(len(registry['nodes']), 25)
         self.assertEqual(find_descriptor(registry, 'refmuse.pcg.geometry_stub')['readiness']['code'], 'EXECUTOR_UNAVAILABLE')
         self.rejected(lambda: find_descriptor(registry, 'not-installed'), 'DESCRIPTOR_UNKNOWN')
         self.rejected(lambda: find_descriptor(registry, registry['nodes'][0]['id'], True), 'VERSION_UNSUPPORTED')

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 # -I isolates site/user environment; this fixed repository path supplies contracts.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -33,11 +34,53 @@ def diagnose(request):
                        'workerPid': os.getpid(), 'inputHash': request['inputHash']}}
 
 
+def evaluate_graph(request):
+    from pcg_graph import computation_key, MAX_GRAPH_BYTES
+    from pcg_geometry import evaluate, summarize
+    from pcg_contracts import validate_engine_value, port_types
+    exact(request, {'protocolVersion', 'projectId', 'inputHash', 'plan', 'cache'})
+    require(request['protocolVersion'] == 2 and type(request['protocolVersion']) is int, 'Unsupported graph protocol.')
+    token(request['projectId']); digest(request['inputHash'])
+    plan = request['plan']; exact(plan, {'target', 'nodes'})
+    require(isinstance(plan['nodes'], list) and 1 <= len(plan['nodes']) <= 256, 'Invalid graph size.')
+    require(isinstance(request['cache'], dict), 'Invalid cache payload.')
+    registry = load_registry(); values = {}; records = []; computed = []; hits = []
+    for node in plan['nodes']:
+        exact(node, {'nodeId', 'descriptorId', 'descriptorVersion', 'operationVersion', 'parameters', 'inputs'})
+        token(node['nodeId']); require(node['nodeId'] not in values, 'Duplicate graph node.')
+        descriptor = find_descriptor(registry, node['descriptorId'], node['descriptorVersion'], node['operationVersion'])
+        require(descriptor['readiness']['state'] == 'ready' and descriptor['id'] not in {'refmuse.pcg.diagnostic', 'refmuse.pcg.geometry_stub'}, 'Graph executor is unavailable.', 'EXECUTOR_UNAVAILABLE')
+        parameters = validate_parameters(descriptor, node['parameters'])
+        ports = {p['name']: p for p in descriptor['inputs']}; exact(node['inputs'], {p['name'] for p in descriptor['inputs'] if p['required']}, ports)
+        inputs = {}
+        for name, ref in node['inputs'].items():
+            exact(ref, {'nodeId', 'port'})
+            require(ref['nodeId'] in values and ref['port'] in values[ref['nodeId']], 'Graph inputs must precede use.', 'INVALID_GRAPH')
+            inputs[name] = values[ref['nodeId']][ref['port']]
+            validate_engine_value(inputs[name], ports[name]['type'])
+        require(len(canonical(inputs)) <= descriptor['budget']['maxInputBytes'], 'Node inputs exceed budget.', 'BUDGET_EXCEEDED')
+        key = computation_key(node, inputs); started = time.perf_counter()
+        cached = request['cache'].get(key)
+        if cached is None:
+            result = evaluate(descriptor['id'], parameters, inputs); computed.append(node['nodeId'])
+        else:
+            result = cached; hits.append(node['nodeId'])
+        outputs = {p['name']: p for p in descriptor['outputs']}; exact(result, {p['name'] for p in descriptor['outputs'] if p['required']}, outputs)
+        for name, value in result.items(): validate_engine_value(value, outputs[name]['type'])
+        require(len(canonical(result)) <= descriptor['budget']['maxOutputBytes'], 'Node outputs exceed budget.', 'BUDGET_EXCEEDED')
+        values[node['nodeId']] = result
+        records.append({'nodeId': node['nodeId'], 'key': key, 'outputs': result, 'outputHash': __import__('pcg_contracts').content_hash(result), 'cacheHit': cached is not None, 'elapsedMs': (time.perf_counter() - started) * 1000})
+        require(len(canonical(values)) <= MAX_GRAPH_BYTES, 'Graph outputs exceed budget.', 'BUDGET_EXCEEDED')
+    require(plan['target'] in values, 'Missing graph target.')
+    return {'outputs': values[plan['target']], 'records': records, 'computedNodes': computed, 'cacheHits': hits, 'inputHash': request['inputHash']}
+
+
 def main():
     try:
-        raw = sys.stdin.buffer.read(MAX_VALUE_BYTES + 1)
-        require(0 < len(raw) <= MAX_VALUE_BYTES, 'Worker input exceeds budget.', 'BUDGET_EXCEEDED')
-        result = diagnose(parse_json(raw))
+        raw = sys.stdin.buffer.read(32 * MAX_VALUE_BYTES + 1)
+        require(0 < len(raw) <= 32 * MAX_VALUE_BYTES, 'Worker input exceeds budget.', 'BUDGET_EXCEEDED')
+        request = parse_json(raw)
+        result = evaluate_graph(request) if isinstance(request, dict) and request.get('protocolVersion') == 2 and 'plan' in request else diagnose(request)
         output = {'ok': True, 'result': result}
     except PCGError as exc:
         output = {'ok': False, 'error': {'code': exc.code, 'message': exc.message}}

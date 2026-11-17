@@ -1,0 +1,274 @@
+{
+  "schemaVersion": 1,
+  "name": "PCG M2 original-source inventory",
+  "scope": "M2 feature source, retained contract compatibility, fixtures and documentation; not a complete repository or interpreter distribution SBOM",
+  "license": "Apache-2.0",
+  "licenseFile": "LICENSE",
+  "sourcePolicy": {
+    "origin": "Original repository-authored implementation or modifications to existing repository-authored files",
+    "copiedThirdPartySource": false,
+    "newThirdPartyDependencies": [],
+    "dynamicCodeEntry": false
+  },
+  "runtimePrerequisites": [
+    {
+      "name": "Existing Python interpreter and standard library",
+      "sourceCopiedIntoRepository": false,
+      "license": "PSF-2.0",
+      "note": "OS isolation stages the existing interpreter locally per task; interpreter runtime licensing remains independent of Apache-2.0 source inventory."
+    },
+    {
+      "name": "Windows native security and process APIs",
+      "sourceCopiedIntoRepository": false,
+      "note": "System platform prerequisite; no bundled OS implementation."
+    }
+  ],
+  "files": [
+    {
+      "path": "pcg_api.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_contracts.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_runtime.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_worker.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_assets.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_export.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_fields.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_geometry.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_graph.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_isolation.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_isolation_win.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_preview.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/CanvasWorkbench.jsx",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/PcgNode.jsx",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/pcg-mcp.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/pcg-registry.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/pcg-runtime.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_contracts.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_runtime.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_assets.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_export.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_fields.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_geometry.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_graph.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_isolation.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_m2_runtime.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_preview.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test-pcg-frontend.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test-pcg-preview.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg/registry.json",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg/API.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg/ENGINE_API.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg/ISOLATION_API.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg/SBOM.json",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/AGENT_GUIDE.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/CONTRACTS.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/DEV_STEPS.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/VALIDATION.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/M2_STEPS.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/M2_REVIEW.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    }
+  ]
+}

@@ -72,6 +72,11 @@ export function createPcgRuntime({ getContext, getNode, persistProject, onChange
       return result;
     },
     invoke,
+    async cancelNode(nodeId) {
+      const task = states.get(stateKey(getContext().projectId, nodeId))?.task;
+      if (!task) throw pcgError('TASK_NOT_FOUND', 'Read canvas_pcg_list_tasks before cancellation.');
+      return invoke('cancel', pcgTaskHandle(task));
+    },
     async runNode(nodeId, { runId = globalThis.crypto.randomUUID(), wait = false, timeoutMs = 1000 } = {}) {
       const key = stateKey(getContext().projectId, nodeId);
       if (inflight.has(key)) throw pcgError('NODE_BUSY', 'A PCG submission is already in progress. Read or wait for its task.');
