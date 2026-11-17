@@ -540,6 +540,8 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         }),
       },
     ];
+    tools.push({name:'canvas_publish_extension',description:'显式发布已安装的精确工作流包或新版本到当前登录用户的节点库。同一requestId固定同一包，查询/重放不重复上传；提交不代表发布成功，使用状态工具查询。不会更新画布已固定版本。',inputSchema:schema({requestId:nodeIdProperty,digest:{type:'string',pattern:'^[a-f0-9]{64}$'},packageId:{type:'string'},version:{type:'string'},mode:{type:'string',enum:['update','publish'],default:'update'}},['requestId','digest','packageId','version']),execute:respond(args=>latest.current.actions.publishExtension(args))});
+    tools.push({name:'canvas_get_extension_publish_status',description:'只读查询发布请求状态；不重试上传，不返回节点包或媒体。',inputSchema:schema({requestId:nodeIdProperty},['requestId']),execute:respond(({requestId})=>latest.current.actions.getExtensionPublishStatus(requestId))});
     tools.push({
       name: 'canvas_retry_save',
       description: '显式重试当前页面保存，保留未保存修改及版本冲突保护；不会重新生成或刷新页面。',
@@ -569,10 +571,10 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
     for (const tool of tools) {
       const original = tool.execute;
       tool.execute = async (args = {}, executionOptions) => {
-        const mutation = !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
+        const mutation = !['canvas_get_extension_publish_status', 'canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
         const result = JSON.parse(await original(args, executionOptions));
-        if (mutation && result.ok && !['canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
+        if (mutation && result.ok && !['canvas_publish_extension', 'canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
           try { await latest.current.actions.persistProject?.(); }
           catch (error) { return JSON.stringify({ ...result, ok: false, error: error.message, localChangesRetained: true }); }
         }
