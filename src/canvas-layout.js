@@ -6,6 +6,7 @@ const NODE_SIZES = {
   videoTimeRemap: { width: 380, height: 620 },
   videoChromaKey: { width: 400, height: 640 },
   videoLocalRepair: { width: 400, height: 920 },
+  videoWhitePlate: { width: 400, height: 640 },
   videoEdit: { width: 400, height: 420 },
   media: { width: 310, height: 250 },
   generator: { width: 440, height: 360 },

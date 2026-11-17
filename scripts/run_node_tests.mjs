@@ -21,6 +21,8 @@ const suites = {
     'test-image-process-graph.mjs',
     'test-image-process-runtime.mjs',
     'test-api.mjs',
+    'test-video-chroma-lifecycle.mjs',
+    'test-video-plate.mjs',
     'test-video-repair.mjs',
     'test-video-chroma.mjs',
     'test-video-rhythm.mjs',
@@ -63,6 +65,7 @@ const suites = {
     'test-update-offer.mjs',
   ],
   browser: [
+    'test-video-plate-ui.mjs',
     'test-video-repair-ui.mjs',
     'test-video-chroma-ui.mjs',
     'test-video-rhythm-ui.mjs',

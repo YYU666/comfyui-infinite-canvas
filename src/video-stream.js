@@ -4,7 +4,8 @@ export const isVideoEditNode = node => node?.type === 'videoEdit';
 export const isVideoRhythmNode = node => ['videoSpeed', 'videoTimeRemap'].includes(node?.type);
 export const isVideoChromaNode = node => node?.type === 'videoChromaKey';
 export const isVideoRepairNode = node => node?.type === 'videoLocalRepair';
-export const isVideoProcessor = node => isVideoRepairNode(node) || isVideoChromaNode(node) || isVideoEditNode(node) || isVideoRhythmNode(node);
+export const isVideoPlateNode = node => node?.type === 'videoWhitePlate';
+export const isVideoProcessor = node => isVideoPlateNode(node) || isVideoRepairNode(node) || isVideoChromaNode(node) || isVideoEditNode(node) || isVideoRhythmNode(node);
 
 export function videoStreamKind(source) {
   if (isVideoProcessor(source)) return 'video';
@@ -14,6 +15,7 @@ export function videoStreamKind(source) {
 export function videoStreamAsset(source, cache = {}, context = {}) {
   if (isVideoChromaNode(source)) return source.data?.chromaResultAssetPath ? { assetPath: source.data.chromaResultAssetPath } : { needsExport: source.data?.title || '绿幕合成' };
   if (isVideoRepairNode(source)) return videoRepairSummary(source.data, { ...context, nodeId: source.id }).repairResultCurrent ? { assetPath: source.data.repairResultAssetPath } : { needsExport: source.data?.title || '局部修补（输入或参数已变更）' };
+  if (isVideoPlateNode(source)) return source.data?.plateResultAssetPath ? { assetPath: source.data.plateResultAssetPath } : { needsExport: source.data?.title || '绿幕白模' };
   if (isVideoRhythmNode(source)) return source.data?.rhythmResultAssetPath ? { assetPath: source.data.rhythmResultAssetPath } : { needsExport: source.data?.title || '视频节奏' };
   if (isVideoEditNode(source)) return source.data?.editResultAssetPath
     ? { assetPath: source.data.editResultAssetPath }
