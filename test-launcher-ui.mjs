@@ -78,12 +78,21 @@ try {
   await page.locator('button[title="添加元素"]').click();
   await page.getByRole('button', { name: /图片素材/ }).click();
   await page.locator('.media-shell input[type=file]').setInputFiles({ name: 'reference.png', mimeType: 'image/png', buffer: png });
-  await sleep(1800);
   let rows = await api('');
-  let document = await api(`/${rows.projects.find((item) => item.name === '验收项目').id}`);
-  const projectId = document.id;
+  const projectId = rows.projects.find((item) => item.name === '验收项目').id;
+  let document;
+  // Uploads wait for earlier writes, then schedule a canvas save. Wait for that
+  // committed snapshot rather than assuming both requests finish within 1.8s.
+  const uploadSaveDeadline = Date.now() + 15000;
+  do {
+    document = await api(`/${projectId}`);
+    if (document.canvas.nodes.some((node) => node.type === 'media' && node.data.assetPath)
+      && await page.locator('.save-indicator').innerText() === '已保存') break;
+    await sleep(100);
+  } while (Date.now() < uploadSaveDeadline);
   const mediaNode = document.canvas.nodes.find((node) => node.type === 'media');
   assert(mediaNode?.data.assetPath, 'assetPath persisted after upload');
+  assert.equal(await page.locator('.save-indicator').innerText(), '已保存', 'upload and canvas saves settled');
   assert.equal(document.assets.length, 1);
   assert(document.revision >= 3, 'asset and canvas revisions advance without 409');
   const committedRevision = (await api(`/${projectId}`)).revision;

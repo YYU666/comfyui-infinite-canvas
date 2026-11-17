@@ -12,6 +12,7 @@ import { DEFAULT_SPRITE_OPTIONS, spriteSnapshot } from './sprite-atlas.js';
 import { PCG_PRESETS, isPcgNode, pcgNodeDescriptor, validatePcgSchema } from './pcg-registry.js';
 import { pcgTaskHandle } from './pcg-runtime.js';
 import { createPcgTools } from './pcg-mcp.js';
+import { imageCompactArgs } from './image-inline-output.js';
 
 export const NODE_PRESETS = {
   ...PCG_PRESETS,
@@ -567,6 +568,12 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
     ];
     tools.push(...createPcgTools(latest, { connectionTool: tools.find(tool => tool.name === 'canvas_connect_nodes'), summarize: nodeSummary, waitForNode: (id, predicate = () => true) => waitFor(() => { const node = latest.current.nodesRef.current.find(item => item.id === id); return node && predicate(node) ? node : null; }) }));
     tools.push({
+      name: 'canvas_image_compact',
+      description: '整理指定已完成图片生成节点的重复结果卡，保留媒体身份、文件、历史及下游引用；多输出保留独立卡。默认 dryRun:true 仅预览，执行需显式 false。当前画布忙碌、只读或保存异常时拒绝。',
+      inputSchema: schema({ nodeIds: { type: 'array', items: nodeIdProperty, minItems: 1, maxItems: 100 }, dryRun: { type: 'boolean', default: true } }, ['nodeIds']),
+      execute: respond(args => latest.current.actions.imageCompact(imageCompactArgs(args))),
+    });
+    tools.push({
       name: 'canvas_retry_save',
       description: '显式重试当前页面保存，保留未保存修改及版本冲突保护；不会重新生成或刷新页面。',
       inputSchema: schema(),
@@ -595,7 +602,8 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
     for (const tool of tools) {
       const original = tool.execute;
       tool.execute = async (args = {}, executionOptions) => {
-        const mutation = !tool.annotations?.readOnlyHint && !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
+        const compactPreview = tool.name === 'canvas_image_compact' && args?.dryRun !== false;
+        const mutation = !compactPreview && !tool.annotations?.readOnlyHint && !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
         const result = JSON.parse(await original(args, executionOptions));
         if (mutation && result.ok && !['canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {

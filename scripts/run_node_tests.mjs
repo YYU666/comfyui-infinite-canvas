@@ -8,6 +8,8 @@ const suites = {
   node: [
     'test-pcg-frontend.mjs',
     'test-pcg-preview.mjs',
+    'test-image-inline-output.mjs',
+    'browser_video_validation.test.mjs',
     'test-canvas-file-location.mjs',
     'test-image-export.mjs',
     'test-model-licenses.mjs',
@@ -26,6 +28,7 @@ const suites = {
     'test-image-process-graph.mjs',
     'test-image-process-runtime.mjs',
     'test-api.mjs',
+    'test-upload-identity.mjs',
     'test-browser-public-network.mjs',
     'test-auto-save.mjs',
     'test-canvas-clipboard.mjs',
@@ -65,6 +68,7 @@ const suites = {
     'test-update-offer.mjs',
   ],
   browser: [
+    'test-image-inline-compact-ui.mjs',
     'test-image-export-ui.mjs',
     'test-sprite-atlas-ui.mjs',
     'test-pureref-import-ui.mjs',

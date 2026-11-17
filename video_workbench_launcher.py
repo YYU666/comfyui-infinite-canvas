@@ -355,7 +355,7 @@ def import_douyin_with_browser(url, output_dir, stem):
     if not node:
         raise RuntimeError("没有找到 Node.js，无法启用抖音公开页面解析。")
     file_path = (output_dir / f"{stem}.mp4").resolve()
-    command = [node, str(HERE / "browser_video_import.mjs"), "--url", url, "--output", str(file_path)]
+    command = [node, str(HERE / "browser_video_import.mjs"), "--url", url, "--output", str(file_path), "--ffmpeg", imageio_ffmpeg.get_ffmpeg_exe()]
     try:
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     except subprocess.TimeoutExpired as exc:
@@ -363,9 +363,8 @@ def import_douyin_with_browser(url, output_dir, stem):
         raise RuntimeError("抖音视频加载超时，请换较短的视频，或下载后手动上传。") from exc
     if result.returncode:
         file_path.unlink(missing_ok=True)
-        lines = [line.strip() for line in result.stderr.splitlines() if line.strip()]
-        detail = lines[-1][:350] if lines else "公开页面未返回可下载的视频"
-        raise RuntimeError(f"无法解析这个抖音公开视频。请确认作品公开且未失效；也可以下载后手动上传。\n{detail}")
+        # Browser/decoder stderr can contain signed CDN URLs and local paths.
+        raise RuntimeError("无法核实或下载这个抖音公开视频，文件未保留。请确认作品公开且未失效；也可以下载后手动上传。")
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     try:
         metadata = json.loads(lines[-1])
