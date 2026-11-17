@@ -1,0 +1,39 @@
+{
+  "descriptorVersion": 1,
+  "namespace": "refmuse.pcg",
+  "pluginVersion": "1.0.0",
+  "nodes": [
+    {
+      "id": "refmuse.pcg.diagnostic",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "合同诊断",
+      "category": "diagnostics",
+      "parameters": {"type": "object", "additionalProperties": false, "properties": {"label": {"type": "string", "maxLength": 80, "default": "Contract check"}}, "required": []},
+      "inputs": [{"name": "geometry", "type": "GeometryArtifact", "required": false}, {"name": "instances", "type": "InstanceSet", "required": false}, {"name": "field", "type": "Field", "required": false}, {"name": "attribute", "type": "Attribute", "required": false}],
+      "outputs": [{"name": "report", "type": "DiagnosticReport", "required": true}],
+      "budget": {"timeoutMs": 5000, "maxInputBytes": 1048576, "maxOutputBytes": 65536, "maxItems": 1024},
+      "permissions": [],
+      "readiness": {"state": "ready", "code": null},
+      "examples": [{"parameters": {"label": "Contract check"}}],
+      "errors": ["INVALID_CONTRACT", "VERSION_UNSUPPORTED", "INPUT_UNAVAILABLE", "REVISION_CONFLICT", "WORKER_TIMEOUT", "WORKER_CRASH", "WORKER_PROTOCOL"]
+    },
+    {
+      "id": "refmuse.pcg.geometry_stub",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "几何执行器占位",
+      "category": "geometry",
+      "parameters": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+      "inputs": [{"name": "geometry", "type": "GeometryArtifact", "required": false}],
+      "outputs": [{"name": "geometry", "type": "GeometryArtifact", "required": true}],
+      "budget": {"timeoutMs": 5000, "maxInputBytes": 1048576, "maxOutputBytes": 65536, "maxItems": 1024},
+      "permissions": [],
+      "readiness": {"state": "unavailable", "code": "EXECUTOR_UNAVAILABLE"},
+      "examples": [{"parameters": {}}],
+      "errors": ["EXECUTOR_UNAVAILABLE", "INVALID_CONTRACT", "VERSION_UNSUPPORTED", "REVISION_CONFLICT"]
+    }
+  ]
+}

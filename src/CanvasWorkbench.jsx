@@ -36,6 +36,9 @@ import { qwenCanvasReferences, bindQwenPrompt, validateQwenReferences, compileQw
 import MaskEditor from './MaskEditor';
 import { isMaskNode, maskSourceKey, canvasMaskGuide, qwenCanvasMask, validateCanvasMask } from './canvas-mask';
 import { planCanvasConnection } from './canvas-connections';
+import { PCG_REGISTRY, pcgNodeData } from './pcg-registry.js';
+import { usePcgCanvas } from './pcg-canvas.js';
+import PcgNode from './PcgNode.jsx';
 import ImageLightbox from './ImageLightbox';
 import ModelLicenseNotice from './ModelLicenseNotice.jsx';
 import { useCanvasMcp, NODE_PRESETS, describeNodeModels } from './canvas-mcp';
@@ -117,6 +120,7 @@ function CanvasEdge(props) {
     <g onMouseEnter={(event) => { keepVisible(); setHoverPoint(screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false })); }} onMouseLeave={leave}>
       <BaseEdge id={props.id} path={path} style={props.style} markerStart={props.markerStart} markerEnd={props.markerEnd} interactionWidth={26} />
     </g>
+    {props.data?.pcgType && <EdgeLabelRenderer><span className="nodrag nopan" style={{ position: 'absolute', transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, pointerEvents: 'none', background: 'var(--panel-bg, #222)', padding: '2px 6px', borderRadius: 4, fontSize: 11 }}>{props.data.pcgType}</span></EdgeLabelRenderer>}
     {!readOnly && (hoverPoint || props.selected) && <EdgeLabelRenderer>
       <button className="canvas-edge-disconnect nodrag nopan" data-edge-id={props.id}
         style={{ transform: `translate(-50%, -100%) translate(${point.x}px, ${point.y - 12}px)` }}
@@ -495,7 +499,11 @@ function SpriteAtlasCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <SpriteAtlasNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
-const nodeTypes = { spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode) };
+function PcgCanvasNode(props) {
+  const actions = useContext(NodeContext);
+  return <PcgNode {...props} state={actions.getPcgState(props.id)} />;
+}
+const nodeTypes = { pcg: React.memo(PcgCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode) };
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
   const saved = useMemo(() => {
@@ -1198,6 +1206,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
 
   const artRunRef = useRef(null);
   const spriteRunRef = useRef(null);
+  const pcgRunRef = useRef(null);
   const getImageProcessState = useCallback((id) => {
     try {
       const snapshot = imageProcessSnapshot(id, nodesRef.current, edgesRef.current);
@@ -1281,6 +1290,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }, [project.id, project.readOnly, getImageProcessState, chooseMedia, saveCanvasAsset, updateNode, setNodes, setEdges, persistProject]);
 
   const generateNode = useCallback(async (id) => {
+    if (nodesRef.current.find(n => n.id === id)?.type === 'pcg') return pcgRunRef.current.runNode(id);
     if (nodesRef.current.find(n => n.id === id)?.type === 'spriteAtlas') return spriteRunRef.current?.runSpriteAtlas(id);
     if (nodesRef.current.find(n => n.id === id)?.type === 'artDirector') return artRunRef.current?.(id);
     if (switchingRef.current || project.readOnly) return;
@@ -1394,6 +1404,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
 
   const cancelNode = useCallback(async (id) => {
     const node = nodesRef.current.find((item) => item.id === id);
+    if (node?.type === 'pcg') throw new Error('PCG 固定诊断有执行时限；M1 未声明取消接口，请读取任务终态。');
     if (node?.type === 'spriteAtlas') return spriteRunRef.current?.cancelSpriteAtlas(id);
     if (localImageJobsRef.current.has(id)) { localImageJobsRef.current.get(id).abort(); return; }
     const cancelledAttempt = generationAttemptsRef.current.cancel(id);
@@ -1475,6 +1486,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     const id = uid(type);
     let data;
     if (type === 'generator') data = { ...DEFAULT_GENERATOR, ...extra };
+    else if (type === 'pcg') data = { ...pcgNodeData(extra.descriptorId, extra.parameters, extra), ...(extra.title !== undefined ? { title: extra.title } : {}) };
     else if (type === 'spriteAtlas') data = { title: '3D 角色转多方向图集', status: 'idle', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS }, ...extra };
     else if (type === 'artDirector') data = { title: '电子主美 · 图解分析', status: 'idle', brief: '', preserve: '', referencePurposes: {}, ...extra };
     else if (type === 'imageProcess') data = { ...DEFAULT_ADJUSTMENTS, adjustmentType: 'basic', mode: 'colorAdjust', title: '颜色调整', status: 'idle', blendMode: 'normal', opacity: 100, fit: 'cover', maskChannel: 'luminance', maskInvert: false, ...extra };
@@ -1769,7 +1781,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     const { source, target, multiple, existing, resolvedFrom } = plan;
     if (clickConnection.current) clickConnection.current.connected = true;
     if (existing) { setConnectionNotice('此素材已连接。'); return { edgeId: existing.id, ...plan.connection }; }
-    const edge = { ...plan.connection, id: `edge-${source.id}-${target.id}-${plan.connection.targetHandle}-${Date.now()}` };
+    const edge = { ...plan.connection, ...(plan.edgeData ? { data: plan.edgeData, label: plan.edgeLabel } : {}), id: `edge-${source.id}-${target.id}-${plan.connection.targetHandle}-${Date.now()}` };
     if (target.data.mode === 'qwenEdit' && edge.targetHandle === 'references') {
       const nextRefs = [...qwenCanvasReferences(target, nodesRef.current, edgesRef.current), source];
       updateNode(target.id, { prompt: bindQwenPrompt(target.data.prompt || '', nextRefs), qwenReferenceOrder: nextRefs.map((ref) => ref.id), error: null });
@@ -1910,9 +1922,11 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
   const artDirector = useArtDirector({ project, projectRef, switchingRef, nodes, edges, nodesRef, edgesRef, setNodes, setEdges, updateNode, addNode, chooseMedia, saveCanvasAsset, persistProject, localImageJobsRef, setLocalImageJobsVersion, mediaWritesRef, assetUrl, findFreePosition, uid, onConnect });
   const spriteAtlas = useSpriteAtlas({ project, projectRef, revisionRef, switchingRef, nodes, nodesRef, updateNode, persistProject, localImageJobsRef, setLocalImageJobsVersion });
+  const pcgCanvas = usePcgCanvas({ project, revisionRef, switchingRef, nodes, nodesRef, persistProject });
+  pcgRunRef.current = pcgCanvas.pcg;
   spriteRunRef.current = spriteAtlas;
   artRunRef.current = (id) => { const state = artDirector.getArtDirectorState(id); return state.node?.data.analysis?.sourceVersion === state.signature ? artDirector.exportArtBoard(id) : artDirector.runArtAnalysis(id); };
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [spriteAtlas, artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const context = useMemo(() => ({ ...pcgCanvas, ...spriteAtlas, ...artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [pcgCanvas, spriteAtlas, artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -1930,7 +1944,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   useCanvasMcp({
     nodesRef, edgesRef, projectName, projectId: project.id, readOnly: project.readOnly, server,
-    actions: { imageCompact: (args) => {
+    actions: { ...pcgCanvas, imageCompact: (args) => {
       const { nodeIds, dryRun } = imageCompactArgs(args);
       if (projectRef.current.id !== project.id || projectRef.current.readOnly || switchingRef.current
         || autoSaveRef.current?.failure || autoSaveRef.current?.conflict) throw new Error('当前画布不可写，请先处理保存状态或项目切换。');
@@ -2129,6 +2143,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={() => addNode('note', {}, addMenu.flow)}><i><Type size={17} /></i><span>文本备注<small>分镜与创作设定</small></span><Plus size={13} /></button>
           <div className="add-menu-title">付费 API 节点</div>
           <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>云端视觉 API · 按服务商计费 · 上传作品及参考</small></span><Plus size={13} /></button>
+          <div role="group" aria-label="3D与游戏资产 / 程序化建模〔PCG插件〕"><strong>3D与游戏资产 · 程序化建模</strong><small>PCG插件 / M1</small>{PCG_REGISTRY.nodes.map(descriptor => <button key={descriptor.id} onClick={() => addNode('pcg', pcgNodeData(descriptor.id), addMenu.flow)}><i><Layers3 size={17} /></i><span>{descriptor.label}<small>{descriptor.readiness.state === 'ready' ? '固定合同诊断 · 独立进程报告' : '可读占位 · 几何执行器尚未提供'}</small></span><Plus size={13} /></button>)}</div>
           <div className="add-menu-title">第三方工具</div>
           {LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset]).map((tool) => <button key={tool.preset} onClick={() => addNode(...NODE_PRESETS[tool.preset], addMenu.flow)}><i><WandSparkles size={17} /></i><span>{tool.label}<small>{tool.description}</small></span><Plus size={13} /></button>)}
           <button onClick={() => { setAddMenu(null); setWorkflowLibraryOpen(true); }}><i><Library size={17} /></i><span>已安装的节点工具<small>选择从节点库下载或本地导入的工作流</small></span><Plus size={13} /></button>
