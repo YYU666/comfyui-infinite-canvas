@@ -192,3 +192,5 @@ panel.run为真实任务，stage为pending/preflight/真实任务状态及目标
 panel.desired包含原artifact元数据、完整task handle、graphRevision与generation；displayed只在同一身份GLB通过字节/SHA、GPU上传、真实绘制后发布。新run/连接变化使旧回执失效；所有权清楚的cancel-obsolete仅取消精确旧handle，不影响其他任务。资源报告是逻辑buffer/VAO字节，非物理显存；GLB经认证同源下载，端口/路径/身份不符拒绝。刷新同一项目恢复布局与绑定并查询原任务，不重跑恢复。切换项目销毁面板与监听、取消其任务，另一项目不能读回旧模型。
 
 运行时无有效隔离依赖则保留可读图并报ISOLATION_UNAVAILABLE，不改走普通进程。M3冻结桥仍未授权；game_asset不可伪造accepted。性能目标尚未通过，慢求值展示真实状态，不能写“实时性能已达标”。
+
+受限worker的固定请求协议仍是stdin原始字节。宿主内部把≤32MiB请求独占写入本次runtime的只读临时文件，继承只读stdin；stdout/stderr由同一宿主线程按可用量排空。Agent无需设置文件路径，也没有新增路径、脚本或命令参数。任务结束清理该临时文件；请求不进入日志、导出或仓库。原权限、CPU/内存/墙钟/输出预算与三句柄白名单保留，任一传输或终态验证失败即失败，不能因缺依赖绕开隔离。

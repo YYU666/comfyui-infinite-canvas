@@ -25,6 +25,7 @@ denied('read_outside', lambda: open(data['outside'],'rb').read())
 denied('write_outside', lambda: open(data['outside'],'ab').write(b'x'))
 denied('create_outside', lambda: open(data['outside']+'.new','wb').write(b'x'))
 denied('write_code', lambda: open(__file__,'ab').write(b'x'))
+denied('write_request', lambda: open(os.path.join(os.path.dirname(__file__),'pcg-request.stdin'),'ab').write(b'x'))
 with open(os.path.join(os.environ['TEMP'],'owned.txt'),'w') as f: f.write('owned')
 out['own_temp']=True
 sock=socket.socket(); sock.settimeout(1)
@@ -77,7 +78,7 @@ class IsolationTests(unittest.TestCase):
                 output, error, code, reason = self._fixture(PROBE, json.dumps({'outside':str(outside)}).encode())
                 self.assertEqual((code, reason), (0, None), error.decode(errors='replace'))
                 result = json.loads(output)
-                for key in ('read_outside', 'write_outside', 'create_outside', 'write_code', 'network', 'child'):
+                for key in ('read_outside', 'write_outside', 'create_outside', 'write_code', 'write_request', 'network', 'child'):
                     self.assertTrue(result[key]['denied'], (key,result))
                 self.assertEqual(result['is_appcontainer'], 1)
                 self.assertEqual(result['capability_count'], 0)
@@ -162,7 +163,7 @@ class NativeLifetimeTests(unittest.TestCase):
             return True
         handles = iter(range(100, 106))
         with ExitStack() as stack:
-            for name, replacement in [('CreatePipe', pipe), ('SetHandle', lambda *_: True),
+            for name, replacement in [('_request_stdin', lambda *_: (106, None)), ('CreatePipe', pipe), ('SetHandle', lambda *_: True),
                                       ('InitAttrs', init), ('UpdateAttr', lambda *_: False),
                                       ('Close', lambda *_: True)]:
                 stack.enter_context(mock.patch.object(win, name, side_effect=replacement))
@@ -179,6 +180,151 @@ class NativeLifetimeTests(unittest.TestCase):
 
     def test_initialized_attributes_destroyed_once_on_later_failure(self):
         self.assertEqual(self._attribute_failure(True), 1)
+
+
+@unittest.skipUnless(os.name == 'nt', 'Native Windows transport contract only.')
+class NativeStdioTests(unittest.TestCase):
+    def fixture(self, stdout=(b'abc',), stderr=(), *, limit=1024, partial=65536,
+                failure=None, cancelled=None, clock=None):
+        import pcg_isolation_win as win
+        live, closed, calls = {106}, [], []
+        queues = {100: list(stdout), 102: list(stderr)}
+        next_pipe = iter((100, 102)); terminated = False
+        def owned(handle):
+            self.assertIn(handle, live, ('use after close', handle, calls))
+        def close(handle):
+            owned(handle); live.remove(handle); closed.append(handle); return True
+        def pipe(read, write, *_):
+            handle = next(next_pipe)
+            if failure == 'second-pipe' and handle == 102: return False
+            read._obj.value, write._obj.value = handle, handle + 1
+            live.update((handle, handle + 1)); return True
+        def init(buffer, count, flags, size):
+            size._obj.value = 128; return buffer is not None
+        def update(_attrs, _flags, key, value, *_):
+            if key == 0x20002:
+                inherited = list(win.C.cast(value, win.C.POINTER(win.W.HANDLE * 3)).contents)
+                self.assertEqual(inherited, [106, 101, 103]); calls.append('allowlist3')
+            return True
+        def job(*_): live.add(800); return 800
+        def process(*args):
+            if failure == 'create': return False
+            args[-1]._obj.process, args[-1]._obj.thread = 900, 901
+            live.update((900, 901)); return True
+        def assign(job_handle, process_handle):
+            owned(job_handle); owned(process_handle); return failure != 'assign'
+        def terminate(job_handle, _code):
+            nonlocal terminated
+            owned(job_handle); terminated = True; calls.append('terminate'); return True
+        def wait(handle, _milliseconds):
+            owned(handle)
+            return 0xffffffff if failure == 'wait' and not terminated else 0
+        def peek(handle, _buf, _size, _read, available, _left):
+            owned(handle); calls.append(('peek', handle))
+            if failure == 'peek': win.C.set_last_error(6); return False
+            queue = queues[handle]
+            if not queue: win.C.set_last_error(109); return False
+            if queue[0] is None:
+                queue.pop(0); available._obj.value = 0; return True
+            available._obj.value = len(queue[0]); return True
+        def read(handle, buffer, amount, count, _overlapped):
+            owned(handle); calls.append(('read', handle))
+            if failure == 'read': win.C.set_last_error(6); return False
+            body = queues[handle][0]; self.assertIsNotNone(body)
+            size = min(amount, len(body), partial); self.assertGreater(size, 0)
+            win.C.memmove(buffer, body, size); count._obj.value = size
+            if size == len(body): queues[handle].pop(0)
+            else: queues[handle][0] = body[size:]
+            return True
+        def exit_code(handle, code):
+            owned(handle); code._obj.value = 125 if terminated else 0
+            return failure != 'exit'
+        with ExitStack() as stack:
+            replacements = {'_request_stdin': lambda *_: (106, None), 'CreatePipe': pipe,
+                'SetHandle': lambda *_: True, 'InitAttrs': init, 'UpdateAttr': update,
+                'DeleteAttrs': lambda *_: None, 'CreateJob': job, 'SetJob': lambda *_: True,
+                'CreateProcess': process, 'AssignJob': assign, 'TerminateJob': terminate,
+                'Resume': lambda *_: 0xffffffff if failure == 'resume' else 0,
+                'PeekPipe': peek, 'ReadFile': read, 'Wait': wait, 'ExitCode': exit_code,
+                'Close': close, 'api': lambda *_: lambda *_: True}
+            for name, replacement in replacements.items():
+                stack.enter_context(mock.patch.object(win, name, side_effect=replacement))
+            if clock is not None:
+                stack.enter_context(mock.patch.object(win.time, 'monotonic', side_effect=clock))
+            try:
+                value = win.launch(Path('trusted/pythonw.exe'), Path('trusted/worker.py'),
+                                   Path('owned/temp'), win.P(1), b'{}', {}, .5,
+                                   64 * 1024**2, limit, cancelled)
+                return value, calls
+            finally:
+                self.assertEqual(live, set(), ('leaked handles', live))
+                self.assertEqual(len(closed), len(set(closed)))
+
+    def test_zero_available_short_reads_and_terminal_tail_are_drained(self):
+        value, calls = self.fixture(stdout=(None, b'abcdef', None, b'tail'),
+                                    stderr=(None, b'warning'), partial=2)
+        self.assertEqual(value, (b'abcdeftail', b'warning', 0, None))
+        self.assertEqual(calls[1:3], [('peek', 100), ('peek', 102)])
+        self.assertIn('allowlist3', calls)
+
+    def test_exact_limits_and_both_stream_overflows(self):
+        self.assertEqual(self.fixture(stdout=(b'abcd',), limit=4)[0], (b'abcd', b'', 0, None))
+        for stdout, stderr, limit in [((b'abcde',), (), 4), ((), (b'x' * 65537,), 1024)]:
+            with self.subTest(stream='stderr' if stderr else 'stdout'):
+                result, _ = self.fixture(stdout, stderr, limit=limit)
+                self.assertEqual(result[-1], 'BUDGET_EXCEEDED'); self.assertEqual(result[2], 125)
+
+    def test_busy_stream_does_not_starve_stderr_or_cancellation(self):
+        decisions = iter((False, True))
+        result, calls = self.fixture(stdout=(b'x' * 100000,), stderr=(b'warning',), limit=200000,
+                                     cancelled=lambda: next(decisions))
+        self.assertEqual(result[-1], 'CANCELLED')
+        self.assertEqual(result[1], b'warning')
+        self.assertIn(('read', 102), calls)
+
+    def test_busy_stream_still_checks_wall_deadline(self):
+        result, _ = self.fixture(stdout=(b'x' * 100000,), limit=200000, clock=(0, 0, 1))
+        self.assertEqual(result[-1], 'TIMEOUT')
+
+    def test_partial_initialization_and_io_failures_release_every_owned_handle(self):
+        for failure in ('second-pipe', 'create', 'assign', 'resume', 'peek', 'read', 'wait', 'exit'):
+            with self.subTest(failure=failure), self.assertRaises(OSError):
+                self.fixture(failure=failure)
+
+    def test_request_bytes_and_read_only_inherited_open(self):
+        import pcg_isolation_win as win
+        payload = b'\0' + '合成数据'.encode('utf8') + b'x' * 131073
+        with tempfile.TemporaryDirectory(prefix='pcg-request-fixture-') as directory:
+            worker = Path(directory) / 'worker.py'
+            with mock.patch.object(win, 'CreateFile', return_value=106) as create:
+                handle, path = win._request_stdin(worker, payload, win.SA())
+            self.assertEqual(handle, 106); self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(create.call_args.args[1:3], (0x80000000, 1))
+            self.assertEqual(create.call_args.args[4], 3)
+            with mock.patch.object(win, 'CreateFile') as create:
+                with self.assertRaises(FileExistsError): win._request_stdin(worker, b'other', win.SA())
+                create.assert_not_called()
+            self.assertEqual(path.read_bytes(), payload)
+
+    def test_failed_open_and_incomplete_write_remove_only_new_request(self):
+        import pcg_isolation_win as win
+        with tempfile.TemporaryDirectory(prefix='pcg-request-fixture-') as directory:
+            worker = Path(directory) / 'worker.py'
+            with mock.patch.object(win, 'CreateFile', return_value=win.C.c_void_p(-1).value):
+                with self.assertRaises(OSError): win._request_stdin(worker, b'{}', win.SA())
+            self.assertFalse((worker.parent / 'pcg-request.stdin').exists())
+        stream = mock.MagicMock(); stream.__enter__.return_value.write.return_value = 1
+        with mock.patch.object(Path, 'open', return_value=stream), \
+                mock.patch.object(Path, 'unlink') as unlink, mock.patch.object(win, 'CreateFile') as create:
+            with self.assertRaises(OSError): win._request_stdin(Path('trusted/worker.py'), b'{}', win.SA())
+            create.assert_not_called(); unlink.assert_called_once_with(missing_ok=True)
+
+    def test_request_budget_precedes_any_file_or_native_operation(self):
+        import pcg_isolation_win as win
+        with mock.patch.object(Path, 'open') as opened, mock.patch.object(win, 'CreateFile') as create:
+            for payload in ('not-bytes', b'x' * (32 * 1024**2 + 1)):
+                with self.assertRaises(OSError): win._request_stdin(Path('trusted/worker.py'), payload, win.SA())
+            opened.assert_not_called(); create.assert_not_called()
 
 
 if __name__ == '__main__': unittest.main()
