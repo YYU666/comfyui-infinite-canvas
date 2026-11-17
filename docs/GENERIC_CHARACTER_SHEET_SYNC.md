@@ -13,3 +13,7 @@ Native builders, roles, settings, controls, serial plan validation and staged ex
 Optional long-hair six-panel generation is not included: the retained package contains only the four-view stages and no hair stages. Ordinary characters keep four panels. A future third-party node-library recipe for complete front/back long-hair display must be reviewed separately and must not be advertised as a new built-in menu item.
 
 Validation is offline: frontend build; synthetic dual/back role, output-crop and private-field rejection contracts; staged export/import/fallback; serial queue cancellation/restart/inspection and existing outfit/queue regressions. No private reference images or actual inference were used. UI appearance and generated identity/framing quality still require separate acceptance.
+
+## Merge gate
+
+The migrated execution versions 2–5 still carry the local development minimum `>=1.0.6`. Public 1.0.17 only reads version 1. This is a known compatibility blocker: set a truthful minimum/capability gate on both export and import, with tests, once the actual first supporting release is chosen. Do not publish new staged packages or merge this draft with that historical minimum. This feature is not included in the small-fix release. The new frontend contract is explicitly registered in normal Node CI.
