@@ -1,17 +1,7 @@
 import { remapQwenReferences } from './qwen-references.js';
 import { allocateReferenceTag, replaceReferenceTags } from './reference-tags.js';
+import { findFreePosition, nodeLayoutSize, visibleLayoutNodes } from './canvas-layout.js';
 
-const NODE_SIZES = {
-  spriteAtlas: { width: 430, height: 1100 },
-  artDirector: { width: 540, height: 1700 },
-  imageProcess: { width: 370, height: 1000 },
-  media: { width: 310, height: 250 },
-  generator: { width: 440, height: 360 },
-  prompt: { width: 370, height: 430 },
-  note: { width: 300, height: 250 },
-};
-
-const GAP = 70;
 const GRID = 22;
 const TEXT_FIELDS = ['prompt', 'idea', 'optimizedPrompt'];
 
@@ -21,18 +11,13 @@ function cloneData(data = {}) {
 }
 
 function nodeBox(node, position = node.position) {
-  const size = NODE_SIZES[node.type] || NODE_SIZES.media;
+  const size = nodeLayoutSize(node);
   return {
     x: position.x,
     y: position.y,
-    width: node.measured?.width || node.width || size.width,
-    height: node.measured?.height || node.height || size.height,
+    width: size.width,
+    height: size.height,
   };
-}
-
-function overlaps(a, b) {
-  return a.x < b.x + b.width + GAP && a.x + a.width + GAP > b.x
-    && a.y < b.y + b.height + GAP && a.y + a.height + GAP > b.y;
 }
 
 function findGroupPosition(nodes, existingNodes) {
@@ -42,20 +27,16 @@ function findGroupPosition(nodes, existingNodes) {
     x: Math.round((minX + GRID * 2) / GRID) * GRID,
     y: Math.round((minY + GRID * 2) / GRID) * GRID,
   };
-  const occupied = existingNodes.map((node) => nodeBox(node));
-  for (let index = 0; index < 240; index += 1) {
-    const candidate = {
-      x: start.x + Math.floor(index / 12) * 550,
-      y: start.y + (index % 12) * 440,
-    };
-    const offset = { x: candidate.x - minX, y: candidate.y - minY };
-    const boxes = nodes.map((node) => nodeBox(node, {
-      x: node.position.x + offset.x,
-      y: node.position.y + offset.y,
-    }));
-    if (!boxes.some((box) => occupied.some((other) => overlaps(box, other)))) return offset;
-  }
-  return { x: start.x + 11000 - minX, y: start.y - minY };
+  const boxes = visibleLayoutNodes(nodes).map(node => nodeBox(node));
+  if (!boxes.length) return { x: start.x - minX, y: start.y - minY };
+  const candidate = findFreePosition(existingNodes, start, {
+    type: 'group',
+    measured: {
+      width: Math.max(...boxes.map(box => box.x + box.width)) - minX,
+      height: Math.max(...boxes.map(box => box.y + box.height)) - minY,
+    },
+  });
+  return { x: candidate.x - minX, y: candidate.y - minY };
 }
 
 export function copyCanvasSelection(nodes, edges) {
@@ -108,10 +89,18 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
     pastedRefTags.set(node.id, refTag);
     if (previous && previous !== refTag) tagMap.set(previous, refTag);
   }
-  const offset = findGroupPosition(clipboard.nodes, existingNodes);
+  // Pasting clears the completed presentation. Reserve the idle card, which can
+  // be taller than a completed landscape result, before looking for space.
+  const layoutNodes = clipboard.nodes.map(node => node.type === 'generator'
+    ? { ...node, data: { ...node.data, status: 'idle', resultUrl: null } } : node);
+  const offset = findGroupPosition(layoutNodes, existingNodes);
   const nodes = clipboard.nodes.map((source) => {
     const data = remapQwenReferences(cloneData(source.data), idMap);
     if (data.maskSourceId) data.maskSourceId = idMap.get(data.maskSourceId) || data.maskSourceId;
+    if (data.inlineImageOwnerId) {
+      if (idMap.has(data.inlineImageOwnerId)) data.inlineImageOwnerId = idMap.get(data.inlineImageOwnerId);
+      else delete data.inlineImageOwnerId;
+    }
     if (data.title) data.title = `${data.title} · 副本`;
     if (pastedRefTags.has(source.id)) data.refTag = pastedRefTags.get(source.id);
     TEXT_FIELDS.forEach((field) => { if (field in data) data[field] = replaceReferenceTags(replaceMentions(data[field]), tagMap); });
@@ -126,7 +115,7 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
     if (data.sourceArtDirectorId) data.sourceArtDirectorId = idMap.get(data.sourceArtDirectorId) || null;
     if (source.type === 'generator' || source.type === 'imageProcess') {
       Object.assign(data, { status: 'idle', progress: 0, stage: '', runs: [] });
-      ['promptId', 'resultUrl', 'error', 'hasMedia'].forEach((field) => { delete data[field]; });
+      ['promptId', 'resultUrl', 'error', 'hasMedia', 'inlineImageOutputId'].forEach((field) => { delete data[field]; });
     }
     return {
       id: idMap.get(source.id),
