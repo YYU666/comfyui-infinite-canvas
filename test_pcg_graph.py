@@ -82,6 +82,29 @@ class GraphTests(unittest.TestCase):
         self.assertIn('geometry', caught.exception.message)
         self.assertIn('scatter-stage', caught.exception.message)
 
+    def test_plan_cache_snapshot_excludes_history_keeps_exact_dependency_hits(self):
+        from pcg_contracts import canonical
+        plan, _ = plan_graph(self.document, 'b', self.registry)
+        cache = GraphCache(max_bytes=32 * 1024 * 1024)
+        root_key = computation_key(plan['nodes'][0], {})
+        root_value = {'geometry': {'fixture': [1, 2]}}
+        moved_key = computation_key(plan['nodes'][1], {'geometry': root_value['geometry']})
+        cache.put('p', root_key, root_value)
+        cache.put('p', moved_key, {'geometry': {'fixture': [2, 3]}})
+        for i in range(16): cache.put('p', f'unrelated-{i}', {'payload': 'x' * (1024 * 1024)})
+        cache.put('other-project', root_key, {'geometry': {'fixture': ['foreign']}})
+        complete = cache.snapshot('p')
+        selected = cache.snapshot('p', plan=plan)
+        self.assertGreater(len(canonical(complete)), 16 * 1024 * 1024)
+        self.assertLess(len(canonical(selected)), 1024)
+        self.assertEqual(set(selected), {root_key, moved_key})
+        self.assertEqual(dirty_nodes(plan, selected), dirty_nodes(plan, complete))
+        selected[root_key]['geometry']['fixture'].append('mutated')
+        self.assertEqual(cache.get('p', root_key), root_value)
+        changed = copy.deepcopy(plan); changed['nodes'][0]['parameters'] = {'seed': 17}
+        self.assertEqual(cache.snapshot('p', plan=changed), {})
+        self.assertEqual(len(cache.snapshot('p')), len(complete))
+
     def test_strict_schema_defaults_numbers_arrays_objects_enums(self):
         schema = {'type': 'object', 'additionalProperties': False, 'required': [], 'properties': {
             'vector': {'type': 'array', 'items': {'type': 'number', 'minimum': -5, 'maximum': 5}, 'minItems': 3, 'maxItems': 3, 'default': [1, 2, 3]},

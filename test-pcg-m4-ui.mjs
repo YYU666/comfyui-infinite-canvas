@@ -123,7 +123,7 @@ async function done(initial,expected='succeeded') {
   const waited=await call('pcg_demo_wait',{afterSequence:state.eventCursor,timeoutMs:1000});
   state=waited.state;
  }
- assert.equal(state.run.runId,initial.run.runId);assert.equal(state.run.status,expected,JSON.stringify(state.run.error));return state;
+ assert.equal(state.run.runId,initial.run.runId);assert.equal(state.run.status,expected,JSON.stringify({error:state.run.error,currentNodeId:state.run.currentNodeId,stageIndex:state.run.stageIndex,stageCount:state.run.stageCount,currentTask:state.run.currentTask,completedNodeIds:state.run.completedStages.map(stage=>stage.nodeId)}));return state;
 }
 async function displayed(assetId) {
  await page.waitForFunction(asset=>{

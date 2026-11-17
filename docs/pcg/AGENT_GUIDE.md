@@ -138,6 +138,8 @@ const exported=await call('canvas_pcg_export',{...H,format:'glb',port:'geometry'
 
 缓存键含操作/版本、规范参数、显式输入内容及 Field/Selection 绑定，不含项目 revision；按项目/宿主隔离并返回副本。32MiB/256条 LRU；最多256任务、4个任务准入、1个几何执行、64MiB保留最终值、依赖图最多256节点。局部修改只重算其依赖后代；断开的分支不参与目标求值。旧 revision 或同节点新 run 使旧结果 stale，旧 run 不能覆盖新结果。
 
+worker请求只携带当前保存图中、能从已缓存依赖确认精确内容键的缓存闭包；历史分支和旧参数变体留在宿主LRU，不随每个新任务重复复制/传输。祖先缓存已驱逐时，后代键无法预先确认，会保守重算；不猜测旧键或绕过验证。缓存仍为可选优化，任务身份、几何输出、OS隔离、预算和取消合同不变。
+
 ## Windows 隔离和未交付范围
 
 几何协议2仅在可验证的 Windows AppContainer 中运行：每任务唯一 SID、零 capabilities、受保护只读代码/运行时 ACL、独占可写低完整性临时区、仅三条 stdio 句柄、禁止子进程，挂入资源 JobObject 后才恢复执行。JobObject 限制1进程、内存、CPU时间并 kill-on-close；超时/取消/输出超量终止本 job。环境仅系统目录/盘符及本任务 profile/temp，Python `-I -S -B` 且无 site-packages。应用容器仍保留 OS 允许的系统文件访问；不声称系统所有文件都不可读。

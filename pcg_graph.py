@@ -87,8 +87,23 @@ class GraphCache:
         while self.bytes > self.max_bytes or len(self.entries) > self.max_entries:
             _, (_, old_size) = self.entries.popitem(last=False); self.bytes -= old_size
 
-    def snapshot(self, project):
-        return {key: copy.deepcopy(value) for (pid, key), (value, _) in self.entries.items() if pid == project}
+    def snapshot(self, project, plan=None):
+        if plan is None:
+            return {key: copy.deepcopy(value) for (pid, key), (value, _) in self.entries.items() if pid == project}
+        # Only cached dependencies whose exact keys can be established belong in
+        # this request. Old branches and parameter variants stay in the host LRU.
+        values, selected = {}, {}
+        for node in plan['nodes']:
+            if any(ref['nodeId'] not in values for ref in node['inputs'].values()):
+                continue
+            inputs = {name: values[ref['nodeId']][ref['port']] for name, ref in node['inputs'].items()}
+            key = computation_key(node, inputs)
+            entry = self.entries.get((project, key))
+            if entry is not None:
+                value = copy.deepcopy(entry[0])
+                selected[key] = value
+                values[node['nodeId']] = value
+        return selected
 
 
 def dirty_nodes(plan, cache):

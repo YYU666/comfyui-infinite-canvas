@@ -133,7 +133,7 @@ class PCGRuntime:
         if not permit_unavailable:
             require(self._isolation()['available'], 'Required OS isolation is unavailable.', 'ISOLATION_UNAVAILABLE', 409)
         input_hash = content_hash({'identity': {k: v for k, v in identity.items() if k != 'runId'}, 'plan': plan})
-        with self.lock: cache = self.cache.snapshot(identity['projectId'])
+        with self.lock: cache = self.cache.snapshot(identity['projectId'], plan=plan)
         request = {'protocolVersion': 2, 'projectId': identity['projectId'], 'inputHash': input_hash, 'plan': plan, 'cache': cache}
         # Cache reuse is optional; drop the oldest snapshot entries to bound IPC.
         while cache and len(canonical(request)) > 32 * 1024 * 1024: cache.pop(next(iter(cache)))
