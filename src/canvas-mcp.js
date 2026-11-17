@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { isVideoRhythm, normalizeSpeedDocument, normalizeRemapDocument, videoRhythmSummary } from './video-rhythm-document.js';
+import { CHROMA_FIELDS, chromaDocumentFromNode, defaultChromaHandle, defaultChromaSettings, isVideoChroma, normalizePreviewTime, videoChromaSummary } from './video-chroma-document.js';
 import { isVideoEdit, normalizeVideoEditDocument, nextVideoEditPort, videoEditSummary } from './video-edit-document.js';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
@@ -26,6 +27,7 @@ export const NODE_PRESETS = {
   video_asset: ['video', {}],
   video_speed: ['videoSpeed', { title: '恒定速度', speed: 0.5, rhythmAudio: 'preserve' }],
   video_time_remap: ['videoTimeRemap', { title: '时间重映射', remapKeyframes: [{ output: 0, source: 0, interpolation: 'linear' }, { output: 1, source: 1, interpolation: 'linear' }] }],
+  video_chroma_key: ['videoChromaKey', { title: '绿幕扣像合成', ...defaultChromaSettings() }],
   video_edit: ['videoEdit', { title: '视频编辑' }],
   video_download: ['note', { title: '视频链接下载', noteRole: 'videoDownload' }],
   audio_asset: ['audio', {}],
@@ -55,7 +57,7 @@ export const NODE_PRESETS = {
 };
 
 const EDITABLE_SETTINGS = new Set([
-  'speed', 'rhythmAudio', 'remapKeyframes', 'editDocument',
+  ...CHROMA_FIELDS, 'speed', 'rhythmAudio', 'remapKeyframes', 'editDocument',
   'spriteInputPath', 'spriteOptions',
   'packChannels', 'packPreview',
   ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
@@ -186,8 +188,9 @@ export function nodeSummary(node, includeContent = true) {
     position: node.position,
     selected: Boolean(node.selected),
     pinned: Boolean(node.data.pinned),
-    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath || node.data.editResultAssetPath || node.data.rhythmResultAssetPath),
+    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath || node.data.editResultAssetPath || node.data.rhythmResultAssetPath || node.data.chromaResultAssetPath),
     ...(isVideoRhythm(node) ? videoRhythmSummary(node.data, node.type) : {}),
+    ...(isVideoChroma(node) ? videoChromaSummary(node.data) : {}),
     ...(isVideoEdit(node) ? videoEditSummary(node.data) : {}),
     ...(media ? { media } : {}),
   };
@@ -203,7 +206,8 @@ function edgeSummary(edge) {
   };
 }
 
-function defaultTargetHandle(target, source) {
+function defaultTargetHandle(target, source, edges = []) {
+  if (isVideoChroma(target)) return defaultChromaHandle(target, source, edges);
   if (isVideoRhythm(target)) return 'v1';
   if (target.type === 'artDirector') return 'artwork';
   if (isImageProcess(target)) return target.data.mode === 'channelPack' ? 'red' : target.data.mode === 'imageBlend' ? 'base' : 'guide';
@@ -269,8 +273,8 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     if (!result?.ok) throw new Error(result?.error || '解析图输出失败。');
     return { node: nodeSummary(mcpNode(latest, nodeId)), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
   }
-  if (isVideoEdit(initial) || isVideoRhythm(initial)) {
-    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : 'rhythmJobId';
+  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial)) {
+    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : 'chromaJobId';
     const result = await latest.current.actions.generateNode(nodeId);
     if (!result?.ok) throw new Error(result?.error || '视频导出提交失败。');
     if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId };
@@ -310,8 +314,8 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
 
 export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
-  if (isVideoEdit(initial) || isVideoRhythm(initial)) {
-    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : 'rhythmJobId';
+  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial)) {
+    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : 'chromaJobId';
     try {
       return { pending: false, ...await waitForVideoJob(latest, nodeId, jobKey, initial.data[jobKey], timeoutMs, waitImpl) };
     } catch (error) {
@@ -485,9 +489,24 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
             normalizeSpeedDocument({ schemaVersion: 1, speed: settings.speed ?? current.data.speed, audio: settings.rhythmAudio ?? current.data.rhythmAudio });
           }
           if ('remapKeyframes' in settings) { if (current.type !== 'videoTimeRemap') throw new Error('曲线参数仅用于时间重映射节点。'); normalizeRemapDocument({ schemaVersion: 1, keyframes: settings.remapKeyframes }); }
+          if (CHROMA_FIELDS.some(key => key in settings)) { if (!isVideoChroma(current)) throw new Error('绿幕参数仅用于绿幕合成节点。'); chromaDocumentFromNode({ ...current.data, ...settings }); if ('previewTime' in settings) normalizePreviewTime(settings.previewTime); }
           if ('editDocument' in settings && !isVideoEdit(current)) throw new Error('editDocument 仅适用于视频编辑节点。');
           validateModelSettings(settings, current.data.mode ?? '');
           const patch = { ...settings };
+          if (current.type === 'videoChromaKey' && CHROMA_FIELDS.some((key) => key in settings)) {
+            const merged = chromaDocumentFromNode({ ...current.data, ...settings });
+            const exported = {
+              keyColor: merged.keyColor, similarity: merged.similarity, blend: merged.blend, despill: merged.despill,
+              choke: merged.choke, feather: merged.feather,
+              secondKey: merged.secondKey, secondKeyColor: merged.secondKeyColor, secondSimilarity: merged.secondSimilarity, secondBlend: merged.secondBlend,
+              scale: merged.scale, offsetX: merged.offsetX, offsetY: merged.offsetY,
+              anchor: merged.anchor, backgroundFit: merged.backgroundFit, outputSize: merged.outputSize,
+              chromaAudio: merged.audio, startOffset: merged.startOffset,
+            };
+            for (const [key, value] of Object.entries(exported)) if (key in settings) patch[key] = value;
+            if ('previewTime' in settings) patch.previewTime = normalizePreviewTime(settings.previewTime);
+          }
+
           if ('editDocument' in settings) patch.editDocument = normalizeVideoEditDocument(settings.editDocument);
           if ('workflowParameters' in settings) patch.workflowParameters = validateWorkflowParameters(current.data, settings.workflowParameters);
           if (title !== undefined) patch.title = title;
@@ -512,7 +531,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         execute: respond(async ({ sourceId, targetId, targetHandle }) => {
           const source = getNode(sourceId);
           const target = getNode(targetId);
-          const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || (isVideoEdit(target) ? nextVideoEditPort(target, source, latest.current.edgesRef.current) : defaultTargetHandle(target, source));
+          const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || (isVideoEdit(target) ? nextVideoEditPort(target, source, latest.current.edgesRef.current) : defaultTargetHandle(target, source, latest.current.edgesRef.current));
           const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
           if (connected?.error) throw new Error(connected.error);
           const edge = await waitFor(() => {
