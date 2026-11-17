@@ -132,7 +132,7 @@ class DownloadTests(unittest.TestCase):
         (self.root / "ComfyUI").mkdir()
         (self.root / "ComfyUI" / "main.py").touch()
         self.data = b"verified-model-bytes"
-        self.source = {"path": "loras/fixture.safetensors", "url": "https://huggingface.co/test/model", "bytes": len(self.data), "sha256": hashlib.sha256(self.data).hexdigest()}
+        self.source = {"path": "loras/fixture.safetensors", "repository": "test/model", "revision": "a" * 40, "filename": "fixture.safetensors", "url": "https://huggingface.co/test/model/resolve/" + "a" * 40 + "/fixture.safetensors", "bytes": len(self.data), "sha256": hashlib.sha256(self.data).hexdigest()}
         self.manager = ModelDownloads(self.root, sources={self.source["path"]: self.source}, opener=lambda *a, **k: io.BytesIO(self.data))
         self.report = {"models": [{"id": "1:lora_name", "download": self.source}]}
 
@@ -170,10 +170,30 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(first["jobId"], second["jobId"])
         self.assertEqual(len(self.manager.jobs), 1)
 
+    def test_unpinned_or_missing_hash_is_rejected_before_network(self):
+        for changes in ({'revision': 'main'}, {'sha256': ''}, {'url': 'https://example.com/model'}):
+            with self.subTest(changes=changes):
+                self.manager.sources = {self.source['path']: {**self.source, **changes}}
+                with patch.object(self.manager, 'opener') as opener, self.assertRaises(ExtensionError):
+                    self.manager.start(self.report, ['1:lora_name'])
+                opener.assert_not_called()
+
+    def test_external_model_root_and_content_receipt(self):
+        external = self.root / 'external-models'
+        external.mkdir()
+        self.manager = ModelDownloads(self.root, sources={self.source['path']: self.source}, model_root=external, opener=lambda *a, **k: io.BytesIO(self.data))
+        job = self.run_synchronously()
+        self.assertEqual(job['status'], 'completed')
+        self.assertEqual((external / self.source['path']).read_bytes(), self.data)
+        self.assertFalse((self.root / 'ComfyUI/models').exists())
+        self.assertEqual(job['files'], [{key: self.source[key] for key in ('path', 'sha256', 'repository', 'revision', 'bytes')} | {'verification': 'sha256'}])
+
     def test_target_path_escape_rejected(self):
         self.source["path"] = "../escape.safetensors"
         self.manager.sources = {self.source["path"]: self.source}
-        self.assertEqual(self.run_synchronously()["status"], "failed")
+        with patch.object(self.manager, 'opener') as opener, self.assertRaises(ExtensionError):
+            self.run_synchronously()
+        opener.assert_not_called()
         self.assertFalse((self.root / "ComfyUI/escape.safetensors").exists())
 
     def test_target_reparse_or_symlink_rejected(self):

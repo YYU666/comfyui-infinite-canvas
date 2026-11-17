@@ -24,36 +24,11 @@ MODEL_FIELDS = {
     "clip_name": "text_encoders", "clip_name1": "text_encoders", "clip_name2": "text_encoders", "clip_name3": "text_encoders",
     "control_net_name": "controlnet", "upscale_model": "upscale_models",
 }
-OFFICIAL_EXTRAS = {
-    "checkpoints/sam3.1_multiplex_fp16.safetensors": "Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors",
-    "diffusion_models/seedvr2_3b_int8_convrot.safetensors": "Comfy-Org/SeedVR2/resolve/main/diffusion_models/seedvr2_3b_int8_convrot.safetensors",
-    "latent_upscale_models/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors": "LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors",
-    "loras/Krea2-四视图QuadView_krea2_v1.safetensors": "Alissonerdx/CharacterSheet/resolve/main/QuadView_krea2_v1.safetensors",
-    "loras/krea2_identity_edit_v2.safetensors": "conradlocke/krea2-identity-edit/resolve/main/krea2_identity_edit_v2.safetensors",
-}
+from model_sources import locked_sources, validate_source
 
 
 def canonical_sources():
-    root = Path(__file__).resolve().parent / "models"
-    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    licenses = {row["path"]: row for row in json.loads((root / "licenses.json").read_text(encoding="utf-8"))["files"]}
-    core = set(manifest["profiles"]["core-h3"]["files"])
-    sources = {}
-    for row in manifest["files"]:
-        path = row["path"]
-        remote = "Comfy-Org/MiniMax-H3/resolve/main/" + path if path in core else OFFICIAL_EXTRAS.get(path)
-        if remote:
-            license_row = licenses.get(path, {})
-            sources[path] = {**row, "url": "https://huggingface.co/" + urllib.parse.quote(remote, safe="/"),
-                             "license": license_row.get("license", "未知"), "licenseUrl": license_row.get("licenseUrl", ""),
-                             "verification": "sha256" if row.get("sha256") else "size-only"}
-    image_sources = json.loads((root / "h3-image-sources.json").read_text(encoding="utf-8"))
-    for row in image_sources["files"]:
-        remote = f'{image_sources["repository"]}/resolve/{image_sources["revision"]}/{row["path"]}'
-        sources[row["path"]] = {**row, "url": "https://huggingface.co/" + urllib.parse.quote(remote, safe="/"),
-                                "license": image_sources["license"], "licenseUrl": image_sources["licenseUrl"],
-                                "verification": "sha256"}
-    return sources
+    return locked_sources()
 
 
 def _safe_model_name(value):
@@ -187,8 +162,9 @@ def catalog_import(store, payload, opener=None):
 
 class ModelDownloads:
     """One bounded, explicit download job at a time; never accepts caller URLs/paths."""
-    def __init__(self, comfy_root, sources=None, opener=None):
-        self.root = Path(comfy_root) / "ComfyUI" / "models" if comfy_root else None
+    def __init__(self, comfy_root, sources=None, opener=None, model_root=None):
+        self.comfy = Path(comfy_root) / "ComfyUI" if comfy_root else None
+        self.root = Path(model_root).resolve(strict=True) if model_root else self.comfy / "models" if self.comfy else None
         self.sources = canonical_sources() if sources is None else sources
         self.opener = opener or urllib.request.build_opener(_ModelRedirect()).open
         self.jobs = {}
@@ -202,7 +178,7 @@ class ModelDownloads:
             return copy.deepcopy(job)
 
     def start(self, report, model_ids):
-        require(self.root is not None and (self.root.parent / "main.py").is_file(), "ComfyUI 模型目录未配置。", "MODEL_ROOT_UNAVAILABLE")
+        require(self.root is not None and self.comfy is not None and (self.comfy / "main.py").is_file(), "ComfyUI 模型目录未配置。", "MODEL_ROOT_UNAVAILABLE")
         require(isinstance(model_ids, list) and model_ids and len(model_ids) <= 100 and all(isinstance(v, str) for v in model_ids), "请选择要补齐的模型。")
         selected = {row["id"]: row for row in report["models"]}
         require(len(set(model_ids)) == len(model_ids) and set(model_ids) <= set(selected), "包含未知或重复模型。")
@@ -212,6 +188,10 @@ class ModelDownloads:
             source = row.get("download")
             require(source is not None and source.get("path") in self.sources, "所选模型没有已核实的官方下载来源。", "MODEL_SOURCE_UNKNOWN")
             trusted = self.sources[source["path"]]
+            try:
+                trusted = validate_source(trusted)
+            except ValueError as exc:
+                raise ExtensionError(str(exc), "MODEL_SOURCE_UNPINNED") from exc
             sources[trusted["path"]] = trusted
         fingerprint = hashlib.sha256(json.dumps(sorted(sources)).encode()).hexdigest()
         with self.lock:
@@ -239,6 +219,10 @@ class ModelDownloads:
         try:
             self._update(job_id, status="running")
             for index, source in enumerate(sources):
+                try:
+                    source = validate_source(source)
+                except ValueError as exc:
+                    raise ExtensionError(str(exc), "MODEL_SOURCE_UNPINNED") from exc
                 path = source["path"]
                 require(_safe_model_name(path) and "/" in path, "模型目标路径无效。", "MODEL_PATH_UNSAFE")
                 target = self.root / path
@@ -263,14 +247,14 @@ class ModelDownloads:
                         stream.flush()
                         os.fsync(stream.fileno())
                     require(count == source["bytes"], "模型大小与清单不一致。", "MODEL_SIZE_MISMATCH")
-                    require(not source.get("sha256") or hasher.hexdigest() == source["sha256"], "模型 SHA256 校验失败。", "MODEL_HASH_MISMATCH")
+                    require(hasher.hexdigest() == source["sha256"], "模型 SHA256 校验失败。", "MODEL_HASH_MISMATCH")
                     ExtensionStore._regular_path(target)
                     os.link(temp, target)
                 finally:
                     temp.unlink(missing_ok=True)
                 downloaded += count
                 with self.lock:
-                    self.jobs[job_id]["files"].append({"path": path, "verification": "sha256" if source.get("sha256") else "size-only"})
+                    self.jobs[job_id]["files"].append({"path": path, "verification": "sha256", "sha256": hasher.hexdigest(), "repository": source["repository"], "revision": source["revision"], "bytes": count})
                 self._update(job_id, completed=index + 1, downloadedBytes=downloaded)
             self._update(job_id, status="completed", currentModel="")
         except Exception as exc:
