@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { isVideoRhythm, normalizeSpeedDocument, normalizeRemapDocument, videoRhythmSummary } from './video-rhythm-document.js';
 import { CHROMA_FIELDS, chromaDocumentFromNode, defaultChromaHandle, defaultChromaSettings, isVideoChroma, normalizePreviewTime, videoChromaSummary } from './video-chroma-document.js';
 import { REPAIR_FIELDS, defaultRepairSettings, isVideoRepair, normalizeRepairDocument, normalizeRepairPreviewTime, videoRepairSummary } from './video-repair-document.js';
+import { PLATE_FIELDS, PLATE_PORT, defaultPlateSettings, isVideoPlate, plateDocumentFromNode, videoPlateSummary } from './video-plate-document.js';
 import { isVideoEdit, normalizeVideoEditDocument, nextVideoEditPort, videoEditSummary } from './video-edit-document.js';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
@@ -30,6 +31,7 @@ export const NODE_PRESETS = {
   video_time_remap: ['videoTimeRemap', { title: '时间重映射', remapKeyframes: [{ output: 0, source: 0, interpolation: 'linear' }, { output: 1, source: 1, interpolation: 'linear' }] }],
   video_chroma_key: ['videoChromaKey', { title: '绿幕扣像合成', ...defaultChromaSettings() }],
   video_local_repair: ['videoLocalRepair', { title: '局部水印修补', ...defaultRepairSettings() }],
+  video_white_plate: ['videoWhitePlate', { title: '绿幕白模', ...defaultPlateSettings() }],
   video_edit: ['videoEdit', { title: '视频编辑' }],
   video_download: ['note', { title: '视频链接下载', noteRole: 'videoDownload' }],
   audio_asset: ['audio', {}],
@@ -59,7 +61,7 @@ export const NODE_PRESETS = {
 };
 
 const EDITABLE_SETTINGS = new Set([
-  ...REPAIR_FIELDS, ...CHROMA_FIELDS, 'speed', 'rhythmAudio', 'remapKeyframes', 'editDocument',
+  ...PLATE_FIELDS, ...REPAIR_FIELDS, ...CHROMA_FIELDS, 'speed', 'rhythmAudio', 'remapKeyframes', 'editDocument',
   'spriteInputPath', 'spriteOptions',
   'packChannels', 'packPreview',
   ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
@@ -190,10 +192,11 @@ export function nodeSummary(node, includeContent = true, graph = {}) {
     position: node.position,
     selected: Boolean(node.selected),
     pinned: Boolean(node.data.pinned),
-    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath || node.data.editResultAssetPath || node.data.rhythmResultAssetPath || node.data.chromaResultAssetPath || node.data.repairResultAssetPath),
+    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath || node.data.editResultAssetPath || node.data.rhythmResultAssetPath || node.data.chromaResultAssetPath || node.data.repairResultAssetPath || node.data.plateResultAssetPath),
     ...(isVideoRhythm(node) ? videoRhythmSummary(node.data, node.type) : {}),
     ...(isVideoChroma(node) ? videoChromaSummary(node.data) : {}),
     ...(isVideoRepair(node) ? videoRepairSummary(node.data, { ...graph, nodeId: node.id }) : {}),
+    ...(isVideoPlate(node) ? videoPlateSummary(node.data) : {}),
     ...(isVideoEdit(node) ? videoEditSummary(node.data) : {}),
     ...(media ? { media } : {}),
   };
@@ -212,6 +215,7 @@ function edgeSummary(edge) {
 function defaultTargetHandle(target, source, edges = []) {
   if (isVideoChroma(target)) return defaultChromaHandle(target, source, edges);
   if (isVideoRepair(target)) return 'video';
+  if (isVideoPlate(target)) return PLATE_PORT;
   if (isVideoRhythm(target)) return 'v1';
   if (target.type === 'artDirector') return 'artwork';
   if (isImageProcess(target)) return target.data.mode === 'channelPack' ? 'red' : target.data.mode === 'imageBlend' ? 'base' : 'guide';
@@ -221,7 +225,7 @@ function defaultTargetHandle(target, source, edges = []) {
   const mode = target?.data.mode || 'reference';
   if (['reference', 'qwenEdit'].includes(mode)) return 'references';
   if (mode === 'frames') return source?.data.slot === 'last' ? 'last' : 'first';
-  if (['swap', 'upscale'].includes(mode)) return source?.data.kind === 'video' ? 'guide' : 'identity';
+  if (['swap', 'upscale'].includes(mode)) return source?.data.kind === 'video' || isVideoPlate(source) ? 'guide' : 'identity';
   if (['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode)) return 'guide';
   throw new Error('这个生成模式不接受素材连线。');
 }
@@ -277,8 +281,8 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     if (!result?.ok) throw new Error(result?.error || '解析图输出失败。');
     return { node: nodeSummary(mcpNode(latest, nodeId)), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
   }
-  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial)) {
-    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : 'repairJobId';
+  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial) || isVideoPlate(initial)) {
+    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : isVideoRepair(initial) ? 'repairJobId' : 'plateJobId';
     const result = await latest.current.actions.generateNode(nodeId);
     if (!result?.ok) throw new Error(result?.error || '视频导出提交失败。');
     if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId };
@@ -318,8 +322,8 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
 
 export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
-  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial)) {
-    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : 'repairJobId';
+  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial) || isVideoPlate(initial)) {
+    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : isVideoRepair(initial) ? 'repairJobId' : 'plateJobId';
     try {
       return { pending: false, ...await waitForVideoJob(latest, nodeId, jobKey, initial.data[jobKey], timeoutMs, waitImpl) };
     } catch (error) {
@@ -497,6 +501,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           if ('editDocument' in settings && !isVideoEdit(current)) throw new Error('editDocument 仅适用于视频编辑节点。');
           validateModelSettings(settings, current.data.mode ?? '');
           const patch = { ...settings };
+          if (PLATE_FIELDS.some(key => key in settings)) { if (!isVideoPlate(current)) throw new Error('绿幕白模参数仅用于白模节点。'); const normalized = plateDocumentFromNode({ ...current.data, ...settings }); for (const key of PLATE_FIELDS) if (key in settings) patch[key] = normalized[key]; }
           if ('repairSettings' in settings && !isVideoRepair(current)) throw new Error('repairSettings 仅用于局部修补。');
           if (isVideoRepair(current)) { if ('repairSettings' in settings) patch.repairSettings = normalizeRepairDocument(settings.repairSettings); if ('previewTime' in settings) patch.previewTime = normalizeRepairPreviewTime(settings.previewTime); }
           if (current.type === 'videoChromaKey' && CHROMA_FIELDS.some((key) => key in settings)) {
