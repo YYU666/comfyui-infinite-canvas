@@ -1,6 +1,7 @@
 // Shared connection helpers for the independently shipped video processors.
 export const isVideoEditNode = node => node?.type === 'videoEdit';
-export const isVideoProcessor = isVideoEditNode;
+export const isVideoRhythmNode = node => ['videoSpeed', 'videoTimeRemap'].includes(node?.type);
+export const isVideoProcessor = node => isVideoEditNode(node) || isVideoRhythmNode(node);
 
 export function videoStreamKind(source) {
   if (isVideoProcessor(source)) return 'video';
@@ -8,6 +9,7 @@ export function videoStreamKind(source) {
 }
 
 export function videoStreamAsset(source, cache = {}) {
+  if (isVideoRhythmNode(source)) return source.data?.rhythmResultAssetPath ? { assetPath: source.data.rhythmResultAssetPath } : { needsExport: source.data?.title || '视频节奏' };
   if (isVideoEditNode(source)) return source.data?.editResultAssetPath
     ? { assetPath: source.data.editResultAssetPath }
     : { needsExport: source.data?.title || '视频编辑' };
