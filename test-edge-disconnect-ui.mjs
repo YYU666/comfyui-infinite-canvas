@@ -11,8 +11,8 @@ const failures = [], queued = [];
 const makeProject = (readOnly = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen references fixture', revision: 1, readOnly, shots: [], canvas: {
   viewport: { x: 20, y: 30, zoom: 0.9 },
   nodes: [
-    ...['地编截图', '场景氛围', '手绘笔触'].map((title, i) => ({ id: `image${i + 1}`, type: 'media', position: { x: 20, y: 10 + i * 240 }, data: { kind: 'image', title, remoteName: `${i + 1}.png`, url: `${origin}/fixture-${i + 1}.svg` } })),
-    { id: 'qwen', type: 'generator', selected: true, position: { x: 420, y: 40 }, data: { mode: 'qwenEdit', title: '保留的概念设计标题', prompt: '保留图1的路线，使用图2的场景氛围。', qwenSteps: 40, seed: 42, randomSeed: false, status: 'idle' } },
+    ...['地编截图', '场景氛围', '手绘笔触'].map((title, i) => ({ id: `image${i + 1}`, type: 'media', position: { x: 20 + i * 510, y: 800 }, data: { kind: 'image', title, remoteName: `${i + 1}.png`, url: `${origin}/fixture-${i + 1}.svg` } })),
+    { id: 'qwen', type: 'generator', selected: true, position: { x: 600, y: 40 }, data: { mode: 'qwenEdit', title: '保留的概念设计标题', prompt: '保留图1的路线，使用图2的场景氛围。', qwenSteps: 40, seed: 42, randomSeed: false, status: 'idle' } },
     { id: 'prompt', type: 'prompt', position: { x: -900, y: 0 }, data: { title: 'Prompt fixture', idea: '保留地形' } },
   ], edges: [
     { id: 'old-style', source: 'image2', target: 'qwen', sourceHandle: 'ref', targetHandle: 'identity' },
@@ -21,7 +21,7 @@ const makeProject = (readOnly = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen
 } });
 async function fixture(readOnly = false) {
   let project = makeProject(readOnly);
-  const context = await browser.newContext({ viewport: { width: 1360, height: 1040 } });
+  const context = await browser.newContext({ viewport: { width: 1800, height: 1500 } });
   await context.addInitScript(() => {
     window.fixtureTools = new Map();
     Object.defineProperty(document, 'modelContext', { value: { registerTool(tool, options) { window.fixtureTools.set(tool.name, tool); options?.signal?.addEventListener('abort', () => window.fixtureTools.delete(tool.name)); } } });
@@ -66,6 +66,8 @@ async function edgePoint(page, id) {
 }
 try {
  const { page, context, call } = await fixture();
+ // Deselect the generator so its floating settings do not cover the wire.
+ await page.mouse.click(1700,1400);
  const edge = page.locator('.react-flow__edge[data-id="old-guide"]');
  const button = page.locator('button.canvas-edge-disconnect[data-edge-id="old-guide"]');
  let point = await edgePoint(page, 'old-guide');
@@ -91,6 +93,7 @@ try {
  const activeId = state.edges.find((e) => e.source === 'image1' && e.target === 'qwen').id;
  await call('canvas_focus_node', { nodeId: 'qwen' });
  await page.waitForTimeout(400);
+ await page.mouse.click(1700,1400);
  const active = page.locator(`.react-flow__edge[data-id="${activeId}"]`);
  point = await edgePoint(page, activeId);
  await page.mouse.move(point.x, point.y);
@@ -101,6 +104,7 @@ try {
  assert.equal((await call('canvas_get_state')).edges.some((e) => e.id === activeId), true, 'busy reference cannot be Alt-deleted');
  await context.close();
  const ro = await fixture(true);
+ await ro.page.mouse.click(1700,1400);
  point = await edgePoint(ro.page, 'old-guide'); await ro.page.mouse.move(point.x, point.y);
  assert.equal(await ro.page.locator('.canvas-edge-disconnect').count(), 0);
  await ro.page.keyboard.down('Alt'); await ro.page.mouse.click(point.x, point.y); await ro.page.keyboard.up('Alt');

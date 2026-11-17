@@ -121,6 +121,14 @@
       "deployedSourceSha256": null,
       "normalizedEqual": false,
       "reason": "Adapt isolated fixture geometry for 440x550 media cards; original 240-unit spacing overlapped cards and the selected-node toolbar. Keep real pointer hit-testing and all assertions, without forced clicks."
+    },
+    {
+      "path": "test-edge-disconnect-ui.mjs",
+      "gitNormalizedSha256": "1861812407f69a766ceb51dfdb38710598576604cf8ee8d392ddeb82cb35fc60",
+      "worktreeSha256": "1861812407f69a766ceb51dfdb38710598576604cf8ee8d392ddeb82cb35fc60",
+      "deployedSourceSha256": null,
+      "normalizedEqual": false,
+      "reason": "Adapt isolated fixture geometry and deselect settings toolbar for 440x550 media cards; preserve pointer, hover, Alt, undo, save, busy and read-only assertions."
     }
   ]
 }
