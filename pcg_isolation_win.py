@@ -99,6 +99,9 @@ def profile(name):
     try:
         check(SidString(sid, C.byref(value)), 'ConvertSidToStringSid')
         return sid, C.wstring_at(value)
+    except BaseException:
+        if sid: FreeSid(sid)
+        raise
     finally:
         if value: LocalFree(value)
 
@@ -108,6 +111,7 @@ def launch(executable, worker, directory, sid, payload, environment, timeout, me
     handles = []
     job = None
     attrs = None
+    attrs_initialized = False
     pi = PI()
     assigned = False
     alive = threading.Event()
@@ -126,6 +130,7 @@ def launch(executable, worker, directory, sid, payload, environment, timeout, me
         InitAttrs(None, 3, 0, C.byref(size))
         attrs = C.create_string_buffer(size.value)
         check(InitAttrs(attrs, 3, 0, C.byref(size)), 'InitializeProcThreadAttributeList')
+        attrs_initialized = True
         caps = CAPS(sid, None, 0, 0)
         child_policy = W.DWORD(1)  # PROCESS_CREATION_CHILD_PROCESS_RESTRICTED
         for key, value in ((0x20009, caps), (0x20002, child_handles), (0x2000e, child_policy)):
@@ -197,4 +202,4 @@ def launch(executable, worker, directory, sid, payload, environment, timeout, me
         for handle in handles: Close(handle)
         if pi.thread: Close(pi.thread)
         if pi.process: Close(pi.process)
-        if attrs: DeleteAttrs(attrs)
+        if attrs_initialized: DeleteAttrs(attrs)

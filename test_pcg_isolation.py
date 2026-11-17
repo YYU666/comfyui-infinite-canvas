@@ -8,6 +8,8 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import ExitStack
+from unittest import mock
 
 import pcg_isolation as isolation
 
@@ -131,6 +133,52 @@ class FailClosedTests(unittest.TestCase):
         with self.assertRaises(isolation.IsolationError) as caught:
             isolation.execute('not bytes')
         self.assertEqual(caught.exception.code,'BUDGET_EXCEEDED')
+
+
+@unittest.skipUnless(os.name == 'nt', 'Native Windows cleanup contract only.')
+class NativeLifetimeTests(unittest.TestCase):
+    def test_profile_conversion_failure_releases_created_sid(self):
+        import pcg_isolation_win as win
+        def create(*args):
+            args[-1]._obj.value = 0x1000
+            return 0
+        with mock.patch.object(win, 'CreateProfile', side_effect=create), \
+                mock.patch.object(win, 'SidString', return_value=False), \
+                mock.patch.object(win, 'FreeSid') as free, \
+                mock.patch.object(win, 'LocalFree') as local:
+            with self.assertRaises(OSError): win.profile('synthetic')
+            self.assertEqual(free.call_count, 1)
+            self.assertEqual(free.call_args.args[0].value, 0x1000)
+            local.assert_not_called()
+
+    def _attribute_failure(self, initialize):
+        import pcg_isolation_win as win
+        def init(buffer, count, flags, size):
+            size._obj.value = 128
+            return bool(buffer is not None and initialize)
+        def pipe(read, write, *_):
+            read._obj.value = next(handles)
+            write._obj.value = next(handles)
+            return True
+        handles = iter(range(100, 106))
+        with ExitStack() as stack:
+            for name, replacement in [('CreatePipe', pipe), ('SetHandle', lambda *_: True),
+                                      ('InitAttrs', init), ('UpdateAttr', lambda *_: False),
+                                      ('Close', lambda *_: True)]:
+                stack.enter_context(mock.patch.object(win, name, side_effect=replacement))
+            delete = stack.enter_context(mock.patch.object(win, 'DeleteAttrs'))
+            create = stack.enter_context(mock.patch.object(win, 'CreateProcess'))
+            with self.assertRaises(OSError):
+                win.launch(Path('pythonw.exe'), Path('worker.py'), Path('.'), win.P(1),
+                           b'', {}, 1, 64 * 1024**2, 1024, None)
+            create.assert_not_called()
+            return delete.call_count
+
+    def test_failed_attribute_initialization_never_destroys_uninitialized_storage(self):
+        self.assertEqual(self._attribute_failure(False), 0)
+
+    def test_initialized_attributes_destroyed_once_on_later_failure(self):
+        self.assertEqual(self._attribute_failure(True), 1)
 
 
 if __name__ == '__main__': unittest.main()

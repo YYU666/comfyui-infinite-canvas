@@ -54,3 +54,7 @@ CI捕获了布局整理推进项目revision后，面板仍取旧handle导致GLB 
 最终完整画布证据`canvas-57936-1794942408211.json`：ok=true，93条页桥命令全部done，12checks，8张本机截图。真实布局保存revision22→23、generation35→36，displayed handle revision23；逐步形状→组合→散布及原有恢复/隔离检查全部保留。临时URL http://127.0.0.1:4179/ 已回收，不代表持续在线演示。关闭时buffer5/5、VAO1/1、10776bytes全部释放，live均0；外网请求和页面异常均0。
 
 本次前端与测试更新后Node全套65文件通过、构建通过，控制器10/10；Python沿用未变源码对应的121项OK/2跳过。最新修复提交的CI需单独核验，旧cb7889e的PR重跑绿不能替代当前提交结果，push失败保留。性能仍FAILED（实例p95=4067.87ms/目标300ms；同拓扑p95=2213.57ms/目标1000ms）；不宣称完整M4通过，不进入M5。
+
+## 原生失败路径补丁复验
+
+PR/push CI在59f3fad均失败：前者测试宿主0xC0000005后断网，后者icacls10秒超时并fail-closed。独立审查发现两项可复现清理缺口，现仅成功初始化的属性列表才析构，SID字符串转换失败释放已创建SID，三项全mock故障注入通过。源码复审accept；完整PCG Python124项OK/2跳过，实际AppContainer零能力/私有读写/网络/子进程拒绝及取消预算门保留。40轮Python3.12原生会话探针通过；同版本Python3.12加PYTHONMALLOC=debug的完整M4用例m4-90756-1794943722611.json为integrationOk=true、performanceOk=false、overall ok=false，退出0仅因默认CI功能模式，不能算性能通过。实例p95=4732.90ms、网格p95=2078.01ms，调试分配器下不与旧样本比较优化幅度。最新修复提交CI另行核对；不宣称已定位/修复原生访问异常根因。IPC线程限时join后的清理风险仍单列，未借本补丁改变隔离语义。
