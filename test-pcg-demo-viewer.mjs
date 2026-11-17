@@ -136,6 +136,20 @@ test('turntable advances actual draws, pauses and stops animation when hidden',a
   viewer.setRotating(false);const paused=viewer.getState();assert.equal(f.callbacks.size,0);f.frame(2000);assert.equal(viewer.getState().yaw,paused.yaw);
   viewer.dispose();
 });
+
+test('turntable bounds redundant draws while a new model is drawn immediately',async()=>{
+  const f=surface();let notifications=0;const viewer=createViewer(f.canvas,{onFrame:()=>notifications++});
+  await viewer.load(fixtures.box,{assetId:'box'});assert.equal(viewer.getState().sceneFrameCount,1);
+  f.frame(0);const before=viewer.getState().frameCount,beforeNotifications=notifications;
+  f.frame(16);f.frame(33);assert.equal(viewer.getState().frameCount,before);assert.equal(notifications,beforeNotifications);
+  f.frame(50);f.frame(66);f.frame(100);assert.equal(viewer.getState().frameCount,before+2);
+  assert.ok(Math.abs(viewer.getState().yaw-.035)<1e-10);
+  f.frame(116);const previous=viewer.getState().frameCount;
+  await viewer.load(fixtures.rock,{assetId:'rock'});
+  assert.equal(viewer.getState().frameCount,previous+1);assert.equal(viewer.getState().sceneFrameCount,1);
+  assert.equal(viewer.getState().loadedIdentity.assetId,'rock');assert.equal(viewer.getState().cameraFramed,true);
+  viewer.dispose();assert.equal(f.callbacks.size,0);
+});
 test('hidden upload reports unframed until actual draw, context loss and dispose invalidate loads',async()=>{
   const f=surface(),viewer=createViewer(f.canvas);f.doc.hidden=true;f.doc.fire('visibilitychange');
   await viewer.load(fixtures.points,{assetId:'points'});assert.equal(viewer.getState().cameraFramed,false);assert.equal(f.callbacks.size,0);

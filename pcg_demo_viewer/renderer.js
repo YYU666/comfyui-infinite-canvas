@@ -197,9 +197,14 @@ export function createViewer(canvas,{onFrame}={}) {
   function schedule(){if(raf===null && scene && visible() && state.rotating)raf=request(tick);}
   function tick(time) {
     raf=null;if(!visible()||!scene)return;
-    if(lastTime!==null)state.yaw=(state.yaw+Math.min(.1,Math.max(0,(time-lastTime)/1000))*.35)%(Math.PI*2);
-    lastTime=time;
-    try{draw();notify();schedule();}catch(error){state.error=errorValue(error);state.status='error';stop();notify();}
+    try{
+      // Bound turntable work; model/resize refreshes still draw immediately.
+      if(lastTime===null||time-lastTime>=50){
+        if(lastTime!==null)state.yaw=(state.yaw+Math.min(.1,Math.max(0,(time-lastTime)/1000))*.35)%(Math.PI*2);
+        lastTime=time;draw();notify();
+      }
+      schedule();
+    }catch(error){state.error=errorValue(error);state.status='error';stop();notify();}
   }
   function refresh(){if(!visible())return;try{draw();notify();schedule();}catch(error){state.error=errorValue(error);state.status='error';stop();notify();}}
   function visibility(){state.visible=!doc?.hidden;stop();if(!state.visible){if(scene)state.status='hidden';notify();}else refresh();}

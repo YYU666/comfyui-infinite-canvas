@@ -47,6 +47,109 @@ class SessionTests(unittest.TestCase):
             time.sleep(.01)
         self.fail('Session did not reach a terminal state.')
 
+    def registered_asset(self):
+        samples = self.root / 'samples'; samples.mkdir()
+        fixture_evidence(samples); self.session._import_samples(samples)
+        return self.session.snapshot()['desired']['assetId']
+
+    def blocked_preview(self, asset_id, patch_target, action, expected_code=None, base_id=None):
+        entered, release, control_done = threading.Event(), threading.Event(), threading.Event()
+        errors, results = [], []
+        import pcg_demo_session
+        import pcg_preview_stream
+        original = (pcg_demo_session._safe_read if patch_target.endswith('_safe_read')
+                    else pcg_preview_stream.build_preview)
+        def slow(*args, **kwargs):
+            entered.set()
+            if not release.wait(5): raise AssertionError('Control did not release test work')
+            return original(*args, **kwargs)
+        def preview():
+            try: results.append(self.session.preview(asset_id, base_id or asset_id))
+            except BaseException as error: errors.append(error)
+        def control():
+            try: action()
+            except BaseException as error: errors.append(error)
+            finally: control_done.set()
+        with mock.patch(patch_target, side_effect=slow):
+            worker = threading.Thread(target=preview); worker.start()
+            observer = None
+            try:
+                self.assertTrue(entered.wait(2))
+                observer = threading.Thread(target=control); observer.start()
+                self.assertTrue(control_done.wait(2), 'Preview work held the session control lock')
+            finally:
+                release.set(); worker.join(3)
+                if observer: observer.join(3)
+        self.assertFalse(worker.is_alive())
+        if observer: self.assertFalse(observer.is_alive())
+        if expected_code is None:
+            self.assertEqual(errors, []); self.assertEqual(len(results), 1)
+        else:
+            self.assertEqual(results, []); self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], PCGError); self.assertEqual(errors[0].code, expected_code)
+            self.assertEqual(self.session.preview_descriptors, {})
+            self.assertEqual(self.session.previews, {})
+
+    def test_slow_asset_read_does_not_block_wait_snapshot_or_cancel(self):
+        asset = self.registered_asset()
+        with self.session.lock:
+            self.session.run = {'runId': 'test-run', 'status': 'running', 'currentTask': None}
+        def controls():
+            state = self.session.snapshot()
+            self.session.wait(state['eventCursor'], 0)
+            self.assertEqual(self.session.cancel('test-run')['run']['status'], 'cancelling')
+        self.blocked_preview(asset, 'pcg_demo_session._safe_read', controls)
+
+    def test_slow_preview_build_does_not_block_wait_snapshot_or_cancel(self):
+        asset = self.registered_asset()
+        with self.session.lock:
+            self.session.run = {'runId': 'test-run', 'status': 'running', 'currentTask': None}
+        def controls():
+            state = self.session.snapshot()
+            self.session.wait(state['eventCursor'], 0)
+            self.assertEqual(self.session.cancel('test-run')['run']['status'], 'cancelling')
+        self.blocked_preview(asset, 'pcg_preview_stream.build_preview', controls)
+
+    def test_preview_close_rejects_late_computed_descriptor(self):
+        asset = self.registered_asset()
+        self.blocked_preview(asset, 'pcg_preview_stream.build_preview', self.session.close, 'SESSION_CLOSED')
+
+    def test_asset_close_rejects_late_file_read(self):
+        asset = self.registered_asset()
+        self.blocked_preview(asset, 'pcg_demo_session._safe_read', self.session.close, 'SESSION_CLOSED')
+
+    def test_asset_path_change_rejects_late_file_read(self):
+        asset = self.registered_asset()
+        def change():
+            with self.session.lock:
+                self.session.records[asset] = self.root / 'unapproved.glb'
+        self.blocked_preview(asset, 'pcg_demo_session._safe_read', change, 'ASSET_CHANGED')
+
+    def test_preview_catalog_change_rejects_late_computed_descriptor(self):
+        asset = self.registered_asset()
+        def change():
+            with self.session.lock:
+                self.session.catalog[asset] = {**self.session.catalog[asset], 'sha256': 'f' * 64}
+        self.blocked_preview(asset, 'pcg_preview_stream.build_preview', change, 'ASSET_CHANGED')
+
+    def test_preview_path_change_rejects_late_computed_descriptor(self):
+        asset = self.registered_asset()
+        def change():
+            with self.session.lock:
+                self.session.records[asset] = self.root / 'unapproved.glb'
+        self.blocked_preview(asset, 'pcg_preview_stream.build_preview', change, 'ASSET_CHANGED')
+
+    def test_preview_base_path_change_rejects_late_computed_descriptor(self):
+        asset = self.registered_asset(); body, meta = self.session.read_asset(asset)
+        source = {**copy.deepcopy(meta['sourceIdentity']), 'evidenceRun': 'base-fixture'}
+        base = self.session._register(body, summarize(evaluate('primitive', {}, {})['geometry']), source,
+                                      meta['producerNodeId'], meta['runId'], meta['jobId'], meta['inputHash'], 'base-fixture')['assetId']
+        self.assertNotEqual(base, asset)
+        def change():
+            with self.session.lock:
+                self.session.records[base] = self.root / 'unapproved.glb'
+        self.blocked_preview(asset, 'pcg_preview_stream.build_preview', change, 'ASSET_CHANGED', base_id=base)
+
     def test_real_incremental_geometry_and_field_stages(self):
         self.boundary(); initial = self.session.start(seed=11)
         run_id = initial['run']['runId']; observed_intermediate = False; sequence = []

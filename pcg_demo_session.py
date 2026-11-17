@@ -224,17 +224,27 @@ class DemoSession:
 
     def preview(self, targetAssetId, baseAssetId=None):
         from pcg_preview_stream import build_preview
+        token(targetAssetId)
+        if baseAssetId is not None: token(baseAssetId)
         with self.lock:
-            target, target_meta = self.read_asset(targetAssetId)
-            base, base_meta = self.read_asset(baseAssetId) if baseAssetId is not None else (None, None)
-            pair = (targetAssetId, baseAssetId)
+            target_path = self.records.get(targetAssetId)
+            base_path = self.records.get(baseAssetId) if baseAssetId is not None else None
+        # Catalog records are immutable. Read and validate bytes without holding
+        # the event lock needed by wait/cancel and stage publication.
+        target, target_meta = self.read_asset(targetAssetId)
+        base, base_meta = self.read_asset(baseAssetId) if baseAssetId is not None else (None, None)
+        pair = (targetAssetId, baseAssetId)
+        with self.lock:
+            self._preview_current(targetAssetId, target_meta, target_path, baseAssetId, base_meta, base_path)
             cached = self.preview_descriptors.get(pair)
             if (cached is not None and cached['targetSha256'] == target_meta['sha256'] and
                     cached['targetBytes'] == target_meta['bytes'] and
                     cached['baseSha256'] == (base_meta['sha256'] if base_meta else None)):
                 # File path/link, length and full SHA checks above still run on every read.
                 return copy.deepcopy(cached)
-            descriptor, payload = build_preview(target, target_meta, base, base_meta)
+        descriptor, payload = build_preview(target, target_meta, base, base_meta)
+        with self.lock:
+            self._preview_current(targetAssetId, target_meta, target_path, baseAssetId, base_meta, base_path)
             if payload is not None:
                 key = descriptor['sha256']
                 if key not in self.previews:
@@ -245,6 +255,12 @@ class DemoSession:
                 self.preview_descriptors.pop(next(iter(self.preview_descriptors)))
             self.preview_descriptors[pair] = copy.deepcopy(descriptor)
             return descriptor
+
+    def _preview_current(self, target_id, target_meta, target_path, base_id, base_meta, base_path):
+        require(not self.closed, 'Demo session is closed.', 'SESSION_CLOSED', 409)
+        require(self.catalog.get(target_id) == target_meta and self.records.get(target_id) == target_path and
+                (base_id is None or (self.catalog.get(base_id) == base_meta and self.records.get(base_id) == base_path)),
+                'Preview catalog identity changed.', 'ASSET_CHANGED', 409)
 
     def read_preview(self, preview_id):
         digest(preview_id)
@@ -343,10 +359,15 @@ class DemoSession:
     def read_asset(self, asset_id):
         token(asset_id)
         with self.lock:
+            require(not self.closed, 'Demo session is closed.', 'SESSION_CLOSED', 409)
             require(asset_id in self.catalog, 'Managed demo asset not found.', 'ASSET_NOT_FOUND', 404)
             metadata = copy.deepcopy(self.catalog[asset_id]); target = self.records[asset_id]
-            body = _safe_read(target, MAX_ASSET_BYTES)
-            require(len(body) == metadata['bytes'] and hashlib.sha256(body).hexdigest() == metadata['sha256'], 'Demo asset hash differs.', 'ASSET_HASH_MISMATCH')
+        body = _safe_read(target, MAX_ASSET_BYTES)
+        require(len(body) == metadata['bytes'] and hashlib.sha256(body).hexdigest() == metadata['sha256'], 'Demo asset hash differs.', 'ASSET_HASH_MISMATCH')
+        with self.lock:
+            require(not self.closed, 'Demo session is closed.', 'SESSION_CLOSED', 409)
+            require(self.catalog.get(asset_id) == metadata and self.records.get(asset_id) == target,
+                    'Demo asset catalog changed.', 'ASSET_CHANGED', 409)
             return body, metadata
 
     def start(self, recipe='rock', seed=0, roughness=.2, count=100, minDistance=0):
