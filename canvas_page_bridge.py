@@ -13,7 +13,7 @@ from project_store import StoreError
 TOOLS = frozenset({"canvas_move_nodes", "canvas_retry_save", "canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
                    "canvas_generate_node", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset",
                    "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
-                   "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node"})
+                   "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node", "canvas_image_compact"})
 LAUNCHER_TOOLS = frozenset({"canvas_get_state", "canvas_create_project", "canvas_open_project"})
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}")
 # A page-bridge wait holds the single command slot (heartbeats still run). Cap it
@@ -98,6 +98,13 @@ class CanvasPageBridge:
                 raise StoreError("BAD_REQUEST", "当前页通道只提交生成（wait:false），请用 canvas_get_state 或完成事件查询结果。")
             if tool == "canvas_wait_for_node":
                 args = self._bounded_wait_args(args)
+            if tool == "canvas_image_compact":
+                ids = args.get("nodeIds")
+                if (set(args) - {"nodeIds", "dryRun"} or not isinstance(ids, list) or not 1 <= len(ids) <= 100
+                        or any(not isinstance(node_id, str) or not IDENTIFIER.fullmatch(node_id) for node_id in ids)
+                        or type(args.get("dryRun", True)) is not bool):
+                    raise StoreError("BAD_REQUEST", "Image compact accepts 1–100 safe nodeIds and optional boolean dryRun only.")
+                args = {"nodeIds": list(ids), "dryRun": args.get("dryRun", True)}
             identity = {"sessionId": session_id, "projectId": project_id, "tool": tool, "args": args}
             encoded = json.dumps(identity, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
             if len(encoded) > 32768:
