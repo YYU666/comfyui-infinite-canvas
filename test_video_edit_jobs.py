@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase, mock
+import threading
 
 from project_store import StoreError
 from video_edit_api import VideoEditAPI
@@ -17,6 +18,47 @@ from workbench_update import UpdateError
 
 
 class ExportTests(TestCase):
+    def test_root_replacement_waits_for_inflight_commit(self):
+        with TemporaryDirectory() as temporary:
+            old_store, new_store = mock.Mock(), mock.Mock()
+            old_store.put_asset.return_value = {'asset': {'path': 'assets/synthetic.mp4'}, 'revision': 2}
+            jobs = VideoEditJobs(Path(temporary), old_store)
+            job_id = 'ved_' + 'a' * 32
+            jobs.jobs[job_id] = {'id': job_id, 'projectId': 'prj_same', 'status': 'completed'}
+            opened, release, replaced = threading.Event(), threading.Event(), threading.Event()
+            errors = []
+            def synthetic_open(*_args, **_kwargs):
+                opened.set()
+                if not release.wait(3): raise TimeoutError('synthetic commit stalled')
+                return BytesIO(b'synthetic old-root output')
+            def commit():
+                try: jobs.commit(job_id, {'projectId': 'prj_same', 'revision': 1})
+                except Exception as error: errors.append(error)
+            def replace():
+                jobs.replace_store(new_store)
+                replaced.set()
+            with mock.patch('pathlib.Path.open', side_effect=synthetic_open):
+                writer = threading.Thread(target=commit); writer.start()
+                self.assertTrue(opened.wait(3))
+                switcher = threading.Thread(target=replace); switcher.start()
+                try: self.assertFalse(replaced.wait(.1))
+                finally: release.set(); writer.join(3); switcher.join(3)
+            self.assertFalse(writer.is_alive()); self.assertFalse(switcher.is_alive())
+            self.assertEqual(errors, []); old_store.put_asset.assert_called_once(); new_store.put_asset.assert_not_called()
+            self.assertTrue(replaced.is_set()); jobs.close()
+
+    def test_root_replacement_invalidates_completed_job_identity(self):
+        with TemporaryDirectory() as temporary:
+            old_store, new_store = mock.Mock(), mock.Mock()
+            jobs = VideoEditJobs(Path(temporary), old_store)
+            job_id = 'ved_' + 'a' * 32
+            jobs.jobs[job_id] = {'id': job_id, 'projectId': 'prj_same', 'nodeId': 'edit', 'status': 'completed'}
+            jobs.replace_store(new_store)
+            with self.assertRaises(StoreError):
+                jobs.commit(job_id, {'projectId': 'prj_same', 'revision': 1})
+            new_store.put_asset.assert_not_called()
+            jobs.close()
+
     def test_audio_only_probe_uses_optional_video_map(self):
         runner = mock.Mock()
         runner.run.return_value = b'#tb 0: 1/48000\n#media_type 0: audio\n#sample_rate 0: 48000\n0, 0, 0, 48000, 192000, 0x00000000\n'

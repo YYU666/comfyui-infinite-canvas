@@ -967,8 +967,8 @@ def apply_server_settings(server):
         if getattr(server, 'sprite_atlas_api', None):
             server.sprite_atlas_api.store = replacement
         if getattr(server, "video_edit_api", None):
-            server.video_edit_api.jobs.store = replacement
-        if getattr(server, "video_rhythm_api", None): server.video_rhythm_api.jobs.store = replacement
+            server.video_edit_api.jobs.replace_store(replacement)
+        if getattr(server, "video_rhythm_api", None): server.video_rhythm_api.jobs.replace_store(replacement)
         if getattr(server, "art_director_api", None):
             server.art_director_api.store = replacement
         server.project_api.domain.store = replacement
