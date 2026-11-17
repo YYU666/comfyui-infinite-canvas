@@ -9,8 +9,10 @@ import { PHOTO_ADJUSTMENTS, DEFAULT_PHOTO_SETTINGS, normalizePhotoAdjustment } f
 import { CHANNEL_KEYS, normalizeChannelPackSettings } from './channel-packing.js';
 import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-references.js';
 import { availableNodePresets } from './local-node-tools.js';
+import { DEFAULT_SPRITE_OPTIONS, spriteSnapshot } from './sprite-atlas.js';
 
 export const NODE_PRESETS = {
+  sprite_atlas: ['spriteAtlas', { title: '3D 角色转多方向图集', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS } }],
   art_director: ['artDirector', { title: '电子主美 · 图解分析', brief: '', preserve: '', referencePurposes: {} }],
   color_adjust: ['imageProcess', { ...DEFAULT_ADJUSTMENTS, mode: 'colorAdjust', title: '颜色调整' }],
   color_hsl: ['imageProcess', { mode: 'colorAdjust', adjustmentType: 'hsl', title: 'HSL 分色调整' }],
@@ -51,6 +53,7 @@ export const NODE_PRESETS = {
 
 const EDITABLE_SETTINGS = new Set([
   'videoUpscaleModel', 'videoUpscaleScale', 'rtxQuality', 'rtxStrength',
+  'spriteInputPath', 'spriteOptions',
   'packChannels', 'packPreview',
   ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
   'adjustmentType', 'hsl', 'hslChannel', 'levels', 'levelsChannel', 'maskChannel', 'maskInvert',
@@ -162,6 +165,7 @@ export function nodeSummary(node, includeContent = true) {
     type: node.type,
     title: node.data.title || '',
     kind: node.data.kind,
+    ...(node.type === 'spriteAtlas' ? { spriteInputPath: node.data.spriteInputPath, spriteOptions: node.data.spriteOptions, spriteJobId: node.data.spriteJobId, spriteFiles: node.data.spriteFiles } : {}),
     ...(node.data.mediaRole === 'mask' ? { mediaRole: 'mask', maskSourceId: node.data.maskSourceId } : {}),
     mode: node.data.mode,
     ...(isImageProcess(node) ? { processingSettings: imageProcessSettings(node.data), processedAssetPath: node.data.processedAssetPath, processedTgaAssetPath: node.data.processedTgaAssetPath, processedResultId: node.data.processedResultId } : {}),
@@ -239,6 +243,17 @@ function mcpNode(latest, id) {
 export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
   if (['uploading', 'queued', 'running', 'finishing'].includes(initial.data.status)) throw new Error('节点已经在生成，请使用 canvas_wait_for_node 等待，避免重复提交。');
+  if (initial.type === 'spriteAtlas') {
+    const result = await latest.current.actions.generateNode(nodeId);
+    if (!result?.ok) throw new Error(result?.error || '精灵图提交失败。');
+    if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId };
+    const finished = await waitImpl(() => {
+      const node = mcpNode(latest, nodeId);
+      return node.data.spriteJobId === result.jobId && ['done', 'error', 'cancelled'].includes(node.data.status) ? node : null;
+    }, timeoutMs, 500);
+    if (finished.data.status !== 'done') throw new Error(finished.data.error || '精灵图未交付。');
+    return { node: nodeSummary(finished) };
+  }
   if (initial.type === 'artDirector') {
     const result = await latest.current.actions.generateNode(nodeId);
     if (!result?.ok) throw new Error(result?.error || '解析图输出失败。');
@@ -276,6 +291,20 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
 
 export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
+  if (initial.type === 'spriteAtlas') {
+    if (!initial.data.spriteJobId) throw new Error('精灵图节点尚未提交任务。');
+    try {
+      const finished = await waitImpl(() => {
+        const node = mcpNode(latest, nodeId);
+        if (node.data.spriteJobId !== initial.data.spriteJobId) throw new Error('精灵图任务已更换。');
+        return ['done', 'error', 'cancelled'].includes(node.data.status) ? node : null;
+      }, timeoutMs, 500);
+      return { pending: false, node: nodeSummary(finished), resultNode: null };
+    } catch (error) {
+      if (!/超时|timeout/i.test(error.message)) throw error;
+      return { pending: true, node: nodeSummary(mcpNode(latest, nodeId)), resultNode: null };
+    }
+  }
   const promptId = initial.data.promptId;
   const queueJobId = initial.data.queueJobId;
   if (!promptId && !queueJobId) throw new Error('这个节点还没有提交生成任务。');
@@ -419,6 +448,10 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           if (['uploading', 'queued', 'running', 'finishing'].includes(current.data.status)) throw new Error('节点正在生成，请先完成或取消后再修改。');
           const unknown = Object.keys(settings).filter((key) => !EDITABLE_SETTINGS.has(key));
           if (unknown.length) throw new Error(`不支持的参数：${unknown.join(', ')}`);
+          if ('spriteInputPath' in settings || 'spriteOptions' in settings) {
+            if (current.type !== 'spriteAtlas') throw new Error('精灵图参数仅用于精灵图节点。');
+            spriteSnapshot({ ...current.data, ...settings });
+          }
           validateModelSettings(settings, current.data.mode ?? '');
           const patch = { ...settings };
           if ('workflowParameters' in settings) patch.workflowParameters = validateWorkflowParameters(current.data, settings.workflowParameters);

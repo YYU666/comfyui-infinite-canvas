@@ -1,0 +1,68 @@
+import assert from 'node:assert/strict';
+import { DEFAULT_SPRITE_OPTIONS, SPRITE_ATLAS_MENU, spriteSnapshot, validateSpriteOptions, spriteFiles, waitForSpriteJob, spriteRequest } from './src/sprite-atlas.js';
+import { migrateCanvas } from './src/canvas-migration.js';
+import { persistentCanvas } from './src/auto-save.js';
+import { backingJobId, canvasHasActiveTask } from './src/canvas-task-state.js';
+import { copyCanvasSelection, pasteCanvasSelection } from './src/canvas-clipboard.js';
+import { CanvasHistory, restoreHistoryNodes } from './src/canvas-history.js';
+import { NODE_PRESETS, generateNodeForMcp, waitForNodeForMcp } from './src/canvas-mcp.js';
+
+const id = 'spa_' + 'a'.repeat(32);
+const files = { albedo: `/api/sprite-atlas/jobs/${id}/files/albedo.png`, normal: `/api/sprite-atlas/jobs/${id}/files/normal.png`, metadata: `/api/sprite-atlas/jobs/${id}/files/atlas.json` };
+const success = { id, status: 'done', files };
+assert.deepEqual(SPRITE_ATLAS_MENU, ['游戏美术', '精灵图', '3D 角色转多方向图集']);
+assert.equal(NODE_PRESETS.sprite_atlas[0], 'spriteAtlas');
+assert.equal(validateSpriteOptions().frameSize, 192);
+assert.equal(validateSpriteOptions({ directions: 16 }).directions, 16);
+assert.equal(spriteSnapshot({ spriteInputPath: 'C:\\models\\角色.glb' }).inputPath, 'C:\\models\\角色.glb');
+assert.equal(spriteSnapshot({ spriteInputPath: '/models/角色.fbx' }).options.directions, 8);
+for (const path of ['', 'relative.glb', 'https://host/model.glb', '\\\\share\\model.glb', '//share/model.glb', 'C:\\model.blend']) assert.throws(() => spriteSnapshot({ spriteInputPath: path }));
+for (const options of [{ directions: 5 }, { directions: '8' }, { frameSize: 192.5 }, { frameSize: true }, { framesPerAction: 0 }, { elevation: NaN }, { startYaw: 361 }, { padding: 0.5 }, { pivot: [0.5] }, { actions: [''] }, { actions: ['idle', 'idle'] }, { actions: Array.from({ length: 9 }, (_, i) => `action${i}`) }, { frameSize: 1024, framesPerAction: 64 }, { frameSize: 1024, directions: 16 }, { foo: 'unknown' }]) assert.throws(() => validateSpriteOptions(options));
+const a = validateSpriteOptions(), b = validateSpriteOptions();
+a.pivot[0] = 0.1; a.actions.push('idle');
+assert.equal(b.pivot[0], 0.5); assert.deepEqual(DEFAULT_SPRITE_OPTIONS.actions, []);
+assert.notEqual(spriteSnapshot({ spriteInputPath: 'C:/model.glb' }).signature, spriteSnapshot({ spriteInputPath: 'C:/model.glb', spriteOptions: { frameSize: 256 } }).signature);
+assert.deepEqual(spriteFiles(success), files);
+for (const invalid of [{ ...success, status: 'running' }, { ...success, id: 'other' }, { ...success, files: { ...files, albedo: '/input/model.glb' } }, { ...success, files: { ...files, normal: 'https://remote/normal.png' } }]) assert.throws(() => spriteFiles(invalid));
+
+const fakeResponse = (body, ok = true, status = 200) => ({ ok, status, json: async () => body });
+const requested = [], progress = [], jobs = [{ id, status: 'queued' }, { id, status: 'running' }, success];
+assert.deepEqual(await waitForSpriteJob(id, { interval: 0, onProgress: job => progress.push(job.status), fetchImpl: async url => { requested.push(url); return fakeResponse(jobs.shift()); } }), success);
+assert.deepEqual(progress, ['queued', 'running', 'done']);
+assert.ok(requested.every(url => url === `/api/sprite-atlas/jobs/${id}`));
+await assert.rejects(() => waitForSpriteJob(id, { fetchImpl: async () => fakeResponse({ id, status: 'error', error: 'model import failed' }) }), /model import failed/);
+await assert.rejects(() => waitForSpriteJob(id, { fetchImpl: async () => fakeResponse({ ...success, id: 'wrong' }) }), /身份/);
+await assert.rejects(() => spriteRequest('/jobs', { fetchImpl: async () => fakeResponse({ message: 'readonly' }, false, 403) }), /readonly/);
+const controller = new AbortController();
+const polling = waitForSpriteJob(id, { signal: controller.signal, interval: 10000, fetchImpl: async () => fakeResponse({ id, status: 'running' }), onProgress: () => queueMicrotask(() => controller.abort()) });
+await assert.rejects(polling, /abort/i);
+
+const node = { id: 'sprite', type: 'spriteAtlas', selected: true, position: { x: 1, y: 2 }, data: { spriteInputPath: 'C:/model.glb', spriteOptions: validateSpriteOptions(), spriteJobId: id, spriteFiles: files, spriteResultSignature: 'old', status: 'running' } };
+const restored = migrateCanvas(persistentCanvas({ nodes: [node], edges: [] })).nodes[0];
+assert.equal(restored.data.status, 'running', 'reload reconnects to backend job');
+assert.equal(backingJobId(restored), id);
+assert.ok(canvasHasActiveTask([restored]));
+assert.equal(migrateCanvas({ nodes: [{ ...node, data: { status: 'running' } }], edges: [] }).nodes[0].data.status, 'error');
+const copied = copyCanvasSelection([node], []);
+const pasted = pasteCanvasSelection(copied, [], prefix => `${prefix}-new`).nodes[0];
+assert.equal(pasted.type, 'spriteAtlas'); assert.equal(pasted.data.status, 'idle'); assert.equal(pasted.data.spriteFiles, undefined); assert.equal(pasted.data.spriteJobId, undefined);
+const beforeRun = { ...node, data: { spriteInputPath: 'C:/model.glb', status: 'idle' } };
+const history = new CanvasHistory([beforeRun], []);
+history.observe([node], []);
+// Adding options is an edit; receiving a job/result thereafter isn't.
+const afterEditCount = history.past.length;
+history.observe([{ ...node, data: { ...node.data, status: 'done', spriteResultSignature: 'new' } }], []);
+assert.equal(history.past.length, afterEditCount);
+const undoNode = restoreHistoryNodes([beforeRun], [node])[0];
+assert.deepEqual(undoNode.data.spriteFiles, files);
+assert.equal(undoNode.data.spriteJobId, id);
+
+let live = { ...node, data: { ...node.data, status: 'idle' } };
+const latest = { current: { nodesRef: { get current() { return [live]; } }, edgesRef: { current: [] }, actions: { generateNode: async () => { live = { ...live, data: { ...live.data, status: 'queued' } }; return { ok: true, jobId: id }; } } } };
+const submission = await generateNodeForMcp(latest, { nodeId: 'sprite', wait: false });
+assert.equal(submission.jobId, id); assert.equal(submission.node.type, 'spriteAtlas');
+const pending = await waitForNodeForMcp(latest, { nodeId: 'sprite' }, async () => { throw new Error('等待超时'); });
+assert.equal(pending.pending, true);
+live = { ...live, data: { ...live.data, status: 'done' } };
+assert.equal((await waitForNodeForMcp(latest, { nodeId: 'sprite' }, async read => read())).pending, false);
+console.log('SPRITE_ATLAS_CORE_OK validation resource bounds output identity abort persistence clipboard MCP');
