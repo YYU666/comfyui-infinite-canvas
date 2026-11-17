@@ -1,4 +1,6 @@
 import { buildH3ImageWorkflow } from './h3-image.js';
+import { buildCharacterSwapMapWorkflow } from './character-swap-map.js';
+import { assertCharacterSwapMapAvailable } from './character-swap-map-availability.js';
 import { orderQwenReferences, compileQwenPrompt, validateQwenReferences } from './qwen-references.js';
 import { buildFlux3KleinWorkflow, scaleFlux3Dimensions } from './flux3-klein.js';
 import { LOCAL_RECONNECTED } from './local-connection.js';
@@ -1035,6 +1037,10 @@ export function buildCharacterSwapPrompt(details = '', target = '') {
 }
 
 export function buildCharacterSwapWorkflow(options) {
+  if (options.characterSwapMethod === 'preprocessorMap') {
+    assertCharacterSwapMapAvailable();
+    return buildCharacterSwapMapWorkflow(options, MODEL_INFO, CHARACTER_SWAP_MODELS, resolveDimensions, durationToFrames);
+  }
   const guide = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'video');
   const identity = options.references?.find((ref) => ref.slot === 'identity' && ref.kind === 'image');
   if (!guide || !identity) throw new Error('角色替换需要连接一段源视频和一张人物参考图；单人照片或同一人物的多视角设定图均可。');
