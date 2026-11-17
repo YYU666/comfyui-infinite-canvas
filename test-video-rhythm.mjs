@@ -130,3 +130,6 @@ assert.equal(NODE_PRESETS.video_time_remap[0], 'videoTimeRemap');
   assert.equal(node.data.status, 'done');
 }
 console.log('VIDEO_RHYTHM_OK schema parity, freeze curve, downstream connections, agent speed/remap, runner');
+
+const { verifyVideoImportGuard } = await import('./test-video-import-guard.mjs');
+await verifyVideoImportGuard(createVideoRhythmRunner, 'videoSpeed', {speed:2,rhythmAudio:'mute'}, 'v1');

@@ -38,6 +38,13 @@ class VideoRhythmJobs:
         self.worker = None
         self.closed = False
 
+    def replace_store(self, store):
+        with self.lock:
+            if self.active_count():
+                raise StoreError("VIDEO_PROCESSOR_BUSY", "视频仍在导出，无法切换素材存储。", 409)
+            self.jobs.clear()
+            self.store = store
+
     def active_count(self):
         with self.lock:
             return sum(job["status"] not in TERMINAL for job in self.jobs.values())
@@ -83,31 +90,33 @@ class VideoRhythmJobs:
         raise StoreError("RHYTHM_DOCUMENT_INVALID", "operation 必须是 speed 或 remap。", 400)
 
     def submit(self, payload):
-        if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "input", "operation", "settings"}:
-            raise _bad("视频节奏作业字段无效。")
-        project_id, node_id = self._identity(payload)
-        document = self._document(payload)
-        source = self._asset(project_id, payload.get("input"))
-        self.root.mkdir(parents=True, exist_ok=True)
-        if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
-            raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-        job_id = f"vry_{uuid.uuid4().hex}"
-        job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
-               "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
-               "operation": document["operation"], "input": payload.get("input")}
+        # Bind source resolution and admission to one project-store epoch.
         with self.lock:
-            active = [item for item in self.jobs.values() if item["nodeId"] == node_id and item["projectId"] == project_id and item["status"] not in TERMINAL]
-            if self.closed:
-                raise StoreError("VIDEO_RHYTHM_CLOSED", "视频节奏服务正在关闭。", 503)
-            if active:
-                raise StoreError("VIDEO_RHYTHM_BUSY", "此视频节奏节点已有导出作业，请等待或取消。", 409, {"jobId": active[0]["id"]})
-            self._trim()
-            self.jobs[job_id] = {**job, "_document": document, "_source": source}
-            self.wake.notify_all()
-            if not self.worker or not self.worker.is_alive():
-                self.worker = threading.Thread(target=self._loop, name="video-rhythm-jobs", daemon=True)
-                self.worker.start()
-        return self.get(job_id)
+            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "input", "operation", "settings"}:
+                raise _bad("视频节奏作业字段无效。")
+            project_id, node_id = self._identity(payload)
+            document = self._document(payload)
+            source = self._asset(project_id, payload.get("input"))
+            self.root.mkdir(parents=True, exist_ok=True)
+            if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
+                raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
+            job_id = f"vry_{uuid.uuid4().hex}"
+            job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
+                   "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
+                   "operation": document["operation"], "input": payload.get("input")}
+            with self.lock:
+                active = [item for item in self.jobs.values() if item["nodeId"] == node_id and item["projectId"] == project_id and item["status"] not in TERMINAL]
+                if self.closed:
+                    raise StoreError("VIDEO_RHYTHM_CLOSED", "视频节奏服务正在关闭。", 503)
+                if active:
+                    raise StoreError("VIDEO_RHYTHM_BUSY", "此视频节奏节点已有导出作业，请等待或取消。", 409, {"jobId": active[0]["id"]})
+                self._trim()
+                self.jobs[job_id] = {**job, "_document": document, "_source": source}
+                self.wake.notify_all()
+                if not self.worker or not self.worker.is_alive():
+                    self.worker = threading.Thread(target=self._loop, name="video-rhythm-jobs", daemon=True)
+                    self.worker.start()
+            return self.get(job_id)
 
     def _trim(self):
         finished = sorted((job for job in self.jobs.values() if job["status"] in TERMINAL), key=lambda job: job["createdAt"])
@@ -155,14 +164,13 @@ class VideoRhythmJobs:
             if job["status"] != "completed":
                 raise StoreError("VIDEO_RHYTHM_NOT_READY", "导出尚未完成。", 409)
             output = self.root / job_id / "output.mp4"
-        revision = payload["revision"]
-        if type(revision) is not int or revision < 1:
-            raise _bad("revision 无效。")
-        with output.open("rb") as source:
-            saved = self.store.put_asset(job["projectId"], f"video-rhythm-{job_id[4:16]}.mp4", source, "video/mp4", expected_revision=revision)
-        with self.lock:
+            revision = payload["revision"]
+            if type(revision) is not int or revision < 1:
+                raise _bad("revision 无效。")
+            with output.open("rb") as source:
+                saved = self.store.put_asset(job["projectId"], f"video-rhythm-{job_id[4:16]}.mp4", source, "video/mp4", expected_revision=revision)
             job["committedAsset"] = saved["asset"]["path"]
-        return saved
+            return saved
 
     def output_file(self, job_id):
         with self.lock:
