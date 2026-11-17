@@ -200,14 +200,13 @@ class VideoChromaJobs:
             if job["status"] != "completed":
                 raise StoreError("VIDEO_CHROMA_NOT_READY", "导出尚未完成。", 409)
             output = self.root / job_id / "output.mp4"
-        revision = payload["revision"]
-        if type(revision) is not int or revision < 1:
-            raise _bad("revision 无效。")
-        with output.open("rb") as source:
-            saved = self.store.put_asset(job["projectId"], f"video-chroma-{job_id[4:16]}.mp4", source, "video/mp4", expected_revision=revision)
-        with self.lock:
+            revision = payload["revision"]
+            if type(revision) is not int or revision < 1:
+                raise _bad("revision 无效。")
+            with output.open("rb") as source:
+                saved = self.store.put_asset(job["projectId"], f"video-chroma-{job_id[4:16]}.mp4", source, "video/mp4", expected_revision=revision)
             job["committedAsset"] = saved["asset"]["path"]
-        return saved
+            return saved
 
     def output_file(self, job_id):
         with self.lock:
