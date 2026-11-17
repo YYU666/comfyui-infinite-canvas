@@ -50,6 +50,9 @@ export function createVideoRhythmRunner(deps) {
   const unregister = (id, controller) => { if (deps.jobs.get(id) === controller) { deps.jobs.delete(id); deps.onJobsChange?.(); } };
 
   async function resolveInput(id, signal) {
+    const projectId = deps.getProjectId();
+    const assertCurrent = () => { signal?.throwIfAborted(); if (deps.getProjectId() !== projectId || !canWrite() || !node(id)) throw new Error('当前画布已改变。'); };
+    assertCurrent();
     const current = node(id);
     const edge = deps.getEdges().find((item) => item.target === id && item.targetHandle === 'v1');
     const source = deps.getNodes().find((item) => item.id === edge?.source);
@@ -63,10 +66,11 @@ export function createVideoRhythmRunner(deps) {
     const response = await fetch(resolved.pendingUrl.data.url, { credentials: 'same-origin', signal });
     if (!response.ok) throw new Error(`无法读取「${resolved.pendingUrl.data.title || '视频'}」。`);
     const blob = await response.blob();
+    assertCurrent();
     const file = new File([blob], resolved.pendingUrl.data.name || 'v1.mp4', { type: blob.type || 'video/mp4' });
-    const saved = await deps.saveCanvasMedia((revision, storageId) => deps.saveProjectFile(storageId, file, revision), (result) => ({ ok: true, assetPath: result.asset.path }));
+    const saved = await deps.saveCanvasMedia((revision, storageId) => { assertCurrent(); return deps.saveProjectFile(storageId, file, revision); }, (result) => ({ ok: true, assetPath: result.asset.path }));
     if (!saved?.ok) throw new Error(saved?.error?.message || '输入素材保存失败。');
-    signal.throwIfAborted();
+    assertCurrent();
     deps.updateNode(id, { rhythmInputCache: { ...(node(id)?.data.rhythmInputCache || {}), [resolved.pendingUrl.id]: { url: resolved.pendingUrl.data.url, assetPath: saved.assetPath } } });
     return saved.assetPath;
   }
