@@ -102,15 +102,22 @@ const bootstrap=String.raw`import atexit,faulthandler,json,pathlib,sys,threading
 faulthandler.enable(all_threads=True)
 sys.path.extend(json.loads(sys.argv[2]));sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[3:]
 import pcg_demo_server
+import pcg_isolation
 from scripts.pcg_m4_rpc_trace import install,write_once
+from scripts.pcg_m4_isolation_trace import IsolationTrace
 ledger=install(pcg_demo_server)
+isolation_trace=IsolationTrace().install(pcg_isolation)
 trace_root=pathlib.Path(sys.argv[sys.argv.index('--runtime-dir')+1])
 stop_diagnostics=threading.Event()
 def diagnostic_samples():
     index=0;next_sample=time.monotonic()+120;exported=False
     while not stop_diagnostics.wait(.1):
         if not exported and (trace_root/'rpc-trace-request').exists():
-            write_once(ledger,trace_root/'rpc-trace.json');exported=True
+            exported=True
+            try: write_once(ledger,trace_root/'rpc-trace.json')
+            except Exception: print('PCG_RPC_EXPORT_UNAVAILABLE',file=sys.stderr,flush=True)
+            try: write_once(isolation_trace,trace_root/'isolation-trace.json')
+            except Exception: print('PCG_ISOLATION_EXPORT_UNAVAILABLE',file=sys.stderr,flush=True)
         if index<2 and time.monotonic()>=next_sample:
             index+=1;next_sample+=120
             print('PCG_STACK_SAMPLE_BEGIN', index, time.monotonic(), file=sys.stderr, flush=True)
@@ -126,6 +133,7 @@ try:
     pcg_demo_server.main()
 finally:
     stop_samples()
+    isolation_trace.restore()
 `;
 async function rpc(method,params={}) {
  const id=++requestId;
@@ -148,6 +156,22 @@ async function collectTrace(){
   do{try{const body=await readFile(path.join(runtime,'rpc-trace.json'));assert.ok(body.length<=65536);return JSON.parse(body);}catch(error){if(error.code!=='ENOENT')throw error;}await sleep(50);}while(performance.now()<deadline);
   return {unavailable:true,reason:'no-diagnostic-reply'};
  }catch{return {unavailable:true,reason:'diagnostic-read-failed'};}
+}
+async function collectIsolationTrace(){
+ try{
+  if(!await requestTrace())return {unavailable:true,reason:'runtime-not-created'};
+  const deadline=performance.now()+2000;
+  do{try{const body=await readFile(path.join(runtime,'isolation-trace.json'));assert.ok(body.length<=32768);return JSON.parse(body);}catch(error){if(error.code!=='ENOENT')throw error;}await sleep(50);}while(performance.now()<deadline);
+  return {unavailable:true,reason:'no-diagnostic-reply'};
+ }catch{return {unavailable:true,reason:'diagnostic-read-failed'};}
+}
+function exportIsolationTrace(value){
+ try{
+  const body=JSON.stringify(value);assert.ok(Buffer.byteLength(body)<=32768);
+  console.error('PCG_ISOLATION_PHASE_BEGIN');
+  for(let offset=0;offset<body.length;offset+=4000)console.error('PCG_ISOLATION_PHASE_CHUNK '+body.slice(offset,offset+4000));
+  console.error('PCG_ISOLATION_PHASE_END');
+ }catch{console.error('PCG_ISOLATION_EXPORT_UNAVAILABLE');}
 }
 async function call(name,args={},errorCode=null) {
  const response=await rpc('tools/call',{name,arguments:args});
@@ -292,10 +316,11 @@ try {
  evidence.mesh100kLatency=quantiles(evidence.samples.mesh100k.map(s=>s.selectToFrameAckMs));
  for(const gate of Object.values(evidence.performanceGates))assert.ok(gate.n>=3&&Number.isFinite(gate.p50)&&Number.isFinite(gate.p95),'No empty or nonfinite performance evidence.');
  evidence.integrationOk=true;evidence.performanceOk=Object.values(evidence.performanceGates).every(g=>g.passed);evidence.ok=evidence.integrationOk&&evidence.performanceOk;evidence.strictLatency=process.env.PCG_M4_STRICT_LATENCY==='1';
- evidence.rpcTrace=await collectTrace();await writeFile(evidencePath,JSON.stringify(evidence,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify({ok:evidence.ok,integrationOk:true,performanceGates:evidence.performanceGates,evidenceFile:evidencePath}));
+ evidence.rpcTrace=await collectTrace();evidence.isolationTrace=await collectIsolationTrace();exportIsolationTrace(evidence.isolationTrace);await writeFile(evidencePath,JSON.stringify(evidence,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify({ok:evidence.ok,integrationOk:true,performanceGates:evidence.performanceGates,evidenceFile:evidencePath}));
  if(evidence.strictLatency&&!evidence.performanceOk)process.exitCode=1;
 }catch(error){
  const diagnostic={firstRpcFailure,rpcTrace:await collectTrace()};
+ diagnostic.isolationTrace=await collectIsolationTrace();exportIsolationTrace(diagnostic.isolationTrace);
  // Export only the bounded, payload-free ledger; CI does not retain temp files.
  const traceText=JSON.stringify({firstRpcFailure:diagnostic.firstRpcFailure,rpcTrace:diagnostic.rpcTrace});console.error('PCG_RPC_PHASE_BEGIN');
  for(let offset=0;offset<traceText.length;offset+=4000)console.error('PCG_RPC_PHASE_CHUNK '+traceText.slice(offset,offset+4000));

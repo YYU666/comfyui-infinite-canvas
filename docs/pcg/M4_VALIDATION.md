@@ -122,3 +122,14 @@ worker对本节点已验证输出规范化一次，用同一局部字节计算SH
 m4-84652-1794955453176.json每档5样本，功能通过、性能与整体false：实例p50=3098.46/p95=3487.43ms，同拓扑p50=1566.62/p95=1617.10ms，仍不达300/1000ms门。确定性编码次数减少不等于端到端加速；不从不同负载轮次推断性能因果。无前端源变更，沿用已通过的Node65文件/构建；当前提交自身CI必须另核。M4保持REVISE，不进入M5。
 
 3a1c969的PR run44191401092另外失败于RPC236：read_state的fetch在11.5ms以TypeError失败，同上下文POST/mcp为ERR_NO_BUFFER_SPACE；rock/publish run已成功、error=null，服务进程未报告退出。账本保留RPC235结束而无236已绑定记录，窗口内28对锁申请即时取得并释放；无本请求锁等待或模型失败证据。源码中的ACK缺失轮询/失败后帧重试是条件放大路径，不足以证明本次网络错误根因。后续提交不能用旧CI绿替代。
+
+
+## 07:04 隔离准备/启动/资源诊断
+
+基线9391b69的两个CI分别为ground预检ISOLATION_UNAVAILABLE和instance-transform WORKER_TIMEOUT，不认同因。本切片仅测试进程安装白名单observer，产品执行器/协议/工具/bundle未改。preflight/execute数字序号及parent关联，准备/profile/ACL完整性/暂存/原生属性与Job/进程启动恢复/资源终态为固定阶段，只有时钟、退出码、预算和字节/轮询计数。保留ctypes last-error和原返回/异常；诊断各自导出，失败不遮盖原错误。8活跃/16历史/64事件、phase摘要、首非取消失败和两类首失败pin；32KiB硬限，超容量缺记录/裁剪明确不当业务成功。正常broken-pipe EOF也可能计入poll failures，不能据计数认运行失败。
+
+12项聚焦通过（7项新诊断+5项RPC），含真实AppContainer正常启动、准备PermissionError注入和真实owned睡眠worker .2秒TIMEOUT；仅用于验证诊断，不是历史CI复现。两类有界时间线在本机ISOLATION_DIAG_LOCAL_INJECTED.json。独立审查复跑12项及12线程容量/restore通过，ACCEPT。5项源码提取的分块重组/超限/导出异常用例通过。完整PCG156项OK/2权限skip；现有标准库不自包含的CI解释器会明确跳过新native探针，不伪装运行验收，浏览器测试仍使用原来固定的自包含夹具。
+
+本机原五样本m4-13788-1794958306919.json：integrationOk=true，performanceOk=false/整体false；1000实例p50=3032.95/p95=4356.52ms，同拓扑p50=1508.11/p95=1622.39ms，仍不达300/1000ms。诊断包装扰动计时，不推断优化或生产性能幅度。隔离账本22914bytes、16历史/0活跃、diagnosticErrors=0，本轮无隔离故障；测试端口10981已回收。不盲重跑历史提交，下一次为新诊断提交自己的CI。
+
+UI/MCP/worker schema和产品源码无变化，原真实画布canvas-29680-1794955604734.json的94命令/12checks/4sessions/8截图继续对应同产品实现；没有新开正式画布或把独立演示页当画布验收。本提交准确CI及两类实际失败的底层证据以外部RECEIPT_M4.md为准。未定位根因前不改隔离生命周期，M4仍REVISE，M5未开始。

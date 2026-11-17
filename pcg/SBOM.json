@@ -521,6 +521,18 @@
       "license": "Apache-2.0",
       "origin": "repository-original",
       "thirdPartyCopied": false
+    },
+    {
+      "path": "scripts/pcg_m4_isolation_trace.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_m4_isolation_trace.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
     }
   ]
 }
