@@ -110,6 +110,10 @@ class CatalogTests(unittest.TestCase):
 
     def test_license_and_format_blockers_remain_explicit(self):
         entries = {entry["id"]: entry for entry in self.workflows["workflows"]}
+        self.assertEqual(entries["character-sheet-generic"]["interface"]["outputs"],
+                         ["Front portrait cropped above the chest",
+                          "Three-quarter portrait cropped above the chest",
+                          "Headless front body panel", "Headless back body panel"])
         self.assertEqual(entries["krea-moss-two-pass"]["publicationStatus"],
                          "blocked-upstream-workflow-license")
         self.assertEqual(entries["moss-pose"]["publicationStatus"], "blocked-model-format-policy")

@@ -57,7 +57,10 @@
           "Reference image; selected view; proportions and style settings"
         ],
         "outputs": [
-          "Front and three-quarter portraits; front and back full-body images"
+          "Front portrait cropped above the chest",
+          "Three-quarter portrait cropped above the chest",
+          "Headless front body panel",
+          "Headless back body panel"
         ]
       },
       "modelRefs": [
@@ -69,7 +72,9 @@
       "manualPrerequisites": [],
       "notes": [
         "Only the generic interface is documented. Subject-specific approved recipes and prompts are excluded.",
-        "Existing implementation must be decoupled from private recipes before any public runtime synchronization."
+        "Existing implementation must be decoupled from private recipes before any public runtime synchronization.",
+        "Default sheet: two portraits above the chest plus headless front/back body panels. Full-body generation may be an intermediate only; it is not the delivered body framing.",
+        "Optional six-panel extension is for complete front/back long-hair display. Ordinary characters keep the four-panel layout. This describes the third-party node-library recipe, not a new built-in official menu item."
       ],
       "sources": []
     },
