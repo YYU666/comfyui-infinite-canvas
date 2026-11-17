@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -290,6 +291,66 @@ class ThumbnailTests(unittest.TestCase):
         handler.path += "&asset=assets/another.png"
         self.cache.handle_get(handler)
         self.assertEqual(handler.status, 400)
+
+
+class ThumbnailPathTests(unittest.TestCase):
+    """Synthetic bytes and mocked HTTP only; no service or socket is opened."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.cache = ThumbnailCache(Path(self.temp.name) / "cache", None, "http://synthetic.invalid")
+
+    def test_windows_comfy_subfolder_normalizes_and_reuses_cache(self):
+        content = png(size=(64, 32))
+        headers = {"ETag": '"synthetic"', "Content-Length": str(len(content))}
+
+        def response():
+            return mock.Mock(status=200, getheader=headers.get, read=io.BytesIO(content).read)
+
+        with mock.patch("thumbnail_cache.http.client.HTTPConnection") as constructor:
+            connection = constructor.return_value
+            connection.getresponse.side_effect = response
+            for kind in ("input", "output", "temp"):
+                query = {"filename": "out.png", "subfolder": r"nested\generated\fixture", "type": kind}
+                original = dict(query)
+                first = self.cache.get(query)
+                self.assertEqual(query, original, "original media identity must not be mutated")
+                with Image.open(first) as image:
+                    self.assertEqual(image.size, (64, 32))
+                    self.assertEqual(image.format, "WEBP")
+                with mock.patch("thumbnail_cache.Image.open", side_effect=AssertionError("normalized identity must hit cache")):
+                    for folder in ("nested/generated/fixture", r"nested/generated\fixture"):
+                        self.assertEqual(self.cache.get({**query, "subfolder": folder}), first)
+            gets = [args for args, _ in connection.request.call_args_list if args[0] == "GET"]
+            self.assertEqual(len(gets), 3, "slash variants share one thumbnail per media type")
+            for method, path in (args for args, _ in connection.request.call_args_list):
+                forwarded = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+                self.assertEqual(forwarded["subfolder"], ["nested/generated/fixture"])
+                self.assertIn(forwarded["type"][0], ("input", "output", "temp"))
+
+    def test_windows_subfolder_rejects_traversal_and_absolute_paths(self):
+        folders = [r"nested\..\secret", r"nested/..\secret", r"\root", r"\\server\share",
+                   r"C:\folder", "C:folder", r"nested\.\x", r"nested\\x", "/root",
+                   "nested/\\x", "nested\x00x", r"\\?\C:\folder", None, 123]
+        with mock.patch("thumbnail_cache.http.client.HTTPConnection") as network, mock.patch("thumbnail_cache.Image.open") as decode:
+            for folder in folders:
+                with self.subTest(folder=folder), self.assertRaises(StoreError) as error:
+                    self.cache.get({"filename": "out.png", "subfolder": folder})
+                self.assertEqual(error.exception.code, "BAD_REQUEST")
+            network.assert_not_called()
+            decode.assert_not_called()
+
+    def test_filename_and_project_assets_do_not_gain_separator_normalization(self):
+        with mock.patch("thumbnail_cache.http.client.HTTPConnection") as network, mock.patch("thumbnail_cache.Image.open") as decode:
+            for query in ({"filename": r"nested\out.png"},
+                          {"filename": r"C:\out.png"},
+                          {"project": "prj_fixture", "asset": r"assets\out.png"}):
+                with self.subTest(query=query), self.assertRaises(StoreError) as error:
+                    self.cache.get(query)
+                self.assertEqual(error.exception.code, "BAD_REQUEST")
+            network.assert_not_called()
+            decode.assert_not_called()
 
 
 if __name__ == "__main__":

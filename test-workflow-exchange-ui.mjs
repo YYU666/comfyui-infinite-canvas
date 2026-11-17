@@ -36,7 +36,7 @@ project.canvas.nodes.find(node=>node.id==='sheet').data.error='当前节点是�
 project.canvas.nodes.find(node=>node.id==='qwen').data.error='CUDA out of memory';
 project.canvas.nodes.find(node=>node.id==='qwen').data.shareError='旧的节点上传失败';
 const imported = []; const reports = []; const shares = []; const downloads = []; const writes = []; const unexpected = []; const errors = [];
-const model = (parameters = {}) => ({ id: 'model:unet_name', nodeId: 'model', inputName: 'unet_name', parameterId: 'model_name', category: 'diffusion_models', name: parameters.model_name || 'required.safetensors', status: missing && !downloaded && !parameters.model_name ? 'missing' : 'installed', candidates: [{ name: 'local.safetensors', compatibility: 'loader-option', reason: 'same loader' }], download: { path: 'diffusion_models/required.safetensors', bytes: 1024, sha256: null, url: 'https://example.invalid/trusted-fixture' } });
+const model = (parameters = {}) => ({ id: 'model:unet_name', nodeId: 'model', inputName: 'unet_name', parameterId: 'model_name', category: 'diffusion_models', name: parameters.model_name || 'required.safetensors', status: missing && !downloaded && !parameters.model_name ? 'missing' : 'installed', candidates: [{ name: 'local.safetensors', compatibility: 'loader-option', reason: 'same loader' }], licenseInfo: { license: 'MiniMax H3 Community License', licenseUrl: 'https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/' + 'a'.repeat(40) + '/LICENSE', restriction: '地域限制：欧盟、英国、韩国、美国' }, source: { repository: 'fixture/author', revision: 'a'.repeat(40), sha256: 'b'.repeat(64) }, download: { path: 'diffusion_models/required.safetensors', bytes: 1024, revision: 'a'.repeat(40), sha256: 'b'.repeat(64), url: 'https://huggingface.co/fixture/author/resolve/' + 'a'.repeat(40) + '/model' } });
 const report = (parameters = {}) => ({ models: [model(parameters)], comfyNodes: [{ classType: 'UNETLoader', installed: true }, { classType: 'SaveImage', installed: true }], ready: model(parameters).status === 'installed', summary: {} });
 const browser = await chromium.launch({ headless: true });
 try {
@@ -95,6 +95,11 @@ try {
  await remote.evaluate(()=>addNode('missing'));
  const dialog=page.getByRole('dialog',{name:'添加工作流到画布'});await dialog.waitFor();
  assert.match(await dialog.innerText(),/不保证架构/);
+ assert.match(await dialog.innerText(),/本地节点在连接的 ComfyUI 运行/);
+ assert.match(await dialog.innerText(),/地域限制：欧盟、英国、韩国、美国/);
+ assert.match(await dialog.innerText(),/强制 SHA-256 校验，不符即停止/);
+ assert.match(await dialog.innerText(),/revision a{40}/);
+ assert.equal(await dialog.getByRole('link',{name:'权重许可：MiniMax H3 Community License'}).count(),1);
  assert.equal(downloads.length,0,'does not auto-download');
  const selectsBefore=reports.length;
  await dialog.getByLabel('替换 required.safetensors').selectOption('local.safetensors');
@@ -148,7 +153,7 @@ try {
  await page.waitForFunction(()=>!document.querySelector('.neo-canvas-wrap').inert);
  // Share Qwen from its node footer: local preview first, no remote upload and no image upload.
  await focusNode('qwen');
- await page.locator('.react-flow__node[data-id="qwen"]').click();
+ await page.locator('.react-flow__node[data-id="qwen"] .neo-node-title > svg').click();
  await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
  const share=page.getByRole('dialog',{name:'上传节点到节点库'});await share.waitFor();
  assert.equal(await page.locator('.react-flow__node[data-id="qwen"]').getByText('旧的节点上传失败',{exact:false}).count(),0,'successful retry clears only the share failure');
@@ -212,7 +217,7 @@ try {
  await panel.getByRole('button',{name:'关闭节点库'}).click();
  await panel.waitFor({state:'hidden'});
  await focusNode('sheet');
- await page.locator('.react-flow__node[data-id="sheet"]').click();
+ await page.locator('.react-flow__node[data-id="sheet"] .neo-node-title > svg').click();
  await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
  await share.waitFor();
  assert.match(await share.innerText(),/逐张生成、最后拼接/);
@@ -238,7 +243,7 @@ try {
  await share.getByRole('button',{name:'关闭上传节点到节点库'}).click();
  await share.waitFor({state:'hidden'});
  await focusNode('bad-cover');
- await page.locator('.react-flow__node[data-id="bad-cover"]').click();
+ await page.locator('.react-flow__node[data-id="bad-cover"] .neo-node-title > svg').click();
  await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
  await share.waitFor();
  await share.getByText(/封面图片读取失败/).waitFor();
@@ -257,11 +262,16 @@ try {
  await remote.waitForFunction(()=>received.some(message=>message.requestId==='save-failure'&&message.ok===false));
  assert.equal(project.canvas.nodes.length,savedNodeCount,'save error never reports a delivered node');
  assert.equal(await remote.evaluate(()=>received.some(message=>message.requestId==='save-failure'&&message.ok===true)),false);
- const visibleAfterFailedSave=await page.locator('.react-flow__node').count();
+ const canvasNodeIds=()=>page.evaluate(async()=>{
+  const state=JSON.parse(await window.fixtureTools.get('canvas_get_state').execute({}));
+  if(!state.ok)throw new Error(state.error);
+  return state.nodes.map(node=>node.id).sort();
+ });
+ const idsAfterFailedSave=await canvasNodeIds();
  failSave=false;
  await remote.evaluate(()=>addNode('save-retry-new-request'));
  await remote.waitForFunction(()=>received.some(message=>message.requestId==='save-retry-new-request'&&message.ok===true));
- assert.equal(await page.locator('.react-flow__node').count(),visibleAfterFailedSave,'new request retries original visible node without duplication');
+ assert.deepEqual(await canvasNodeIds(),idsAfterFailedSave,'new request retries the exact original nodes without duplication, including culled nodes');
  assert.equal(project.canvas.nodes.length,savedNodeCount+1);
  assert.deepEqual(unexpected,[],'no generation or media upload'); assert.deepEqual(errors,[]);
  console.log('Workflow exchange UI passed: saved catalog import, idempotency/origin guards, explicit replacement, download job, cancellation, later dependency repair, Qwen preview, four-view staged share consent and bounded summary.');

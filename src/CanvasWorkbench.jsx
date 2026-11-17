@@ -37,6 +37,7 @@ import MaskEditor from './MaskEditor';
 import { isMaskNode, maskSourceKey, canvasMaskGuide, qwenCanvasMask, validateCanvasMask } from './canvas-mask';
 import { planCanvasConnection } from './canvas-connections';
 import ImageLightbox from './ImageLightbox';
+import ModelLicenseNotice from './ModelLicenseNotice.jsx';
 import { useCanvasMcp, NODE_PRESETS, describeNodeModels } from './canvas-mcp';
 import { LOCAL_NODE_TOOLS } from './local-node-tools';
 import WorkflowInspector from './WorkflowInspector';
@@ -55,7 +56,8 @@ import HandoffDialog from './HandoffDialog';
 import { initializeProjects, listProjects, createProject, openProject, closeProject, saveProject, projectSummary, saveProjectFile, readProjectFile, createDomainEntity, createTake, updateProjectHandoff, restoreProjectAccess } from './project-store-http';
 import { AutoSaveController, persistentCanvas } from './auto-save';
 import { readViewport, saveViewport } from './canvas-viewport';
-import { outputFileLocation, selectCompletedVideo } from './canvas-output-selection';
+import { selectCompletedVideo } from './canvas-output-selection';
+import { nodeFileLocation, revealProjectAsset } from './canvas-file-location.js';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
 import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, resolveCanvasCompletion, shouldReconcileCompletion, takeOutputIdentity } from './generation-queue';
 import { absentPromptPatches, absentQueueJobPatches, canvasHasActiveTask, classifyExportJob, comfyQueuePromptIds, exportJobRequest, exportLookupPatch, isActiveTaskStatus, patchNodes, promptEventTargets, promptExecutingPatch, promptProgressPatch } from './canvas-task-state';
@@ -275,7 +277,9 @@ function MediaNode({ id, data, selected }) {
       </> : <div className="media-empty"><Icon size={26} /><strong>{maskNode || maskGuide ? '局部遮罩修改' : `添加${KIND_LABEL[kind]}素材`}</strong><span>{maskGuide ? '单击绘制 · 白色修改 / 黑色保留' : maskNode ? '连接底图后绘制遮罩' : '单击添加 · 按住拖动节点'}</span><MediaDragSurface onActivate={maskNode || maskGuide ? openMaskEditor : () => input.current?.click()} /></div>}
       {maskGuide && <button className="media-mask-edit nodrag" onClick={openMaskEditor}>绘制遮罩</button>}
       <button className="media-replace nodrag" disabled={readOnly || (maskNode && !maskGuide)} onClick={() => input.current?.click()} title={maskGuide ? '从文件导入黑白遮罩' : '替换素材'}><RefreshCw size={12} /><span>{maskGuide ? '导入' : '替换'}</span></button>
-      {data.output && <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>}
+      {data.output && (kind === 'image'
+        ? <button className="media-download nodrag" title="导出图片" aria-label="导出图片" onClick={() => openImagePreview({ url: data.url, title: data.title, name: data.name })}><ArrowDownToLine size={13} /></button>
+        : <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>)}
     </div>
     <div className="media-caption"><span>{data.artDirectorStale ? `旧版解析 · ${data.artDirectorStaleReason || '待重新输出'}` : maskNode || maskGuide ? '局部遮罩' : data.output ? '生成结果' : KIND_LABEL[kind]}</span><b title={showResolution ? '原始图片分辨率（像素）' : data.name}>{showResolution ? resolutionLabel : data.name || (data.url ? data.title : maskGuide ? '尚未绘制' : '未上传')}</b></div>
     {kind === 'image' && data.url && !maskNode && <button className="nodrag art-image-shortcut" disabled={readOnly} onClick={() => createArtDirector(id)}>电子主美 · 图解分析</button>}
@@ -381,6 +385,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
       {running && <div className="generation-overlay"><div><i style={{ width: `${data.progress || 3}%` }} /></div><span>{data.stage} · {data.progress || 0}%</span></div>}
     </div>
     <div className="generator-subline"><span>{mode === 'characterSheet' ? `单格 1152 × 2048 · 整图 2304 × 4096 · ${data.qwenSteps || 40} 步` : mode === 'localRealism' ? `原图尺寸 · 局部 ${data.localRealismSize || 768} · 保护未选区域` : mode === 'outfitEdit' ? `${data.outfitPanel ? '单视图' : '四张单图'} · ${models.outfitHdLabel} · ${(data.outfitLayout || 'legacy') === 'legacy' ? '旧版拼接' : '原版面合成'}` : mode === 'qwenEdit' ? h3Image ? `保持图1比例 · ${data.h3ImageResolution || '4MP'} · 6 步` : isFlux3 ? `保持图1比例 · ${data.flux3Resolution || '1MP'} · 16 步` : `继承原图比例 · 参考精度 ${data.qwenRefResolution || 1024} · ${models.qwenSteps} 步` : ['image', 'identityEdit'].includes(mode) ? `${data.ratio} · ${outputWidth} × ${outputHeight} · ${imageSteps} 步` : mode === 'imageUpscale' ? `${data.imageScale || 1.5} 倍 · 独立图片高清` : `${data.ratio} · ${resolution}${mode === 'upscale' ? ' · 独立二采' : ` · ${data.duration} 秒`}`}</span><b>{data.status === 'done' ? '已完成' : mode === 'characterSheet' ? 'Qwen 2.1 · 无高清' : mode === 'outfitEdit' ? models.outfitModelLabel : mode === 'qwenEdit' ? models.qwenModelLabel : mode === 'identityEdit' ? 'Identity V2' : mode === 'image' ? `${imageModelLabel} 生图` : mode === 'imageUpscale' ? 'SeedVR2 高清' : mode === 'swap' ? 'H3 换人 v1.5' : mode === 'upscale' ? 'H3 高清二采' : 'H3 INT8'}</b></div>
+    <ModelLicenseNotice data={data} />
     {mode === 'qwenEdit' && !h3Image && <div className="qwen-mask-row nodrag">
       <span title="白色区域修改，黑色区域保留；遮罩不占参考图编号">局部遮罩：{mask ? (mask.data.url ? '已连接' : '待绘制') : '未连接'}</span>
       {mask && <label className="qwen-mask-crop" title="裁切遮罩附近区域并放大重绘，最后回贴原图；图1在采样时对应局部画面"><input type="checkbox" aria-label="局部放大重绘" checked={Boolean(data.qwenMaskCrop)} disabled={readOnly || running} onChange={(event) => updateNode(id, { qwenMaskCrop: event.target.checked })} />局部放大重绘</label>}
@@ -1863,16 +1868,6 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (event.target.closest('.react-flow__node,button,input,textarea,.react-flow__controls,.react-flow__minimap,.node-top-toolbar,.creator-toolbar')) return;
     placeAddMenu({ x: event.clientX, y: event.clientY });
   };
-  const nodeFileLocation = (node) => {
-    if (node.data.output && node.data.filename) return outputFileLocation(node.data);
-    if (node.data.remoteName) return { kind: 'input', name: node.data.remoteName };
-    if (node.data.resultUrl) {
-      const params = new URL(node.data.resultUrl, window.location.origin).searchParams;
-      const filename = params.get('filename');
-      if (filename) return { kind: params.get('type') || 'output', name: `${params.get('subfolder') ? `${params.get('subfolder')}/` : ''}${filename}` };
-    }
-    return null;
-  };
   const openContextMenu = (event) => {
     if (event.target.closest('input,textarea,select,button,a,[contenteditable="true"],.node-top-toolbar,.creator-toolbar,.add-node-menu,.node-context-menu')) return;
     event.preventDefault();
@@ -1884,7 +1879,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       setNodeMenu({
         x: Math.max(8, Math.min(event.clientX, window.innerWidth - 238)),
         y: Math.max(8, Math.min(event.clientY, window.innerHeight - (inspectable ? 200 : 135))),
-        nodeId: node.id, title: node.data.title || '节点', file: nodeFileLocation(node), inspectable, status: 'idle', error: null,
+        nodeId: node.id, title: node.data.title || '节点', file: nodeFileLocation(node, project.id, window.location.origin), inspectable, status: 'idle', error: null,
       });
       return;
     }
@@ -1894,7 +1889,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (!nodeMenu?.file || nodeMenu.status === 'opening') return;
     setNodeMenu((menu) => ({ ...menu, status: 'opening', error: null }));
     try {
-      await requestFileLocation(nodeMenu.file);
+      if (nodeMenu.file.kind === 'project') await revealProjectAsset(nodeMenu.file);
+      else await requestFileLocation(nodeMenu.file);
       setNodeMenu(null);
     } catch (error) {
       setNodeMenu((menu) => ({ ...menu, status: 'error', error: error.message || '无法打开文件位置。' }));
@@ -2098,25 +2094,27 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>
           <div className="add-menu-title">游戏美术 / 精灵图</div>
           <button onClick={() => addNode(...NODE_PRESETS.sprite_atlas, addMenu.flow)}><i><Grid2X2 size={17} /></i><span>3D 角色转多方向图集<small>Blender CPU · 颜色 + 相机空间法线 + JSON</small></span><Plus size={13} /></button>
-          <div className="add-menu-title">官方节点</div>
-          <button onClick={() => addNode('generator', {}, addMenu.flow)}><i><WandSparkles size={17} /></i><span>视频生成<small>MiniMax H3 · 全能参考 / 首尾帧</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('generator', { mode: 'image', title: '文生图' }, addMenu.flow)}><i><ImageIcon size={17} /></i><span>文生图<small>Krea2 / MOSS · 新人物与场景 · 约 1MP</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('generator', { mode: 'image', title: 'H3-Image · 文生图', imageModel: 'h3_image', imageLora: 'none', h3ImageResolution: '4MP', ratio: '1:1' }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>H3-Image 文生图<small>MiniMax · 6 步 · 4MP / 16MP</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('generator', { mode: 'qwenEdit', title: 'H3-Image · 多图编辑', qwenModel: 'h3_image', imageLora: 'none', h3ImageResolution: '4MP' }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>H3-Image 多图编辑<small>连接参考图片 · 图1决定比例</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('generator', { mode: 'qwenEdit', title: '图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>图生图<small>千问 2.1 · 多图参考 · 标准 / Turbo</small></span><Plus size={13} /></button>
+          <div className="add-menu-title">本地模型节点</div>
+          <button onClick={() => addNode('generator', {}, addMenu.flow)}><i><WandSparkles size={17} /></i><span>视频生成<small>MiniMax H3 · Community License · 地域限制：欧盟/英国/韩国/美国</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'image', title: '文生图' }, addMenu.flow)}><i><ImageIcon size={17} /></i><span>文生图<small>Krea2：Community + 作者许可待核实 · MOSS：Apache-2.0</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'image', title: 'H3-Image · 文生图', imageModel: 'h3_image', imageLora: 'none', h3ImageResolution: '4MP', ratio: '1:1' }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>H3-Image 文生图<small>H3-Image Community License · 地域限制：欧盟/英国/韩国/美国</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'qwenEdit', title: 'H3-Image · 多图编辑', qwenModel: 'h3_image', imageLora: 'none', h3ImageResolution: '4MP' }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>H3-Image 多图编辑<small>H3-Image Community License · 含地域限制 · 图1决定比例</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'qwenEdit', title: '图生图', randomSeed: true, qwenSteps: 40, qwenRefResolution: 1024 }, addMenu.flow)}><i><WandSparkles size={17} /></i><span>图生图<small>Qwen Research License · 多图参考 · 标准 / Turbo</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'imageUpscale', title: '图片高清', imageScale: 1.5, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>图片高清<small>SeedVR2 · Apache-2.0 · 3B / 7B</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('generator', { mode: 'upscale', title: '视频高清二采', resolution: '720P', randomSeed: false }, addMenu.flow)}><i><Sparkles size={17} /></i><span>视频高清二采<small>H3 Community License + 放大器 Apache-2.0 · 含地域限制</small></span><Plus size={13} /></button>
+          <div className="add-menu-title">本地图片工具与素材</div>
           <button onClick={() => addNode(...NODE_PRESETS.local_mask, addMenu.flow)}><i><Crosshair size={17} /></i><span>局部遮罩修改<small>绘制修改范围 · 连接图生图遮罩输入</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('generator', { mode: 'imageUpscale', title: '图片高清', imageScale: 1.5, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>图片高清<small>可选 SeedVR2 3B / 7B · 调整放大倍率</small></span><Plus size={13} /></button>
           <button disabled={project.readOnly} onClick={() => pureRefFileRef.current?.click()}><i><Upload size={17} /></i><span>导入 PureRef 图片<small>.pur 内嵌图片 → 普通图片节点 · 网格排列</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>作品 + 可选参考 → 可编辑辅助线与详细解析 PNG</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'colorAdjust', title: '颜色调整' }, addMenu.flow)}><i><Settings2 size={17} /></i><span>图片调色<small>曲线 · 波峰色阶 · 曝光 · HSL · 色彩平衡等</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'imageBlend', title: '图像混合' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>图像混合<small>底图 + 叠加图 · 14 种混合模式 · 可选遮罩</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'channelPack', title: 'RGBA 通道合并', packPreview: 'rgb' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>RGBA 通道合并<small>四张灰度贴图 → RGBA · 32 位 TGA 导出</small></span><Plus size={13} /></button>
-          <button onClick={() => addNode('generator', { mode: 'upscale', title: '视频高清二采', resolution: '720P', randomSeed: false }, addMenu.flow)}><i><Sparkles size={17} /></i><span>视频高清二采<small>独立运行 · 3D Latent 放大 · 4 步 Turbo</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('image', {}, addMenu.flow)}><i><ImageIcon size={17} /></i><span>图片素材<small>角色、场景、风格参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode(...NODE_PRESETS.video_download, addMenu.flow)}><i><ArrowDownToLine size={17} /></i><span>视频链接下载<small>粘贴分享链接 · 下载到画布</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('video', {}, addMenu.flow)}><i><Video size={17} /></i><span>视频素材<small>动作、运镜或内容参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('audio', {}, addMenu.flow)}><i><Music2 size={17} /></i><span>音频素材<small>音色、配乐或声音参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('note', {}, addMenu.flow)}><i><Type size={17} /></i><span>文本备注<small>分镜与创作设定</small></span><Plus size={13} /></button>
+          <div className="add-menu-title">付费 API 节点</div>
+          <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>云端视觉 API · 按服务商计费 · 上传作品及参考</small></span><Plus size={13} /></button>
           <div className="add-menu-title">第三方工具</div>
           {LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset]).map((tool) => <button key={tool.preset} onClick={() => addNode(...NODE_PRESETS[tool.preset], addMenu.flow)}><i><WandSparkles size={17} /></i><span>{tool.label}<small>{tool.description}</small></span><Plus size={13} /></button>)}
           <button onClick={() => { setAddMenu(null); setWorkflowLibraryOpen(true); }}><i><Library size={17} /></i><span>已安装的节点工具<small>选择从节点库下载或本地导入的工作流</small></span><Plus size={13} /></button>
