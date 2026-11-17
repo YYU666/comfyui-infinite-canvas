@@ -1,98 +1,151 @@
-# PCG M1：Agent 开发与使用手册
+# PCG M2：Agent 开发与使用手册
 
-## 当前能力与发现
+当前切片提供自写标准库几何、保存图求值、受限 worker、真实 GLB/JSON 和只读 SVG。M2 正在集成验收；本手册描述代码接口，不代表 CI、正式画布或发布验收完成。M3–M5 未开始，`game_asset` 是明确不可运行的 M3 占位。旧 `diagnostic` 与 `geometry_stub` 保留 M1 合同，不能替代几何输出。
 
-本切片交付宿主合同及固定诊断操作。它没有几何生成算法，也没有接入冻结的 3D 资产处理链。不要把诊断报告当成模型，不要把占位节点运行失败说成建模成功。
+先调用 `canvas_pcg_describe {}`，以返回的 `pcg/registry.json` 描述、schema、示例和错误恢复为准。namespace=`refmuse.pcg`，descriptorVersion=1、operationVersion=1、pluginVersion=1.0.0。`ready` 表示固定操作已实现；本机 OS 隔离仍须 preflight 通过。未知版本、额外字段、自由表达式、脚本、路径、URL、可执行文件参数全部拒绝。
 
-先调用 `canvas_pcg_describe {}`，读取注册表、工具 schema、示例、错误恢复说明。UI、页面工具、宿主和 worker 使用同一份 `pcg/registry.json`。固定身份为 namespace `refmuse.pcg`、descriptorVersion `1`、pluginVersion `1.0.0`、operationVersion `1`。未知版本必须停止，不猜测兼容。
+只使用拥有写锁的当前项目页。创建→设参→连接→保存→预检→运行→等待→读回→核验→导出；项目只读、切换或 revision 冲突时停止修改。开发验证只用合成夹具；本文示例不授权操作正式页面或生成服务。
 
-菜单在「3D与游戏资产 / 程序化建模〔PCG插件〕」。注册的是本切片的合同诊断和执行器占位，不提前铺开未实现的算法菜单。预览仅展示状态、身份和结果；用户不需要操作 3D 视口。
+## 五个任务入口
 
-Agent 沿用创建→设参→连接→预检→运行→等待→读回→核验。所有修改必须在拥有写锁的当前项目页执行；只读、切换中或项目不匹配时停止。不要用另一个页面或直接改项目文件来绕过冲突。本手册的工具例子说明未来获准项目页中的用法，本线程开发测试只使用隔离夹具。
+表中 `?` 表示可选端口。最小参数例使用实际默认值；所需输入从同一保存图中的节点连入，不能把数组或路径直接塞入 run。`Geometry` 是 Mesh/PointSet/InstanceSet 的封闭联合类型，具体操作还会检查实际子类型。
 
-## 节点说明
-
-| ID | 用途与输入 | 输出 | 最小用法 | 常见错误与处理 |
+| ID（均加 `refmuse.pcg.`） | 用途与输入约束 | 输入 → 输出端口 | 最小参数例 | 常见错误与处理 |
 | --- | --- | --- | --- | --- |
-| `refmuse.pcg.diagnostic` | 核对合同和进程边界；可选 `geometry:GeometryArtifact`、`instances:InstanceSet`、`field:Field`、`attribute:Attribute`；`label` 最长 80 字符 | `report:DiagnosticReport`，包含实际 workerPid、输入数量/类型、inputHash；没有模型 | 创建、设置 `{"label":"M1 check"}`，不接输入，保存后预检/运行/等待/读回/verify | `INPUT_UNAVAILABLE`：连接源未产生真实结果，断开或等待正确源；`WORKER_*`：保留失败并明确新建 run，不偷偷自动替代 |
-| `refmuse.pcg.geometry_stub` | 为几何端口与版本校验保留身份，可选 `geometry:GeometryArtifact`；参数必须 `{}` | 声明 `geometry:GeometryArtifact`，M1 没有实际输出 | 创建→读回 descriptor→preflight；预期 `EXECUTOR_UNAVAILABLE` | 这是明确未就绪，不能靠改 readiness、伪造 report 或重命名输入来通过；等待后续批准执行器 |
+| `shape` | 基础体任务入口；调用同一 primitive 执行器；无输入，参数选择 box/sphere/cylinder/plane | `—` → `geometry:Geometry` | `{"kind":"box","size":[1,1,1],"subdivisions":0}` | 未知 kind 或零尺寸：修正参数 |
+| `rock` | 确定性岩石配方：sphere→attribute_read(position)+noise_field(scalar)→field_math(multiply)→set_position→recompute_normals；无输入；seed 改变真实顶点 | `—` → `geometry:Geometry` | `{"seed":0,"subdivisions":2,"size":[1,1,1],"roughness":0.2}` | 细分预算：降低 subdivisions；不是质量认证 |
+| `scatter` | 表面采样并共享原型实例化；geometry=Mesh；prototype=Mesh | `geometry:Geometry；prototype:Geometry` → `instances:Geometry` | `{"count":100,"seed":0,"minDistance":0,"maxSlope":90,"minHeight":-1000000.0,"maxHeight":1000000.0,"scale":[1,1,1]}` | INSUFFICIENT_PLACEMENT：减少 count/间距或放宽坡度高度 |
+| `compose` | 同类型几何组合入口；a、b 均 Mesh 或均 PointSet | `a:Geometry；b:Geometry` → `geometry:Geometry` | `{}` | 混合类型/实例：显式处理；不隐式 realize |
+| `game_asset` | M3 游戏资产桥占位；M2 不执行；没有可用输入来源，参数 {} | `—` → `geometry:Geometry` | `{}` | M3_BRIDGE_UNAVAILABLE：保留可读节点，等待独立桥接批准 |
 
-可用通用 preset：`pcg_diagnostic`、`pcg_geometry_stub`。首选专用创建工具，它明确传版本和参数。诊断没有可连到几何输入的输出；`DiagnosticReport` 与 `GeometryArtifact` 不兼容。几何占位的 geometry→诊断 geometry 是合法可见边，但上游没有执行器时整链不可运行。
+## 十八个原子操作
 
-## 最小可运行诊断回路
+任务配方与下列原子操作使用同一求值器；可以建立非固定配方的组合图。
 
-下例 `P` 为当前项目 ID，`N`、`R`、`H` 全部取自真实工具返回值。不要把示例字符串直接当成实际身份。
+| ID（均加 `refmuse.pcg.`） | 用途与输入约束 | 输入 → 输出端口 | 最小参数例 | 常见错误与处理 |
+| --- | --- | --- | --- | --- |
+| `primitive` | 创建自写基础几何；无输入；kind 选择基础体 | `—` → `geometry:Geometry` | `{"kind":"box","size":[1,1,1],"subdivisions":0}` | kind/尺寸无效或细分超限：修正参数 |
+| `transform` | 平移、欧拉旋转（弧度）、缩放；geometry=任一 Geometry | `geometry:Geometry` → `geometry:Geometry` | `{"translation":[0,0,0],"rotation":[0,0,0],"scale":[1,1,1]}` | 零缩放拒绝；实例父变换只接受均匀缩放，避免丢失剪切 |
+| `join_geometry` | 合并网格或点集；a、b 为相同 Mesh/PointSet | `a:Geometry；b:Geometry` → `geometry:Geometry` | `{}` | 混合类型、InstanceSet 或合并后超预算：显式拆分 |
+| `subdivide` | 网格三角形细分；geometry=Mesh | `geometry:Geometry` → `geometry:Geometry` | `{"levels":1}` | 点集/实例拒绝；levels 增大会触发预算 |
+| `attribute_read` | 读位置或角法线为已绑定 Field；geometry；position→Point，normal→Corner | `geometry:Geometry` → `field:Field` | `{"name":"position"}` | normal 需要 Mesh 法线；不能把 Corner 当 Point |
+| `noise_field` | 确定性标量/向量噪声；geometry；可选同绑定 Point position:Field | `geometry:Geometry；position:Field?` → `field:Field` | `{"seed":0,"amplitude":0.1,"frequency":1,"output":"vector3"}` | 位置 Field 绑定/域/类型不符：从当前几何重新读取 |
+| `field_math` | 加乘、取分量、长度、归一化；a:Field；可选同绑定/域的数值 b | `a:Field；b:Field?` → `field:Field` | `{"operation":"multiply","value":1}` | 不同绑定/域或非数值类型拒绝；允许标量/向量逐分量广播；零向量不能归一化 |
+| `compare` | 标量比较产生布尔 Selection；field 为 float/integer Field | `field:Field` → `selection:Selection` | `{"operation":"greater","value":0}` | vector3 先经 length/component 提取标量 |
+| `selection` | 域内全选/空选/每N项及布尔组合；geometry；and/or 需 a,b，not 需 a | `geometry:Geometry；a:Selection?；b:Selection?` → `selection:Selection` | `{"domain":"Point","mode":"all","every":2}` | 选择域和源必须一致；缺少布尔输入应补连线 |
+| `set_position` | 按选区应用 Point 向量位移；geometry=Mesh/PointSet；offset=Point vector3；selection 可选 | `geometry:Geometry；offset:Field；selection:Selection?` → `geometry:Geometry` | `{}` | Corner/标量位移或旧绑定拒绝；变形后重算法线 |
+| `recompute_normals` | 显式重建平滑/平面 Corner 法线；geometry=Mesh | `geometry:Geometry` → `geometry:Geometry` | `{"mode":"smooth"}` | 非 Mesh 拒绝；检查 mode 枚举 |
+| `sample_texture` | 受管内存图片采样为 Field；geometry；可选 Image；缺图用显式 color 常量纹理 | `geometry:Geometry；image:Image?` → `field:Field` | `{"interpolation":"bilinear","mapping":"uv","channel":"rgb","color":[0.5,0.5,0.5]}` | uv 要有效 Corner UV；投影 xy/xz/yz 为 Point；不接受文件路径 |
+| `scatter_points` | 按面积/坡度/高度/间距确定性表面采样；geometry=Mesh | `geometry:Geometry` → `points:Geometry` | `{"count":100,"seed":0,"minDistance":0,"maxSlope":90,"minHeight":-1000000.0,"maxHeight":1000000.0}` | INSUFFICIENT_PLACEMENT 无部分成功；调整约束或数量 |
+| `instance_on_points` | 每个点放置共享原型；points=PointSet；prototype=Mesh | `points:Geometry；prototype:Geometry` → `instances:Geometry` | `{"scale":[1,1,1]}` | 类型错误或零 scale 拒绝；输出保持实例 |
+| `instance_transform` | 变换实例集，保留共享原型；instances=InstanceSet | `instances:Geometry` → `instances:Geometry` | `{"translation":[0,0,0],"rotation":[0,0,0],"scale":[1,1,1]}` | 父缩放须均匀；需要实体网格时显式 realize |
+| `realize_instances` | 显式展开实例为网格；instances=InstanceSet | `instances:Geometry` → `geometry:Geometry` | `{}` | 展开前检查顶点/三角形预算，过量拒绝 |
+| `inspect_geometry` | 有界诊断并透传几何；geometry=任一 Geometry | `geometry:Geometry` → `report:DiagnosticReport；geometry:Geometry` | `{}` | report 不可连到 geometry；实例 bounds 为保守包围盒 |
+| `publish_geometry` | 校验并透传，宿主发布真实受管资产；geometry=任一 Geometry | `geometry:Geometry` → `geometry:Geometry` | `{}` | 导出精度丢失/资产哈希变化拒绝；不是 M3 质量门 |
+
+`shape`/`primitive`：kind 默认 box，size=[1,1,1]，subdivisions=0..6；rock 默认 subdivisions=2、roughness=.2、seed=0。旋转为弧度，scatter 的 maxSlope 为相对 +Y 的角度。M2没有文件图片导入或生成Image的节点；保存图中的纹理采样使用显式color常量，Image端口只声明受管内存数据合同。完整参数范围见 [ENGINE_API.md](../../pcg/ENGINE_API.md)，运行前仍须读取实际 descriptor。
+
+## 完整工具回路
+
+下面 `call` 是 Agent 的工具入口，不是 worker 执行脚本功能；`P`、节点 ID、保存 revision 和 handle 必须来自实际返回值。示例建立 primitive→transform→publish_geometry，与任务入口预设无关。
 
 ```javascript
-const catalog = await call('canvas_pcg_describe', {});
-const created = await call('canvas_pcg_create_node', {
-  projectId: P, descriptorId: 'refmuse.pcg.diagnostic',
-  descriptorVersion: 1, operationVersion: 1, x: 0, y: 0
+await call('canvas_pcg_describe', {});
+const page=await call('canvas_get_state',{});
+const P=page.projectId;
+const create = async descriptorId => call('canvas_pcg_create_node', {
+  projectId: P, descriptorId: `refmuse.pcg.${descriptorId}`,
+  descriptorVersion: 1, operationVersion: 1
 });
-// 从 created 返回的 node 身份取 N。
-const updated = await call('canvas_pcg_set_parameters', {
-  projectId: P, nodeId: N, descriptorVersion: 1, operationVersion: 1,
-  parameters: { label: 'M1 check' }
+const source = await create('primitive');
+const moved = await create('transform');
+const final = await create('publish_geometry');
+const S = source.node.id, M = moved.node.id, N = final.node.id;
+await call('canvas_pcg_set_parameters', {
+  projectId:P,nodeId:S,descriptorVersion:1,operationVersion:1,
+  parameters:{kind:'box',size:[1,1,1],subdivisions:0}
 });
-// 从 updated 取保存后的 revision R；图改变后必须重新读取 R。
-const request = {
-  projectId: P, nodeId: N, revision: R, descriptorVersion: 1,
-  operationVersion: 1, runId: 'm1-check-001'
-};
-await call('canvas_pcg_preflight', request);
-const {task} = await call('canvas_pcg_run', request);
-const H = Object.fromEntries([
+await call('canvas_pcg_set_parameters', {
+  projectId:P,nodeId:M,descriptorVersion:1,operationVersion:1,
+  parameters:{translation:[1,0,0],rotation:[0,0,0],scale:[1,1,1]}
+});
+await call('canvas_connect_nodes', {
+  sourceId:S,targetId:M,sourceHandle:'geometry',targetHandle:'geometry'
+});
+await call('canvas_connect_nodes', {
+  sourceId:M,targetId:N,sourceHandle:'geometry',targetHandle:'geometry'
+});
+// 连线已保存；读取当前页实际最新 revision。
+const saved=await call('canvas_get_state',{});
+const R=saved.revision;
+const request={projectId:P,nodeId:N,revision:R,
+  descriptorVersion:1,operationVersion:1,runId:'geometry-001'};
+const checked=await call('canvas_pcg_preflight',request);
+if(!checked.ok || !checked.isolation?.available) throw new Error('预检/隔离未通过');
+// 核对 executionOrder/dirtyNodes/cacheHits。
+const launched=await call('canvas_pcg_run',request);
+if (!launched.ok) throw new Error('保留并读取 launched.task/error');
+const H=Object.fromEntries([
   'projectId','nodeId','revision','descriptorVersion','operationVersion',
   'runId','jobId','inputHash'
-].map(key => [key, task[key]]));
-let answer = await call('canvas_pcg_wait', {...H, timeoutMs: 1000});
-// queued/running 时继续相同 handle 的有界等待，不重复提交 run。
-while (['queued','running'].includes(answer.task.status)) {
-  answer = await call('canvas_pcg_wait', {...H, timeoutMs: 1000});
+].map(key=>[key,launched.task[key]]));
+let waited=await call('canvas_pcg_wait',{...H,timeoutMs:1000});
+while (['queued','running'].includes(waited.task.status)) {
+  waited=await call('canvas_pcg_wait',{...H,timeoutMs:1000});
 }
-const result = await call('canvas_pcg_read', H);
-if (result.task.status !== 'succeeded') throw new Error('检查保留的 task.error');
-const verified = await call('canvas_pcg_verify', H);
-// 核对 verified.verified === true，inputHash/resultHash 与本任务一致。
+const read=await call('canvas_pcg_read',H);
+if(read.task.status!=='succeeded') throw new Error('检查 read.task.error');
+const verified=await call('canvas_pcg_verify',H);
+if(verified.verified!==true) throw new Error('结果未通过核验');
+const exported=await call('canvas_pcg_export',{...H,format:'glb',port:'geometry'});
+// 核对 exported.artifact 的 jobId/runId/inputHash、sha256/bytes/mime/role/url。
+// 需要终止正在执行的任务时，在等待循环期间使用：
+// await call('canvas_pcg_cancel',H);
+// 再等待 cancelled/failed 终态；不会取消其他任务或服务。
 ```
 
-此代码中的 `call` 是当前 Agent 提供的工具调用入口，不是插件执行代码功能。worker 不接受这段脚本，也不执行用户字符串。
+完整 handle 含八个字段，不能仅传 jobId：
 
-## 每个工具的输入、输出与恢复
+```json
+{"projectId":"prj_example","nodeId":"pcg-1","revision":2,"descriptorVersion":1,"operationVersion":1,"runId":"run-001","jobId":"pcg_0123456789abcdef0123456789abcdef","inputHash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+```
 
-每个工具的机器可读 schema 和直接调用示例由 `canvas_pcg_describe` 返回。额外参数、未知版本和非有限数值不合法；不要向 run 塞入参数或一份并行的图，参数和连接取自已保存项目。
+八项身份字段为：projectId/nodeId/revision/descriptorVersion/operationVersion/runId/jobId/inputHash；以 JSON 和工具 schema 为准，不增加 display label 或 resultHash。`canvas_pcg_list_tasks {projectId:P,nodeId:N}` 用于页面重载恢复。宿主重启后内存任务/缓存不保证保留。相同 runId 只对完全相同身份/输入幂等；参数、连线、revision 或版本改变须新 runId。queued/running 时继续有界 wait（0..20000ms），不重复 run。
 
-| 工具 | 输入 / 最小示例 | 输出与用途 | 错误处理 |
-| --- | --- | --- | --- |
-| `canvas_pcg_describe` | `{}` | 共享节点描述、工具 schema、示例与错误；先发现再操作 | 未发现插件时保持旧项目可读，不装依赖 |
-| `canvas_pcg_create_node` | `{projectId:P,descriptorId:"refmuse.pcg.diagnostic",descriptorVersion:1,operationVersion:1}` | 创建并保存节点，返回节点与 revision | 未知描述/版本或只读：停止；不要转成 note 绕过 |
-| `canvas_pcg_set_parameters` | `{projectId:P,nodeId:N,descriptorVersion:1,operationVersion:1,parameters:{label:"M1 check"}}` | 校验后设置参数并保存，返回 revision | 未知参数/超长 label：按 descriptor 修正；占位仅接受 `{}` |
-| `canvas_connect_nodes` | `{sourceId:S,targetId:N,sourceHandle:"geometry",targetHandle:"geometry"}` | 产生真实类型化可见连线；M1 可连占位，但不能产出几何 | 端口/类型不符、循环、重复输入：修正图；report 不能冒充 geometry |
-| `canvas_pcg_preflight` | 上节 `request` | 检查保存版本、依赖、端口、输入及就绪状态，不执行 worker | 缺件即停止；revision 冲突先保存/读取最新图，不改旧 handle |
-| `canvas_pcg_run` | 同一 `request` | 返回任务及完整身份；固定诊断在独立本地进程执行 | 相同 run 与输入幂等；换参数/身份要新 runId。失败节点和任务保留 |
-| `canvas_pcg_wait` | `{...H,timeoutMs:1000}`，0–20000 毫秒 | 有界等待后返回当前任务；未终态继续 wait | 不因 pending 重跑，不无限阻塞单次调用 |
-| `canvas_pcg_read` | `H` | 读回真实报告/错误与身份；旧任务明确标过期 | 跨项目或伪造身份拒绝；过期任务可查看但不当作当前输出 |
-| `canvas_pcg_verify` | `H` | 校验成功报告、inputHash、resultHash、版本和归属 | failed/pending/stale 或被改结果不能 verified；检查原因再新 run |
-| `canvas_pcg_list_tasks` | `{projectId:P,nodeId:N}` | 查询同节点保留任务，用于页面重载恢复 | 仅当前授权项目；宿主重启后不能假定旧内存任务仍存在 |
+## 工具输入、输出与恢复
 
-通用 `canvas_create_node`、`canvas_update_node`、`canvas_generate_node`、`canvas_wait_for_node`、`canvas_get_state` 提供薄适配，保持现有操作习惯。专用工具提供更明确的版本/任务身份；不得同时从多个页面写同一项目。
+| 工具 | 输入 | 真实输出及恢复 |
+| --- | --- | --- |
+| canvas_pcg_describe | `{}` | registry/tools/errors；先发现再建图 |
+| canvas_pcg_create_node | projectId/descriptorId/descriptorVersion/operationVersion，可选 x/y/focus | 节点与保存 revision；错误项目/只读立即停 |
+| canvas_pcg_set_parameters | projectId/nodeId/两版本/parameters | 同源 schema 校验、保存并返回 revision；替换整个参数对象 |
+| canvas_connect_nodes | sourceId/targetId/sourceHandle/targetHandle | 当前页真实边；拒绝未知端口、类型错误、环与重复输入；完成连线后核对保存 revision |
+| canvas_pcg_preflight | 六项 request 身份 | 保存 DAG、依赖顺序、dirty/cache 预测、隔离可用性；不运行几何 |
+| canvas_pcg_run | 同一 request | 完整 task；几何不可用时保留 failed，不降级执行 |
+| canvas_pcg_wait/read | 完整 H；wait 可选 timeoutMs | task 实际状态/有界结果/错误/stale；旧任务可读，不能当当前输出 |
+| canvas_pcg_verify | 完整 H | verified/inputHash/resultHash；复核当前图和真实资产哈希 |
+| canvas_pcg_cancel | 完整 H | 仅本任务取消标志与受管 OS job；已终态不变；旧 handle 拒绝修改 |
+| canvas_pcg_export | 完整 H，MCP 必须 format=glb/json，可选 port | 受管 artifact；只导出成功且当前的几何端口；预览不作模型 |
+| canvas_pcg_list_tasks | projectId/nodeId | 当前授权项目同节点保留任务，最新在前 |
 
-## 开发合同与边界
+## 读回、导出、缓存
 
-`pcg/API.md` 说明 HTTP 路由、身份和 stdio 报告；`pcg_contracts.py` 为严格值验证权威实现；UI 对参数做同源提前校验，后端仍完整重验。新增操作须先更新共享 descriptor，再补 worker 白名单、合同测试和手册；不能只加菜单或 preset。
+`task.result.outputs` 返回真实 counts/bounds、域、content/topology binding 及每值最多64项确定性抽样；完整数组留在受限 IPC 和宿主验证/缓存中，不默认塞入 MCP。`report` 提供实际 computedNodes/cacheHits、节点 elapsedMs/outputBytes 和宿主总 elapsedMs；preflight 只是预测，不能拿预测当计算证据。
 
-- `GeometryArtifact v1`：不可变项目/资产/hash/topology 身份，米制、右手、Y-up；bounds 和 Point/Face/Corner 统计分开。M1 是元数据合同，不能声称已验证实际网格拓扑。
-- `InstanceSet v1`：绑定原型资产、稳定实例 ID 和有界 row-major 4×4 仿射矩阵；不隐式实体化。
-- `Field v1`：有限 DAG、固定算子白名单与值类型；在明确几何和属性域求值。禁止自由表达式、脚本、动态导入和可执行路径。
-- `Attribute/Selection v1`：绑定具体几何/hash/topology 和 Point/Face/Corner/Instance/Detail；角属性不能按共享点数组混合，未知域转换拒绝。
-- 资产经纪仅访问同项目资产清单注册的受管内容寻址文件；拒绝绝对路径、URL、UNC、穿越、链接/reparse、硬链接及哈希变化。输出模型解析不属于 M1。
-- 任务身份包含项目、节点、保存 revision、descriptor/operation 版本、runId、jobId、inputHash。展示文字不构成结果身份；旧任务不会改写项目或覆盖新任务结果。
-- worker 仅固定 stdio 诊断操作，限制输入、输出、时长与继承环境，无监听端口。这是进程分离，**不是完整 OS 沙箱**；引入实际模型解析前必须另过隔离门。
+`task.result.stagePreviews` 按保存图的执行顺序列出每一步的 nodeId、jobId/runId/inputHash/outputHash、cacheHit/elapsedMs、有界 outputs 和真实 SVG assets。Field/Selection 保留源绑定、域、数量及最多64样本；几何步骤的 SVG 绑定 producerNodeId，可在节点详情只读展开。全部步骤 SVG 合计不得超过16MiB，超限先失败，不静默漏掉步骤。`report.queueWaitMs` 为实际排队时间；4个任务准入仅一个几何任务实际执行，等待者保持 queued，可单独取消。
 
-## 错误决策
+几何输出成功后宿主发布三种不同角色：GLB `role:model`、原生 JSON `role:data`、固定机位 SVG `role:preview`。每项含 artifactId、SHA256、bytes、format/mime、port、job/run/input/project/revision 与受认证本地 URL。GLB 为真实二进制模型，实例共享原型；JSON 保留域数据；SVG 从实际几何投影，最多抽取1800个三角形/点并标注抽样，只读、无交互，不是完整模型或实时视口。下载和 verify 重验文件身份与哈希。浮点32精度导致退化时 EXPORT_PRECISION_LOSS，不能输出看似成功的坏模型。
 
-`REVISION_CONFLICT`：读当前图、保存、重新预检并使用新 runId。`IDEMPOTENCY_CONFLICT`：不要复用已代表另一输入的 runId。`VERSION_UNSUPPORTED`：读取已安装 descriptor，禁止自行改版本字段。`INVALID_CONTRACT`：查看 details，按声明修正字段/域/类型。`EXECUTOR_UNAVAILABLE`：停止几何运行，报告未实现。`INPUT_UNAVAILABLE`：检查真实上游结果和连接。`WORKER_TIMEOUT/CRASH/PROTOCOL`：保留错误，确认实现/环境后显式重试，不拿输入充当输出。权限、锁冲突和项目切换错误：停止修改，不转用隐藏页或正式服务直提任务。
+缓存键含操作/版本、规范参数、显式输入内容及 Field/Selection 绑定，不含项目 revision；按项目/宿主隔离并返回副本。32MiB/256条 LRU；最多256任务、4个任务准入、1个几何执行、64MiB保留最终值、依赖图最多256节点。局部修改只重算其依赖后代；断开的分支不参与目标求值。旧 revision 或同节点新 run 使旧结果 stale，旧 run 不能覆盖新结果。
 
-## 后续门禁
+## Windows 隔离和未交付范围
 
-M2 几何算法、M3 冻结资产桥、M4 增量 3D 展示、M5 正式画布验收均未包含于本切片。冻结快照来源/哈希与允许改动范围，以及后续几何实现复用或自写路线，仍待木一决定。详见 `DEV_STEPS.md`。
+几何协议2仅在可验证的 Windows AppContainer 中运行：每任务唯一 SID、零 capabilities、受保护只读代码/运行时 ACL、独占可写低完整性临时区、仅三条 stdio 句柄、禁止子进程，挂入资源 JobObject 后才恢复执行。JobObject 限制1进程、内存、CPU时间并 kill-on-close；超时/取消/输出超量终止本 job。环境仅系统目录/盘符及本任务 profile/temp，Python `-I -S -B` 且无 site-packages。应用容器仍保留 OS 允许的系统文件访问；不声称系统所有文件都不可读。
+
+宿主要求已有匹配标准库 zip 和 windowless 解释器；不安装依赖、不请求管理员权限。几何运行时使用512MiB内存和最大64MiB stdio输出；descriptor 时限通常30秒，CPU上限为墙钟一半。无该能力的平台/解释器返回 ISOLATION_UNAVAILABLE；图仍可读，几何不退化成普通进程。旧协议1固定诊断仍是独立可信诊断，不能称为 OS 沙箱。详见 [ISOLATION_API.md](../../pcg/ISOLATION_API.md)。
+
+M3 游戏资产桥、既有资产导入/质量门、原型碰撞包围体约束，M4实时增量3D展示，M5正式画布/发布验收均未实现。本切片不以 GLB 导出代替这些门。
+
+## 常见错误决策
+
+REVISION_CONFLICT/STALE_RUN：读当前保存图，新 runId；IDEMPOTENCY_CONFLICT：旧 runId 不代表新输入。PORT_UNKNOWN/PORT_TYPE_MISMATCH/GRAPH_CYCLE：修真实边。FIELD_BINDING_MISMATCH：从当前几何重建 Field；FIELD_DOMAIN_MISMATCH：保持 Point/Corner/Instance 的实际域，set_position 只能 Point vector3。INSUFFICIENT_PLACEMENT：明确减少数量/间距或放宽高度/坡度，不接受部分结果。BUDGET_EXCEEDED：降低细分/数量/图规模。ISOLATION_UNAVAILABLE：保留失败，修宿主能力；M3_BRIDGE_UNAVAILABLE/EXECUTOR_UNAVAILABLE：保持占位，不能伪造输出。WORKER_TIMEOUT/CRASH/PROTOCOL：保留错误后显式新 run；WORKER_CANCELLED 为取消终态。资产哈希或链接异常直接拒绝。权限/项目/锁冲突停止修改，不开第二页面或直提任务绕过。

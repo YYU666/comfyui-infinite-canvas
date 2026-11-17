@@ -10,14 +10,74 @@
       "operationVersion": 1,
       "label": "合同诊断",
       "category": "diagnostics",
-      "parameters": {"type": "object", "additionalProperties": false, "properties": {"label": {"type": "string", "maxLength": 80, "default": "Contract check"}}, "required": []},
-      "inputs": [{"name": "geometry", "type": "GeometryArtifact", "required": false}, {"name": "instances", "type": "InstanceSet", "required": false}, {"name": "field", "type": "Field", "required": false}, {"name": "attribute", "type": "Attribute", "required": false}],
-      "outputs": [{"name": "report", "type": "DiagnosticReport", "required": true}],
-      "budget": {"timeoutMs": 5000, "maxInputBytes": 1048576, "maxOutputBytes": 65536, "maxItems": 1024},
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 80,
+            "default": "Contract check"
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "GeometryArtifact",
+          "required": false
+        },
+        {
+          "name": "instances",
+          "type": "InstanceSet",
+          "required": false
+        },
+        {
+          "name": "field",
+          "type": "Field",
+          "required": false
+        },
+        {
+          "name": "attribute",
+          "type": "Attribute",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "type": "DiagnosticReport",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 5000,
+        "maxInputBytes": 1048576,
+        "maxOutputBytes": 65536,
+        "maxItems": 1024
+      },
       "permissions": [],
-      "readiness": {"state": "ready", "code": null},
-      "examples": [{"parameters": {"label": "Contract check"}}],
-      "errors": ["INVALID_CONTRACT", "VERSION_UNSUPPORTED", "INPUT_UNAVAILABLE", "REVISION_CONFLICT", "WORKER_TIMEOUT", "WORKER_CRASH", "WORKER_PROTOCOL"]
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "label": "Contract check"
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL"
+      ]
     },
     {
       "id": "refmuse.pcg.geometry_stub",
@@ -26,14 +86,2057 @@
       "operationVersion": 1,
       "label": "几何执行器占位",
       "category": "geometry",
-      "parameters": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
-      "inputs": [{"name": "geometry", "type": "GeometryArtifact", "required": false}],
-      "outputs": [{"name": "geometry", "type": "GeometryArtifact", "required": true}],
-      "budget": {"timeoutMs": 5000, "maxInputBytes": 1048576, "maxOutputBytes": 65536, "maxItems": 1024},
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "GeometryArtifact",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "GeometryArtifact",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 5000,
+        "maxInputBytes": 1048576,
+        "maxOutputBytes": 65536,
+        "maxItems": 1024
+      },
       "permissions": [],
-      "readiness": {"state": "unavailable", "code": "EXECUTOR_UNAVAILABLE"},
-      "examples": [{"parameters": {}}],
-      "errors": ["EXECUTOR_UNAVAILABLE", "INVALID_CONTRACT", "VERSION_UNSUPPORTED", "REVISION_CONFLICT"]
+      "readiness": {
+        "state": "unavailable",
+        "code": "EXECUTOR_UNAVAILABLE"
+      },
+      "examples": [
+        {
+          "parameters": {}
+        }
+      ],
+      "errors": [
+        "EXECUTOR_UNAVAILABLE",
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "REVISION_CONFLICT"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.shape",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "形状",
+      "category": "task",
+      "description": "生成米制、右手 Y-up 基础网格。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "box",
+              "sphere",
+              "cylinder",
+              "plane"
+            ],
+            "default": "box"
+          },
+          "size": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              1,
+              1,
+              1
+            ]
+          },
+          "subdivisions": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6,
+            "default": 0
+          }
+        },
+        "required": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "kind": "box",
+            "size": [
+              1,
+              1,
+              1
+            ],
+            "subdivisions": 0
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.rock",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "岩石",
+      "category": "task",
+      "description": "用确定性噪声位移生成真实岩石网格。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "seed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "default": 0
+          },
+          "subdivisions": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6,
+            "default": 2
+          },
+          "size": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              1,
+              1,
+              1
+            ]
+          },
+          "roughness": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.4,
+            "default": 0.2
+          }
+        },
+        "required": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "seed": 0,
+            "subdivisions": 2,
+            "size": [
+              1,
+              1,
+              1
+            ],
+            "roughness": 0.2
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.scatter",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "散布",
+      "category": "task",
+      "description": "按表面面积、坡度、高度与最小间距布点，保留共享原型实例。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000,
+            "default": 100
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "default": 0
+          },
+          "minDistance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000.0,
+            "default": 0
+          },
+          "maxSlope": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 90,
+            "default": 90
+          },
+          "minHeight": {
+            "type": "number",
+            "minimum": -1000000.0,
+            "maximum": 1000000.0,
+            "default": -1000000.0
+          },
+          "maxHeight": {
+            "type": "number",
+            "minimum": -1000000.0,
+            "maximum": 1000000.0,
+            "default": 1000000.0
+          },
+          "scale": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        },
+        {
+          "name": "prototype",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "instances",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "count": 100,
+            "seed": 0,
+            "minDistance": 0,
+            "maxSlope": 90,
+            "minHeight": -1000000.0,
+            "maxHeight": 1000000.0,
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.compose",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "组合",
+      "category": "task",
+      "description": "组合两个同类型 Mesh 或 PointSet；不隐式实体化实例。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "a",
+          "type": "Geometry",
+          "required": true
+        },
+        {
+          "name": "b",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {}
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.game_asset",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "游戏资产",
+      "category": "task",
+      "description": "等待 M3 桥接与冻结快照授权；当前可读不可运行。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "unavailable",
+        "code": "M3_BRIDGE_UNAVAILABLE"
+      },
+      "examples": [
+        {
+          "parameters": {}
+        }
+      ],
+      "errors": [
+        "M3_BRIDGE_UNAVAILABLE",
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.primitive",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "基础体",
+      "category": "operator",
+      "description": "生成 box/sphere/cylinder/plane 网格。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "box",
+              "sphere",
+              "cylinder",
+              "plane"
+            ],
+            "default": "box"
+          },
+          "size": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              1,
+              1,
+              1
+            ]
+          },
+          "subdivisions": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6,
+            "default": 0
+          }
+        },
+        "required": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "kind": "box",
+            "size": [
+              1,
+              1,
+              1
+            ],
+            "subdivisions": 0
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.transform",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "变换",
+      "category": "operator",
+      "description": "对几何应用平移、弧度欧拉旋转、缩放。实例父缩放限均匀缩放。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "translation": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              0,
+              0,
+              0
+            ]
+          },
+          "rotation": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              0,
+              0,
+              0
+            ]
+          },
+          "scale": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "translation": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.join_geometry",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "合并几何",
+      "category": "operator",
+      "description": "合并同类型 Mesh 或 PointSet。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "a",
+          "type": "Geometry",
+          "required": true
+        },
+        {
+          "name": "b",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {}
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.subdivide",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "细分",
+      "category": "operator",
+      "description": "细分三角网格；旧拓扑绑定失效。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "levels": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6,
+            "default": 1
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "levels": 1
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.attribute_read",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "读取属性",
+      "category": "operator",
+      "description": "读取 Point 位置或 Corner 法线到绑定源几何的 Field。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "position",
+              "normal"
+            ],
+            "default": "position"
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "field",
+          "type": "Field",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "name": "position"
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.noise_field",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "噪声场",
+      "category": "operator",
+      "description": "生成确定性 Point 标量或向量噪声场。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "seed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "default": 0
+          },
+          "amplitude": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000,
+            "default": 0.1
+          },
+          "frequency": {
+            "type": "number",
+            "minimum": 0.0001,
+            "maximum": 1000,
+            "default": 1
+          },
+          "output": {
+            "type": "string",
+            "enum": [
+              "scalar",
+              "vector3"
+            ],
+            "default": "vector3"
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        },
+        {
+          "name": "position",
+          "type": "Field",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "field",
+          "type": "Field",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "seed": 0,
+            "amplitude": 0.1,
+            "frequency": 1,
+            "output": "vector3"
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.field_math",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "字段运算",
+      "category": "operator",
+      "description": "同源同域字段运算；分量与长度可转为标量。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "add",
+              "multiply",
+              "component_x",
+              "component_y",
+              "component_z",
+              "length",
+              "normalize"
+            ],
+            "default": "multiply"
+          },
+          "value": {
+            "type": "number",
+            "minimum": -1000,
+            "maximum": 1000,
+            "default": 1
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "a",
+          "type": "Field",
+          "required": true
+        },
+        {
+          "name": "b",
+          "type": "Field",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "field",
+          "type": "Field",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "operation": "multiply",
+            "value": 1
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.compare",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "比较",
+      "category": "operator",
+      "description": "将标量字段比较为同域 Selection。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "greater",
+              "less",
+              "equal"
+            ],
+            "default": "greater"
+          },
+          "value": {
+            "type": "number",
+            "minimum": -1000000000000.0,
+            "maximum": 1000000000000.0,
+            "default": 0
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "field",
+          "type": "Field",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "selection",
+          "type": "Selection",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "operation": "greater",
+            "value": 0
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.selection",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "选择",
+      "category": "operator",
+      "description": "创建指定域选择或组合绑定同源的选择。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "domain": {
+            "type": "string",
+            "enum": [
+              "Point",
+              "Face",
+              "Corner",
+              "Instance",
+              "Detail"
+            ],
+            "default": "Point"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "all",
+              "none",
+              "every_n",
+              "and",
+              "or",
+              "not"
+            ],
+            "default": "all"
+          },
+          "every": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000,
+            "default": 2
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        },
+        {
+          "name": "a",
+          "type": "Selection",
+          "required": false
+        },
+        {
+          "name": "b",
+          "type": "Selection",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "selection",
+          "type": "Selection",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "domain": "Point",
+            "mode": "all",
+            "every": 2
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.set_position",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "设置位置",
+      "category": "operator",
+      "description": "应用 Point 向量偏移和可选 Point Selection，清除过期法线。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        },
+        {
+          "name": "offset",
+          "type": "Field",
+          "required": true
+        },
+        {
+          "name": "selection",
+          "type": "Selection",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {}
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.recompute_normals",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "重算法线",
+      "category": "operator",
+      "description": "重建 Corner 域平面或平滑法线。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "flat",
+              "smooth"
+            ],
+            "default": "smooth"
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "mode": "smooth"
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.sample_texture",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "采样纹理",
+      "category": "operator",
+      "description": "采样内存 RGB 图像；无图时使用显式 color 常量，不读取文件。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "interpolation": {
+            "type": "string",
+            "enum": [
+              "nearest",
+              "bilinear"
+            ],
+            "default": "bilinear"
+          },
+          "mapping": {
+            "type": "string",
+            "enum": [
+              "uv",
+              "xy",
+              "xz",
+              "yz"
+            ],
+            "default": "uv"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "rgb",
+              "r",
+              "g",
+              "b"
+            ],
+            "default": "rgb"
+          },
+          "color": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "default": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        },
+        {
+          "name": "image",
+          "type": "Image",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "field",
+          "type": "Field",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "interpolation": "bilinear",
+            "mapping": "uv",
+            "channel": "rgb",
+            "color": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.scatter_points",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "表面布点",
+      "category": "operator",
+      "description": "面积加权采样 Mesh；无法满足约束则失败，不静默减量。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000,
+            "default": 100
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "default": 0
+          },
+          "minDistance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000.0,
+            "default": 0
+          },
+          "maxSlope": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 90,
+            "default": 90
+          },
+          "minHeight": {
+            "type": "number",
+            "minimum": -1000000.0,
+            "maximum": 1000000.0,
+            "default": -1000000.0
+          },
+          "maxHeight": {
+            "type": "number",
+            "minimum": -1000000.0,
+            "maximum": 1000000.0,
+            "default": 1000000.0
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "points",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "count": 100,
+            "seed": 0,
+            "minDistance": 0,
+            "maxSlope": 90,
+            "minHeight": -1000000.0,
+            "maxHeight": 1000000.0
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.instance_on_points",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "点上实例",
+      "category": "operator",
+      "description": "在 PointSet 上生成共享 Mesh 原型的实例。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scale": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "points",
+          "type": "Geometry",
+          "required": true
+        },
+        {
+          "name": "prototype",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "instances",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.instance_transform",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "实例变换",
+      "category": "operator",
+      "description": "变换 InstanceSet，保留原型；父缩放必须均匀。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "translation": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              0,
+              0,
+              0
+            ]
+          },
+          "rotation": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              0,
+              0,
+              0
+            ]
+          },
+          "scale": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "default": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "instances",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "instances",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {
+            "translation": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.realize_instances",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "实体化实例",
+      "category": "operator",
+      "description": "显式将实例展开为网格；预分配预算校验。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "instances",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {}
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.inspect_geometry",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "检查几何",
+      "category": "operator",
+      "description": "读回有界 counts/bounds/域/样本，同时透传几何。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "type": "DiagnosticReport",
+          "required": true
+        },
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {}
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
+    },
+    {
+      "id": "refmuse.pcg.publish_geometry",
+      "descriptorVersion": 1,
+      "pluginVersion": "1.0.0",
+      "operationVersion": 1,
+      "label": "发布几何",
+      "category": "operator",
+      "description": "校验并透传几何，由宿主发布绑定任务身份的真实文件。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "inputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "geometry",
+          "type": "Geometry",
+          "required": true
+        }
+      ],
+      "budget": {
+        "timeoutMs": 30000,
+        "maxInputBytes": 33554432,
+        "maxOutputBytes": 33554432,
+        "maxItems": 100000
+      },
+      "permissions": [],
+      "readiness": {
+        "state": "ready",
+        "code": null
+      },
+      "examples": [
+        {
+          "parameters": {}
+        }
+      ],
+      "errors": [
+        "INVALID_CONTRACT",
+        "VERSION_UNSUPPORTED",
+        "INPUT_UNAVAILABLE",
+        "REVISION_CONFLICT",
+        "BUDGET_EXCEEDED",
+        "ISOLATION_UNAVAILABLE",
+        "WORKER_TIMEOUT",
+        "WORKER_CRASH",
+        "WORKER_PROTOCOL",
+        "CANCELLED",
+        "FIELD_BINDING_MISMATCH",
+        "FIELD_DOMAIN_MISMATCH",
+        "INSUFFICIENT_PLACEMENT",
+        "EXPORT_PRECISION_LOSS"
+      ]
     }
   ]
 }

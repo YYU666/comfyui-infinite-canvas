@@ -13,7 +13,15 @@ const deferred = () => { let resolve, reject; const promise = new Promise((yes, 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // Shared registry, exact typed ports, closed parameters and no guessed geometry.
-assert.deepEqual(Object.keys(PCG_PRESETS), ['pcg_diagnostic', 'pcg_geometry_stub']);
+assert.equal(Object.keys(PCG_PRESETS).length, 25);
+assert.ok(PCG_PRESETS.pcg_diagnostic && PCG_PRESETS.pcg_geometry_stub && PCG_PRESETS.pcg_rock);
+assert.equal(PCG_REGISTRY.nodes.filter(item => item.category === 'operator').length, 18);
+assert.equal(PCG_REGISTRY.nodes.filter(item => item.category === 'task').length, 5);
+assert.equal(pcgNodeData('refmuse.pcg.rock').parameters.seed, 0);
+assert.match(pcgPreview(pcgNodeData('refmuse.pcg.game_asset')).message, /M3_BRIDGE_UNAVAILABLE/);
+const rock = node('rock', 'refmuse.pcg.rock'), move = node('move', 'refmuse.pcg.transform');
+assert.equal(planCanvasConnection({ source: 'rock', target: 'move', sourceHandle: 'geometry', targetHandle: 'geometry' }, [rock, move], []).edgeData.pcgType, 'Geometry');
+assert.throws(() => pcgNodeData('refmuse.pcg.rock', { roughness: 99 }), /outside declared range/);
 assert.equal(pcgNodeData('refmuse.pcg.diagnostic').parameters.label, 'Contract check');
 assert.throws(() => pcgNodeData('refmuse.pcg.diagnostic', { code: 'run()' }), /unsupported field/);
 assert.throws(() => pcgNodeData('refmuse.pcg.diagnostic', { label: 'x'.repeat(81) }), /invalid string/);
@@ -137,7 +145,7 @@ function runtimeFixture(request) {
   const call = async (name, args = {}) => JSON.parse(await registered.get(name).execute(args));
   const catalog = await call('canvas_pcg_describe');
   assert.deepEqual(catalog.registry, PCG_REGISTRY);
-  assert.equal(catalog.tools.length, 10);
+  assert.equal(catalog.tools.length, 12);
   for (const tool of catalog.tools) {
     assert.equal(tool.inputSchema.additionalProperties, false);
     for (const example of tool.examples) validatePcgSchema(example.arguments, tool.inputSchema);
@@ -160,6 +168,9 @@ function runtimeFixture(request) {
   assert.equal((await call('canvas_pcg_wait', { ...fullHandle, timeoutMs: 100 })).pending, false);
   assert.equal((await call('canvas_pcg_read', fullHandle)).task.result.report.workerPid, 123);
   assert.equal((await call('canvas_pcg_verify', fullHandle)).verified, true);
+  assert.equal((await call('canvas_pcg_cancel', fullHandle)).ok, true);
+  assert.equal((await call('canvas_pcg_export', { ...fullHandle, format: 'glb' })).ok, true);
+  assert.equal((await call('canvas_pcg_export', { ...fullHandle, format: 'exe' })).ok, false);
   const state = await call('canvas_get_state', { nodeId: created.node.id });
   assert.equal(state.projectId, 'prj_tools'); assert.equal(state.revision, 2);
   assert.equal(state.nodes[0].task.jobId, started.task.jobId);
@@ -191,10 +202,11 @@ function runtimeFixture(request) {
 
 // Isolated component/source checks: no viewport controls or fake mesh/URL output.
 const previewSource = await readFile(new URL('./src/PcgNode.jsx', import.meta.url), 'utf8');
-assert.ok(!/<(?:button|input|canvas|img|video)\b/.test(previewSource));
+assert.ok(!/<(?:button|input|canvas|video)\b/.test(previewSource));
 assert.ok(previewSource.includes('pcgPreview(data, state.task, state.error)'));
 assert.ok(previewSource.includes('过期任务，仅供查看'));
 const hostSource = await readFile(new URL('./src/CanvasWorkbench.jsx', import.meta.url), 'utf8');
 assert.ok(hostSource.includes('3D与游戏资产 / 程序化建模〔PCG插件〕'));
-assert.ok(hostSource.includes('PCG插件 / M1'));
+assert.ok(hostSource.includes('PCG插件 / M2'));
+assert.ok(hostSource.includes("filter(descriptor => descriptor.category === 'task')"));
 console.log('PCG_FRONTEND_OK sharedSchema=true strictTools=true typedEdges=true retainedFailure=true reload=true stale=true projectIsolation=true reverseDelivery=true previewReadOnly=true');
