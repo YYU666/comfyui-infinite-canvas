@@ -51,7 +51,8 @@ import HandoffDialog from './HandoffDialog';
 import { initializeProjects, listProjects, createProject, openProject, closeProject, saveProject, projectSummary, saveProjectFile, readProjectFile, createDomainEntity, createTake, updateProjectHandoff, restoreProjectAccess } from './project-store-http';
 import { AutoSaveController, persistentCanvas } from './auto-save';
 import { readViewport, saveViewport } from './canvas-viewport';
-import { outputFileLocation, selectCompletedVideo } from './canvas-output-selection';
+import { selectCompletedVideo } from './canvas-output-selection';
+import { nodeFileLocation, revealProjectAsset } from './canvas-file-location.js';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
 import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, resolveCanvasCompletion, shouldReconcileCompletion, takeOutputIdentity } from './generation-queue';
 import { absentPromptPatches, absentQueueJobPatches, canvasHasActiveTask, classifyExportJob, comfyQueuePromptIds, exportJobRequest, exportLookupPatch, isActiveTaskStatus, patchNodes, promptEventTargets, promptExecutingPatch, promptProgressPatch } from './canvas-task-state';
@@ -1890,16 +1891,6 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (event.target.closest('.react-flow__node,button,input,textarea,.react-flow__controls,.react-flow__minimap,.node-top-toolbar,.creator-toolbar')) return;
     placeAddMenu({ x: event.clientX, y: event.clientY });
   };
-  const nodeFileLocation = (node) => {
-    if (node.data.output && node.data.filename) return outputFileLocation(node.data);
-    if (node.data.remoteName) return { kind: 'input', name: node.data.remoteName };
-    if (node.data.resultUrl) {
-      const params = new URL(node.data.resultUrl, window.location.origin).searchParams;
-      const filename = params.get('filename');
-      if (filename) return { kind: params.get('type') || 'output', name: `${params.get('subfolder') ? `${params.get('subfolder')}/` : ''}${filename}` };
-    }
-    return null;
-  };
   const openContextMenu = (event) => {
     if (event.target.closest('input,textarea,select,button,a,[contenteditable="true"],.node-top-toolbar,.creator-toolbar,.add-node-menu,.node-context-menu')) return;
     event.preventDefault();
@@ -1911,7 +1902,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       setNodeMenu({
         x: Math.max(8, Math.min(event.clientX, window.innerWidth - 238)),
         y: Math.max(8, Math.min(event.clientY, window.innerHeight - (inspectable ? 200 : 135))),
-        nodeId: node.id, title: node.data.title || '节点', file: nodeFileLocation(node), inspectable, status: 'idle', error: null,
+        nodeId: node.id, title: node.data.title || '节点', file: nodeFileLocation(node, project.id, window.location.origin), inspectable, status: 'idle', error: null,
       });
       return;
     }
@@ -1921,7 +1912,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (!nodeMenu?.file || nodeMenu.status === 'opening') return;
     setNodeMenu((menu) => ({ ...menu, status: 'opening', error: null }));
     try {
-      await requestFileLocation(nodeMenu.file);
+      if (nodeMenu.file.kind === 'project') await revealProjectAsset(nodeMenu.file);
+      else await requestFileLocation(nodeMenu.file);
       setNodeMenu(null);
     } catch (error) {
       setNodeMenu((menu) => ({ ...menu, status: 'error', error: error.message || '无法打开文件位置。' }));
