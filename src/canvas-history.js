@@ -1,4 +1,4 @@
-const RUNTIME_FIELDS = new Set(['status', 'progress', 'stage', 'runs', 'error', 'promptId', 'queueJobId', 'output', 'resultUrl', 'spriteJobId', 'spriteJobSignature', 'spriteFiles', 'spriteResultSignature']);
+const RUNTIME_FIELDS = new Set(['status', 'progress', 'stage', 'runs', 'error', 'promptId', 'queueJobId', 'output', 'resultUrl', 'spriteJobId', 'spriteJobSignature', 'spriteFiles', 'spriteResultSignature', 'videoEditJobId', 'editResultAssetPath', 'editResult', 'editResultDocument', 'editSubmittedDocument', 'editResultJobId', 'editInputCache']);
 
 function cleanNodes(nodes, editing) {
   return (nodes || []).map((node) => {

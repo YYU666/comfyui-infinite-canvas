@@ -2,6 +2,7 @@ import { ART_PORTS } from './art-director.js';
 import { isMaskNode } from './canvas-mask.js';
 import { qwenCanvasReferences } from './qwen-references.js';
 import { isImageProcess, acceptsImageProcessConnection } from './image-process-graph.js';
+import { isVideoEdit, planVideoEditConnection } from './video-edit-document.js';
 
 const busy = (node) => ['uploading', 'queued', 'running', 'finishing'].includes(node?.data?.status);
 const fail = (error) => ({ error });
@@ -44,6 +45,10 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
     if (!acceptsImageProcessConnection(normalized, nodes, edges)) return fail('图片处理只接受图片输入和对应通道，且连线不能形成循环。');
     const existing = edges.find((edge) => Object.entries(normalized).every(([key, value]) => edge[key] === value));
     return { connection: normalized, source, target, multiple: false, existing, resolvedFrom: resolved.resolvedFrom };
+  }
+  if (isVideoEdit(target)) {
+    const plan = planVideoEditConnection(connection, source, target, nodes, edges);
+    return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom };
   }
   let targetHandle = connection.targetHandle;
   let sourceHandle = isMaskNode(source) ? 'mask' : source.type === 'prompt' ? 'prompt' : 'ref';

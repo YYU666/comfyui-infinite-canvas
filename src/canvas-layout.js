@@ -2,6 +2,7 @@ const NODE_SIZES = {
   spriteAtlas: { width: 430, height: 1100 },
   artDirector: { width: 540, height: 1700 },
   imageProcess: { width: 370, height: 1000 },
+  videoEdit: { width: 400, height: 420 },
   media: { width: 310, height: 250 },
   generator: { width: 440, height: 360 },
   prompt: { width: 370, height: 430 },

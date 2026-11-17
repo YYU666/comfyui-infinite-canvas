@@ -72,6 +72,9 @@ import { copyPureRefResource, pureRefImageNodes } from './pureref-import.js';
 import { DEFAULT_ADJUSTMENTS } from './image-compositing';
 import { isImageProcess, imageProcessPorts, imageProcessSnapshot } from './image-process-graph';
 import { renderImageProcess } from './image-process-runtime';
+import VideoEditorNode from './VideoEditorNode';
+import { defaultVideoEditDocument, videoEditInputView } from './video-edit-document';
+import { createVideoEditRunner } from './video-edit-runtime';
 import { assetUrl } from './project-store-http';
 import { useLocalConnection } from './use-local-connection';
 import { localConnectionPresentation } from './local-connection';
@@ -473,6 +476,10 @@ function ImageProcessCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <ImageProcessNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
+function VideoEditCanvasNode(props) {
+  const actions = useContext(NodeContext);
+  return <VideoEditorNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
+}
 function ArtDirectorCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <ArtDirectorNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
@@ -481,7 +488,7 @@ function SpriteAtlasCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <SpriteAtlasNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
-const nodeTypes = { spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode) };
+const nodeTypes = { spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) };
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
   const saved = useMemo(() => {
@@ -1265,7 +1272,27 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     }
   }, [project.id, project.readOnly, getImageProcessState, chooseMedia, saveCanvasAsset, updateNode, setNodes, setEdges, persistProject]);
 
+  const videoEditDepsRef = useRef({});
+  videoEditDepsRef.current = { updateNode, saveCanvasMedia, persistProject, saveProjectFile: (storageId, file, revision) => saveProjectFile(project.id, storageId, file, revision) };
+  const videoEditRunnerRef = useRef(null);
+  if (!videoEditRunnerRef.current) videoEditRunnerRef.current = createVideoEditRunner({
+    getProjectId: () => projectRef.current.id, getNodes: () => nodesRef.current, getEdges: () => edgesRef.current,
+    canWrite: () => !switchingRef.current && !projectRef.current.readOnly && !autoSaveRef.current?.failure,
+    jobs: localImageJobsRef.current, onJobsChange: () => setLocalImageJobsVersion(version => version + 1),
+    // The runner samples refs immediately before versioned saves and polling.
+    updateNode: (...args) => flushSync(() => videoEditDepsRef.current.updateNode(...args)),
+    saveCanvasMedia: (...args) => videoEditDepsRef.current.saveCanvasMedia(...args),
+    persistProject: () => videoEditDepsRef.current.persistProject(),
+    saveProjectFile: (...args) => videoEditDepsRef.current.saveProjectFile(...args),
+  });
+  const getVideoEditState = useCallback(id => {
+    const node = nodesRef.current.find(item => item.id === id);
+    return { inputs: videoEditInputView(id, nodesRef.current, edgesRef.current, path => assetUrl(project.id, path)), busy: localImageJobsRef.current.has(id),
+      resultUrl: node?.data.editResultAssetPath ? assetUrl(project.id, node.data.editResultAssetPath) : null };
+  }, [project.id]);
+
   const generateNode = useCallback(async (id) => {
+    if (nodesRef.current.find(node => node.id === id)?.type === 'videoEdit') return videoEditRunnerRef.current.run(id);
     if (nodesRef.current.find(n => n.id === id)?.type === 'spriteAtlas') return spriteRunRef.current?.runSpriteAtlas(id);
     if (nodesRef.current.find(n => n.id === id)?.type === 'artDirector') return artRunRef.current?.(id);
     if (switchingRef.current || project.readOnly) return;
@@ -1463,6 +1490,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     else if (type === 'spriteAtlas') data = { title: '3D 角色转多方向图集', status: 'idle', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS }, ...extra };
     else if (type === 'artDirector') data = { title: '电子主美 · 图解分析', status: 'idle', brief: '', preserve: '', referencePurposes: {}, ...extra };
     else if (type === 'imageProcess') data = { ...DEFAULT_ADJUSTMENTS, adjustmentType: 'basic', mode: 'colorAdjust', title: '颜色调整', status: 'idle', blendMode: 'normal', opacity: 100, fit: 'cover', maskChannel: 'luminance', maskInvert: false, ...extra };
+    else if (type === 'videoEdit') data = { title: '视频编辑', status: 'idle', editDocument: defaultVideoEditDocument(), ...extra };
     else if (type === 'prompt') data = { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...extra };
     else if (type === 'note') data = { title: '创作备注', text: '', ...extra };
     else {
@@ -1852,7 +1880,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       if (!columns.has(depth)) columns.set(depth, []);
       columns.get(depth).push(node);
     });
-    const heightOf = (node) => node.type === 'spriteAtlas' ? 1100 : node.type === 'artDirector' ? 1450 : node.type === 'imageProcess' ? 1000 : node.type === 'generator' ? 360 : node.type === 'prompt' ? 390 : node.type === 'note' ? 250 : 260;
+    const heightOf = (node) => node.type === 'videoEdit' ? 420 : node.type === 'spriteAtlas' ? 1100 : node.type === 'artDirector' ? 1450 : node.type === 'imageProcess' ? 1000 : node.type === 'generator' ? 360 : node.type === 'prompt' ? 390 : node.type === 'note' ? 250 : 260;
     const layouts = new Map();
     const maxHeight = Math.max(...[...columns.values()].map((items) => items.reduce((sum, node) => sum + heightOf(node) + 80, -80)));
     [...columns.entries()].sort(([a], [b]) => a - b).forEach(([depth, items]) => {
@@ -1941,7 +1969,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const spriteAtlas = useSpriteAtlas({ project, projectRef, revisionRef, switchingRef, nodes, nodesRef, updateNode, persistProject, localImageJobsRef, setLocalImageJobsVersion });
   spriteRunRef.current = spriteAtlas;
   artRunRef.current = (id) => { const state = artDirector.getArtDirectorState(id); return state.node?.data.analysis?.sourceVersion === state.signature ? artDirector.exportArtBoard(id) : artDirector.runArtAnalysis(id); };
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [spriteAtlas, artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoEditState, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -2142,6 +2170,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={() => addNode('video', {}, addMenu.flow)}><i><Video size={17} /></i><span>视频素材<small>动作、运镜或内容参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('audio', {}, addMenu.flow)}><i><Music2 size={17} /></i><span>音频素材<small>音色、配乐或声音参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('note', {}, addMenu.flow)}><i><Type size={17} /></i><span>文本备注<small>分镜与创作设定</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoEdit', { title: '视频编辑' }, addMenu.flow)}><i><Film size={17} /></i><span>视频编辑<small>裁切 · 分割 · 倒放 · 补帧 · 拼接 · 原声</small></span><Plus size={13} /></button>
           <div className="add-menu-title">第三方工具</div>
           {LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset]).map((tool) => <button key={tool.preset} onClick={() => addNode(...NODE_PRESETS[tool.preset], addMenu.flow)}><i><WandSparkles size={17} /></i><span>{tool.label}<small>{tool.description}</small></span><Plus size={13} /></button>)}
           <button onClick={() => { setAddMenu(null); setWorkflowLibraryOpen(true); }}><i><Library size={17} /></i><span>已安装的节点工具<small>选择从节点库下载或本地导入的工作流</small></span><Plus size={13} /></button>

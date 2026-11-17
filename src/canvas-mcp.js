@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { isVideoEdit, normalizeVideoEditDocument, nextVideoEditPort, videoEditSummary } from './video-edit-document.js';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
 import { validateCharacterSheetAngleSeed, validateQwenCacheDevice, validateQwenSourceCrop } from './workbench-api.js';
@@ -22,6 +23,7 @@ export const NODE_PRESETS = {
   image_asset: ['image', {}],
   local_mask: ['image', { mediaRole: 'mask', title: '局部遮罩修改' }],
   video_asset: ['video', {}],
+  video_edit: ['videoEdit', { title: '视频编辑' }],
   video_download: ['note', { title: '视频链接下载', noteRole: 'videoDownload' }],
   audio_asset: ['audio', {}],
   note: ['note', {}],
@@ -50,6 +52,7 @@ export const NODE_PRESETS = {
 };
 
 const EDITABLE_SETTINGS = new Set([
+  'editDocument',
   'spriteInputPath', 'spriteOptions',
   'packChannels', 'packPreview',
   ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
@@ -180,7 +183,8 @@ export function nodeSummary(node, includeContent = true) {
     position: node.position,
     selected: Boolean(node.selected),
     pinned: Boolean(node.data.pinned),
-    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath),
+    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath || node.data.editResultAssetPath),
+    ...(isVideoEdit(node) ? videoEditSummary(node.data) : {}),
     ...(media ? { media } : {}),
   };
 }
@@ -231,6 +235,16 @@ function mcpNode(latest, id) {
   return node;
 }
 
+async function waitForVideoEdit(latest, nodeId, jobId, timeoutMs, waitImpl) {
+  if (!jobId) throw new Error('这个视频编辑节点还没有提交导出。');
+  const node = await waitImpl(() => {
+    const current = mcpNode(latest, nodeId);
+    if (current.data.videoEditJobId !== jobId) throw new Error('视频编辑任务已更换。');
+    return ['done', 'error', 'cancelled'].includes(current.data.status) ? current : null;
+  }, timeoutMs, 500);
+  return { node: nodeSummary(node), resultNode: null };
+}
+
 export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
   if (['uploading', 'queued', 'running', 'finishing'].includes(initial.data.status)) throw new Error('节点已经在生成，请使用 canvas_wait_for_node 等待，避免重复提交。');
@@ -249,6 +263,14 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     const result = await latest.current.actions.generateNode(nodeId);
     if (!result?.ok) throw new Error(result?.error || '解析图输出失败。');
     return { node: nodeSummary(mcpNode(latest, nodeId)), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
+  }
+  if (isVideoEdit(initial)) {
+    const result = await latest.current.actions.generateNode(nodeId);
+    if (!result?.ok) throw new Error(result?.error || '视频导出提交失败。');
+    if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId };
+    const finished = await waitForVideoEdit(latest, nodeId, result.jobId, timeoutMs, waitImpl);
+    if (finished.node.status !== 'done') throw new Error(finished.node.error || '视频编辑未交付。');
+    return finished;
   }
   if (isImageProcess(initial)) {
     const result = await latest.current.actions.generateNode(nodeId);
@@ -282,6 +304,14 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
 
 export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
+  if (isVideoEdit(initial)) {
+    try {
+      return { pending: false, ...await waitForVideoEdit(latest, nodeId, initial.data.videoEditJobId, timeoutMs, waitImpl) };
+    } catch (error) {
+      if (!/超时|timeout/i.test(error.message)) throw error;
+      return { pending: true, node: nodeSummary(mcpNode(latest, nodeId)), resultNode: null };
+    }
+  }
   if (initial.type === 'spriteAtlas') {
     if (!initial.data.spriteJobId) throw new Error('精灵图节点尚未提交任务。');
     try {
@@ -443,8 +473,10 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
             if (current.type !== 'spriteAtlas') throw new Error('精灵图参数仅用于精灵图节点。');
             spriteSnapshot({ ...current.data, ...settings });
           }
+          if ('editDocument' in settings && !isVideoEdit(current)) throw new Error('editDocument 仅适用于视频编辑节点。');
           validateModelSettings(settings, current.data.mode ?? '');
           const patch = { ...settings };
+          if ('editDocument' in settings) patch.editDocument = normalizeVideoEditDocument(settings.editDocument);
           if ('workflowParameters' in settings) patch.workflowParameters = validateWorkflowParameters(current.data, settings.workflowParameters);
           if (title !== undefined) patch.title = title;
           if (prompt !== undefined) { patch.prompt = current.data.mode === 'qwenEdit' ? bindQwenPrompt(prompt, qwenCanvasReferences(current, latest.current.nodesRef.current, latest.current.edgesRef.current)) : prompt; patch.outfitPreset = null; }
@@ -468,7 +500,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         execute: respond(async ({ sourceId, targetId, targetHandle }) => {
           const source = getNode(sourceId);
           const target = getNode(targetId);
-          const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || defaultTargetHandle(target, source);
+          const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || (isVideoEdit(target) ? nextVideoEditPort(target, source, latest.current.edgesRef.current) : defaultTargetHandle(target, source));
           const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
           if (connected?.error) throw new Error(connected.error);
           const edge = await waitFor(() => {

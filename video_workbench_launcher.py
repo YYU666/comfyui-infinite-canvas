@@ -32,6 +32,8 @@ from workflow_extensions import ExtensionStore
 from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_websocket
 from thumbnail_cache import ThumbnailCache
 from project_api import ProjectAPI
+from video_edit_api import VideoEditAPI
+from video_edit_jobs import VideoEditJobs
 from art_director import ArtDirectorAPI
 from pureref_sessions import PureRefSessions
 from sprite_atlas import SpriteAtlasAPI
@@ -240,6 +242,11 @@ def shutdown_workbench(server, *, preserve_comfy=False):
             server.sprite_atlas_api.close()
         except Exception:
             LOGGER.exception("关闭精灵图渲染失败。")
+    if server is not None and getattr(server, "video_edit_api", None):
+        try:
+            server.video_edit_api.jobs.close()
+        except Exception:
+            LOGGER.exception("关闭视频编辑失败。")
     if server is not None and hasattr(server, "project_store"):
         try:
             server.project_store.close()
@@ -609,6 +616,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request():
             return
         path = urllib.parse.urlparse(self.path).path
+        video_edit_api = getattr(self.server, "video_edit_api", None)
+        if video_edit_api and video_edit_api.handle_get(self, path):
+            return
         if path.startswith('/api/sprite-atlas/') and getattr(self.server, 'sprite_atlas_api', None) and self.server.sprite_atlas_api.handle(self, "GET", path):
             return
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "GET", path):
@@ -725,6 +735,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        video_edit_api = getattr(self.server, "video_edit_api", None)
+        if video_edit_api and video_edit_api.handle_post(self, path):
+            return
         if path.startswith('/api/sprite-atlas/') and getattr(self.server, 'sprite_atlas_api', None) and self.server.sprite_atlas_api.handle(self, "POST", path):
             return
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "POST", path):
@@ -882,6 +895,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
 
 
 def validate_update_ready(server):
+    if getattr(server, "video_edit_api", None) and server.video_edit_api.jobs.active_count():
+        raise UpdateError("视频仍在导出，完成或取消后才能升级。", status=409, code="QUEUE_BUSY")
     if getattr(server, "sprite_atlas_api", None) and server.sprite_atlas_api.active_count():
         raise UpdateError("精灵图仍有活动渲染任务，完成或取消后才能升级。", status=409, code="QUEUE_BUSY")
     store = server.project_store
@@ -915,6 +930,8 @@ def validate_update_ready(server):
 def validate_settings_change(server, candidate):
     if Path(candidate["projectsRoot"]).resolve() == server.project_store.root:
         return
+    if getattr(server, "video_edit_api", None) and server.video_edit_api.jobs.active_count():
+        raise SettingsError("视频仍在导出，完成或取消后才能切换项目根目录。", status=409, code="QUEUE_BUSY")
     if getattr(server, "sprite_atlas_api", None) and server.sprite_atlas_api.active_count():
         raise SettingsError("精灵图仍有活动渲染任务，完成或取消后才能切换项目根目录。", status=409, code="QUEUE_BUSY")
     if server.project_store._held:
@@ -939,6 +956,8 @@ def apply_server_settings(server):
             server.pureref_sessions.store = replacement
         if getattr(server, 'sprite_atlas_api', None):
             server.sprite_atlas_api.store = replacement
+        if getattr(server, "video_edit_api", None):
+            server.video_edit_api.jobs.store = replacement
         if getattr(server, "art_director_api", None):
             server.art_director_api.store = replacement
         server.project_api.domain.store = replacement
@@ -1016,6 +1035,7 @@ def main(argv=None):
             logging.getLogger().setLevel(server.settings.data["logLevel"])
             server.project_store = ProjectStore(server.settings.data["projectsRoot"], defaults=server.settings.data["defaults"])
             server.project_api = ProjectAPI(server.project_store)
+            server.video_edit_api = VideoEditAPI(VideoEditJobs(runtime_dir() / "video-edit-jobs", server.project_store))
             server.pureref_sessions = PureRefSessions(server.project_store)
             server.sprite_atlas_api = SpriteAtlasAPI(server.project_store, runtime_dir() / "sprite-atlas")
             server.art_director_api = ArtDirectorAPI(server.project_store)
