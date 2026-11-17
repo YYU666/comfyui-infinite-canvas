@@ -1,3 +1,4 @@
+import { inlineImageView } from './image-inline-output.js';
 import { isH3Image, resolveH3ImageDimensions, getH3ImageDependencyStatus } from './h3-image.js';
 import {DEFAULT_GENERATOR, initialCanvas, migrateCanvas} from './canvas-migration.js';
 import {createProjectAccessRecovery, retryCurrentProjectSave} from './project-save-recovery.js';
@@ -22,9 +23,13 @@ import {
   openFileLocation as requestFileLocation, optimizePrompt as requestPromptOptimization,
   resolveDimensions, resolveImageDimensions, uploadMedia,
 } from './workbench-api';
-import { findFreePosition } from './canvas-layout';
+import { compactCanvasPositions, findFreePosition, findReferencePosition, planReferencePositions, visibleLayoutNodes } from './canvas-layout';
 import { copyCanvasSelection, pasteCanvasSelection } from './canvas-clipboard';
 import './canvas.css';
+import { CanvasPreviewTier, CanvasVideo } from './CanvasMediaPreview';
+import { useResultPresentation, ResultSettingsToggle } from './result-node-presentation';
+import './result-node-presentation.css';
+import './canvas-media-preview.css';
 import PromptEditor from './PromptEditor';
 import QwenReferenceEditor from './QwenReferenceEditor';
 import { qwenCanvasReferences, bindQwenPrompt, validateQwenReferences, compileQwenPrompt } from './qwen-references';
@@ -265,13 +270,15 @@ function MediaNode({ id, data, selected }) {
       onDrop={(e) => { e.preventDefault(); e.stopPropagation(); const file = [...(e.dataTransfer.files || [])].find((item) => item.type.startsWith(`${kind}/`)); if (file && (!maskNode || maskGuide)) void chooseFile(file).catch((error) => setMediaError(error.message)); }}>
       {data.url ? <>
         {kind === 'image' && <CanvasImage source={data.url} alt={data.title} />}
-        {kind === 'video' && (lightweightVideo ? <div className="media-video-compact"><Film size={24} /><span>视频预览 · 放大恢复播放</span></div> : <video ref={videoRef} className="nodrag" src={data.url} controls preload="metadata" playsInline />)}
+        {kind === 'video' && (lightweightVideo ? <div className="media-video-compact"><Film size={24} /><span>视频预览 · 放大恢复播放</span></div> : <CanvasVideo ref={videoRef} className="nodrag" src={data.url} controls preload="metadata" playsInline />)}
         {kind === 'audio' && <div className="audio-content"><span><AudioLines size={25} /></span><strong>{data.title}</strong>{viewTier === 'full' && <audio className="nodrag" src={data.url} controls preload="metadata" />}</div>}
         {['image', 'video'].includes(kind) && <MediaDragSurface videoRef={videoRef} video={kind === 'video' && !lightweightVideo} onActivate={maskGuide ? openMaskEditor : undefined} />}
       </> : <div className="media-empty"><Icon size={26} /><strong>{maskNode || maskGuide ? '局部遮罩修改' : `添加${KIND_LABEL[kind]}素材`}</strong><span>{maskGuide ? '单击绘制 · 白色修改 / 黑色保留' : maskNode ? '连接底图后绘制遮罩' : '单击添加 · 按住拖动节点'}</span><MediaDragSurface onActivate={maskNode || maskGuide ? openMaskEditor : () => input.current?.click()} /></div>}
       {maskGuide && <button className="media-mask-edit nodrag" onClick={openMaskEditor}>绘制遮罩</button>}
       <button className="media-replace nodrag" disabled={readOnly || (maskNode && !maskGuide)} onClick={() => input.current?.click()} title={maskGuide ? '从文件导入黑白遮罩' : '替换素材'}><RefreshCw size={12} /><span>{maskGuide ? '导入' : '替换'}</span></button>
-      {data.output && <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>}
+      {data.output && (kind === 'image'
+        ? <button className="media-download nodrag" title="导出图片" aria-label="导出图片" onClick={() => openImagePreview({ url: data.url, title: data.title, name: data.name })}><ArrowDownToLine size={13} /></button>
+        : <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>)}
     </div>
     <div className="media-caption"><span>{data.artDirectorStale ? `旧版解析 · ${data.artDirectorStaleReason || '待重新输出'}` : maskNode || maskGuide ? '局部遮罩' : data.output ? '生成结果' : KIND_LABEL[kind]}</span><b title={showResolution ? '原始图片分辨率（像素）' : data.name}>{showResolution ? resolutionLabel : data.name || (data.url ? data.title : maskGuide ? '尚未绘制' : '未上传')}</b></div>
     {kind === 'image' && data.url && !maskNode && <button className="nodrag art-image-shortcut" disabled={readOnly} onClick={() => createArtDirector(id)}>电子主美 · 图解分析</button>}
@@ -286,16 +293,18 @@ function MediaNode({ id, data, selected }) {
 }
 
 function CustomWorkflowNode({ id, data, selected }) {
+  const presentation = useResultPresentation(data, data.resultUrl);
   const updateNodeInternals = useUpdateNodeInternals();
-  useEffect(() => { updateNodeInternals(id); }, [id, data.workflowDefinition, data.resultUrl, updateNodeInternals]);
+  useEffect(() => { updateNodeInternals(id); }, [id, data.workflowDefinition, data.resultUrl, presentation.compact, updateNodeInternals]);
   const { updateNode, generateNode, cancelNode, serverOnline, getReferences, openNodeShare, checkNodeDependencies } = useContext(NodeContext);
   const running = ['uploading', 'queued', 'running', 'finishing'].includes(data.status);
   const refs = getReferences(id);
-  return <div className={`generator-shell h3-node custom-workflow-node ${selected ? 'selected' : ''}`}>
+  return <div className={`generator-shell h3-node custom-workflow-node ${presentation.compact ? 'result-compact' : ''} ${selected ? 'selected' : ''}`}>
     <NodeTitle id={id} data={data} kind="generator" /><NodeActions id={id} data={data} selected={selected} generator />
+    <ResultSettingsToggle presentation={presentation} />
     <div className="custom-workflow-identity" title={data.extensionDigest}>{data.extensionPackageId} · {data.extensionVersion} · {data.extensionDigest?.slice(0, 12)}</div>
-    {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <video className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
-    {(data.workflowDefinition?.inputs || []).map((port) => <div className="custom-workflow-port" key={port.id}><Handle type="target" position={Position.Left} id={port.id} className="neo-handle target" /><strong>{port.label || port.name || port.id}</strong> · {port.required ? '必填图片' : '可选图片'}<span> · {refs.find((ref) => ref.data.slot === port.id)?.data.title || '未连接'}</span></div>)}
+    {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
+    {(data.workflowDefinition?.inputs || []).map((port, index, ports) => <div className="custom-workflow-port" key={port.id} style={{ "--compact-port-top": `${20 + index * 60 / Math.max(1, ports.length - 1)}%` }}><Handle type="target" position={Position.Left} id={port.id} title={port.label || port.name || port.id} className="neo-handle target" /><strong>{port.label || port.name || port.id}</strong> · {port.required ? '必填图片' : '可选图片'}<span> · {refs.find((ref) => ref.data.slot === port.id)?.data.title || '未连接'}</span></div>)}
     <div className="custom-workflow-params nodrag nowheel">{Object.entries(data.workflowDefinition?.parameters?.properties || {}).map(([key, field]) => {
       const value = data.workflowParameters?.[key] ?? field.default ?? (field.type === 'boolean' ? false : '');
       const change = (next) => updateNode(id, { workflowParameters: { ...data.workflowParameters, [key]: next }, error: null });
@@ -314,6 +323,7 @@ function GeneratorNode(props) {
 }
 
 function BuiltinGeneratorNode({ id, data, selected }) {
+  const presentation = useResultPresentation(data, data.resultUrl);
   const {
     updateNode, generateNode, cancelNode, serverOnline, getReferences,
     getMentionItems, attachFilesToGenerator, openImagePreview, viewTier, openNodeShare, changeQwenReferences, addQwenMask, getQwenMask, readOnly,
@@ -324,7 +334,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
   const running = ['uploading', 'queued', 'running', 'finishing'].includes(data.status);
   const mode = data.mode || 'reference';
   const updateNodeInternals = useUpdateNodeInternals();
-  useEffect(() => { updateNodeInternals(id); }, [id, mode, viewTier, updateNodeInternals]);
+  useEffect(() => { updateNodeInternals(id); }, [id, mode, viewTier, presentation.compact, updateNodeInternals]);
   const isMoss = mode === 'image' && data.imageModel === 'moss';
   const isFlux3 = (mode === 'image' && data.imageModel === 'flux3_klein') || (mode === 'qwenEdit' && data.qwenModel === 'flux3_klein');
   const h3Image = isH3Image(data);
@@ -355,15 +365,16 @@ function BuiltinGeneratorNode({ id, data, selected }) {
     error: null,
   });
 
-  return <div className={`generator-shell h3-node ${mode === 'swap' ? 'swap-node' : ''} ${imageFamily ? 'image-generator-node' : ''} ${selected ? 'selected' : ''} ${running ? 'running' : ''} ${data.pinned ? 'pinned' : ''}`}>
+  return <div className={`generator-shell h3-node ${presentation.compact ? 'result-compact' : ''} ${mode === 'swap' ? 'swap-node' : ''} ${imageFamily ? 'image-generator-node' : ''} ${selected ? 'selected' : ''} ${running ? 'running' : ''} ${data.pinned ? 'pinned' : ''}`}>
     <NodeTitle id={id} data={data} kind="generator" /><NodeActions id={id} data={data} selected={selected} generator />
+    <ResultSettingsToggle presentation={presentation} />
     <div className="generator-preview" title={imageFamily && data.resultUrl ? '双击预览大图' : undefined} onDoubleClick={(event) => {
       if (!imageFamily || !data.resultUrl) return;
       event.stopPropagation();
       openImagePreview({ url: data.resultUrl, title: data.title });
     }}>
       {data.resultUrl ? <>
-        {imageFamily ? <CanvasImage source={data.resultUrl} alt={data.title} draggable={false} /> : viewTier !== 'full' ? <div className="media-video-compact"><Film size={24} /><span>视频结果 · 放大恢复播放</span></div> : <video ref={resultVideoRef} className="nodrag" src={data.resultUrl} controls preload="metadata" playsInline />}
+        {imageFamily ? <CanvasImage source={data.resultUrl} alt={data.title} draggable={false} /> : viewTier !== 'full' ? <div className="media-video-compact"><Film size={24} /><span>视频结果 · 放大恢复播放</span></div> : <CanvasVideo ref={resultVideoRef} className="nodrag" src={data.resultUrl} controls preload="metadata" playsInline />}
         <MediaDragSurface videoRef={resultVideoRef} video={!imageFamily && viewTier === 'full'} />
       </> : <div className="generator-placeholder">
         {running ? <LoaderCircle className="spin" size={29} /> : imageFamily ? <ImageIcon size={29} /> : <WandSparkles size={29} />}
@@ -409,7 +420,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
       {['imageUpscale', 'identityEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) && <div className="reference-strip swap-strip"><span className={guide ? 'connected' : ''}><ImageIcon size={13} />{mode === 'characterSheet' ? '单人角色参考' : mode === 'outfitEdit' ? '原始四视图' : mode === 'identityEdit' ? '人物母图' : '输入图片'}：{guide?.data.title || '从图片节点右侧连线到本节点左侧'}</span>{['qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && <span className={identity ? 'connected' : ''}><ImageIcon size={13} />{mode === 'localRealism' ? '自定义遮罩' : mode === 'outfitEdit' ? '穿搭参考' : '妆容 / 风格'}：{identity?.data.title || '可选，连接左侧下方端口'}</span>}</div>}
       {mode === 'reference' && <div className="reference-strip">
         {descriptors.map(({ node, kind, tag }) => <button key={node.id} className={`reference-chip ${kind}`} onClick={() => promptEditorRef.current?.insertReference(node)} title={`${tag} · 点击插入提示词`}>
-          {node.data.url && kind === 'image' ? <CanvasImage source={node.data.url} alt="" /> : node.data.url && kind === 'video' ? <video src={node.data.url} muted playsInline preload="metadata" /> : React.createElement(KIND_ICON[kind], { size: 13 })}
+          {node.data.url && kind === 'image' ? <CanvasImage source={node.data.url} alt="" /> : node.data.url && kind === 'video' ? <CanvasVideo src={node.data.url} muted playsInline preload="metadata" /> : React.createElement(KIND_ICON[kind], { size: 13 })}
           <span>@{node.data.title}</span><X size={11} onClick={(e) => { e.stopPropagation(); updateNode(id, { prompt: data.prompt.replaceAll(`@${node.data.title}`, '').replace(/ {2,}/g, ' ') }); }} />
         </button>)}
         {descriptors.length < 15 && <button className="add-reference" onClick={() => uploadRef.current?.click()} title="添加图片、视频或音频"><Plus size={17} /></button>}
@@ -492,6 +503,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }, [project.id]);
   const [nodes, setNodes, onNodesChange] = useNodesState(saved.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(saved.edges || []);
+  const imageView = useMemo(() => inlineImageView(nodes, edges), [nodes, edges]);
   const [projectName, setProjectName] = useState(project.name);
   const [projects, setProjects] = useState(() => [projectSummary(project)]);
   const [projectBusy, setProjectBusy] = useState(false);
@@ -1473,7 +1485,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       data = { kind, title: `${KIND_LABEL[kind]} ${count}`, url: '', name: '', ...extra, refTag: nextReferenceTag(nodesRef.current, kind) };
       type = 'media';
     }
-    const position = findFreePosition(nodesRef.current, desired, type);
+    const position = findFreePosition(nodesRef.current, desired, { type, data });
     setNodes((items) => items.concat({ id, type, position, data }));
     setAddMenu(null);
     if (shouldFocus) setTimeout(() => fitView({ nodes: [{ id }], duration: 300, maxZoom: 1, padding: 0.6 }), 60);
@@ -1488,7 +1500,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (existing) { fitView({ nodes: [{ id: existing.id }], duration: 300, maxZoom: 1 }); return; }
     const guide = qwenCanvasReferences(target, nodesRef.current, edgesRef.current)[0];
     if (!guide?.data.url) { updateNode(id, { error: '请先连接图1作为修改底图。' }); return; }
-    const maskId = addNode(...NODE_PRESETS.local_mask, { x: target.position.x - 370, y: target.position.y + 350 });
+    const maskId = addNode(...NODE_PRESETS.local_mask, findReferencePosition(nodesRef.current, target));
     setEdges((items) => items.concat([
       { id: `edge-${guide.id}-${maskId}-guide`, source: guide.id, sourceHandle: 'ref', target: maskId, targetHandle: 'guide' },
       { id: `edge-${maskId}-${id}-mask`, source: maskId, sourceHandle: 'mask', target: id, targetHandle: 'mask' },
@@ -1644,9 +1656,10 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const attachFilesToGenerator = useCallback((generatorId, files) => {
     const generator = nodesRef.current.find((node) => node.id === generatorId);
     if (!generator) return;
+    const positions = planReferencePositions(nodesRef.current, generator, files.length);
     files.forEach((file, index) => {
       const kind = file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'image';
-      const position = { x: generator.position.x - 330, y: generator.position.y + index * 215 - 60 };
+      const position = positions[index];
       const id = addNode(kind, { title: file.name.replace(/\.[^.]+$/, '') }, position);
       chooseMedia(id, file);
       setEdges((items) => addEdge({ id: `edge-${id}-${generatorId}`, source: id, target: generatorId, sourceHandle: 'ref', targetHandle: 'references' }, items));
@@ -1684,7 +1697,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const { current, videoCount } = validateTarget();
       const remoteName = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
       const position = downloadNodeId ? { x: current.position.x + 360, y: current.position.y }
-        : { x: current.position.x - 340, y: current.position.y + 220 + videoCount * 210 };
+        : findReferencePosition(nodesRef.current, current);
       let id;
       flushSync(() => {
         id = addNode('video', { title: result.title || (downloadNodeId ? '下载的视频' : '在线视频参考'), name: result.name, remoteName,
@@ -1796,7 +1809,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     referenceImportBusyRef.current = true;
     let sourceId;
     try {
-      flushSync(() => { sourceId = addNode('image', { title: slot === 'mask' ? '混合遮罩' : `${{ red: 'R', green: 'G', blue: 'B', alpha: 'A' }[slot] || slot} 通道贴图` }, { x: target.position.x - 420, y: target.position.y + 400 }, false); });
+      flushSync(() => { sourceId = addNode('image', { title: slot === 'mask' ? '混合遮罩' : `${{ red: 'R', green: 'G', blue: 'B', alpha: 'A' }[slot] || slot} 通道贴图` }, findReferencePosition(nodesRef.current, target), false); });
       const uploaded = await chooseMedia(sourceId, file);
       if (!uploaded?.ok) throw new Error(uploaded?.error?.message || '贴图保存失败。');
       assertExtensionWritable();
@@ -1829,52 +1842,16 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
 
   const resetCanvas = () => changeProject(null, '未命名项目');
   const tidyCanvas = () => {
+    if (project.readOnly || switchingRef.current) return;
     const currentNodes = nodesRef.current;
-    const currentEdges = edgesRef.current;
-    const depths = new Map(currentNodes.map((node) => [node.id, 0]));
-    const indegree = new Map(currentNodes.map((node) => [node.id, 0]));
-    const outgoing = new Map(currentNodes.map((node) => [node.id, []]));
-    currentEdges.forEach((edge) => {
-      if (!depths.has(edge.source) || !depths.has(edge.target)) return;
-      outgoing.get(edge.source).push(edge.target);
-      indegree.set(edge.target, indegree.get(edge.target) + 1);
-    });
-    const queue = currentNodes.filter((node) => !indegree.get(node.id)).map((node) => node.id);
-    for (let index = 0; index < queue.length; index += 1) {
-      const source = queue[index];
-      outgoing.get(source).forEach((target) => {
-        depths.set(target, Math.max(depths.get(target), depths.get(source) + 1));
-        indegree.set(target, indegree.get(target) - 1);
-        if (!indegree.get(target)) queue.push(target);
-      });
-    }
-    const columns = new Map();
-    currentNodes.forEach((node) => {
-      const depth = depths.get(node.id) || 0;
-      if (!columns.has(depth)) columns.set(depth, []);
-      columns.get(depth).push(node);
-    });
-    const heightOf = (node) => node.type === 'spriteAtlas' ? 1100 : node.type === 'artDirector' ? 1450 : node.type === 'imageProcess' ? 1000 : node.type === 'generator' ? 360 : node.type === 'prompt' ? 390 : node.type === 'note' ? 250 : 260;
-    const layouts = new Map();
-    const maxHeight = Math.max(...[...columns.values()].map((items) => items.reduce((sum, node) => sum + heightOf(node) + 80, -80)));
-    [...columns.entries()].sort(([a], [b]) => a - b).forEach(([depth, items]) => {
-      const columnHeight = items.reduce((sum, node) => sum + heightOf(node) + 80, -80);
-      let y = (maxHeight - columnHeight) / 2;
-      items.forEach((node) => {
-        layouts.set(node.id, { x: depth * 520, y });
-        y += heightOf(node) + 80;
-      });
-    });
-    setNodes((items) => items.map((node) => {
-      const incoming = node.data.output ? currentEdges.find((edge) => edge.target === node.id && edge.targetHandle === 'preview') : null;
-      const parent = incoming ? currentNodes.find((item) => item.id === incoming.source) : null;
-      const resultIndex = incoming ? currentEdges.filter((edge) => edge.source === incoming.source && edge.targetHandle === 'preview').findIndex((edge) => edge.target === node.id) : -1;
-      const data = parent ? { ...node.data, title: `${parent.data.title} · 成品 ${resultIndex + 1}` } : node.data;
-      return { ...node, data, position: layouts.get(node.id) || node.position, selected: false };
-    }));
-    setEdges((items) => items.map((edge) => ({ ...edge, type: 'default', selected: false })));
+    const layouts = compactCanvasPositions(currentNodes, edgesRef.current);
+    const next = currentNodes.map(node => layouts.has(node.id) ? { ...node, position: layouts.get(node.id) } : node);
+    historyRef.current.observe(currentNodes, edgesRef.current);
+    nodesRef.current = next;
+    setNodes(next);
+    historyRef.current.observe(next, edgesRef.current);
     setAddMenu(null); setNodeMenu(null);
-    const recentNodes = currentNodes.slice(-8).map((node) => ({ id: node.id }));
+    const recentNodes = visibleLayoutNodes(next).slice(-6).map(node => ({ id: node.id }));
     setTimeout(() => fitView({ nodes: recentNodes, duration: 450, padding: 0.2, maxZoom: 0.75 }), 100);
   };
   const placeAddMenu = (screenPoint) => {
@@ -1996,7 +1973,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const pinnedNodes = nodes.filter((node) => node.data.pinned);
   const vramPercent = metrics.vramTotal ? Math.min(100, Math.max(0, metrics.vramUsed / metrics.vramTotal * 100)) : 0;
   const cpuPercent = Number.isFinite(metrics.cpuPercent) ? Math.min(100, Math.max(0, metrics.cpuPercent)) : 0;
-  return <NodeContext.Provider value={context}>
+  return <CanvasPreviewTier.Provider value={viewTier}><NodeContext.Provider value={context}>
     <div className="neo-app">
       <header className="neo-header" inert={libraryModalOpen ? true : undefined}>
         {onLauncher && <button className="launcher-return" disabled={projectBusy || hasActiveTask()} onClick={async () => {
@@ -2041,7 +2018,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         onDrop={dropCanvasFiles}
         onDoubleClickCapture={openAddMenu}>
         <ReactFlow
-          nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onlyRenderVisibleElements
+          nodes={imageView.nodes} edges={imageView.edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onlyRenderVisibleElements
           nodesDraggable={!project.readOnly} nodesConnectable={!project.readOnly} edgesFocusable={!project.readOnly}
           onNodesChange={(changes) => {
             if (changes.some((change) => change.dragging === true || change.resizing === true)) { interactionRef.current = true; autoSaveRef.current?.suspend(); }
@@ -2221,7 +2198,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       {nodeShare && <WorkflowShare {...nodeShare} onClose={() => setNodeShare(null)} onSend={async (packet) => { setReferenceLibrary(null); setNodeLibraryMounted(true); setNodeLibraryOpen(true); setSharePacket(packet); setNodeShare(null); }} />}
       {referenceLibraryTab && <ReferenceLibrary library={referenceLibraryTab} open={Boolean(referenceLibrary)} onLibraryChange={openReferenceLibrary} readOnly={project.readOnly} onImport={importReference} onClose={() => setReferenceLibrary(null)} />}
     </div>
-  </NodeContext.Provider>;
+  </NodeContext.Provider></CanvasPreviewTier.Provider>;
 }
 
 export default function CanvasWorkbench({ initialProject = null, onActiveProjectChange, ...props }) {

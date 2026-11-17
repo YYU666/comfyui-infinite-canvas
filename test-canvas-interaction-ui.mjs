@@ -11,8 +11,8 @@ const failures = [], queued = [];
 const makeProject = (readOnly = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen references fixture', revision: 1, readOnly, shots: [], canvas: {
   viewport: { x: 20, y: 30, zoom: 0.9 },
   nodes: [
-    ...['地编截图', '场景氛围', '手绘笔触'].map((title, i) => ({ id: `image${i + 1}`, type: 'media', position: { x: 20, y: 10 + i * 240 }, data: { kind: 'image', title, remoteName: `${i + 1}.png`, url: `${origin}/fixture-${i + 1}.svg` } })),
-    { id: 'qwen', type: 'generator', selected: true, position: { x: 420, y: 40 }, data: { mode: 'qwenEdit', title: '保留的概念设计标题', prompt: '保留图1的路线，使用图2的场景氛围。', qwenSteps: 40, seed: 42, randomSeed: false, status: 'idle' } },
+    ...['地编截图', '场景氛围', '手绘笔触'].map((title, i) => ({ id: `image${i + 1}`, type: 'media', position: { x: 20 + i * 510, y: 800 }, data: { kind: 'image', title, remoteName: `${i + 1}.png`, url: `${origin}/fixture-${i + 1}.svg` } })),
+    { id: 'qwen', type: 'generator', selected: true, position: { x: 600, y: 40 }, data: { mode: 'qwenEdit', title: '保留的概念设计标题', prompt: '保留图1的路线，使用图2的场景氛围。', qwenSteps: 40, seed: 42, randomSeed: false, status: 'idle' } },
     { id: 'renderer', type: 'generator', position: {x:-1400,y:500}, data: {mode:'image',title:'Renderer fixture',status:'done',resultUrl:`${origin}/fixture-current.svg`} },
     { id: 'rendered', type: 'media', position:{x:-900,y:500}, data:{kind:'image',title:'Current result',url:`${origin}/fixture-current.svg`,output:true,sourceGeneratorId:'renderer'} },
     { id: 'prompt', type: 'prompt', position: { x: -900, y: 0 }, data: { title: 'Prompt fixture', idea: '保留地形' } },
@@ -23,7 +23,7 @@ const makeProject = (readOnly = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen
 } });
 async function fixture(readOnly = false) {
   let project = makeProject(readOnly);
-  const context = await browser.newContext({ viewport: { width: 1360, height: 1040 } });
+  const context = await browser.newContext({ viewport: { width: 1800, height: 1500 } });
   await context.addInitScript(() => {
     window.fixtureTools = new Map();
     Object.defineProperty(document, 'modelContext', { value: { registerTool(tool, options) { window.fixtureTools.set(tool.name, tool); options?.signal?.addEventListener('abort', () => window.fixtureTools.delete(tool.name)); } } });

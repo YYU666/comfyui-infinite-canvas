@@ -1,0 +1,22 @@
+/* Shared footprint stays stable across zoom tiers, so rows keep their small gaps. */
+.media-shell.media-image, .media-shell.media-video,
+.generator-shell.result-compact { width:440px; min-height:550px; }
+.media-shell.media-image .media-preview, .media-shell.media-video .media-preview,
+.generator-shell.result-compact .generator-preview { width:100%; height:440px; min-height:0; }
+.generator-shell.result-compact .generator-preview > img,
+.generator-shell.result-compact .generator-preview > video { width:100%; height:100%; max-height:none; object-fit:contain; }
+.canvas-view-compact .media-shell.media-image, .canvas-view-compact .media-shell.media-video,
+.canvas-view-compact .generator-shell.result-compact { min-height:550px; }
+.canvas-view-compact .media-shell.media-image .media-preview,
+.canvas-view-compact .media-shell.media-video .media-preview,
+.canvas-view-compact .generator-shell.result-compact .generator-preview { height:440px; }
+.canvas-view-placeholder .media-shell.media-image, .canvas-view-placeholder .media-shell.media-video,
+.canvas-view-placeholder .generator-shell.result-compact { min-height:550px; }
+.canvas-view-placeholder .media-shell.media-image .media-preview,
+.canvas-view-placeholder .media-shell.media-video .media-preview,
+.canvas-view-placeholder .generator-shell.result-compact .generator-preview { height:440px; }
+.canvas-video-preview { width:100%; height:100%; overflow:hidden; }
+.canvas-video-preview video { width:100%; height:100%; display:block; object-fit:contain; background:#0b0b0d; }
+.reference-chip > .canvas-video-preview { flex:0 0 21px; width:21px; height:21px; border-radius:5px; }
+.reference-chip > .canvas-video-preview video { width:21px; height:21px; object-fit:cover; }
+.reference-chip > .canvas-video-preview .media-video-compact span { display:none; }

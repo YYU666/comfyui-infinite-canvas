@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Image as ImageIcon, X } from 'lucide-react';
+import { Download, Image as ImageIcon, X } from 'lucide-react';
+import { imageExportBlob } from './image-export.js';
 
 const FIT_VIEW = { scale: 1, x: 0, y: 0 };
 const clampScale = (value) => Math.min(8, Math.max(1, value));
@@ -8,6 +9,25 @@ export default function ImageLightbox({ preview, onClose, closeRef }) {
   const [view, setView] = useState(FIT_VIEW);
   const contentRef = useRef(null);
   const dragRef = useRef(null);
+  const [removeMetadata, setRemoveMetadata] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
+  const exportImage = async () => {
+    if (exporting) return;
+    setExporting(true); setExportError('');
+    try {
+      const blob = await imageExportBlob(preview.url, removeMetadata);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const name = (preview.name || preview.title || 'image').replace(/[\\/:*?"<>|]/g, '_');
+      const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/avif': 'avif' }[blob.type];
+      link.download = removeMetadata ? `${name.replace(/\.[^.]+$/, '')}.png` : /\.[a-z0-9]{2,5}$/i.test(name) || !extension ? name : `${name}.${extension}`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (error) { setExportError(error.message); }
+    finally { setExporting(false); }
+  };
 
   useEffect(() => {
     const content = contentRef.current;
@@ -62,6 +82,12 @@ export default function ImageLightbox({ preview, onClose, closeRef }) {
         <div><ImageIcon size={15} /><span>{preview.title || '图片预览'}</span>{preview.name && <small>{preview.name}</small>}</div>
         <div><span className="image-lightbox-hint">滚轮缩放 · 拖动查看 · 双击复位 · Esc 关闭</span><span className="image-lightbox-zoom" data-testid="image-preview-zoom">{Math.round(view.scale * 100)}%</span><button ref={closeRef} onClick={onClose} aria-label="关闭大图预览" title="关闭 · Esc"><X size={18} /></button></div>
       </header>
+      <div className="image-export-controls" onClick={(event) => event.stopPropagation()}>
+        <label><input type="checkbox" checked={removeMetadata} onChange={(event) => setRemoveMetadata(event.target.checked)} />去除元数据（PNG）</label>
+        <small>移除提示词、工作流、种子等信息，保留像素与色彩配置；原文件不变。</small>
+        <button disabled={exporting} onClick={exportImage}><Download size={14} />{exporting ? '正在导出…' : '导出图片'}</button>
+        {exportError && <span role="alert">{exportError}</span>}
+      </div>
       <div ref={contentRef} className="image-lightbox-content" onClick={onClose} onDoubleClick={() => setView(FIT_VIEW)}>
         <img src={preview.url} alt={preview.title || '生成图片大图'} draggable={false} className={view.scale > 1 ? 'is-zoomed' : ''}
           style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
