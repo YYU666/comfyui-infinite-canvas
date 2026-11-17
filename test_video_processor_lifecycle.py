@@ -9,6 +9,31 @@ from video_repair_jobs import VideoRepairJobs
 
 
 class ProcessorLifecycleTests(TestCase):
+    def test_repair_preview_blocks_replacement_and_is_cancelled_on_close(self):
+        import threading
+        with TemporaryDirectory() as temporary:
+            runner = mock.Mock()
+            jobs = VideoRepairJobs(Path(temporary), mock.Mock(), runner_factory=lambda: runner)
+            started, release = threading.Event(), threading.Event()
+            errors = []
+            def render(*args, **kwargs):
+                started.set()
+                if not release.wait(3): raise TimeoutError('fixture release')
+                return {'png': b'png'}
+            def preview():
+                try: jobs.preview({})
+                except Exception as error: errors.append(error)
+            with mock.patch.object(jobs, '_request', return_value=({}, Path('fixture'), {})), mock.patch('video_repair_jobs.render_preview', side_effect=render):
+                thread = threading.Thread(target=preview); thread.start()
+                try:
+                    self.assertTrue(started.wait(3)); self.assertEqual(jobs.active_count(), 1)
+                    with self.assertRaises(StoreError): jobs.replace_store(mock.Mock())
+                    jobs.close(); runner.cancel.assert_called()
+                finally:
+                    release.set(); thread.join(3)
+                self.assertFalse(errors); self.assertEqual(jobs.active_count(), 0)
+                with self.assertRaises(StoreError): jobs.preview({})
+
     def test_finished_jobs_are_invalidated_and_active_jobs_block_root_change(self):
         for job_type, prefix in [(VideoRhythmJobs, 'vry'), (VideoChromaJobs, 'vck'), (VideoRepairJobs, 'vrp')]:
             with self.subTest(job_type=job_type), TemporaryDirectory() as temporary:
