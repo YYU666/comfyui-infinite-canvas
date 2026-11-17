@@ -9,6 +9,7 @@ import { CHANNEL_KEYS, normalizeChannelPackSettings } from './channel-packing.js
 import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-references.js';
 import { availableNodePresets } from './local-node-tools.js';
 import { DEFAULT_SPRITE_OPTIONS, spriteSnapshot } from './sprite-atlas.js';
+import { imageCompactArgs } from './image-inline-output.js';
 
 export const NODE_PRESETS = {
   sprite_atlas: ['spriteAtlas', { title: '3D 角色转多方向图集', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS } }],
@@ -541,6 +542,12 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       },
     ];
     tools.push({
+      name: 'canvas_image_compact',
+      description: '整理指定已完成图片生成节点的重复结果卡，保留媒体身份、文件、历史及下游引用；多输出保留独立卡。默认 dryRun:true 仅预览，执行需显式 false。当前画布忙碌、只读或保存异常时拒绝。',
+      inputSchema: schema({ nodeIds: { type: 'array', items: nodeIdProperty, minItems: 1, maxItems: 100 }, dryRun: { type: 'boolean', default: true } }, ['nodeIds']),
+      execute: respond(args => latest.current.actions.imageCompact(imageCompactArgs(args))),
+    });
+    tools.push({
       name: 'canvas_retry_save',
       description: '显式重试当前页面保存，保留未保存修改及版本冲突保护；不会重新生成或刷新页面。',
       inputSchema: schema(),
@@ -569,7 +576,8 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
     for (const tool of tools) {
       const original = tool.execute;
       tool.execute = async (args = {}, executionOptions) => {
-        const mutation = !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
+        const compactPreview = tool.name === 'canvas_image_compact' && args?.dryRun !== false;
+        const mutation = !compactPreview && !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
         const result = JSON.parse(await original(args, executionOptions));
         if (mutation && result.ok && !['canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {

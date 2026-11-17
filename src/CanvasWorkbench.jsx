@@ -1,4 +1,4 @@
-import { inlineImageView } from './image-inline-output.js';
+import { inlineImageView, compactInlineImages, imageCompactArgs } from './image-inline-output.js';
 import { isH3Image, resolveH3ImageDimensions, getH3ImageDependencyStatus } from './h3-image.js';
 import {DEFAULT_GENERATOR, initialCanvas, migrateCanvas} from './canvas-migration.js';
 import {createProjectAccessRecovery, retryCurrentProjectSave} from './project-save-recovery.js';
@@ -1930,7 +1930,21 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   useCanvasMcp({
     nodesRef, edgesRef, projectName, projectId: project.id, readOnly: project.readOnly, server,
-    actions: { moveNodes, addNode, createExtensionNode: async (digest, nodeDefinitionId, position, focus) => {
+    actions: { imageCompact: (args) => {
+      const { nodeIds, dryRun } = imageCompactArgs(args);
+      if (projectRef.current.id !== project.id || projectRef.current.readOnly || switchingRef.current
+        || autoSaveRef.current?.failure || autoSaveRef.current?.conflict) throw new Error('当前画布不可写，请先处理保存状态或项目切换。');
+      if (hasActiveTask() || mediaWritesRef.current.size || referenceImportBusyRef.current || catalogBusyRef.current
+        || interactionRef.current || nodesRef.current.some(node => node.dragging || node.resizing)) throw new Error('任务或编辑进行中，请等待完成后再整理图片结果。');
+      const result = compactInlineImages(nodesRef.current, edgesRef.current, nodeIds);
+      if (!dryRun && result.compacted.length) {
+        historyRef.current.observe(nodesRef.current, edgesRef.current);
+        nodesRef.current = result.nodes;
+        flushSync(() => setNodes(result.nodes));
+        historyRef.current.observe(result.nodes, edgesRef.current);
+      }
+      return { dryRun, compacted: result.compacted, skipped: result.skipped };
+    }, moveNodes, addNode, createExtensionNode: async (digest, nodeDefinitionId, position, focus) => {
       if (workflowLibraryOpen || switchingRef.current || project.readOnly) throw new Error('请关闭本地工作流窗口，并确认当前画布可写后再添加节点。');
       const bundle = await getExtension(digest);
       if (switchingRef.current || project.readOnly) throw new Error('当前画布不可写。');
