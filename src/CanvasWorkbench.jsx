@@ -78,6 +78,9 @@ import { createVideoRhythmRunner } from './video-rhythm-runtime';
 import VideoChromaKeyNode from './VideoChromaKeyNode';
 import { createVideoChromaRunner } from './video-chroma-runtime';
 import { defaultChromaSettings } from './video-chroma-document';
+import VideoRepairNode from './VideoRepairNode';
+import { createVideoRepairRunner } from './video-repair-runtime';
+import { defaultRepairSettings, repairSourceSignature } from './video-repair-document';
 import VideoEditorNode from './VideoEditorNode';
 import { defaultVideoEditDocument, videoEditInputView } from './video-edit-document';
 import { createVideoEditRunner } from './video-edit-runtime';
@@ -484,6 +487,7 @@ function ImageProcessCanvasNode(props) {
 }
 function VideoRhythmCanvasNode(props) { const actions = useContext(NodeContext); return <VideoRhythmNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />; }
 function VideoChromaCanvasNode(props) { const actions = useContext(NodeContext); return <VideoChromaKeyNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />; }
+function VideoRepairCanvasNode(props) { const actions = useContext(NodeContext); return <VideoRepairNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />; }
 function VideoEditCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <VideoEditorNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
@@ -496,7 +500,7 @@ function SpriteAtlasCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <SpriteAtlasNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
-const nodeTypes = { videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) };
+const nodeTypes = { videoLocalRepair: React.memo(VideoRepairCanvasNode), videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) };
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
   const saved = useMemo(() => {
@@ -1344,9 +1348,28 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       resultUrl: node?.data.chromaResultAssetPath ? assetUrl(project.id, node.data.chromaResultAssetPath) : null,
     };
   }, [project.id]);
+  const videoRepairRunnerRef = useRef(null);
+  if (!videoRepairRunnerRef.current) videoRepairRunnerRef.current = createVideoRepairRunner({
+    getProjectId: () => projectRef.current.id, getNodes: () => nodesRef.current, getEdges: () => edgesRef.current,
+    canWrite: () => !switchingRef.current && !projectRef.current.readOnly && !autoSaveRef.current?.failure,
+    jobs: localImageJobsRef.current, onJobsChange: () => setLocalImageJobsVersion((version) => version + 1),
+    updateNode: (...args) => flushSync(() => videoEditDepsRef.current.updateNode(...args)),
+    saveCanvasMedia: (...args) => videoEditDepsRef.current.saveCanvasMedia(...args),
+    persistProject: () => videoEditDepsRef.current.persistProject(),
+    saveProjectFile: (...args) => videoEditDepsRef.current.saveProjectFile(...args),
+  });
+  const getVideoRepairState = useCallback((id) => {
+    const node = nodesRef.current.find(item => item.id === id);
+    const edge = edgesRef.current.find(item => item.target === id && item.targetHandle === 'video');
+    const source = nodesRef.current.find(item => item.id === edge?.source);
+    return { busy: localImageJobsRef.current.has(id), sourceTitle: source ? source.data.title || source.data.name || source.id : null,
+      sourceSignature: repairSourceSignature(id, nodesRef.current, edgesRef.current),
+      resultUrl: node?.data.repairResultAssetPath ? assetUrl(project.id, node.data.repairResultAssetPath) : null };
+  }, [project.id]);
   const generateNode = useCallback(async (id) => {
     if (['videoSpeed', 'videoTimeRemap'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoRhythmRunnerRef.current.run(id);
     if (['videoChromaKey'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoChromaRunnerRef.current.run(id);
+    if (['videoLocalRepair'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoRepairRunnerRef.current.run(id);
     if (nodesRef.current.find(node => node.id === id)?.type === 'videoEdit') return videoEditRunnerRef.current.run(id);
     if (nodesRef.current.find(n => n.id === id)?.type === 'spriteAtlas') return spriteRunRef.current?.runSpriteAtlas(id);
     if (nodesRef.current.find(n => n.id === id)?.type === 'artDirector') return artRunRef.current?.(id);
@@ -1460,6 +1483,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }, [clientId, getReferences, project.id, project.readOnly, updateNode, runImageProcess]);
 
   const cancelNode = useCallback(async (id) => {
+    if (nodesRef.current.find(node => node.id === id)?.type === 'videoLocalRepair') return videoRepairRunnerRef.current.cancel(id);
     const node = nodesRef.current.find((item) => item.id === id);
     if (node?.type === 'spriteAtlas') return spriteRunRef.current?.cancelSpriteAtlas(id);
     if (localImageJobsRef.current.has(id)) { localImageJobsRef.current.get(id).abort(); return; }
@@ -1548,6 +1572,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     else if (type === 'videoSpeed') data = { title: '恒定速度', status: 'idle', ...defaultSpeedSettings(), ...extra };
     else if (type === 'videoTimeRemap') data = { title: '时间重映射', status: 'idle', remapKeyframes: defaultRemapKeyframes(), ...extra };
     else if (type === 'videoChromaKey') data = { title: '绿幕扣像合成', status: 'idle', ...defaultChromaSettings(), ...extra };
+    else if (type === 'videoLocalRepair') data = { title: '局部水印修补', status: 'idle', ...defaultRepairSettings(), ...extra };
     else if (type === 'videoEdit') data = { title: '视频编辑', status: 'idle', editDocument: defaultVideoEditDocument(), ...extra };
     else if (type === 'prompt') data = { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...extra };
     else if (type === 'note') data = { title: '创作备注', text: '', ...extra };
@@ -2027,7 +2052,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const spriteAtlas = useSpriteAtlas({ project, projectRef, revisionRef, switchingRef, nodes, nodesRef, updateNode, persistProject, localImageJobsRef, setLocalImageJobsVersion });
   spriteRunRef.current = spriteAtlas;
   artRunRef.current = (id) => { const state = artDirector.getArtDirectorState(id); return state.node?.data.analysis?.sourceVersion === state.signature ? artDirector.exportArtBoard(id) : artDirector.runArtAnalysis(id); };
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoEditState, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [getVideoChromaState, getVideoRhythmState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoEditState, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -2231,6 +2256,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={() => addNode('videoSpeed', { title: '恒定速度' }, addMenu.flow)}><i><Film size={17} /></i><span>恒定速度<small>0.5× 升格慢放 · 2× 快放</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('videoTimeRemap', { title: '时间重映射' }, addMenu.flow)}><i><Film size={17} /></i><span>时间重映射<small>关键帧曲线 · 走平为定格 · 缓入缓出</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('videoChromaKey', { title: '绿幕扣像合成' }, addMenu.flow)}><i><Film size={17} /></i><span>绿幕扣像合成<small>绿幕人物叠到图片或视频背景</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoLocalRepair', { title: '局部水印修补' }, addMenu.flow)}><i><Film size={17} /></i><span>局部水印修补<small>CPU 邻域填补 · 小块文字 · 原片声音</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('videoEdit', { title: '视频编辑' }, addMenu.flow)}><i><Film size={17} /></i><span>视频编辑<small>裁切 · 分割 · 倒放 · 补帧 · 拼接 · 原声</small></span><Plus size={13} /></button>
           <div className="add-menu-title">第三方工具</div>
           {LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset]).map((tool) => <button key={tool.preset} onClick={() => addNode(...NODE_PRESETS[tool.preset], addMenu.flow)}><i><WandSparkles size={17} /></i><span>{tool.label}<small>{tool.description}</small></span><Plus size={13} /></button>)}

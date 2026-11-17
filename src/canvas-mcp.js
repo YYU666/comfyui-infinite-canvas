@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { isVideoRhythm, normalizeSpeedDocument, normalizeRemapDocument, videoRhythmSummary } from './video-rhythm-document.js';
 import { CHROMA_FIELDS, chromaDocumentFromNode, defaultChromaHandle, defaultChromaSettings, isVideoChroma, normalizePreviewTime, videoChromaSummary } from './video-chroma-document.js';
+import { REPAIR_FIELDS, defaultRepairSettings, isVideoRepair, normalizeRepairDocument, normalizeRepairPreviewTime, videoRepairSummary } from './video-repair-document.js';
 import { isVideoEdit, normalizeVideoEditDocument, nextVideoEditPort, videoEditSummary } from './video-edit-document.js';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
@@ -28,6 +29,7 @@ export const NODE_PRESETS = {
   video_speed: ['videoSpeed', { title: '恒定速度', speed: 0.5, rhythmAudio: 'preserve' }],
   video_time_remap: ['videoTimeRemap', { title: '时间重映射', remapKeyframes: [{ output: 0, source: 0, interpolation: 'linear' }, { output: 1, source: 1, interpolation: 'linear' }] }],
   video_chroma_key: ['videoChromaKey', { title: '绿幕扣像合成', ...defaultChromaSettings() }],
+  video_local_repair: ['videoLocalRepair', { title: '局部水印修补', ...defaultRepairSettings() }],
   video_edit: ['videoEdit', { title: '视频编辑' }],
   video_download: ['note', { title: '视频链接下载', noteRole: 'videoDownload' }],
   audio_asset: ['audio', {}],
@@ -57,7 +59,7 @@ export const NODE_PRESETS = {
 };
 
 const EDITABLE_SETTINGS = new Set([
-  ...CHROMA_FIELDS, 'speed', 'rhythmAudio', 'remapKeyframes', 'editDocument',
+  ...REPAIR_FIELDS, ...CHROMA_FIELDS, 'speed', 'rhythmAudio', 'remapKeyframes', 'editDocument',
   'spriteInputPath', 'spriteOptions',
   'packChannels', 'packPreview',
   ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
@@ -158,7 +160,7 @@ function mediaLocation(data = {}) {
   return Object.keys(media).length ? media : null;
 }
 
-export function nodeSummary(node, includeContent = true) {
+export function nodeSummary(node, includeContent = true, graph = {}) {
   if (!node) return null;
   const media = mediaLocation(node.data);
   return {
@@ -188,9 +190,10 @@ export function nodeSummary(node, includeContent = true) {
     position: node.position,
     selected: Boolean(node.selected),
     pinned: Boolean(node.data.pinned),
-    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath || node.data.editResultAssetPath || node.data.rhythmResultAssetPath || node.data.chromaResultAssetPath),
+    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath || node.data.editResultAssetPath || node.data.rhythmResultAssetPath || node.data.chromaResultAssetPath || node.data.repairResultAssetPath),
     ...(isVideoRhythm(node) ? videoRhythmSummary(node.data, node.type) : {}),
     ...(isVideoChroma(node) ? videoChromaSummary(node.data) : {}),
+    ...(isVideoRepair(node) ? videoRepairSummary(node.data, { ...graph, nodeId: node.id }) : {}),
     ...(isVideoEdit(node) ? videoEditSummary(node.data) : {}),
     ...(media ? { media } : {}),
   };
@@ -208,6 +211,7 @@ function edgeSummary(edge) {
 
 function defaultTargetHandle(target, source, edges = []) {
   if (isVideoChroma(target)) return defaultChromaHandle(target, source, edges);
+  if (isVideoRepair(target)) return 'video';
   if (isVideoRhythm(target)) return 'v1';
   if (target.type === 'artDirector') return 'artwork';
   if (isImageProcess(target)) return target.data.mode === 'channelPack' ? 'red' : target.data.mode === 'imageBlend' ? 'base' : 'guide';
@@ -273,8 +277,8 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     if (!result?.ok) throw new Error(result?.error || '解析图输出失败。');
     return { node: nodeSummary(mcpNode(latest, nodeId)), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
   }
-  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial)) {
-    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : 'chromaJobId';
+  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial)) {
+    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : 'repairJobId';
     const result = await latest.current.actions.generateNode(nodeId);
     if (!result?.ok) throw new Error(result?.error || '视频导出提交失败。');
     if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId };
@@ -314,8 +318,8 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
 
 export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
-  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial)) {
-    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : 'chromaJobId';
+  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial)) {
+    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : 'repairJobId';
     try {
       return { pending: false, ...await waitForVideoJob(latest, nodeId, jobKey, initial.data[jobKey], timeoutMs, waitImpl) };
     } catch (error) {
@@ -403,7 +407,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
             server: latest.current.server,
             nodeCount: latest.current.nodesRef.current.length,
             nodes: nodes.map((node) => {
-              const summary = nodeSummary(node, includePrompt);
+              const summary = nodeSummary(node, includePrompt, { nodes: latest.current.nodesRef.current, edges: latest.current.edgesRef.current });
               if (node.data.mode !== 'qwenEdit') return summary;
               const references = qwenCanvasReferences(node, latest.current.nodesRef.current, latest.current.edgesRef.current);
               return { ...summary, maskNodeId: latest.current.edgesRef.current.find((edge) => edge.target === node.id && edge.targetHandle === 'mask')?.source || null, referenceNodeIds: references.map((ref) => ref.id), referenceCount: references.length,
@@ -489,10 +493,12 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
             normalizeSpeedDocument({ schemaVersion: 1, speed: settings.speed ?? current.data.speed, audio: settings.rhythmAudio ?? current.data.rhythmAudio });
           }
           if ('remapKeyframes' in settings) { if (current.type !== 'videoTimeRemap') throw new Error('曲线参数仅用于时间重映射节点。'); normalizeRemapDocument({ schemaVersion: 1, keyframes: settings.remapKeyframes }); }
-          if (CHROMA_FIELDS.some(key => key in settings)) { if (!isVideoChroma(current)) throw new Error('绿幕参数仅用于绿幕合成节点。'); chromaDocumentFromNode({ ...current.data, ...settings }); if ('previewTime' in settings) normalizePreviewTime(settings.previewTime); }
+          if (CHROMA_FIELDS.some(key => key in settings && !(key === 'previewTime' && isVideoRepair(current)))) { if (!isVideoChroma(current)) throw new Error('绿幕参数仅用于绿幕合成节点。'); chromaDocumentFromNode({ ...current.data, ...settings }); if ('previewTime' in settings) normalizePreviewTime(settings.previewTime); }
           if ('editDocument' in settings && !isVideoEdit(current)) throw new Error('editDocument 仅适用于视频编辑节点。');
           validateModelSettings(settings, current.data.mode ?? '');
           const patch = { ...settings };
+          if ('repairSettings' in settings && !isVideoRepair(current)) throw new Error('repairSettings 仅用于局部修补。');
+          if (isVideoRepair(current)) { if ('repairSettings' in settings) patch.repairSettings = normalizeRepairDocument(settings.repairSettings); if ('previewTime' in settings) patch.previewTime = normalizeRepairPreviewTime(settings.previewTime); }
           if (current.type === 'videoChromaKey' && CHROMA_FIELDS.some((key) => key in settings)) {
             const merged = chromaDocumentFromNode({ ...current.data, ...settings });
             const exported = {
