@@ -1,0 +1,134 @@
+{
+  "baselineCommit": "977faf9795b70be2e68137015bd9a2f1fd89532f",
+  "sourceBuild": "index-CJGSPrmA.js / index-DINJ9USp.css",
+  "files": [
+    {
+      "path": "scripts/run_node_tests.mjs",
+      "gitNormalizedSha256": "8ed96714a8413001ea3adfad169579905e35bad69f6a00b3ad3e1e253a970d5e",
+      "worktreeSha256": "8ed96714a8413001ea3adfad169579905e35bad69f6a00b3ad3e1e253a970d5e",
+      "deployedSourceSha256": "fdee65e9d43673dd8ca3de0c5a9d1a4f70b5ad99f7d504623e9f47a78a83ad71",
+      "normalizedEqual": false,
+      "reason": "Integrate this feature on current main, retain sprite-atlas and main safety fixes; add isolated synthetic regression coverage. Completed multi-input ports receive distinct offsets, fixing an issue found during integration review."
+    },
+    {
+      "path": "src/CanvasImage.jsx",
+      "gitNormalizedSha256": "777489f447ae236f593e6036c88cb4850f75d245324c55092935bc9a89a4188f",
+      "worktreeSha256": "777489f447ae236f593e6036c88cb4850f75d245324c55092935bc9a89a4188f",
+      "deployedSourceSha256": "8a04fa8daf279f126e64c4be2e186470bb12f1a7c570b390fabf349deb028586",
+      "normalizedEqual": true,
+      "reason": "Matches deployed source after newline normalization."
+    },
+    {
+      "path": "src/CanvasMediaPreview.jsx",
+      "gitNormalizedSha256": "bebcca47c24e1a184984e1c22c0a49eebde48ebe0085f06af69b75e4896978d6",
+      "worktreeSha256": "bebcca47c24e1a184984e1c22c0a49eebde48ebe0085f06af69b75e4896978d6",
+      "deployedSourceSha256": "bebcca47c24e1a184984e1c22c0a49eebde48ebe0085f06af69b75e4896978d6",
+      "normalizedEqual": true,
+      "reason": "Matches deployed source after newline normalization."
+    },
+    {
+      "path": "src/CanvasWorkbench.jsx",
+      "gitNormalizedSha256": "d45336c2493080be8f0a3f07c545f40076fe5d8a78aaff69ec3b72d6e017d80a",
+      "worktreeSha256": "d45336c2493080be8f0a3f07c545f40076fe5d8a78aaff69ec3b72d6e017d80a",
+      "deployedSourceSha256": "10bdb81e9e5edac996dc940f3bef67c40de203acf6f16ba239bbffed5b1e836d",
+      "normalizedEqual": false,
+      "reason": "Integrate this feature on current main, retain sprite-atlas and main safety fixes; add isolated synthetic regression coverage. Completed multi-input ports receive distinct offsets, fixing an issue found during integration review."
+    },
+    {
+      "path": "src/canvas-clipboard.js",
+      "gitNormalizedSha256": "3cbf36001eb83a44547ce59d7f6c2f163cb5d2c92a8721bd3f993d9626ebd547",
+      "worktreeSha256": "3cbf36001eb83a44547ce59d7f6c2f163cb5d2c92a8721bd3f993d9626ebd547",
+      "deployedSourceSha256": "e3d51919f43ccb9e09a59a2fc5a41464df56a3a61aa543c5539afdd99f2ed507",
+      "normalizedEqual": false,
+      "reason": "Integrate this feature on current main, retain sprite-atlas and main safety fixes; add isolated synthetic regression coverage. Completed multi-input ports receive distinct offsets, fixing an issue found during integration review."
+    },
+    {
+      "path": "src/canvas-layout.js",
+      "gitNormalizedSha256": "f2be63c1bbb4e3070b2ad9010ac9b8c9e5f4842e0a7cdebd61b296c5446b66c1",
+      "worktreeSha256": "f2be63c1bbb4e3070b2ad9010ac9b8c9e5f4842e0a7cdebd61b296c5446b66c1",
+      "deployedSourceSha256": "bd1c4b8e21ff0d9cab2f2044639067e19f00f157318e97150a28626235ebd4df",
+      "normalizedEqual": false,
+      "reason": "Integrate this feature on current main, retain sprite-atlas and main safety fixes; add isolated synthetic regression coverage. Completed multi-input ports receive distinct offsets, fixing an issue found during integration review."
+    },
+    {
+      "path": "src/canvas-media-preview.css",
+      "gitNormalizedSha256": "1ba6c388ddf28684c0bcc074dcfece8685e25c042269a8ba07f7a595799554ab",
+      "worktreeSha256": "9c8eecf9cf647bf82755a758cfc42c3162d2cab57e6d7ae994d6362284dc5235",
+      "deployedSourceSha256": "9c8eecf9cf647bf82755a758cfc42c3162d2cab57e6d7ae994d6362284dc5235",
+      "normalizedEqual": true,
+      "reason": "Matches deployed source after newline normalization."
+    },
+    {
+      "path": "src/image-inline-output.js",
+      "gitNormalizedSha256": "c9765d9b8bf767bf8116b71b3e215fd1490bf49c010eb410d63f605165beea0f",
+      "worktreeSha256": "2ed346b1c300187067697715af9e1b1ed6eeabd15c3df61be4883c94d81839ed",
+      "deployedSourceSha256": "2ed346b1c300187067697715af9e1b1ed6eeabd15c3df61be4883c94d81839ed",
+      "normalizedEqual": true,
+      "reason": "Matches deployed source after newline normalization."
+    },
+    {
+      "path": "src/result-node-presentation.css",
+      "gitNormalizedSha256": "c33011dc1447d31d34687d84f9e3ad5e7b73721eabca4510678153b65721ff45",
+      "worktreeSha256": "f35362d7a4a13063cd9294387d2120763e6bcc5f94e630d66c1d8f53113008ed",
+      "deployedSourceSha256": "f35362d7a4a13063cd9294387d2120763e6bcc5f94e630d66c1d8f53113008ed",
+      "normalizedEqual": true,
+      "reason": "Matches deployed source after newline normalization."
+    },
+    {
+      "path": "src/result-node-presentation.jsx",
+      "gitNormalizedSha256": "eb82442341a60239e2f9517a40b17ee724ac7acafa4798483b7a55df94d5502e",
+      "worktreeSha256": "2a028ea145952d942ec8a215433fdd40c1febde62fa9a0ab8e2d0ace44cabdac",
+      "deployedSourceSha256": "2a028ea145952d942ec8a215433fdd40c1febde62fa9a0ab8e2d0ace44cabdac",
+      "normalizedEqual": true,
+      "reason": "Matches deployed source after newline normalization."
+    },
+    {
+      "path": "test-canvas-clipboard.mjs",
+      "gitNormalizedSha256": "636e749f1a85598d1747847aa940b171d9d0a92048bcd797d69ae37847da55e4",
+      "worktreeSha256": "636e749f1a85598d1747847aa940b171d9d0a92048bcd797d69ae37847da55e4",
+      "deployedSourceSha256": "46bdf66a654b3bf24f2540f8f93a6055ef029cbf43ae9e43d363c99d9f707c88",
+      "normalizedEqual": true,
+      "reason": "Matches deployed source after newline normalization."
+    },
+    {
+      "path": "test-canvas-layout-roundtrip.mjs",
+      "gitNormalizedSha256": "cba4a9edbf8281583efb30427268041e5a7af533b697a874db55ccae9b18ab91",
+      "worktreeSha256": "cba4a9edbf8281583efb30427268041e5a7af533b697a874db55ccae9b18ab91",
+      "deployedSourceSha256": null,
+      "normalizedEqual": false,
+      "reason": "Integrate this feature on current main, retain sprite-atlas and main safety fixes; add isolated synthetic regression coverage. Completed multi-input ports receive distinct offsets, fixing an issue found during integration review."
+    },
+    {
+      "path": "test-canvas-layout.mjs",
+      "gitNormalizedSha256": "77b46235afeb5692861eaa1f6d6e069b84c03fb5cbff3543063d2399dfd95f6d",
+      "worktreeSha256": "77b46235afeb5692861eaa1f6d6e069b84c03fb5cbff3543063d2399dfd95f6d",
+      "deployedSourceSha256": "a7b4ef5a8856991117c7b0f9ff948f8b2f408e9c9ce3c1fe524c2e20f9eef257",
+      "normalizedEqual": false,
+      "reason": "Integrate this feature on current main, retain sprite-atlas and main safety fixes; add isolated synthetic regression coverage. Completed multi-input ports receive distinct offsets, fixing an issue found during integration review."
+    },
+    {
+      "path": "test-canvas-media-preview-ui.mjs",
+      "gitNormalizedSha256": "1004d3aff99ed89cfe2dbbfc637cc10ce3ecf3ba2176c8c925cc2a94d279740d",
+      "worktreeSha256": "1004d3aff99ed89cfe2dbbfc637cc10ce3ecf3ba2176c8c925cc2a94d279740d",
+      "deployedSourceSha256": "86aa2b2835f0b949b5b4ba6d374278320f3c3750bd24085f5cb03c0b74565c90",
+      "normalizedEqual": false,
+      "reason": "Integrate this feature on current main, retain sprite-atlas and main safety fixes; add isolated synthetic regression coverage. Completed multi-input ports receive distinct offsets, fixing an issue found during integration review."
+    },
+    {
+      "path": "test-canvas-interaction-ui.mjs",
+      "gitNormalizedSha256": "344534e2490160e785b06bf7bff6ca23950131578963c8a4ff4e3125aded0b45",
+      "worktreeSha256": "344534e2490160e785b06bf7bff6ca23950131578963c8a4ff4e3125aded0b45",
+      "deployedSourceSha256": null,
+      "normalizedEqual": false,
+      "reason": "Adapt isolated fixture geometry for 440x550 media cards; original 240-unit spacing overlapped cards and the selected-node toolbar. Keep real pointer hit-testing and all assertions, without forced clicks."
+    },
+    {
+      "path": "test-edge-disconnect-ui.mjs",
+      "gitNormalizedSha256": "1861812407f69a766ceb51dfdb38710598576604cf8ee8d392ddeb82cb35fc60",
+      "worktreeSha256": "1861812407f69a766ceb51dfdb38710598576604cf8ee8d392ddeb82cb35fc60",
+      "deployedSourceSha256": null,
+      "normalizedEqual": false,
+      "reason": "Adapt isolated fixture geometry and deselect settings toolbar for 440x550 media cards; preserve pointer, hover, Alt, undo, save, busy and read-only assertions."
+    }
+  ]
+}
