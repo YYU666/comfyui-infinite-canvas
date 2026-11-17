@@ -306,7 +306,7 @@ class PCGRuntime:
                             summaries[name] = self.assets.summary(task['projectId'], value)
                             artifacts.append(self.assets.publish(task, name, value, 'glb'))
                             artifacts.append(self.assets.publish(task, name, value, 'json'))
-                            artifacts.append(self.assets.publish(task, name, value, 'svg'))
+                            artifacts.append(self.assets.publish(task, name, value, 'svg', prepared_body=stage_bodies[(request['plan']['target'], name)]))
                         elif value.get('type') == 'DiagnosticReport': summaries[name] = copy.deepcopy(value)
                         else:
                             summaries[name] = {k: copy.deepcopy(v) for k, v in value.items() if k not in {'values', 'pixels'}}

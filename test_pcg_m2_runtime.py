@@ -156,6 +156,20 @@ class M2RuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.assets.records, {})
         self.assertIsNone(task['result'])
 
+    def test_final_preview_reuses_budgeted_target_stage_bytes(self):
+        self.require_boundary()
+        from pcg_preview import render_preview_svg
+        with mock.patch('pcg_preview.render_preview_svg', wraps=render_preview_svg) as renderer:
+            task = self.execute()
+        self.assertEqual(task['status'], 'succeeded', task)
+        self.assertEqual(renderer.call_count, 3)
+        final = next(a for a in task['result']['assets'] if a['format'] == 'svg')
+        stage = task['result']['stagePreviews'][-1]['assets'][0]
+        self.assertEqual(final, stage)
+        body, metadata = self.runtime.download(self.handle(task), final['artifactId'])
+        self.assertIn(b'<svg', body)
+        self.assertEqual(metadata, final)
+
     def assert_slots_released(self):
         self.assertTrue(self.runtime.geometry_slot.acquire(blocking=False))
         self.runtime.geometry_slot.release()
