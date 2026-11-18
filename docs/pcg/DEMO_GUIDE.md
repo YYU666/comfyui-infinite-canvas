@@ -1,4 +1,6 @@
-# PCG 最小只读 3D 演示：Agent 使用手册
+> 21:54正式入口修订：本页仅为隔离诊断工具。M4用户入口是画布内可拖动/缩放3D面板，接口与步骤见AGENT_GUIDE.md末节；独立演示不能独自作为M4通过依据。
+
+# PCG 只读 3D 演示与增量反馈：Agent 使用手册
 
 这是独立测试页，真实加载 M2 的 GLB。它不是正式画布入口，不保存或修改正式项目；没有选择点面、拖拽变换或建模工具。自动取景、自动转台、阶段刷新只使用本地 CPU/GPU，不按帧请求模型。游戏资产桥及完整生产验收仍未交付。
 
@@ -14,7 +16,7 @@ python pcg_demo_server.py --runtime-dir "D:\PCG-Demo\run-unique" --samples-root 
 
 `--port 0` 由系统分配空闲端口，只绑定 `127.0.0.1`。8188、8189、8790 被显式禁止；不启动/停止其他服务。标准输出给出 URL、端口、PID、实例 ID，**不输出令牌**。凭据只保存在本地 `runtime-dir/instance.json`，不要复制到聊天、截图或 Git。只关闭自己启动的服务；正常退出释放所有权标记。
 
-浏览器打开实际 URL，首页设置本服务 HttpOnly 会话 Cookie。此页面可新开，不连接正式画布。MCP 客户端从本地实例文件取 `mcpUrl` 和 `token`，将 token 放入 `Authorization: Bearer ...`，不放 URL。本服务提供无会话 JSON Streamable HTTP MCP 子集：`initialize`、`notifications/initialized`、`ping`、`tools/list`、`tools/call`；不提供 SSE/订阅，状态按需读回。MCP 工具本身不启动系统浏览器，`pcg_demo_open` 返回 URL 后由调用客户端打开。
+浏览器打开实际 URL，首页设置本服务 HttpOnly 会话 Cookie。此页面可新开，不连接正式画布。MCP 客户端从本地实例文件取 `mcpUrl` 和 `token`，将 token 放入 `Authorization: Bearer ...`，不放 URL。本服务提供无会话 JSON Streamable HTTP MCP 子集：`initialize`、`notifications/initialized`、`ping`、`tools/list`、`tools/call`；不提供 SSE/订阅，事件通过有界等待按需读回。MCP 工具本身不启动系统浏览器，`pcg_demo_open` 返回 URL 后由调用客户端打开。
 
 工具权威定义是 [demo-tools.json](../../pcg/demo-tools.json)，HTTP `/api/tools` 和 MCP `tools/list` 共用它；浏览器与 Agent 共用会话状态/产物合同。最小传输例子（实际 token 只在内存中）：
 
@@ -36,7 +38,7 @@ page = call('pcg_demo_open')  # 打开 page['url']，不要打印凭据
 state = call('pcg_demo_read_state')
 ```
 
-## 六个工具：输入、输出、最小例子及恢复
+## 九个工具：输入、输出、最小例子及恢复
 
 | 工具 | 用途与输入 | 输出与最小调用 | 常见错误与恢复 |
 |---|---|---|---|
@@ -76,7 +78,7 @@ else: raise RuntimeError('Browser did not acknowledge the selected real model')
 
 `desired` 是期望资产，不表示浏览器已加载；`viewer.displayed` 才是成功 GPU 上传并至少真实绘制一帧后的资产，需同时核对实例、selectionEpoch、assetId。新选择/运行期间保留旧模型并显示各自身份，不伪装为当前结果。回执还带每客户端单调 reportSequence，迟到的成功不能覆盖较新的 context-lost；相同请求可幂等重试。GPU 回执是浏览器自报展示状态，并非远端证明或几何验证的替代；M2 verify 和 SHA256 仍独立执行。
 
-GLB 加载失败保持前一成功 GPU 场景；任务失败保留最后成功阶段；旧响应/旧 epoch 不覆盖新选择。WebGL context lost 会清实际显示身份，恢复后重新加载。只有展示控件（暂停/继续转台、切换产物），没有 DCC 视口操作。隐藏页面停止帧绘制和轮询，显示后恢复；转台帧不发网络请求，每 350ms 可见页状态轮询一次，不调用 AI。
+GLB 加载失败保持前一成功 GPU 场景；任务失败保留最后成功阶段；旧响应/旧 epoch 不覆盖新选择。WebGL context lost 会清实际显示身份，恢复后重新加载。只有展示控件（暂停/继续转台、切换产物），没有 DCC 视口操作。隐藏页面停止帧绘制和轮询，显示后恢复；转台帧不发网络请求，可见页通过最长1秒的事件游标等待获取变更，密集网格展示最多2Hz，不调用 AI。
 
 `viewer.metrics` 是最近一次加载或展示控件变更时的绘制回执，`reportedAt` 标明采样时间；帧计数、角度不会按帧上传服务。每帧状态只存在浏览器本地，用于本地测试，不把回执快照当成连续遥测。
 
@@ -87,3 +89,31 @@ GLB 加载失败保持前一成功 GPU 场景；任务失败保留最后成功�
 缓存最多 128MiB、catalog 最多512项，单 GLB 最多64MiB；M2 保留任务上限256个，不自动清历史产物。容量到达保持失败及上一结果，正常关闭自己服务后用新目录启动，不清用户样例。宿主需已有 M2 验证过的 Windows 隔离运行时；不可用时图/样例可读，真实执行 fail closed。崩溃遗留 owner 标记需人工核对该 PID 已退出，不能自动抢占。
 
 本地验证命令：`python -m unittest discover -s . -p 'test_pcg_demo_*.py' -t .`，`node --test test-pcg-demo-viewer.mjs`，`node test-pcg-demo-ui.mjs`。可用 `H3_TEST_PYTHON` / `PCG_TEST_PYTHON` 指向已有解释器、`CHROME_PATH` 指向已有浏览器。浏览器测试的截图/模型仅保存在本地测试目录；不上传素材或工程。测试 harness 可指定 `--exit-on-stdin-close` 并持有 stdin 管道，结束管道时仅优雅关闭该演示服务及其自有任务；普通启动不要带此标志。
+
+## M4 事件、参数与预览工具
+
+| 工具 | 用途与输入/输出 | 最小例子 | 常见错误与恢复 |
+|---|---|---|---|
+| `pcg_demo_wait` | afterSequence=0..1000000000000（默认0），timeoutMs=0..20000（1000）；返回events、cursor、reset、state完整有界快照 | `next=call('pcg_demo_wait', {'afterSequence':0,'timeoutMs':1000})` | reset表示旧游标被截断或不适用；采用state，随后用cursor继续；不为恢复重跑 |
+| `pcg_demo_tune` | 必填runId、parameters；只改当前配方已声明seed、roughness、count、minDistance、translateY；另存graphRevision、真实目标求值，回传状态 | `state=call('pcg_demo_tune', {'runId':state['run']['runId'],'parameters':{'roughness':0.25}})` | SESSION_BUSY等待；STALE_RUN重读；translateY仅scatter，-100..100；参数未知拒绝，不接动态代码 |
+| `pcg_demo_preview` | targetAssetId必填、baseAssetId可选；返回contractVersion、kind、base/target身份、bytes/sha256/url等传输描述，不默认返回数组 | `preview=call('pcg_demo_preview', {'targetAssetId':state['desired']['assetId']})` | ASSET_NOT_FOUND重新发现；缺base/布局变化/增量不节约传输时返回snapshot；客户端校验失败再请求不带base的snapshot，保留旧模型 |
+
+参数预算沿用run：seed 0..2147483647，roughness 0..0.4，count 1..1000，minDistance 0..1000。tune不是视口编辑，也不修改正式节点；它是隔离合成图的有界测试入口。初次run执行真实逐节点阶段；tune仅执行真实最终目标，completedStages与computedNodes/cacheHits报告实际求值，不把缓存伪造成逐节点执行。
+
+```python
+cursor=0
+state=call('pcg_demo_run', {'recipe':'scatter','seed':17,'count':1000})
+while state['run']['status'] not in ('succeeded','failed','cancelled'):
+    answer=call('pcg_demo_wait', {'afterSequence':cursor,'timeoutMs':1000})
+    cursor=answer['cursor']; state=answer['state']
+assert state['run']['status']=='succeeded', state['run']['error']
+state=call('pcg_demo_tune', {'runId':state['run']['runId'],'parameters':{'translateY':0.4}})
+```
+
+状态公开已保存图的graphRevision、graphHash、项目与完整节点/边/参数；阶段事件和新产物绑定同一图身份。展开“内部执行图”可核对真实端口与求值记录，进度来源是真实worker。事件环有界256项；wait超时是等待结果，不表示几何成功。保持runId、graphRevision、selectionEpoch、assetId的一致性，恢复先读快照。
+
+有限预览合同为 `pcg/preview-stream-v1.json`。完整GLB是不可变真源；mesh-delta只适用于同布局且拓扑/UV不变的位置/法线，instance-delta只适用于原型不变的实例变换。增量为等长GLB的有界字节补丁，客户端验证传输SHA、基SHA和重建目标SHA后重新解析，并独立检查实际几何是否可复用。GPU以引用计数保留共享索引/原型，候选上传或绘制失败不替换旧场景。字段或拓扑不符/传输不节约/超过8MiB增量预算则完整snapshot回退（完整GLB仍受64MiB既有上限）。这不是任意GLB流式编辑合同。
+
+页面隐藏停止定时器/转台；关闭释放CPU保留GLB、GPU buffer/VAO/program及监听器。浏览器本地resources统计是逻辑分配/释放，不能当作物理显存测量。诊断的transport记录请求字节、增量种类和加载耗时；不按帧上报，不调用AI。测试按原子断言验证MCP例子和异常恢复；性能实测与目标差额单独归档，不以静态图或事后动画补齐未达标项。
+
+自动转台的重复重绘最多20fps，实际模型、阶段、尺寸或可见性变化仍立即绘制并确认真实首帧；此上限不表示建模延迟达标。受管预览读盘/字节校验和构建在会话事件锁外执行，返回前仍复核会话开放及不可变资产身份；SESSION_CLOSED或ASSET_CHANGED表示应读当前会话状态后重新选择有效资产，不可强行重放旧描述。此调整不新增MCP工具或参数，所有原身份/哈希/预算门保持。

@@ -11,7 +11,7 @@
   <dl class="identity"><dt>期望展示</dt><dd id="desired">—</dd><dt>实际已绘制</dt><dd id="displayed">—</dd><dt>实例</dt><dd id="instance">—</dd></dl>
  </section>
  <aside>
-  <section class="panel"><div class="panel-head"><h2>真实节点执行</h2><span id="run-status">未运行</span></div><p id="progress">每个节点完成后展示该阶段真实 GLB，字段步骤保留关联模型。</p><div id="graph" aria-label="执行图与所有连线"></div><p class="mono" id="run-id">—</p></section>
+  <section class="panel"><div class="panel-head"><h2>真实节点执行</h2><span id="run-status">未运行</span></div><p id="progress">每个节点完成后展示该阶段真实 GLB，字段步骤保留关联模型。</p><details open><summary>内部执行图 · 真实连接</summary><p id="graph-identity" class="mono"></p><div id="graph" aria-label="执行图与所有连线"></div></details><p class="mono" id="run-id">—</p></section>
   <section class="panel"><h2>受管产物</h2><label for="asset">切换展示（运行中手动选择会暂停跟随）</label><select id="asset"><option value="">等待产物</option></select><p id="asset-detail" class="small"></p></section>
   <section class="panel"><h2>隔离测试</h2><p class="small">只运行本实例的受限几何任务，不连接生图服务。新任务会恢复阶段自动跟随。</p><form id="run-form"><label for="recipe">测试图</label><select id="recipe"><option value="rock">岩石 · 网格与字段</option><option value="scatter">散布 · 点集与共享实例</option></select><label for="seed">Seed</label><input id="seed" type="number" min="0" max="2147483647" value="11"><div class="actions"><button id="run" type="submit">运行真实阶段</button><button id="cancel" type="button" disabled>取消本次</button></div></form></section>
  </aside>

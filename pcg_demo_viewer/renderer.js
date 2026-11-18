@@ -67,14 +67,37 @@ function compileProgram(gl) {
   } catch(error) { if(program)gl.deleteProgram(program);throw error; }
   finally {for(const shader of shaders)gl.deleteShader(shader);}
 }
-function release(gl,scene) {
+function sameArray(a,b) {
+  return a===null||b===null?a===b:a.length===b.length&&a.every((v,i)=>v===b[i]);
+}
+function compatible(old,cpu,kind) {
+  check(old,'A delta requires a displayed base.','DELTA_MISMATCH');
+  const previous=old.cpu;
+  check(previous.meshes.length===cpu.meshes.length&&previous.instances.length===cpu.instances.length,'Delta topology changed.','DELTA_MISMATCH');
+  previous.instances.forEach((a,i)=>{
+    const b=cpu.instances[i];
+    check(a.mesh===b.mesh&&a.name===b.name,'Delta instance identity changed.','DELTA_MISMATCH');
+    if(kind==='mesh-delta')check(sameArray(a.worldMatrix,b.worldMatrix),'Mesh delta changed instance transforms.','DELTA_MISMATCH');
+  });
+  previous.meshes.forEach((mesh,i)=>{
+    check(mesh.primitives.length===cpu.meshes[i].primitives.length,'Delta primitive count changed.','DELTA_MISMATCH');
+    mesh.primitives.forEach((a,j)=>{
+      const b=cpu.meshes[i].primitives[j];
+      check(a.mode===b.mode&&a.vertexCount===b.vertexCount&&!!a.normals===!!b.normals&&sameArray(a.indices,b.indices)&&sameArray(a.uvs,b.uvs),'Delta topology or UVs changed.','DELTA_MISMATCH');
+      if(kind==='instance-delta')check(sameArray(a.positions,b.positions)&&sameArray(a.normals,b.normals),'Instance delta changed prototype geometry.','DELTA_MISMATCH');
+    });
+  });
+}
+function release(gl,scene,resources) {
   if(!scene)return;
-  for(const vao of scene.vaos)gl.deleteVertexArray(vao);
-  for(const buffer of scene.buffers)gl.deleteBuffer(buffer);
+  for(const vao of scene.vaos){gl.deleteVertexArray(vao);resources.vaoDeletions++;resources.liveVaos--;}
+  for(const resource of scene.buffers)if(--resource.refs===0){
+    gl.deleteBuffer(resource.buffer);resources.bufferDeletions++;resources.deletedBytes+=resource.bytes;resources.liveBuffers--;resources.liveBytes-=resource.bytes;
+  }
   scene.vaos.length=0;scene.buffers.length=0;
 }
-function upload(gl,cpu) {
-  const scene={buffers:[],vaos:[],draws:[],bounds:cpu.bounds,metrics:{...cpu.metrics},center:cpu.bounds.min.map((v,i)=>(v+cpu.bounds.max[i])/2)};
+function upload(gl,cpu,resources,old=null,kind='snapshot') {
+  const scene={cpu,buffers:[],vaos:[],draws:[],geometry:new Map(),bounds:cpu.bounds,metrics:{...cpu.metrics},center:cpu.bounds.min.map((v,i)=>(v+cpu.bounds.max[i])/2)};
   scene.radius=Math.hypot(...cpu.bounds.max.map((v,i)=>(v-cpu.bounds.min[i])/2));if(scene.radius<1e-12)scene.radius=1;
   const groups=new Map();
   for(const instance of cpu.instances) {
@@ -82,8 +105,15 @@ function upload(gl,cpu) {
     groups.get(instance.mesh).push(instance);
   }
   let actualBytes=0;
-  function buffer(target,data) {
-    const b=gl.createBuffer();check(b,'GPU buffer allocation failed.');scene.buffers.push(b);gl.bindBuffer(target,b);gl.bufferData(target,data,gl.STATIC_DRAW);actualBytes+=data.byteLength;return b;
+  function buffer(target,data,reuse=null) {
+    if(reuse){
+      reuse.refs++;scene.buffers.push(reuse);actualBytes+=reuse.bytes;
+      resources.reusedBuffers++;resources.reusedBytes+=reuse.bytes;gl.bindBuffer(target,reuse.buffer);return reuse;
+    }
+    const b=gl.createBuffer();check(b,'GPU buffer allocation failed.');
+    const resource={buffer:b,bytes:data.byteLength,refs:1};scene.buffers.push(resource);
+    resources.bufferAllocations++;resources.allocatedBytes+=resource.bytes;resources.liveBuffers++;resources.liveBytes+=resource.bytes;
+    gl.bindBuffer(target,b);gl.bufferData(target,data,gl.STATIC_DRAW);actualBytes+=data.byteLength;return resource;
   }
   try {
     check(!gl.isContextLost(),'WebGL context is lost.','CONTEXT_LOST');
@@ -97,24 +127,28 @@ function upload(gl,cpu) {
         models.set(m,index*16);normals.set(instance.normalMatrix,index*9);
       });
       const modelBuffer=buffer(gl.ARRAY_BUFFER,models),normalBuffer=buffer(gl.ARRAY_BUFFER,normals);
-      for(const primitive of cpu.meshes[meshIndex].primitives) {
-        const vao=gl.createVertexArray();check(vao,'GPU vertex array allocation failed.');scene.vaos.push(vao);gl.bindVertexArray(vao);
-        buffer(gl.ARRAY_BUFFER,primitive.positions);gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
-        if(primitive.normals) {buffer(gl.ARRAY_BUFFER,primitive.normals);gl.enableVertexAttribArray(1);gl.vertexAttribPointer(1,3,gl.FLOAT,false,0,0);}
+      const geometry=[];scene.geometry.set(meshIndex,geometry);
+      cpu.meshes[meshIndex].primitives.forEach((primitive,index)=>{
+        const prior=old?.geometry.get(meshIndex)?.[index];
+        const vao=gl.createVertexArray();check(vao,'GPU vertex array allocation failed.');scene.vaos.push(vao);resources.vaoAllocations++;resources.liveVaos++;gl.bindVertexArray(vao);
+        const positions=buffer(gl.ARRAY_BUFFER,primitive.positions,kind==='instance-delta'?prior?.positions:null);gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+        let normal=null;
+        if(primitive.normals) {normal=buffer(gl.ARRAY_BUFFER,primitive.normals,kind==='instance-delta'?prior?.normals:null);gl.enableVertexAttribArray(1);gl.vertexAttribPointer(1,3,gl.FLOAT,false,0,0);}
         else {gl.disableVertexAttribArray(1);gl.vertexAttrib3f(1,0,1,0);}
-        gl.bindBuffer(gl.ARRAY_BUFFER,modelBuffer);
+        gl.bindBuffer(gl.ARRAY_BUFFER,modelBuffer.buffer);
         for(let c=0;c<4;c++){const location=2+c;gl.enableVertexAttribArray(location);gl.vertexAttribPointer(location,4,gl.FLOAT,false,64,c*16);gl.vertexAttribDivisor(location,1);}
-        gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffer);
+        gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffer.buffer);
         for(let c=0;c<3;c++){const location=6+c;gl.enableVertexAttribArray(location);gl.vertexAttribPointer(location,3,gl.FLOAT,false,36,c*12);gl.vertexAttribDivisor(location,1);}
-        if(primitive.indices)buffer(gl.ELEMENT_ARRAY_BUFFER,primitive.indices);
+        const indices=primitive.indices?buffer(gl.ELEMENT_ARRAY_BUFFER,primitive.indices,kind!=='snapshot'?prior?.indices:null):null;
+        geometry.push({positions,normals:normal,indices});
         scene.draws.push({vao,mode:primitive.mode===4?gl.TRIANGLES:gl.POINTS,indexed:!!primitive.indices,count:primitive.indices?.length??primitive.vertexCount,instances:instances.length});
-      }
+      });
     }
     gl.bindVertexArray(null);gl.bindBuffer(gl.ARRAY_BUFFER,null);
     check(!gl.isContextLost(),'WebGL context was lost during upload.','CONTEXT_LOST');
     check(gl.getError()===gl.NO_ERROR,'GPU rejected geometry upload.');
     scene.metrics.gpuBytes=actualBytes;return scene;
-  } catch(error) { release(gl,scene);throw error; }
+  } catch(error) { release(gl,scene,resources);throw error; }
 }
 
 export function createViewer(canvas,{onFrame}={}) {
@@ -126,8 +160,9 @@ export function createViewer(canvas,{onFrame}={}) {
   const request=win.requestAnimationFrame?.bind(win),cancel=win.cancelAnimationFrame?.bind(win);
   check(request&&cancel,'Animation frame support is unavailable.','WEBGL_UNAVAILABLE');
   let program=compileProgram(gl),scene=null,disposed=false,contextLost=false,epoch=0,raf=null,lastTime=null;
-  const state={status:'ready',loadedIdentity:null,frameCount:0,sceneFrameCount:0,yaw:0,angle:0,rotating:true,visible:!doc?.hidden,cameraFramed:false,camera:null,bounds:null,error:null,contextLost:false,metrics:{...EMPTY}};
-  function getState(){return {...clone(state),...state.metrics};}
+  const resources={bufferAllocations:0,bufferDeletions:0,allocatedBytes:0,deletedBytes:0,liveBuffers:0,liveBytes:0,reusedBuffers:0,reusedBytes:0,vaoAllocations:0,vaoDeletions:0,liveVaos:0};
+  const state={updateKind:null,status:'ready',loadedIdentity:null,frameCount:0,sceneFrameCount:0,yaw:0,angle:0,rotating:true,visible:!doc?.hidden,cameraFramed:false,camera:null,bounds:null,error:null,contextLost:false,metrics:{...EMPTY}};
+  function getState(){return {...clone(state),...state.metrics,resources:{...resources}};}
   function notify(){if(typeof onFrame==='function'){try{onFrame(getState());}catch{/* Caller callbacks cannot corrupt viewer state. */}}}
   function stop(){if(raf!==null){cancel(raf);raf=null;}lastTime=null;}
   function visible(){return !disposed&&!contextLost&&!doc?.hidden;}
@@ -162,14 +197,19 @@ export function createViewer(canvas,{onFrame}={}) {
   function schedule(){if(raf===null && scene && visible() && state.rotating)raf=request(tick);}
   function tick(time) {
     raf=null;if(!visible()||!scene)return;
-    if(lastTime!==null)state.yaw=(state.yaw+Math.min(.1,Math.max(0,(time-lastTime)/1000))*.35)%(Math.PI*2);
-    lastTime=time;
-    try{draw();notify();schedule();}catch(error){state.error=errorValue(error);state.status='error';stop();notify();}
+    try{
+      // Bound turntable work; model/resize refreshes still draw immediately.
+      if(lastTime===null||time-lastTime>=50){
+        if(lastTime!==null)state.yaw=(state.yaw+Math.min(.1,Math.max(0,(time-lastTime)/1000))*.35)%(Math.PI*2);
+        lastTime=time;draw();notify();
+      }
+      schedule();
+    }catch(error){state.error=errorValue(error);state.status='error';stop();notify();}
   }
   function refresh(){if(!visible())return;try{draw();notify();schedule();}catch(error){state.error=errorValue(error);state.status='error';stop();notify();}}
   function visibility(){state.visible=!doc?.hidden;stop();if(!state.visible){if(scene)state.status='hidden';notify();}else refresh();}
   function loss(event) {
-    event.preventDefault?.();contextLost=true;epoch++;stop();release(gl,scene);scene=null;
+    event.preventDefault?.();contextLost=true;epoch++;stop();release(gl,scene,resources);scene=null;
     if(program)gl.deleteProgram(program.program);program=null;
     state.status='error';state.contextLost=true;state.error={code:'CONTEXT_LOST',message:'WebGL context lost. Reload a managed asset after context restoration.'};
     state.loadedIdentity=null;state.metrics={...EMPTY};state.cameraFramed=false;state.camera=null;state.bounds=null;notify();
@@ -182,27 +222,29 @@ export function createViewer(canvas,{onFrame}={}) {
   doc?.addEventListener?.('visibilitychange',visibility);canvas.addEventListener('webglcontextlost',loss);canvas.addEventListener('webglcontextrestored',restore);
   win.addEventListener?.('resize',refresh);
   const observer=typeof win.ResizeObserver==='function'?new win.ResizeObserver(refresh):null;observer?.observe(canvas);
-  async function load(buffer,identity) {
+  async function update(buffer,identity,kind='snapshot') {
     check(!disposed,'Viewer is disposed.','VIEWER_DISPOSED');check(!contextLost,'WebGL context is lost.','CONTEXT_LOST');
     const ownEpoch=++epoch;let candidate=null;
     try {
+      check(['snapshot','mesh-delta','instance-delta'].includes(kind),'Unknown preview update kind.','DELTA_MISMATCH');
       validateIdentity(identity);
       const encoded=JSON.stringify(identity);check(encoded!==undefined&&encoded.length<=4096,'Loaded identity must be bounded JSON.','INVALID_IDENTITY');
       const loadedIdentity=JSON.parse(encoded),cpu=parseGlb(buffer);
       // Yield before allocation and before publication so overlapping loads have a clear latest winner.
       await Promise.resolve();check(ownEpoch===epoch&&!disposed,'A newer load superseded this asset.','STALE_LOAD');
-      candidate=upload(gl,cpu);
+      if(kind!=='snapshot')compatible(scene,cpu,kind);
+      candidate=upload(gl,cpu,resources,scene,kind);
       await Promise.resolve();check(ownEpoch===epoch&&!disposed&&!contextLost,'A newer load superseded this asset.','STALE_LOAD');
       const old=scene,previous=clone(state);scene=candidate;
-      state.loadedIdentity=loadedIdentity;state.metrics={...candidate.metrics};state.bounds=clone(cpu.bounds);state.sceneFrameCount=0;state.yaw=0;state.angle=0;state.cameraFramed=false;state.camera=null;state.error=null;state.status=doc?.hidden?'hidden':'ready';
+      state.updateKind=kind;state.loadedIdentity=loadedIdentity;state.metrics={...candidate.metrics};state.bounds=clone(cpu.bounds);state.sceneFrameCount=0;state.yaw=0;state.angle=0;state.cameraFramed=false;state.camera=null;state.error=null;state.status=doc?.hidden?'hidden':'ready';
       try{draw();}catch(error){
         scene=old;Object.assign(state,previous);
         if(old&&visible()){try{draw();}catch{/* Preserve the original upload/draw error. */}}
         throw error;
       }
-      candidate=null;release(gl,old);stop();notify();schedule();return getState();
+      candidate=null;release(gl,old,resources);stop();notify();schedule();return getState();
     } catch(error) {
-      release(gl,candidate);
+      release(gl,candidate,resources);
       if(ownEpoch===epoch && !disposed && !contextLost) {state.error=errorValue(error);if(!scene)state.status='error';notify();}
       throw error;
     }
@@ -214,8 +256,9 @@ export function createViewer(canvas,{onFrame}={}) {
   function dispose() {
     if(disposed)return;disposed=true;epoch++;stop();observer?.disconnect();
     doc?.removeEventListener?.('visibilitychange',visibility);canvas.removeEventListener('webglcontextlost',loss);canvas.removeEventListener('webglcontextrestored',restore);win.removeEventListener?.('resize',refresh);
-    release(gl,scene);scene=null;if(program)gl.deleteProgram(program.program);program=null;
+    release(gl,scene,resources);scene=null;if(program)gl.deleteProgram(program.program);program=null;
     state.status='disposed';state.loadedIdentity=null;state.metrics={...EMPTY};state.cameraFramed=false;state.camera=null;state.bounds=null;notify();
   }
-  return {load,setRotating,getState,dispose};
+  const load=(buffer,identity)=>update(buffer,identity,'snapshot');
+  return {load,update,setRotating,getState,dispose};
 }

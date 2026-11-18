@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "name": "PCG M2 and isolated 3D demo original-source inventory",
-  "scope": "M2 feature source and isolated read-only 3D demo, fixtures and documentation; not a complete repository or interpreter distribution SBOM",
+  "name": "PCG geometry, isolated preview and canvas panel original-source inventory",
+  "scope": "PCG feature source, contracts, isolated read-only preview, tests and documentation; not a complete host distribution SBOM",
   "license": "Apache-2.0",
   "licenseFile": "LICENSE",
   "sourcePolicy": {
@@ -374,6 +374,168 @@
     },
     {
       "path": "docs/pcg/DEMO_REVIEW.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/CONTINUATION.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/M4_STEPS.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg/preview-stream-v1.json",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_demo_viewer/preview-stream.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg_preview_stream.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test-pcg-m4-ui.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test-pcg-preview-stream.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_preview_stream.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "canvas_page_bridge.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/canvas-mcp.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/pcg-canvas.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "pcg/viewport-tools.json",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/PcgViewportPanel.jsx",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/pcg-viewport-controller.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/pcg-viewport-layout.js",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "src/pcg-viewport.css",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test-pcg-canvas-viewport-ui.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test-pcg-viewport-controller.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test-pcg-viewport-layout.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test-pcg-viewport-panel.mjs",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_viewport_api.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "docs/pcg/M4_VALIDATION.md",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "scripts/pcg_m4_rpc_trace.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_m4_rpc_trace.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "scripts/pcg_m4_isolation_trace.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "scripts/pcg_m4_worker_trace.py",
+      "license": "Apache-2.0",
+      "origin": "repository-original",
+      "thirdPartyCopied": false
+    },
+    {
+      "path": "test_pcg_m4_isolation_trace.py",
       "license": "Apache-2.0",
       "origin": "repository-original",
       "thirdPartyCopied": false

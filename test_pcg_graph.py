@@ -1,6 +1,7 @@
 """Pure saved-graph planning, schema and bounded cache fixtures."""
 import copy
 import unittest
+from unittest import mock
 from pcg_contracts import PCGError, validate_parameters, validate_schema
 from pcg_graph import GraphCache, computation_key, dirty_nodes, plan_graph
 
@@ -33,6 +34,50 @@ class GraphTests(unittest.TestCase):
         plan, _ = plan_graph(self.document, 'join', self.registry)
         self.assertEqual([n['nodeId'] for n in plan['nodes']], ['a', 'b', 'c', 'join'])
 
+    def test_worker_output_bytes_match_hash_budget_and_cached_values(self):
+        from pcg_contracts import canonical, content_hash, load_registry
+        import pcg_worker
+        registry = load_registry()
+        document = {'canvas': {'nodes': [node('source', 'primitive'), node('move', 'transform')],
+                               'edges': [edge('source', 'move')]}}
+        plan, _ = plan_graph(document, 'move', registry)
+        request = {'protocolVersion': 2, 'projectId': 'prj_fixture', 'inputHash': 'a' * 64,
+                   'plan': plan, 'cache': {}}
+        encoded_values = []
+        def observed(value):
+            encoded_values.append(value)
+            return canonical(value)
+        with mock.patch('pcg_worker.canonical', side_effect=observed):
+            result = pcg_worker.evaluate_graph(request)
+        for record in result['records']:
+            self.assertEqual(record['outputHash'], content_hash(record['outputs']))
+            self.assertEqual(sum(value is record['outputs'] for value in encoded_values), 1)
+        request['cache'] = {r['key']: copy.deepcopy(r['outputs']) for r in result['records']}
+        before = copy.deepcopy(request)
+        cached = pcg_worker.evaluate_graph(request)
+        self.assertEqual(request, before)
+        self.assertEqual(cached['outputs'], result['outputs'])
+        self.assertEqual(cached['computedNodes'], [])
+        self.assertEqual(cached['cacheHits'], ['source', 'move'])
+
+    def test_worker_output_byte_limit_exact_and_one_byte_over(self):
+        from pcg_contracts import canonical, load_registry
+        from pcg_worker import evaluate_graph
+        registry = load_registry()
+        plan, _ = plan_graph({'canvas': {'nodes': [node('source', 'primitive')], 'edges': []}}, 'source', registry)
+        request = {'protocolVersion': 2, 'projectId': 'prj_fixture', 'inputHash': 'b' * 64,
+                   'plan': plan, 'cache': {}}
+        expected = evaluate_graph(request)
+        size = len(canonical(expected['outputs']))
+        primitive = next(d for d in registry['nodes'] if d['id'] == 'refmuse.pcg.primitive')
+        primitive['budget']['maxOutputBytes'] = size
+        with mock.patch('pcg_worker.load_registry', return_value=registry):
+            self.assertEqual(evaluate_graph(request)['outputs'], expected['outputs'])
+            primitive['budget']['maxOutputBytes'] = size - 1
+            with self.assertRaises(PCGError) as caught:
+                evaluate_graph(request)
+        self.assertEqual(caught.exception.code, 'BUDGET_EXCEEDED')
+
     def test_cycles_missing_duplicate_unknown_and_wrong_type(self):
         for changes, code in [([edge('b', 'a')], 'INPUT_UNAVAILABLE'), ([edge('a', 'b'), edge('c', 'b')], 'PORT_UNKNOWN')]:
             doc = copy.deepcopy(self.document); doc['canvas']['edges'] = changes
@@ -60,6 +105,50 @@ class GraphTests(unittest.TestCase):
         self.assertIsNone(cache.get('project-a', 'two')); self.assertLessEqual(cache.bytes, 1024)
         field = {'binding': {'topologyHash': 'a', 'contentHash': 'b'}, 'values': [1]}
         self.assertNotEqual(computation_key(root, {'field': field}), computation_key(root, {'field': {**field, 'binding': {'topologyHash': 'c', 'contentHash': 'b'}}}))
+
+    def test_worker_error_names_actual_upstream_stage_and_missing_port(self):
+        from pcg_contracts import load_registry
+        from pcg_worker import evaluate_graph
+        ground = node('ground', 'primitive'); ground['data']['parameters'] = {'kind': 'plane'}
+        scatter = node('scatter-stage', 'scatter_points')
+        scatter['data']['parameters'] = {'count': 20, 'minDistance': 1000}
+        final = node('result', 'instance_on_points')
+        point_edge = {**edge('scatter-stage', 'result', 'points'), 'sourceHandle': 'points'}
+        document = {'canvas': {'nodes': [ground, scatter, final], 'edges': [edge('ground', 'scatter-stage'), point_edge, edge('ground', 'result', 'prototype')]}}
+        registry = load_registry()
+        plan, _ = plan_graph(document, 'result', registry)
+        with self.assertRaises(PCGError) as caught:
+            evaluate_graph({'protocolVersion': 2, 'projectId': 'prj_fixture', 'inputHash': 'a' * 64, 'plan': plan, 'cache': {}})
+        self.assertEqual(caught.exception.code, 'INSUFFICIENT_PLACEMENT')
+        self.assertIn('scatter-stage (refmuse.pcg.scatter_points)', caught.exception.message)
+        document['canvas']['edges'] = []
+        with self.assertRaises(PCGError) as caught:
+            plan_graph(document, 'scatter-stage', registry)
+        self.assertIn('geometry', caught.exception.message)
+        self.assertIn('scatter-stage', caught.exception.message)
+
+    def test_plan_cache_snapshot_excludes_history_keeps_exact_dependency_hits(self):
+        from pcg_contracts import canonical
+        plan, _ = plan_graph(self.document, 'b', self.registry)
+        cache = GraphCache(max_bytes=32 * 1024 * 1024)
+        root_key = computation_key(plan['nodes'][0], {})
+        root_value = {'geometry': {'fixture': [1, 2]}}
+        moved_key = computation_key(plan['nodes'][1], {'geometry': root_value['geometry']})
+        cache.put('p', root_key, root_value)
+        cache.put('p', moved_key, {'geometry': {'fixture': [2, 3]}})
+        for i in range(16): cache.put('p', f'unrelated-{i}', {'payload': 'x' * (1024 * 1024)})
+        cache.put('other-project', root_key, {'geometry': {'fixture': ['foreign']}})
+        complete = cache.snapshot('p')
+        selected = cache.snapshot('p', plan=plan)
+        self.assertGreater(len(canonical(complete)), 16 * 1024 * 1024)
+        self.assertLess(len(canonical(selected)), 1024)
+        self.assertEqual(set(selected), {root_key, moved_key})
+        self.assertEqual(dirty_nodes(plan, selected), dirty_nodes(plan, complete))
+        selected[root_key]['geometry']['fixture'].append('mutated')
+        self.assertEqual(cache.get('p', root_key), root_value)
+        changed = copy.deepcopy(plan); changed['nodes'][0]['parameters'] = {'seed': 17}
+        self.assertEqual(cache.snapshot('p', plan=changed), {})
+        self.assertEqual(len(cache.snapshot('p')), len(complete))
 
     def test_strict_schema_defaults_numbers_arrays_objects_enums(self):
         schema = {'type': 'object', 'additionalProperties': False, 'required': [], 'properties': {

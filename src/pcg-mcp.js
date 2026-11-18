@@ -1,4 +1,6 @@
+import viewportTools from '../pcg/viewport-tools.json' with { type: 'json' };
 import { PCG_REGISTRY, pcgNodeData, pcgNodeDescriptor, validatePcgSchema, pcgError } from './pcg-registry.js';
+import { pcgAgentState } from './pcg-runtime.js';
 
 const object = (properties = {}, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
 const token = { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$' };
@@ -100,5 +102,29 @@ export function createPcgTools(latest, { summarize = node => node, waitForNode =
   define('canvas_pcg_list_tasks', 'Discover retained PCG tasks for a saved node after reload. Tasks are newest first and include complete handles and stale markers.', object({ projectId, nodeId: token }), { projectId: 'prj_example', nodeId: 'pcg-1' }, args => {
     current(args); return latest.current.actions.pcg.listTasks(args);
   }, true);
+  for (const descriptor of viewportTools.tools) {
+    define(descriptor.name, descriptor.description, descriptor.inputSchema, descriptor.examples[0].arguments, async args => {
+      const viewport = latest.current.actions.pcgViewport;
+      if (!viewport) throw pcgError('PREVIEW_UNAVAILABLE', 'This host does not provide the canvas preview hook.');
+      if (descriptor.name === 'canvas_pcg_preview_describe') return { contract: viewportTools, inCanvas: true, realWebGL: true, manualDcc: false, aiCallsPerFrame: 0, incrementalEvaluation: true, modelTransfer: 'verified-full-glb', realtimePerformance: 'not-passed' };
+      current(args);
+      switch (descriptor.name) {
+        case 'canvas_pcg_preview_open': viewport.open(); break;
+        case 'canvas_pcg_preview_close': viewport.close(); break;
+        case 'canvas_pcg_preview_bind': viewport.bind(args.nodeId, args.autoRun ?? true); break;
+        case 'canvas_pcg_preview_layout': viewport.layout(Object.fromEntries(['x','y','width','height'].map(k=>[k,args[k]]))); break;
+      }
+      const panel = viewport.snapshot();
+      return { panel: { ...panel, run: pcgAgentState({ task: panel.run }).task } };
+    }, ['canvas_pcg_preview_describe','canvas_pcg_preview_state'].includes(descriptor.name));
+  }
+  define('canvas_pcg_disconnect', 'Disconnect one exact visible PCG edge and save the current graph; bound preview preflights the changed actual graph.', object({ projectId, edgeId: { type:'string',minLength:1,maxLength:256 } }), { projectId:'prj_example', edgeId:'edge-1' }, async args => {
+    current(args); const edge=latest.current.edgesRef.current.find(e=>e.id===args.edgeId);
+    if(!edge || ![edge.source,edge.target].some(id=>getNode(id)?.type==='pcg')) throw pcgError('EDGE_NOT_FOUND','Use an actual visible PCG edge ID.');
+    latest.current.actions.disconnectEdge(edge.id);
+    const deadline=Date.now()+2500;
+    while(latest.current.edgesRef.current.some(e=>e.id===edge.id)){if(Date.now()>deadline)throw pcgError('EDGE_REMOVE_TIMEOUT','The edge did not leave the visible page.');await new Promise(resolve=>setTimeout(resolve,10));}
+    await latest.current.actions.persistProject();return {edgeId:edge.id,revision:current(args).revision};
+  });
   return tools;
 }

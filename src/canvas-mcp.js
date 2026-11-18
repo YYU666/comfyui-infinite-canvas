@@ -10,7 +10,7 @@ import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-
 import { availableNodePresets } from './local-node-tools.js';
 import { DEFAULT_SPRITE_OPTIONS, spriteSnapshot } from './sprite-atlas.js';
 import { PCG_PRESETS, isPcgNode, pcgNodeDescriptor, validatePcgSchema } from './pcg-registry.js';
-import { pcgTaskHandle } from './pcg-runtime.js';
+import { pcgTaskHandle, pcgAgentState } from './pcg-runtime.js';
 import { createPcgTools } from './pcg-mcp.js';
 import { imageCompactArgs } from './image-inline-output.js';
 
@@ -378,7 +378,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
             nodeCount: latest.current.nodesRef.current.length,
             nodes: nodes.map((node) => {
               const summary = nodeSummary(node, includePrompt);
-              if (isPcgNode(node)) return { ...summary, ...latest.current.actions.getPcgState?.(node.id) };
+              if (isPcgNode(node)) return { ...summary, ...pcgAgentState(latest.current.actions.getPcgState?.(node.id)) };
               if (node.data.mode !== 'qwenEdit') return summary;
               const references = qwenCanvasReferences(node, latest.current.nodesRef.current, latest.current.edgesRef.current);
               return { ...summary, maskNodeId: latest.current.edgesRef.current.find((edge) => edge.target === node.id && edge.targetHandle === 'mask')?.source || null, referenceNodeIds: references.map((ref) => ref.id), referenceCount: references.length,

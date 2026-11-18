@@ -47,6 +47,29 @@ class M2RuntimeTests(unittest.TestCase):
         self.assertEqual(task['status'], 'failed'); self.assertEqual(task['error']['code'], 'ISOLATION_UNAVAILABLE')
         self.assertEqual(self.runtime.read(self.handle(task))['task']['error'], task['error'])
 
+    def test_host_output_byte_budget_exact_and_one_byte_over(self):
+        from pcg_contracts import parse_json
+        from pcg_worker import evaluate_graph
+        def fixed_worker(request, **kwargs):
+            return canonical({'ok': True, 'result': evaluate_graph(parse_json(request))})
+        _, request, _ = self.runtime._prepare(self.identity, permit_unavailable=True)
+        expected = evaluate_graph(request)
+        size = len(canonical(expected['outputs']))
+        target = next(d for d in self.runtime.registry['nodes'] if d['id'] == 'refmuse.pcg.publish_geometry')
+        target['budget']['maxOutputBytes'] = size
+        with mock.patch.object(self.runtime, '_isolation', return_value={'available': True}), \
+                mock.patch('pcg_isolation.execute', side_effect=fixed_worker):
+            exact_task = self.execute()
+            self.assertEqual(exact_task['status'], 'succeeded', exact_task)
+            timing = exact_task['result']['report']['timings'][-1]
+            self.assertEqual(timing['outputBytes'], size)
+            self.assertTrue(self.runtime.verify(self.handle(exact_task))['verified'])
+            target['budget']['maxOutputBytes'] = size - 1
+            oversized = self.execute({**self.identity, 'runId': 'one-byte-over'})
+        self.assertEqual(oversized['status'], 'failed', oversized)
+        self.assertEqual(oversized['error']['code'], 'BUDGET_EXCEEDED')
+        self.assertIsNone(oversized['result'])
+
     def test_real_graph_exports_readback_verify_and_local_cache(self):
         self.require_boundary()
         preflight = self.runtime.preflight(self.identity)
@@ -156,6 +179,20 @@ class M2RuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.assets.records, {})
         self.assertIsNone(task['result'])
 
+    def test_final_preview_reuses_budgeted_target_stage_bytes(self):
+        self.require_boundary()
+        from pcg_preview import render_preview_svg
+        with mock.patch('pcg_preview.render_preview_svg', wraps=render_preview_svg) as renderer:
+            task = self.execute()
+        self.assertEqual(task['status'], 'succeeded', task)
+        self.assertEqual(renderer.call_count, 3)
+        final = next(a for a in task['result']['assets'] if a['format'] == 'svg')
+        stage = task['result']['stagePreviews'][-1]['assets'][0]
+        self.assertEqual(final, stage)
+        body, metadata = self.runtime.download(self.handle(task), final['artifactId'])
+        self.assertIn(b'<svg', body)
+        self.assertEqual(metadata, final)
+
     def assert_slots_released(self):
         self.assertTrue(self.runtime.geometry_slot.acquire(blocking=False))
         self.runtime.geometry_slot.release()
@@ -221,6 +258,18 @@ class M2RuntimeTests(unittest.TestCase):
             self.assertTrue(self.runtime.tasks[task['jobId']]['_event'].is_set())
             self.assertFalse(self.runtime.tasks[task['jobId']]['_thread'].is_alive())
         self.assertEqual(len(calls), 1)
+        self.assertEqual(self.runtime.active_count(), 0)
+        self.assert_slots_released()
+
+    def test_unexpected_host_exception_is_terminal_and_releases_slots(self):
+        with mock.patch.object(self.runtime, '_isolation', return_value={'available': True}), \
+                mock.patch('pcg_isolation.execute', side_effect=RuntimeError('private request text')):
+            task = self.execute()
+        self.assertEqual(task['status'], 'failed', task)
+        self.assertEqual(task['error']['code'], 'WORKER_CRASH')
+        self.assertIn('RuntimeError', task['error']['message'])
+        self.assertNotIn('private request text', task['error']['message'])
+        self.assertTrue(self.runtime.tasks[task['jobId']]['_event'].is_set())
         self.assertEqual(self.runtime.active_count(), 0)
         self.assert_slots_released()
 

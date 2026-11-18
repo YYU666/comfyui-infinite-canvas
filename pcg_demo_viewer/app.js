@@ -1,10 +1,13 @@
 import { createViewer } from './renderer.js';
+import { reconstructPreview } from './preview-stream.js';
 
 const $ = id => document.getElementById(id);
 const clientId = crypto.randomUUID();
 let state = null, viewer, activeEpoch = -1, loadSerial = 0, ackKey = '', loading = false, disposed = false;
-let pollTimer, pollBusy = false, lastGraph = '', lastCatalog = '', localError = '';
-let reportSequence=0, ackPending='';
+let pollTimer, pollAbort, pollBusy = false, lastGraph = '', lastCatalog = '', localError = '';
+let previewTimer, lastDenseLoad=0;
+let reportSequence=0, ackPending='', retainedBytes=null, retainedAsset=null, eventCursor=0;
+const transport={snapshots:0,meshDeltas:0,instanceDeltas:0,fallbacks:0,bytes:0,last:null};
 const statusNames = {running:'运行中',cancelling:'正在取消',succeeded:'已完成',failed:'失败',cancelled:'已取消'};
 const identityText = value => value ? `${value.label || value.producerNodeId || value.assetId} · ${value.assetId} · run ${value.runId || '—'}` : '—';
 function warning(message='') { localError = message; $('warning').textContent = message; $('warning').hidden = !message; }
@@ -64,22 +67,42 @@ async function loadDesired(next) {
   activeEpoch=epoch; loading=true;
   $('desired').textContent=identityText(asset);
   try {
-    if (!/^\/api\/assets\/[A-Za-z0-9_-]+\.glb$/.test(asset.url)) throw new Error('产物 URL 不在本实例受管目录');
-    if (!Number.isSafeInteger(asset.bytes) || asset.bytes>64*1024*1024 || asset.bytes<20) throw new Error('产物超出展示预算');
-    const response=await fetch(asset.url,{cache:'no-store'});
-    if (!response.ok) throw new Error(`GLB HTTP ${response.status}`);
-    const chunks=[]; let size=0;
-    const reader=response.body.getReader();
-    try { for(;;) { const {done,value}=await reader.read(); if(done)break; size+=value.byteLength; if(size>asset.bytes)throw new Error('GLB 大小与资产合同不符'); chunks.push(value); } }
-    finally { await reader.cancel(); }
-    if(size!==asset.bytes)throw new Error('GLB 大小与资产合同不符');
-    const bytes=new Uint8Array(size); let offset=0; for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
-    const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),v=>v.toString(16).padStart(2,'0')).join('');
-    if(hash!==asset.sha256)throw new Error('GLB 内容校验失败');
-    if(serial!==loadSerial || state.selectionEpoch!==epoch)return;
-    const identity={instanceId:state.instanceId,selectionEpoch:epoch,assetId:asset.assetId,runId:asset.runId};
-    const result=await viewer.load(bytes.buffer,identity);
-    if(serial!==loadSerial || state.selectionEpoch!==epoch)return;
+    const started=performance.now(), baseAsset=retainedAsset, baseBytes=retainedBytes;
+    const fetchPreview=async baseAssetId=>{
+      const response=await request('/api/tool',{name:'pcg_demo_preview',arguments:{targetAssetId:asset.assetId,...(baseAssetId?{baseAssetId}:{})}});
+      const descriptor=response.result;
+      if(descriptor.targetAssetId!==asset.assetId||descriptor.targetSha256!==asset.sha256||descriptor.targetBytes!==asset.bytes)throw new Error('预览描述与所选产物身份不符');
+      if(descriptor.kind!=='snapshot'&&(!baseAsset||descriptor.baseAssetId!==baseAsset.assetId||descriptor.baseSha256!==baseAsset.sha256))throw new Error('预览基模型身份不符');
+      if(!/^\/api\/(assets\/[A-Za-z0-9_-]+\.glb|previews\/[a-f0-9]{64}\.json)$/.test(descriptor.url))throw new Error('预览URL不在本实例受管目录');
+      if(!Number.isSafeInteger(descriptor.bytes)||descriptor.bytes<1||descriptor.bytes>64*1024*1024)throw new Error('预览传输超出预算');
+      const answer=await fetch(descriptor.url,{cache:'no-store'});if(!answer.ok)throw new Error(`预览 HTTP ${answer.status}`);
+      const chunks=[];let size=0;const reader=answer.body.getReader();
+      try{for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>descriptor.bytes)throw new Error('预览大小不符');chunks.push(value);}}finally{await reader.cancel();}
+      if(size!==descriptor.bytes)throw new Error('预览大小不符');
+      const payload=new Uint8Array(size);let offset=0;for(const chunk of chunks){payload.set(chunk,offset);offset+=chunk.length;}
+      transport.bytes+=size;
+      return {descriptor,bytes:await reconstructPreview(baseBytes,descriptor,payload.buffer)};
+    };
+    let preview;
+    const identity={instanceId:next.instanceId,selectionEpoch:epoch,assetId:asset.assetId,runId:asset.runId};
+    let result;
+    try{
+      preview=await fetchPreview(baseAsset?.assetId);
+      if(serial!==loadSerial||state.selectionEpoch!==epoch)return;
+      result=preview.descriptor.kind==='snapshot'?await viewer.load(preview.bytes,identity):await viewer.update(preview.bytes,identity,preview.descriptor.kind);
+    }catch(error){
+      if(serial!==loadSerial||state.selectionEpoch!==epoch)return;
+      if(!retainedAsset)throw error;
+      transport.fallbacks++;preview=await fetchPreview(null);
+      if(serial!==loadSerial||state.selectionEpoch!==epoch)return;
+      result=await viewer.load(preview.bytes,identity);
+    }
+    if(serial!==loadSerial||state.selectionEpoch!==epoch)return;
+    retainedBytes=preview.bytes;retainedAsset=asset;
+    if(preview.descriptor.kind==='snapshot')transport.snapshots++;
+    else if(preview.descriptor.kind==='mesh-delta')transport.meshDeltas++;
+    else transport.instanceDeltas++;
+    transport.last={kind:preview.descriptor.kind,bytes:preview.descriptor.bytes,targetBytes:asset.bytes,elapsedMs:performance.now()-started,assetId:asset.assetId};
     warning('');readyFrame(result);
   } catch(exc) {
     if(serial!==loadSerial || state.selectionEpoch!==epoch)return;
@@ -91,10 +114,14 @@ function renderGraph(next) {
   const graph=next.graph, run=next.run;
   const signature=JSON.stringify([graph,run?.currentNodeId,run?.completedStages]); if(signature===lastGraph)return; lastGraph=signature;
   $('graph').replaceChildren();
-  const completed=new Set((run?.completedStages||[]).map(stage=>stage.nodeId));
+  const completed=new Set((run?.completedStages||[]).flatMap(stage=>[stage.nodeId,...(stage.computedNodes||[]),...(stage.cacheHits||[])]));
+  const cacheHits=new Set((run?.completedStages||[]).flatMap(stage=>stage.cacheHits||[]));
   for(const node of graph.nodes) {
     const div=document.createElement('div');div.className=`node ${completed.has(node.id)?'done':run?.currentNodeId===node.id?'active':''}`;
-    div.textContent=`${completed.has(node.id)?'✓':run?.currentNodeId===node.id?'●':'○'} ${node.id} · ${node.data?.descriptorId?.split('.').at(-1) || node.type || ''}`;$('graph').append(div);
+    div.textContent=`${completed.has(node.id)?'✓':run?.currentNodeId===node.id?'●':'○'} ${node.id}${cacheHits.has(node.id)?' [缓存]':''} · ${node.data?.descriptorId?.split('.').at(-1) || node.type || ''}`;$('graph').append(div);
+    const definition=document.createElement('details');const label=document.createElement('summary');label.textContent='参数 / 端口 / 求值记录';
+    const value=document.createElement('pre');const actual=run?.completedStages.find(stage=>stage.nodeId===node.id);
+    value.textContent=JSON.stringify({parameters:node.data?.parameters,inputs:graph.edges.filter(e=>e.target===node.id).map(e=>({node:e.source,port:e.sourceHandle,to:e.targetHandle})),outputs:actual?.outputs,computedNodes:actual?.computedNodes,cacheHits:actual?.cacheHits},null,2);definition.append(label,value);div.append(definition);
     const stage=run?.completedStages.find(stage=>stage.nodeId===node.id);
     for(const [port,output] of Object.entries(stage?.outputs || {})) {
       if(!['Field','Selection'].includes(output.type))continue;
@@ -115,6 +142,7 @@ function applyState(next) {
   state=next;
   $('connection').textContent=`本地连接 · ${next.autoFollow?'自动跟随阶段':'手动展示'}`;
   $('instance').textContent=next.instanceId;
+  $('graph-identity').textContent=`graphRevision ${next.graphRevision ?? next.run?.projectRevision ?? '—'} · ${next.graphHash ?? next.run?.graphHash ?? '—'}`;
   const run=next.run, busy=['running','cancelling'].includes(run?.status);
   $('run-status').textContent=statusNames[run?.status] || '未运行';
   $('progress').textContent=run?`${run.stageIndex} / ${run.stageCount} 阶段 · ${run.currentNodeId || '—'}`:'可查看已有 M2 样例，或启动隔离测试。';
@@ -125,11 +153,24 @@ function applyState(next) {
   const signature=JSON.stringify(next.catalog.map(a=>a.assetId));
   if(signature!==lastCatalog){lastCatalog=signature;$('asset').replaceChildren();for(const asset of next.catalog){const option=document.createElement('option');option.value=asset.assetId;option.textContent=asset.label || `${asset.producerNodeId} · ${asset.assetId}`;$('asset').append(option);}}
   if(next.desired){$('asset').value=next.desired.assetId;$('desired').textContent=identityText(next.desired);$('asset-detail').textContent=`${next.desired.bytes.toLocaleString()} bytes · SHA256 ${next.desired.sha256}`;}
-  if(next.selectionEpoch!==activeEpoch && next.desired && !viewer?.getState().contextLost)loadDesired(next);
+  if(next.selectionEpoch!==activeEpoch && next.desired && !viewer?.getState().contextLost){
+    clearTimeout(previewTimer);
+    const dense=(next.desired.summary?.counts?.Face||next.desired.counts?.Face||0)>50000;
+    const delay=dense?Math.max(0,500-(performance.now()-lastDenseLoad)):0;
+    if(delay)previewTimer=setTimeout(()=>{lastDenseLoad=performance.now();loadDesired(state);},delay);
+    else{if(dense)lastDenseLoad=performance.now();loadDesired(next);}
+  }
 }
 async function poll() {
   if(disposed || document.hidden || pollBusy)return;
-  pollBusy=true;try{applyState(await request('/api/state'));}catch(exc){warning(`本地连接失败：${exc.message}`);}finally{pollBusy=false;}
+  pollBusy=true;pollAbort=new AbortController();
+  let retry=0;
+  try{
+    const response=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'pcg_demo_wait',arguments:{afterSequence:eventCursor,timeoutMs:1000}}),signal:pollAbort.signal,cache:'no-store'});
+    const value=await response.json();if(!response.ok)throw new Error(value.message||'本地等待失败');
+    eventCursor=value.result.cursor;applyState(value.result.state);
+  }catch(exc){if(exc.name!=='AbortError'){warning(`本地连接失败：${exc.message}`);retry=500;}}
+  finally{pollBusy=false;if(!disposed&&!document.hidden)pollTimer=setTimeout(poll,retry);}
 }
 try { viewer=createViewer($('model'),{onFrame:readyFrame}); }
 catch(exc){warning(`无法创建真实 3D 视图：${exc.message}`);}
@@ -137,7 +178,7 @@ $('rotate').addEventListener('click',()=>{if(!viewer)return;const rotating=!view
 $('asset').addEventListener('change',()=>tool('pcg_demo_select',{assetId:$('asset').value}).catch(exc=>warning(exc.message)));
 $('run-form').addEventListener('submit',event=>{event.preventDefault();warning('');tool('pcg_demo_run',{recipe:$('recipe').value,seed:Number($('seed').value)}).catch(exc=>warning(exc.message));});
 $('cancel').addEventListener('click',()=>{if(state?.run)tool('pcg_demo_cancel',{runId:state.run.runId}).catch(exc=>warning(exc.message));});
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll();});
-window.addEventListener('pagehide',()=>{disposed=true;clearInterval(pollTimer);viewer?.dispose();});
-window.pcgDemo=Object.freeze({getState:()=>structuredClone(state),getViewerState:()=>viewer?.getState(),getDiagnostics:()=>({loading,activeEpoch,localError,clientId})});
-await poll();pollTimer=setInterval(poll,350);
+document.addEventListener('visibilitychange',()=>{clearTimeout(pollTimer);clearTimeout(previewTimer);if(document.hidden)pollAbort?.abort();else poll();});
+window.addEventListener('pagehide',()=>{disposed=true;clearTimeout(pollTimer);clearTimeout(previewTimer);pollAbort?.abort();retainedBytes=null;retainedAsset=null;viewer?.dispose();});
+window.pcgDemo=Object.freeze({getState:()=>structuredClone(state),getViewerState:()=>viewer?.getState(),getDiagnostics:()=>({loading,activeEpoch,localError,clientId,eventCursor,transport:structuredClone(transport),retainedBytes:retainedBytes?.byteLength??0,disposed})});
+await poll();

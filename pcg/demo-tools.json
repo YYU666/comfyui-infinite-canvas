@@ -162,6 +162,131 @@
         }
       ],
       "recovery": "身份不符先读回当前run；取消后等待终态再启动新演示，不中断其他服务。"
+    },
+    {
+      "name": "pcg_demo_wait",
+      "description": "有界等待真实事件；游标失效返回reset与完整代理快照。不会重新生成。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "afterSequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000,
+            "default": 0
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20000,
+            "default": 1000
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "afterSequence": 0,
+            "timeoutMs": 1000
+          }
+        }
+      ],
+      "recovery": "reset时采用state及cursor；后续从返回cursor继续。不重跑恢复。"
+    },
+    {
+      "name": "pcg_demo_tune",
+      "description": "修改本实例已声明参数并保存新graphRevision；仅求值真实目标及其dirty依赖。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "seed": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2147483647
+              },
+              "roughness": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 0.4
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              "minDistance": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "translateY": {
+                "type": "number",
+                "minimum": -100,
+                "maximum": 100
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "runId",
+          "parameters"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "runId": "从state.run.runId复制",
+            "parameters": {
+              "roughness": 0.25
+            }
+          }
+        }
+      ],
+      "recovery": "SESSION_BUSY等待；STALE_RUN读回身份；只允许已有配方参数，不接任意代码。"
+    },
+    {
+      "name": "pcg_demo_preview",
+      "description": "描述目标产物的完整快照或有限增量；返回受管URL与哈希，不向agent返回几何数组。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "targetAssetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "baseAssetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "targetAssetId"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "arguments": {
+            "targetAssetId": "从state.desired.assetId复制"
+          }
+        }
+      ],
+      "recovery": "没有base或拓扑不符自动返回snapshot；客户端增量失败重新请求无base快照，保留旧模型。"
     }
   ]
 }

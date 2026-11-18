@@ -2,6 +2,26 @@ import { pcgError, pcgNodeDescriptor, PCG_ACTIVE } from './pcg-registry.js';
 
 export const PCG_HANDLE_KEYS = ['projectId', 'nodeId', 'revision', 'descriptorVersion', 'operationVersion', 'runId', 'jobId', 'inputHash'];
 export const pcgTaskHandle = task => Object.fromEntries(PCG_HANDLE_KEYS.map(key => [key, task[key]]));
+// Whole-canvas discovery must not repeat stage samples and artifact handles for
+// every completed target. Full read-back remains available via canvas_pcg_read.
+export function pcgAgentState(state = {}) {
+  if (!state.task) return { task: null, error: state.error ?? null };
+  const task = state.task;
+  const keys = [...PCG_HANDLE_KEYS, 'descriptorId', 'status', 'progress', 'stale', 'resultHash', 'error'];
+  return {
+    task: {
+      ...Object.fromEntries(keys.filter(key => Object.hasOwn(task, key)).map(key => [key, task[key]])),
+      result: task.result ? {
+        assetCount: task.result.assets?.length || 0,
+        stageCount: task.result.stagePreviews?.length || 0,
+        outputPorts: Object.keys(task.result.outputs || {}),
+        elapsedMs: task.result.report?.elapsedMs ?? null,
+        detailsTool: 'canvas_pcg_read',
+      } : null,
+    },
+    error: state.error ?? null,
+  };
+}
 export async function pcgRequest(path, body, { fetchImpl = globalThis.fetch, signal } = {}) {
   const response = await fetchImpl(`/api/pcg${path}`, body === undefined ? { signal } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
   const result = await response.json();
@@ -72,6 +92,17 @@ export function createPcgRuntime({ getContext, getNode, persistProject, onChange
       return result;
     },
     invoke,
+    async cancelObsolete(task) {
+      const handle = pcgTaskHandle(task), key = stateKey(handle.projectId, handle.nodeId);
+      const known = states.get(key)?.task;
+      if (!known || PCG_HANDLE_KEYS.some(field => known[field] !== handle[field])) throw pcgError('TASK_IDENTITY_MISMATCH', 'Only this page runtime\'s exact known task may be cancelled.');
+      let result = await request('/cancel-obsolete', handle);
+      const validate = value => { if (!value.task || PCG_HANDLE_KEYS.some(field => value.task[field] !== handle[field])) throw pcgError('TASK_IDENTITY_MISMATCH', 'Obsolete cancellation response differs from its exact handle.'); };
+      validate(result);
+      while (PCG_ACTIVE.includes(result.task?.status)) { result = await request('/wait', { ...handle, timeoutMs: 1000 }); validate(result); }
+      publish(handle.projectId, handle.nodeId, { task: result.task, error: null });
+      return result;
+    },
     async cancelNode(nodeId) {
       const task = states.get(stateKey(getContext().projectId, nodeId))?.task;
       if (!task) throw pcgError('TASK_NOT_FOUND', 'Read canvas_pcg_list_tasks before cancellation.');

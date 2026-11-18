@@ -55,13 +55,13 @@ class FakeGL {
   getUniformLocation(_p,name){return name;}useProgram(){}
   createBuffer(){const b={};this.buffers.add(b);return b;}deleteBuffer(b){this.buffers.delete(b);}
   bindBuffer(target,b){this[target]=b;}
-  bufferData(target,data){if(this.failUpload){this.error=1285;this.failUpload=false;}this[target].data=new data.constructor(data);}
+  bufferData(target,data){if(this.throwUpload){this.throwUpload=false;throw new Error('injected buffer allocation failure');}if(this.failUpload){this.error=1285;this.failUpload=false;}this[target].data=new data.constructor(data);}
   createVertexArray(){const v={};this.vaos.add(v);return v;}deleteVertexArray(v){this.vaos.delete(v);}
   bindVertexArray(v){this.vao=v;}enableVertexAttribArray(){}disableVertexAttribArray(){}vertexAttribPointer(){}vertexAttribDivisor(){}vertexAttrib3f(){}
   getError(){const e=this.error;this.error=0;return e;}isContextLost(){return this.lost;}
   viewport(){}clearColor(){}clear(){}enable(){}disable(){}depthFunc(){}
   uniformMatrix4fv(_key,_transpose,data){this.matrix=new Float32Array(data);}uniformMatrix3fv(){}uniform1f(){}
-  drawElementsInstanced(mode,count,_type,_offset,instances){this.draws.push({mode,count,instances});}
+  drawElementsInstanced(mode,count,_type,_offset,instances){if(this.failDraw){this.failDraw=false;this.error=1282;}this.draws.push({mode,count,instances});}
   drawArraysInstanced(mode,_start,count,instances){this.draws.push({mode,count,instances});}
 }
 function surface() {
@@ -136,6 +136,20 @@ test('turntable advances actual draws, pauses and stops animation when hidden',a
   viewer.setRotating(false);const paused=viewer.getState();assert.equal(f.callbacks.size,0);f.frame(2000);assert.equal(viewer.getState().yaw,paused.yaw);
   viewer.dispose();
 });
+
+test('turntable bounds redundant draws while a new model is drawn immediately',async()=>{
+  const f=surface();let notifications=0;const viewer=createViewer(f.canvas,{onFrame:()=>notifications++});
+  await viewer.load(fixtures.box,{assetId:'box'});assert.equal(viewer.getState().sceneFrameCount,1);
+  f.frame(0);const before=viewer.getState().frameCount,beforeNotifications=notifications;
+  f.frame(16);f.frame(33);assert.equal(viewer.getState().frameCount,before);assert.equal(notifications,beforeNotifications);
+  f.frame(50);f.frame(66);f.frame(100);assert.equal(viewer.getState().frameCount,before+2);
+  assert.ok(Math.abs(viewer.getState().yaw-.035)<1e-10);
+  f.frame(116);const previous=viewer.getState().frameCount;
+  await viewer.load(fixtures.rock,{assetId:'rock'});
+  assert.equal(viewer.getState().frameCount,previous+1);assert.equal(viewer.getState().sceneFrameCount,1);
+  assert.equal(viewer.getState().loadedIdentity.assetId,'rock');assert.equal(viewer.getState().cameraFramed,true);
+  viewer.dispose();assert.equal(f.callbacks.size,0);
+});
 test('hidden upload reports unframed until actual draw, context loss and dispose invalidate loads',async()=>{
   const f=surface(),viewer=createViewer(f.canvas);f.doc.hidden=true;f.doc.fire('visibilitychange');
   await viewer.load(fixtures.points,{assetId:'points'});assert.equal(viewer.getState().cameraFramed,false);assert.equal(f.callbacks.size,0);
@@ -158,4 +172,59 @@ test('camera fit preserves the viewport aspect when GPU resolution is capped',as
   const viewer=createViewer(f.canvas);await viewer.load(fixtures.box,{assetId:'wide'});
   assert.equal(f.canvas.width,2048);assert.ok(Math.abs(viewer.getState().camera.aspect-5)<.01);
   viewer.dispose();
+});
+
+function meshDelta(){return mutate('box',(j,b)=>{
+  const a=j.accessors[j.meshes[0].primitives[0].attributes.POSITION],v=j.bufferViews[a.bufferView],data=new DataView(b.buffer);
+  for(let i=0;i<a.count*3;i++)data.setFloat32(v.byteOffset+i*4,data.getFloat32(v.byteOffset+i*4,true)*1.1,true);
+});}
+function instanceDelta(){return mutate('instances',j=>{j.nodes[0].translation[0]+=.25;});}
+
+test('same-topology mesh delta retains index GPU buffer and replaces finite positions',async()=>{
+  const f=surface(),viewer=createViewer(f.canvas);await viewer.load(fixtures.box,{assetId:'base'});
+  const index=f.gl[f.gl.ELEMENT_ARRAY_BUFFER],oldBuffers=new Set(f.gl.buffers),before=viewer.getState().resources;
+  const state=await viewer.update(meshDelta(),{assetId:'mesh-update'},'mesh-delta');
+  assert.equal(f.gl[f.gl.ELEMENT_ARRAY_BUFFER],index);assert.ok(f.gl.buffers.has(index));
+  assert.equal([...oldBuffers].filter(b=>f.gl.buffers.has(b)).length,1);
+  assert.equal(state.resources.reusedBuffers-before.reusedBuffers,1);assert.equal(state.resources.bufferAllocations-before.bufferAllocations,4);
+  assert.equal(state.updateKind,'mesh-delta');assert.equal(state.triangleCount,12);
+  assert.equal(state.resources.liveBytes,state.gpuBytes);assert.equal(state.resources.liveBuffers,5);
+  viewer.dispose();assert.equal(viewer.getState().resources.liveBytes,0);
+  assert.equal(viewer.getState().resources.bufferAllocations,viewer.getState().resources.bufferDeletions);
+});
+test('instance-only delta reuses every prototype GPU buffer and changes all retained transforms',async()=>{
+  const f=surface(),viewer=createViewer(f.canvas);await viewer.load(fixtures.instances,{assetId:'base'});
+  const before=viewer.getState().resources,original=new Set(f.gl.buffers);
+  const state=await viewer.update(instanceDelta(),{assetId:'transforms'},'instance-delta');
+  assert.equal([...original].filter(b=>f.gl.buffers.has(b)).length,3);
+  assert.equal(state.resources.reusedBuffers-before.reusedBuffers,3);assert.equal(state.resources.bufferAllocations-before.bufferAllocations,2);
+  assert.equal(state.instanceCount,100);assert.equal(state.drawCalls,1);assert.equal(state.resources.liveBytes,state.gpuBytes);
+  viewer.dispose();assert.equal(viewer.getState().resources.liveBuffers,0);assert.equal(viewer.getState().resources.liveVaos,0);assert.equal(f.callbacks.size,0);
+});
+test('claimed delta kind cannot bypass actual topology and prototype validators',async()=>{
+  const f=surface(),viewer=createViewer(f.canvas);await viewer.load(fixtures.box,{assetId:'base'});const original=new Set(f.gl.buffers);
+  const changedIndices=mutate('box',(j,b)=>{const v=j.bufferViews[j.accessors[j.meshes[0].primitives[0].indices].bufferView],d=new DataView(b.buffer);const a=d.getUint32(v.byteOffset,true);d.setUint32(v.byteOffset,d.getUint32(v.byteOffset+4,true),true);d.setUint32(v.byteOffset+4,a,true);});
+  for(const [buffer,kind] of [[changedIndices,'mesh-delta'],[meshDelta(),'instance-delta'],[fixtures.rock,'mesh-delta']])await assert.rejects(viewer.update(buffer,{assetId:'bad'},kind),e=>e.code==='DELTA_MISMATCH');
+  assert.deepEqual(f.gl.buffers,original);assert.deepEqual(viewer.getState().loadedIdentity,{assetId:'base'});
+  viewer.dispose();
+});
+test('candidate delta GPU allocation or draw failures preserve shared buffers and base identity',async()=>{
+  const f=surface(),viewer=createViewer(f.canvas);await viewer.load(fixtures.instances,{assetId:'base'});const original=new Set(f.gl.buffers);
+  for(const failure of ['failUpload','throwUpload','failDraw']){
+    f.gl[failure]=true;await assert.rejects(viewer.update(instanceDelta(),{assetId:'rejected'},'instance-delta'));
+    assert.deepEqual(f.gl.buffers,original);assert.deepEqual(viewer.getState().loadedIdentity,{assetId:'base'});
+    assert.equal(viewer.getState().resources.liveBuffers,5);assert.equal(viewer.getState().resources.liveVaos,1);
+  }
+  await viewer.update(instanceDelta(),{assetId:'accepted'},'instance-delta');viewer.dispose();assert.equal(f.gl.buffers.size,0);
+});
+test('overlapping delta publication and close reject stale candidates without deleting shared base',async()=>{
+  const f=surface(),viewer=createViewer(f.canvas);await viewer.load(fixtures.instances,{assetId:'base'});
+  const old=viewer.update(instanceDelta(),{assetId:'late'},'instance-delta');
+  await Promise.resolve(); // Old candidate has retained the shared geometry but has not published.
+  const newest=viewer.update(instanceDelta(),{assetId:'latest'},'instance-delta');
+  await assert.rejects(old,e=>e.code==='STALE_LOAD');await newest;
+  assert.deepEqual(viewer.getState().loadedIdentity,{assetId:'latest'});assert.equal(f.gl.buffers.size,5);
+  const closing=viewer.update(instanceDelta(),{assetId:'closed'},'instance-delta');await Promise.resolve();viewer.dispose();
+  await assert.rejects(closing,e=>e.code==='STALE_LOAD');assert.equal(f.gl.buffers.size,0);assert.equal(f.callbacks.size,0);
+  const r=viewer.getState().resources;assert.equal(r.liveBytes,0);assert.equal(r.bufferAllocations,r.bufferDeletions);assert.equal(r.vaoAllocations,r.vaoDeletions);
 });

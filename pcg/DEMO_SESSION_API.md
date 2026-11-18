@@ -49,3 +49,20 @@ complete original M2 handle; source labels and summaries are retained.
 Invalid configured evidence fails construction. No samples_root means an empty
 catalog until the first completed geometry stage. OS isolation unavailability
 causes an explicit failed run; there is no fallback executor.
+
+## M4 additions
+
+Saved graph identity is `projectId`, `graphRevision`, `graphHash`; it binds each
+new run, event, stage and produced asset. Imported assets retain their own
+original evidence identity rather than inheriting the current synthetic graph.
+`wait(afterSequence=0, timeoutMs=1000)` returns cursor/reset/events/snapshot
+atomically; missing ring history or future cursors reset without generation.
+The HTTP/MCP envelope names this snapshot `state` and adds viewer/url/readOnly.
+`tune(runId, parameters)` saves a new graph revision and evaluates only its final
+target through unchanged M2 dirty/cache semantics; it does not simulate a full
+stage replay. See demo-tools.json for the public allowlist and budgets.
+`preview(targetAssetId, baseAssetId=None)` returns bounded metadata only;
+`read_preview(sha256)` returns immutable canonical patch bytes from a bounded
+independent128MiB/512-entry in-memory cache. Full managed GLB cache remains
+separately bounded. Byte/hash validation is independent of viewer reports.
+No-op or incompatible deltas fall back to complete managed snapshot.

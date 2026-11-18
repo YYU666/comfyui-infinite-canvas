@@ -83,7 +83,7 @@ const pageErrors=[],externalRequests=[];
 const terminal=new Set(['succeeded','failed','cancelled']);
 async function api(name,args={}) {
   const answer=await page.evaluate(async({name,args})=>{
-    const response=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,arguments:args})});
+    const response=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,arguments:args}),signal:AbortSignal.timeout(30000)});
     return {status:response.status,value:await response.json()};
   },{name,args});
   assert.equal(answer.status,200,JSON.stringify(answer.value));return answer.value.result;
@@ -238,7 +238,7 @@ try {
   await page.unroute(oldUrl,delayed);evidence.checks.push('late GLB discarded / stale ACK rejected');
   const corrupt=route=>route.fulfill({status:200,contentType:'model/gltf-binary',body:Buffer.from('invalid owned test response')});
   await page.route(oldUrl,corrupt);await api('pcg_demo_select',{assetId:firstAsset.assetId});
-  await page.waitForFunction(()=>window.pcgDemo.getDiagnostics().localError.includes('GLB'));
+  await page.waitForFunction(()=>window.pcgDemo.getDiagnostics().localError.includes('加载失败'));
   assert.equal((await page.evaluate(()=>window.pcgDemo.getViewerState())).loadedIdentity.assetId,latestAsset.assetId);
   const loadFailure=await read();assert.equal(loadFailure.viewer.displayed.assetId,latestAsset.assetId);await pixels('retainedAfterLoadFailure');
   await page.unroute(oldUrl,corrupt);await select(latestAsset);evidence.checks.push('damaged response rejected / previous displayed GPU scene retained');

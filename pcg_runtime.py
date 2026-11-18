@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -133,7 +134,7 @@ class PCGRuntime:
         if not permit_unavailable:
             require(self._isolation()['available'], 'Required OS isolation is unavailable.', 'ISOLATION_UNAVAILABLE', 409)
         input_hash = content_hash({'identity': {k: v for k, v in identity.items() if k != 'runId'}, 'plan': plan})
-        with self.lock: cache = self.cache.snapshot(identity['projectId'])
+        with self.lock: cache = self.cache.snapshot(identity['projectId'], plan=plan)
         request = {'protocolVersion': 2, 'projectId': identity['projectId'], 'inputHash': input_hash, 'plan': plan, 'cache': cache}
         # Cache reuse is optional; drop the oldest snapshot entries to bound IPC.
         while cache and len(canonical(request)) > 32 * 1024 * 1024: cache.pop(next(iter(cache)))
@@ -261,10 +262,11 @@ class PCGRuntime:
                 require(record['nodeId'] == node['nodeId'] and type(record['cacheHit']) is bool and type(record['elapsedMs']) in (float, int) and 0 <= record['elapsedMs'] <= 60000, 'Invalid node trace.', 'WORKER_PROTOCOL')
                 inputs = {name: values[ref['nodeId']][ref['port']] for name, ref in node['inputs'].items()}
                 key = computation_key(node, inputs)
-                require(key == record['key'] and content_hash(record['outputs']) == record['outputHash'], 'Node hash differs.', 'WORKER_PROTOCOL')
+                output_bytes = canonical(record['outputs'])
+                require(key == record['key'] and hashlib.sha256(output_bytes).hexdigest() == record['outputHash'], 'Node hash differs.', 'WORKER_PROTOCOL')
                 d = find_descriptor(self.registry, node['descriptorId']); ports = {p['name']: p for p in d['outputs']}
                 exact(record['outputs'], {p['name'] for p in d['outputs'] if p['required']}, ports)
-                require(len(canonical(inputs)) <= d['budget']['maxInputBytes'] and len(canonical(record['outputs'])) <= d['budget']['maxOutputBytes'], 'Node byte budget exceeded.', 'BUDGET_EXCEEDED')
+                require(len(canonical(inputs)) <= d['budget']['maxInputBytes'] and len(output_bytes) <= d['budget']['maxOutputBytes'], 'Node byte budget exceeded.', 'BUDGET_EXCEEDED')
                 from pcg_fields import binding, validate_field
                 for name, value in record['outputs'].items():
                     validate_engine_value(value, ports[name]['type'])
@@ -283,7 +285,7 @@ class PCGRuntime:
                     require(key in request['cache'] and record['outputs'] == request['cache'][key], 'Worker cache claim differs.', 'WORKER_PROTOCOL'); hits.append(node['nodeId'])
                 else: computed.append(node['nodeId'])
                 values[node['nodeId']] = record['outputs']; accepted.append((key, record['outputs']))
-                timings.append({'nodeId': node['nodeId'], 'elapsedMs': record['elapsedMs'], 'cacheHit': record['cacheHit'], 'outputBytes': len(canonical(record['outputs']))})
+                timings.append({'nodeId': node['nodeId'], 'elapsedMs': record['elapsedMs'], 'cacheHit': record['cacheHit'], 'outputBytes': len(output_bytes)})
             require(result['computedNodes'] == computed and result['cacheHits'] == hits and result['outputs'] == values[request['plan']['target']], 'Execution set differs.', 'WORKER_PROTOCOL')
             from pcg_preview import render_preview_svg
             stage_bodies, preview_bytes = {}, 0
@@ -303,10 +305,10 @@ class PCGRuntime:
                     require(retained + len(canonical(outputs)) <= 64 * 1024 * 1024, 'Retained geometry capacity reached.', 'TASK_CAPACITY', 503)
                     for name, value in outputs.items():
                         if value.get('type') in {'Mesh', 'PointSet', 'InstanceSet'}:
-                            summaries[name] = summarize(value)
+                            summaries[name] = self.assets.summary(task['projectId'], value)
                             artifacts.append(self.assets.publish(task, name, value, 'glb'))
                             artifacts.append(self.assets.publish(task, name, value, 'json'))
-                            artifacts.append(self.assets.publish(task, name, value, 'svg'))
+                            artifacts.append(self.assets.publish(task, name, value, 'svg', prepared_body=stage_bodies[(request['plan']['target'], name)]))
                         elif value.get('type') == 'DiagnosticReport': summaries[name] = copy.deepcopy(value)
                         else:
                             summaries[name] = {k: copy.deepcopy(v) for k, v in value.items() if k not in {'values', 'pixels'}}
@@ -316,7 +318,7 @@ class PCGRuntime:
                         stage = {'nodeId': record['nodeId'], 'runId': task['runId'], 'jobId': task['jobId'], 'inputHash': task['inputHash'], 'outputHash': record['outputHash'], 'cacheHit': record['cacheHit'], 'elapsedMs': record['elapsedMs'], 'outputs': {}, 'assets': []}
                         for port, value in record['outputs'].items():
                             if value.get('type') in {'Mesh', 'PointSet', 'InstanceSet'}:
-                                stage['outputs'][port] = summarize(value)
+                                stage['outputs'][port] = self.assets.summary(task['projectId'], value)
                                 stage['assets'].append(self.assets.publish(task, port, value, 'svg', producer_node_id=record['nodeId'], prepared_body=stage_bodies[(record['nodeId'], port)]))
                             elif value.get('type') == 'DiagnosticReport': stage['outputs'][port] = copy.deepcopy(value)
                             else:
@@ -333,6 +335,13 @@ class PCGRuntime:
             with self.lock: task.update(status='failed', error={'code': exc.code, 'message': exc.message})
         except (OSError, ValueError, TypeError, KeyError, ImportError, RecursionError):
             with self.lock: task.update(status='failed', error={'code': 'WORKER_PROTOCOL', 'message': 'Geometry worker response could not be validated.'})
+        except Exception as exc:
+            # An unexpected host exception must still complete the task as failed.
+            # Expose its type, never exception arguments containing request data.
+            with self.lock:
+                task.update(status='cancelled' if task['_cancel'].is_set() else 'failed',
+                            error={'code': 'WORKER_CANCELLED' if task['_cancel'].is_set() else 'WORKER_CRASH',
+                                   'message': 'Geometry host failed: ' + type(exc).__name__})
         finally:
             if geometry_owned: self.geometry_slot.release()
             self.slots.release(); task['_event'].set()
@@ -348,6 +357,23 @@ class PCGRuntime:
                     process = task['_process']
                     if process is not None and process.poll() is None: process.kill()
                 return {'task': self._public(task)}
+
+    def cancel_obsolete(self, handle):
+        """Cancel only this host's exact task, even after its saved graph changed.
+
+        Viewport invalidation can race the save or remove the original node. The
+        complete runtime-owned handle remains the cancellation capability; it
+        grants no result validation, artifact reads, or execution at an old revision.
+        """
+        validate_identity(handle, handle=True)
+        with self.store._guard(self.store._project_path(handle['projectId'])):
+            task, stale = self._owned(handle)
+            with self.lock:
+                if task['status'] in {'queued', 'running'}:
+                    task['_cancel'].set()
+                    process = task['_process']
+                    if process is not None and process.poll() is None: process.kill()
+                return {'task': self._public(task, stale)}
 
     def export(self, payload):
         validate_identity(payload, handle=True, optional={'format', 'port'})
@@ -435,3 +461,4 @@ class PCGRuntime:
         for task in tasks:
             thread = task['_thread']
             if thread: thread.join(timeout=6)
+        self.assets.clear_summary_cache()
