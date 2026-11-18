@@ -116,10 +116,12 @@ def _tb(value):
     return Fraction(int(num), int(den))
 
 
-def probe(runner, path):
+def probe(runner, path, *, max_read_seconds=None):
     """Decode once and return exact frame times (relative to the first frame)."""
-    out = runner.run(["-copyts", "-i", str(path), "-map", "0:v:0?", "-map", "0:a:0?", "-fps_mode", "passthrough",
-                      "-c:v", "wrapped_avframe", "-c:a", "pcm_s16le", "-ac", str(AUDIO_CHANNELS), "-f", "framecrc", "-"])
+    read_limit = ["-t", str(max_read_seconds)] if max_read_seconds is not None else []
+    out = runner.run(["-copyts", *read_limit, "-i", str(path), "-map", "0:v:0?", "-map", "0:a:0?", "-fps_mode", "passthrough",
+                      "-c:v", "wrapped_avframe", "-c:a", "pcm_s16le", "-ac", str(AUDIO_CHANNELS), "-f", "framecrc", "-"],
+                     timeout=600 if read_limit else 3600)
     streams, rows = _parse_framecrc(out.decode("utf-8", "replace"))
     video = next((index for index, info in streams.items() if info.get("media_type") == "video"), None)
     audio = next((index for index, info in streams.items() if info.get("media_type") == "audio"), None)

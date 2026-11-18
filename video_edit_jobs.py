@@ -19,7 +19,8 @@ import uuid
 from pathlib import Path
 
 from project_store import StoreError
-from video_edit_document import EditDocumentError, INPUT_SLOTS, normalize_document, plan, used_slots
+from video_auto_cut import MAX_SOURCE_SECONDS, suggest_cuts
+from video_edit_document import EditDocumentError, INPUT_SLOTS, VIDEO_SLOTS, normalize_document, plan, used_slots
 from video_edit_ffmpeg import Cancelled, FFmpegError, Runner, probe, public_probe, render
 
 JOB_ID = re.compile(r"ved_[a-f0-9]{32}")
@@ -122,23 +123,38 @@ class VideoEditJobs:
             self.root.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
                 raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-            job_id = f"ved_{uuid.uuid4().hex}"
-            job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
-                   "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
-                   "inputs": {slot: inputs[slot] for slot in files}, "signature": signature}
-            with self.lock:
-                active = [item for item in self.jobs.values() if item["nodeId"] == node_id and item["projectId"] == project_id and item["status"] not in TERMINAL]
-                if self.closed:
-                    raise StoreError("VIDEO_EDIT_CLOSED", "视频编辑服务正在关闭。", 503)
-                if active:
-                    raise StoreError("VIDEO_EDIT_BUSY", "此视频编辑节点已有导出作业，请等待或取消。", 409, {"jobId": active[0]["id"]})
-                self._trim()
-                self.jobs[job_id] = {**job, "_document": document, "_files": files}
-                self.wake.notify_all()
-                if not self.worker or not self.worker.is_alive():
-                    self.worker = threading.Thread(target=self._loop, name="video-edit-jobs", daemon=True)
-                    self.worker.start()
-            return self.get(job_id)
+            return self._submit(project_id, node_id, inputs={slot: inputs[slot] for slot in files},
+                                signature=signature, _document=document, _files=files)
+
+    def submit_auto_cut(self, payload):
+        if not isinstance(payload, dict) or set(payload) != {"projectId", "nodeId", "slot", "assetPath", "mode"}:
+            raise _bad("自动剪辑需要 projectId、nodeId、slot、assetPath 与 mode。")
+        project_id, node_id = self._identity(payload)
+        slot, mode = payload["slot"], payload["mode"]
+        if slot not in VIDEO_SLOTS or mode not in ("black", "silence"):
+            raise _bad("自动剪辑只支持视频端口上的黑场或静音检测。")
+        with self.lock:
+            file = self._asset(project_id, payload["assetPath"])
+            return self._submit(project_id, node_id, mode=mode, inputs={slot: payload["assetPath"]},
+                                _files={slot: file})
+
+    def _submit(self, project_id, node_id, **fields):
+        # Callers hold the store/admission lock through source lookup and enqueue.
+        if self.closed:
+            raise StoreError("VIDEO_EDIT_CLOSED", "视频编辑服务正在关闭。", 503)
+        for item in self.jobs.values():
+            if item["nodeId"] == node_id and item["projectId"] == project_id and item["status"] not in TERMINAL:
+                raise StoreError("VIDEO_EDIT_BUSY", "此视频编辑节点已有作业，请等待或取消。", 409, {"jobId": item["id"]})
+        self._trim()
+        job_id = f"ved_{uuid.uuid4().hex}"
+        self.jobs[job_id] = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued",
+                             "progress": 0.0, "stage": "排队中", "error": None, "result": None,
+                             "createdAt": time.time(), **fields}
+        self.wake.notify_all()
+        if not self.worker or not self.worker.is_alive():
+            self.worker = threading.Thread(target=self._loop, name="video-edit-jobs", daemon=True)
+            self.worker.start()
+        return self.get(job_id)
 
     def _trim(self):
         finished = sorted((job for job in self.jobs.values() if job["status"] in TERMINAL), key=lambda job: job["createdAt"])
@@ -187,6 +203,8 @@ class VideoEditJobs:
             job = self._job(job_id)
             if job["projectId"] != payload["projectId"]:
                 raise StoreError("FORBIDDEN", "作业不属于此项目。", 403)
+            if job.get("mode"):
+                raise _bad("自动剪辑建议没有可提交的成片。")
             if job["status"] != "completed":
                 raise StoreError("VIDEO_EDIT_NOT_READY", "导出尚未完成。", 409)
             output = self.root / job_id / "output.mp4"
@@ -198,6 +216,8 @@ class VideoEditJobs:
     def output_file(self, job_id):
         with self.lock:
             job = self._job(job_id)
+            if job.get("mode"):
+                raise _bad("自动剪辑建议没有可下载的成片。")
             if job["status"] != "completed":
                 raise StoreError("VIDEO_EDIT_NOT_READY", "导出尚未完成。", 409)
             return self.root / job_id / "output.mp4"
@@ -215,7 +235,7 @@ class VideoEditJobs:
                     try:
                         runner = self.runner_factory()
                     except FFmpegError as error:
-                        job.update(status="failed", stage="导出失败", error=str(error)[:600])
+                        job.update(status="failed", stage="分析失败" if job.get("mode") else "导出失败", error=str(error)[:600])
                         continue
                     self.runners[job["id"]] = runner
                     return job, runner
@@ -244,13 +264,24 @@ class VideoEditJobs:
 
     def _run(self, job, runner):
         workdir = self.root / job["id"]
-        workdir.mkdir(parents=True, exist_ok=True)
+        mode = job.get("mode")
+        failure_stage = "分析失败" if mode else "导出失败"
         try:
             files = job["_files"]
+            if mode:
+                slot, file = next(iter(files.items()))
+                info = probe(runner, file, max_read_seconds=MAX_SOURCE_SECONDS + 1)
+                self._progress(job)(0.5, "正在识别剪辑区间")
+                result = suggest_cuts(runner, file, info, slot, mode)
+                with self.lock:
+                    runner.check()
+                    job.update(status="completed", progress=1.0, stage="分析完成", result=result)
+                return
             probes = {}
             for slot, file in files.items():
                 runner.check()
                 probes[slot] = probe(runner, file)
+            workdir.mkdir(parents=True, exist_ok=True)
             edit_plan = plan(job["_document"], probes)
             target = workdir / "output.part.mp4"
             result = render(runner, job["_document"], edit_plan, files, probes, target, workdir, self._progress(job))
@@ -268,11 +299,11 @@ class VideoEditJobs:
                 job.update(status="cancelled", stage="已取消")
         except (EditDocumentError, FFmpegError) as error:
             with self.lock:
-                job.update(status="failed", stage="导出失败", error=str(error)[:600])
+                job.update(status="failed", stage=failure_stage, error=str(error)[:600])
         except Exception as error:  # keep the worker alive; never leak paths
             traceback.print_exc()
             with self.lock:
-                job.update(status="failed", stage="导出失败", error=f"内部错误：{type(error).__name__}")
+                job.update(status="failed", stage=failure_stage, error=f"内部错误：{type(error).__name__}")
         finally:
             with self.lock:
                 self.runners.pop(job["id"], None)

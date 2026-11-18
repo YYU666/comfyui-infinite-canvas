@@ -51,6 +51,8 @@ class VideoEditAPI:
         try:
             if path == "/api/video-edit/probe":
                 handler.send_json(200, self.jobs.probe_asset(self._json(handler, 4096)))
+            elif path == "/api/video-edit/auto-cut":
+                handler.send_json(201, self.jobs.submit_auto_cut(self._json(handler, 4096)))
             elif path == "/api/video-edit/jobs":
                 handler.send_json(201, self.jobs.submit(self._json(handler)))
             elif match := re.fullmatch(r"/api/video-edit/jobs/(ved_[a-f0-9]{32})/cancel", path):
