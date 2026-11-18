@@ -51,6 +51,18 @@
 .video-presentation-columns input:not([type=number]), .video-presentation-columns textarea { min-width: 0; width: 100%; background: var(--neo-soft, #17181d); color: inherit; border: 1px solid var(--neo-line, #41434c); border-radius: 4px; padding: 6px; resize: vertical; font: inherit; }
 .video-edit-playback { flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; padding: 12px; gap: 8px; }
 .video-edit-playback video { width: 100%; height: 100%; object-fit: contain; background: #111; }
+.motion-canvas-pilot { flex: 1; min-height: 0; overflow: auto; display: grid; align-content: start; gap: 14px; padding: 16px; }
+.motion-canvas-pilot-stages { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 6fr); gap: 12px; align-items: start; }
+.motion-canvas-pilot-stages section { display: grid; gap: 6px; }
+.motion-canvas-pilot-stages video, .motion-canvas-pilot-stages canvas { width: 100%; aspect-ratio: 16/9; object-fit: contain; border-radius: 6px; background: #11151c; }
+.motion-canvas-pilot-controls { display: flex; align-items: center; gap: 10px; }
+.motion-canvas-pilot-controls input { flex: 1; min-width: 0; accent-color: #82e7d0; }
+.motion-canvas-pilot-controls > span, .motion-canvas-pilot-cues time { font-variant-numeric: tabular-nums; color: var(--neo-muted, #969ba9); }
+.motion-canvas-pilot-cues { display: flex; gap: 8px; flex-wrap: wrap; }
+.motion-canvas-pilot-cues button { align-items: center; background: #20242b; }
+.motion-canvas-pilot-cues button[aria-pressed=true] { border-color: #82e7d0; }
+.motion-canvas-pilot-message { margin: 18px; }
+@media (max-width: 700px) { .motion-canvas-pilot-stages { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 1000px) {
   .video-presentation-columns { grid-template-columns: minmax(105px, 1fr) minmax(135px, 2fr) minmax(145px, 1.35fr); }
   .video-presentation-columns label { grid-template-columns: 1fr; }

@@ -237,6 +237,7 @@ export function videoEditSummary(data = {}) {
     clipCount: Array.isArray(document?.clips) ? document.clips.length : 0,
     editResultAssetPath: data.editResultAssetPath || null,
     editResult: data.editResult || null,
+    ...(data.motionCanvasPreview ? { motionCanvasPreview: data.motionCanvasPreview } : {}),
     videoEditJobId: data.videoEditJobId || null,
     editStale: Boolean(data.editResultAssetPath && data.editResultDocument !== JSON.stringify(document ?? null)),
   };

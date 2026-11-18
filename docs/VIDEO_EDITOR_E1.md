@@ -31,6 +31,12 @@ Agent 通过当前可见画布按顺序使用这些工具：
 
 参考实现包括 [Auto-Editor](https://github.com/WyattBlue/auto-editor) 的初剪、[Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) 的离线转写、[HyperFrames](https://github.com/heygen-com/hyperframes) 的按时间渲染和 [Slidev](https://sli.dev/guide/animations) 的逐项揭示。画布按结构化时间线渲染内置版式。
 
+### Motion Canvas 同步预览
+
+连接视频后，Agent 通过原生分析工具取得词或短语的时间。查询转写时传 `includeWords: true`，按 `nextOffset` 分页。识别器缺词或定位不准时，先在原片复核对应发音。使用 `canvas_set_motion_canvas_preview` 写入端口、同一素材的 `transcriptJobId`、源视频预览区间、流程标题与 1–5 个触发点；每个触发点包含源视频毫秒时间、要点和说明。画布提供可复用的流程动画，无需为每段素材编写场景。
+
+打开视频编辑节点的「Motion Canvas」页签，同一原声时钟驱动实际 Motion Canvas 3.17.2 场景。可播放、暂停、拖动进度条，或点击一个触发点核对动画。预览支持首个视频帧与音轨同起点的素材，选取 1–60 秒连续片段。先导出一份已对齐的片段可处理起点不一致的录屏。此试验验证同步和版式，MP4 导出使用现有「演示轨」。[Motion Canvas · Time Events](https://motioncanvas.io/docs/time-events/)
+
 导出需要已安装的 FFmpeg（优先使用工作台依赖中的 imageio-ffmpeg，其次使用 PATH 中的程序）。本功能不安装软件、下载模型或提交 ComfyUI 任务。导出读取源素材并创建新 MP4，不覆盖输入。后台只写任务临时文件；页面使用当前项目 revision 将结果存入 assets，再更新同一编辑节点。失败或取消保留已有结果；参数改变后会标记已有结果待重新导出。取消仅影响本节点的导出进程。
 
 默认 24 fps、H.264/AAC、CRF 14。输入必须能通过恒定帧率和时基检查；输出按文档帧率重采样。默认使用片段原声，也可选择静音或外部音轨；外部音轨长度须与成片一致。末帧补帧会延长时长，不代表运动插帧模型。

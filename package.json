@@ -16,6 +16,8 @@
     "browser:install": "playwright-core install chromium"
   },
   "dependencies": {
+    "@motion-canvas/2d": "3.17.2",
+    "@motion-canvas/core": "3.17.2",
     "@vitejs/plugin-react": "^5.1.4",
     "@xyflow/react": "^12.12.0",
     "lucide-react": "^0.577.0",

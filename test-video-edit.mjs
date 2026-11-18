@@ -4,6 +4,7 @@ import { normalizeVideoEditDocument, defaultVideoEditDocument, planVideoEditConn
 import { planCanvasConnection } from './src/canvas-connections.js';
 import { registerCanvasMcp, generateNodeForMcp, waitForNodeForMcp, NODE_PRESETS } from './src/canvas-mcp.js';
 import { createVideoEditRunner } from './src/video-edit-runtime.js';
+import { normalizeMotionCanvasPreview } from './src/motion-canvas-pilot.js';
 import { restoreHistoryNodes } from './src/canvas-history.js';
 import { pasteCanvasSelection } from './src/canvas-clipboard.js';
 
@@ -12,6 +13,12 @@ const clip = (extra = {}) => ({ id: 'c1', inputSlot: 'v1', sourceInPts: 0, sourc
 const doc = (clips = [clip()], profile = {}) => ({ schemaVersion: 1, outputProfile: { fps: { num: 24, den: 1 }, ...profile }, clips });
 const slide = { id: 'page1', startFrame: 4, endFrame: 21, title: ' 演示标题 ', bullets: ['要点一', '要点二'],
   layout: 'side', motion: 'reveal' };
+const preview = { slot: 'v1', sourceInMs: 1000, sourceOutMs: 15000, title: '录屏到成片', cues: [
+  { atMs: 1550, label: '导入素材', detail: '添加本地视频' }, { atMs: 6200, label: '检查时间线', detail: '保留原声' },
+] };
+assert.deepEqual(normalizeMotionCanvasPreview(preview), preview);
+assert.throws(() => normalizeMotionCanvasPreview({ ...preview, cues: [...preview.cues].reverse() }), /严格递增/);
+assert.throws(() => normalizeMotionCanvasPreview({ ...preview, sourceInMs: 1800 }), /预览区间/);
 
 // 1. JS schema == Python schema (same accept/reject and same normalized output).
 const cases = [
@@ -87,6 +94,26 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
     assert.equal(c1.edge.targetHandle, 'v1');
     const bad = await call('canvas_connect_nodes', { sourceId: 'm2', targetId: id });
     assert.equal(bad.ok, false);
+    const transcriptJobId = `ved_${'a'.repeat(32)}`;
+    const motionArgs = { nodeId: id, transcriptJobId, ...preview };
+    const analysisResult = { id: transcriptJobId, projectId: 'prj_fixture', nodeId: id, mode: 'transcript', status: 'completed',
+      inputs: { v1: video.data.assetPath }, result: { durationMs: 16000, source: { audioOffset: { num: 0, den: 1 } } } };
+    const actualFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (url) => {
+        assert.equal(url, `/api/video-edit/jobs/${transcriptJobId}`);
+        return new Response(JSON.stringify(analysisResult), { status: 200 });
+      };
+      const motion = await call('canvas_set_motion_canvas_preview', motionArgs);
+      assert.deepEqual(motion, { ok: true, nodeId: id, cueCount: 2 });
+      const described = (await call('canvas_get_state', { nodeId: id })).nodes[0];
+      assert.deepEqual(described.motionCanvasPreview, { ...preview, assetPath: video.data.assetPath });
+      assert.match((await call('canvas_set_motion_canvas_preview', { ...motionArgs, sourceOutMs: 17000 })).error, /超出源视频/);
+      analysisResult.result.source.audioOffset = { num: -1, den: 4 };
+      assert.match((await call('canvas_set_motion_canvas_preview', motionArgs)).error, /同时开始/);
+      analysisResult.inputs = { v1: `assets/${'b'.repeat(64)}.mp4` };
+      assert.match((await call('canvas_set_motion_canvas_preview', motionArgs)).error, /素材已更换/);
+    } finally { globalThis.fetch = actualFetch; }
     const document = doc([clip({ sourceInPts: 12, sourceOutPts: 372 }), clip({ id: 'c2', sourceInPts: 372, sourceOutPts: 400, reverse: true, pad: { mode: 'last_frame', count: 4 } })], { audio: 'external', audioFrom: { inputSlot: 'v1', sourceInPts: 12, sourceOutPts: 404, timebase: F24 } });
     const updated = await call('canvas_update_node', { nodeId: id, settings: { editDocument: document } });
     assert.equal(updated.ok, true, updated.error);

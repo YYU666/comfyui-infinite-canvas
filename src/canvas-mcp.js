@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { isVideoEdit, normalizeVideoEditDocument, nextVideoEditPort, videoEditSummary, videoEditInputView, VIDEO_EDIT_VIDEO_PORTS } from './video-edit-document.js';
 import { submitVideoAnalysis, getVideoEditJob, cancelVideoEditJob } from './video-edit-runtime.js';
+import { MOTION_CANVAS_MAX_CUES, normalizeMotionCanvasPreview } from './motion-canvas-pilot.js';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
 import { validateCharacterSheetAngleSeed, validateQwenCacheDevice, validateQwenSourceCrop } from './workbench-api.js';
@@ -522,12 +523,13 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       },
       {
         name: 'canvas_get_video_analysis',
-        description: '查询素材分析。转写分页返回源时间毫秒与讲解原文。根据讲解构造剪辑，再通过 editDocument.presentation 写入按成片帧定位的可编辑演示页。',
+        description: '查询素材分析。转写分页返回源时间毫秒与讲解原文。includeWords:true 时返回模型实际识别的词或短语时间，用于安排口播动效。缺失时序的词应复核原片。',
         inputSchema: schema({ nodeId: nodeIdProperty, jobId: { type: 'string' },
-          offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 30 } }, ['nodeId', 'jobId']),
+          offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 30 },
+          includeWords: { type: 'boolean' } }, ['nodeId', 'jobId']),
         annotations: { readOnlyHint: true, untrustedContentHint: true },
-        execute: respond(async ({ nodeId, jobId, offset = 0, limit = 20 }) => {
-          if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 30) throw new Error('转写分页范围无效。');
+        execute: respond(async ({ nodeId, jobId, offset = 0, limit = 20, includeWords = false }) => {
+          if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 30 || typeof includeWords !== 'boolean') throw new Error('转写分页参数无效。');
           const job = await readAnalysis(nodeId, jobId);
           const { inputs } = analysisSource(nodeId);
           if (!Object.entries(job.inputs).every(([slot, path]) => inputs[slot]?.assetPath === path)) {
@@ -535,9 +537,19 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           }
           const summary = { jobId, status: job.status, stage: job.stage, mode: job.mode, progress: job.progress, error: job.error };
           if (!job.result || job.mode !== 'transcript') return { ...summary, result: job.result };
-          const { segments, source, language, durationMs } = job.result;
-          const nextOffset = offset + limit < segments.length ? offset + limit : null;
-          return { ...summary, result: { segments: segments.slice(offset, offset + limit), source, language, durationMs, segmentCount: segments.length, nextOffset } };
+          const { segments, source, language, durationMs, wordTimingsTruncated } = job.result;
+          const page = [];
+          const encoder = new TextEncoder();
+          let bytes = 0;
+          for (const { startMs, endMs, text, words } of segments.slice(offset, offset + limit)) {
+            const segment = { startMs, endMs, text, ...(includeWords && words?.length ? { words } : {}) };
+            bytes += encoder.encode(JSON.stringify(segment)).length + 1;
+            if (bytes > 64 * 1024 && page.length) break;
+            page.push(segment);
+          }
+          const nextOffset = offset + page.length < segments.length ? offset + page.length : null;
+          return { ...summary, result: { segments: page, source, language, durationMs, segmentCount: segments.length, nextOffset,
+            ...(includeWords && wordTimingsTruncated ? { wordTimingsTruncated: true } : {}) } };
         }),
       },
       {
@@ -549,6 +561,35 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           const cancelled = await cancelVideoEditJob(jobId, job.projectId);
           releaseAnalysis(jobId);
           return { jobId, status: cancelled.status, stage: cancelled.stage };
+        }),
+      },
+      {
+        name: 'canvas_set_motion_canvas_preview',
+        description: '通过可见视频编辑节点保存 Motion Canvas 流程动效预览。完整保留所选区间的原声。根据 canvas_get_video_analysis 的词或短语时间选择触发点。时间为源视频绝对毫秒，Agent 只提交内容和时间数据。',
+        inputSchema: schema({ nodeId: nodeIdProperty, slot: { type: 'string', enum: VIDEO_EDIT_VIDEO_PORTS },
+          transcriptJobId: { type: 'string', description: '用于核对转写时间与当前素材的已完成转写任务。' },
+          sourceInMs: { type: 'integer', minimum: 0 }, sourceOutMs: { type: 'integer', minimum: 1 },
+          title: { type: 'string', minLength: 1, maxLength: 42 },
+          cues: { type: 'array', minItems: 1, maxItems: MOTION_CANVAS_MAX_CUES, items: schema({
+            atMs: { type: 'integer', minimum: 0 }, label: { type: 'string', minLength: 1, maxLength: 24 },
+            detail: { type: 'string', minLength: 1, maxLength: 52 },
+          }, ['atMs', 'label', 'detail']) },
+        }, ['nodeId', 'slot', 'transcriptJobId', 'sourceInMs', 'sourceOutMs', 'title', 'cues']),
+        execute: respond(async ({ nodeId, transcriptJobId, ...plan }) => {
+          const preview = normalizeMotionCanvasPreview(plan);
+          const job = await readAnalysis(nodeId, transcriptJobId);
+          if (job.mode !== 'transcript' || job.status !== 'completed') throw new Error('请先完成该素材的语音转写。');
+          const { inputs } = analysisSource(nodeId);
+          const assetPath = inputs[preview.slot]?.assetPath;
+          if (!assetPath) throw new Error('请先将该端口的视频导入项目素材。');
+          if (latest.current.readOnly || job.inputs[preview.slot] !== assetPath) throw new Error('画布或素材已更换，请重新分析。');
+          const { durationMs, source } = job.result;
+          if (source?.audioOffset?.num !== 0) throw new Error('试验仅支持首帧与音轨同时开始的素材，请先导出一份已对齐的片段。');
+          if (!Number.isSafeInteger(durationMs) || preview.sourceOutMs > durationMs) throw new Error('动效预览结束时间超出源视频。');
+          const motionCanvasPreview = { ...preview, assetPath };
+          latest.current.actions.updateNode(nodeId, { motionCanvasPreview });
+          await waitFor(() => getNode(nodeId).data.motionCanvasPreview === motionCanvasPreview);
+          return { nodeId, cueCount: motionCanvasPreview.cues.length };
         }),
       },
       {

@@ -1,9 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Plus, Trash2, ArrowUp, ArrowDown, Scissors, Undo2, Redo2, ArrowDownToLine, Square } from 'lucide-react';
 import { normalizeVideoEditDocument, defaultVideoEditDocument, VIDEO_EDIT_VIDEO_PORTS, VIDEO_EDIT_PORTS, framesOf, timecode, ptsToSeconds } from './video-edit-document';
 import { probeVideoAsset, analyzeVideoInput } from './video-edit-runtime';
 import VideoPresentationEditor from './VideoPresentationEditor';
+import { normalizeMotionCanvasPreview } from './motion-canvas-pilot';
+
+const MotionCanvasPilot = lazy(() => import('./MotionCanvasPilot'));
 
 const FPS_CHOICES = [[{ num: 24, den: 1 }, '24'], [{ num: 25, den: 1 }, '25'], [{ num: 30000, den: 1001 }, '29.97'], [{ num: 30, den: 1 }, '30'], [{ num: 60, den: 1 }, '60']];
 const fpsKey = (fps) => `${fps.num}/${fps.den}`;
@@ -75,6 +78,13 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
   const frames = clips.map((item) => framesOf(item, fps));
   const total = frames.reduce((sum, value) => sum + (value ?? 0), 0);
   const presentation = draft.presentation || [];
+  const motionPreview = useMemo(() => {
+    if (!data.motionCanvasPreview) return null;
+    try { return normalizeMotionCanvasPreview(data.motionCanvasPreview); }
+    catch { return null; }
+  }, [data.motionCanvasPreview]);
+  const motionInput = motionPreview ? state.inputs[motionPreview.slot] : null;
+  const motionUrl = motionInput?.assetPath && motionInput.assetPath === data.motionCanvasPreview?.assetPath ? motionInput.url : null;
 
   const addWhole = (slot) => change((doc) => {
     const info = probes[slot];
@@ -186,12 +196,18 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
       <header><b>{data.title || '视频编辑'}</b><nav aria-label="视频编辑视图" className="video-edit-tabs">
         <button aria-pressed={view === 'timeline'} onClick={() => setView('timeline')}>剪辑</button>
         <button aria-pressed={view === 'presentation'} onClick={() => setView('presentation')}>演示轨{presentation.length > 0 && ` · ${presentation.length} 页`}</button>
+        <button aria-pressed={view === 'motion-canvas'} onClick={() => setView('motion-canvas')}>Motion Canvas</button>
         {state.resultUrl && <button aria-pressed={view === 'playback'} onClick={() => setView('playback')}>播放成片</button>}
       </nav><span />
         <button onClick={undo} title="撤销 (Ctrl+Z)" disabled={locked}><Undo2 size={14} /></button><button onClick={redo} title="重做 (Ctrl+Shift+Z)" disabled={locked}><Redo2 size={14} /></button>
         <button onClick={onClose} aria-label="关闭"><X size={16} /></button></header>
       {view === 'presentation' && <VideoPresentationEditor pages={presentation} fps={fps} total={total} locked={locked}
         onChange={(pages) => change((doc) => { doc.presentation = pages; })} />}
+      {view === 'motion-canvas' && (motionUrl ?
+        <Suspense fallback={<p className="motion-canvas-pilot-message" role="status">加载 Motion Canvas…</p>}>
+          <MotionCanvasPilot plan={motionPreview} url={motionUrl} />
+        </Suspense> :
+        <p className="motion-canvas-pilot-message">{motionPreview ? '预览的源素材已更换，请让 Agent 重新按旁白安排动效。' : '连接视频后，请让 Agent 按口播生成 Motion Canvas 同步预览。'}</p>)}
       {view === 'playback' && <main className="video-edit-playback">
         <video controls playsInline preload="metadata" src={state.resultUrl} />
         {data.editResultDocument !== JSON.stringify(data.editDocument) && <small>当前播放上次导出的成片。</small>}
@@ -300,7 +316,7 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
       <footer>
         <span>{running ? `${data.stage || '导出中'} ${Math.round((data.progress || 0) * 100)}%` : data.editResultAssetPath ? '已有导出结果；再次导出会替换节点内结果（旧文件保留在项目素材中）' : '尚未导出'}</span>
         {running ? <button disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoEdit(id); }}><Square size={12} />取消导出</button>
-          : <button className="video-edit-export" disabled={locked || Boolean(error)} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />导出 MP4</button>}
+          : view !== 'motion-canvas' && <button className="video-edit-export" disabled={locked || Boolean(error)} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />导出 MP4</button>}
       </footer>
     </section>
   </div>, document.body);

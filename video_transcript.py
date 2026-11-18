@@ -18,6 +18,9 @@ SAMPLE_RATE = 16000
 MAX_SEGMENTS = 4096
 MAX_SEGMENT_TEXT = 1024
 MAX_RESULT_BYTES = 1024 * 1024
+MAX_SEGMENT_WORDS = 192
+MAX_WORD_TEXT = 96
+MAX_SEGMENT_TIMING_BYTES = 12 * 1024
 MODEL_IDS = ("small", "base", "tiny")
 WORKER_PATH = Path(__file__).resolve()
 
@@ -124,8 +127,32 @@ def _source_segments(payload, offset_ms, duration_ms):
             raise TranscriptError("本地转写返回了无效的时间或文本。")
         first, last = max(0, start + offset_ms), min(duration_ms, end + offset_ms)
         if first < last and text.strip():
-            mapped.append({"startMs": first, "endMs": last, "text": text.strip()})
-    return {"language": language, "durationMs": duration_ms, "segments": sorted(mapped, key=lambda part: part["startMs"])}
+            item = {"startMs": first, "endMs": last, "text": text.strip()}
+            if words := _source_words(segment.get("words"), offset_ms, first, last):
+                item["words"] = words
+            mapped.append(item)
+    result = {"language": language, "durationMs": duration_ms,
+              "segments": sorted(mapped, key=lambda part: part["startMs"])}
+    if payload.get("wordTimingsTruncated") is True:
+        result["wordTimingsTruncated"] = True
+    return result
+
+
+def _source_words(words, offset_ms, first, last):
+    if not isinstance(words, list):
+        return []
+    mapped = []
+    for word in words[:MAX_SEGMENT_WORDS]:
+        if not isinstance(word, dict):
+            continue
+        start, end, text = word.get("startMs"), word.get("endMs"), word.get("text")
+        if (type(start) is not int or type(end) is not int or not 0 <= start < end
+                or not isinstance(text, str) or len(text) > MAX_WORD_TEXT):
+            continue
+        start, end = max(first, start + offset_ms), min(last, end + offset_ms)
+        if start < end and text.strip():
+            mapped.append({"startMs": start, "endMs": end, "text": text.strip()})
+    return sorted(mapped, key=lambda word: word["startMs"])
 
 
 def transcribe_video(runner, file, info, workdir, *, max_seconds):
@@ -149,6 +176,33 @@ def transcribe_video(runner, file, info, workdir, *, max_seconds):
     return _source_segments(payload, round(info["audioOffset"] * 1000), round(info["duration"] * 1000))
 
 
+def _json_bytes(value):
+    return json.dumps(value, ensure_ascii=False).encode("utf-8")
+
+
+def _worker_words(words):
+    timed = []
+    size = len(b'{"words": []}')
+    truncated = False
+    for word in words or ():
+        try:
+            start, end = round(word.start * 1000), round(word.end * 1000)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        text = word.word.strip()
+        if not text or not 0 <= start < end:
+            continue
+        if len(text) > MAX_WORD_TEXT:
+            truncated = True
+            continue
+        item = {"startMs": start, "endMs": end, "text": text}
+        size += len(_json_bytes(item)) + 2
+        if len(timed) >= MAX_SEGMENT_WORDS or size > MAX_SEGMENT_TIMING_BYTES:
+            return timed, True
+        timed.append(item)
+    return timed, truncated
+
+
 def _worker(model_dir, audio):
     try:
         from faster_whisper import WhisperModel
@@ -158,21 +212,50 @@ def _worker(model_dir, audio):
     try:
         model = WhisperModel(model_dir, device="cpu", compute_type="int8", local_files_only=True,
                              cpu_threads=min(8, os.cpu_count() or 1))
-        segments, info = model.transcribe(audio, vad_filter=True)
+        segments, info = model.transcribe(audio, vad_filter=True, word_timestamps=True)
         result = []
         size = 100
+        timings = []
+        timing_size = 0
+        timings_truncated = False
         for segment in segments:
             start, end = round(segment.start * 1000), round(segment.end * 1000)
             text = segment.text.strip()
             if not text or start >= end:
                 continue
             item = {"startMs": start, "endMs": end, "text": text}
-            size += len(json.dumps(item, ensure_ascii=False).encode("utf-8")) + 2
+            size += len(_json_bytes(item)) + 2
             if len(result) >= MAX_SEGMENTS or len(text) > MAX_SEGMENT_TEXT or size > MAX_RESULT_BYTES:
                 return 3
             result.append(item)
-        output = json.dumps({"language": info.language, "segments": result}, ensure_ascii=False)
-        sys.stdout.buffer.write(output.encode("utf-8"))
+
+            if timing_size > MAX_RESULT_BYTES:
+                continue
+            words, truncated = _worker_words(segment.words)
+            timings_truncated = timings_truncated or truncated
+            if not words:
+                continue
+            # Replacing the two outer braces with a comma and space adds
+            # exactly this many UTF-8 bytes to the enclosing segment.
+            added_size = len(_json_bytes({"words": words}))
+            timing_size += added_size
+            if timing_size > MAX_RESULT_BYTES:
+                timings_truncated = True
+                continue
+            timings.append((item, words, added_size))
+
+        # Keep all available segment text before allocating the remaining
+        # result budget to the earliest observed word timings.
+        for item, words, added_size in timings:
+            if size + added_size > MAX_RESULT_BYTES:
+                timings_truncated = True
+                break
+            item["words"] = words
+            size += added_size
+        output = {"language": info.language, "segments": result}
+        if timings_truncated:
+            output["wordTimingsTruncated"] = True
+        sys.stdout.buffer.write(_json_bytes(output))
         return 0
     except Exception:
         return 1

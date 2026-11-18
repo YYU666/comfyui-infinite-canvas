@@ -15,7 +15,7 @@ TOOLS = frozenset({"canvas_move_nodes", "canvas_retry_save", "canvas_get_state",
                    "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
                    "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node",
                    "canvas_start_video_analysis", "canvas_get_video_analysis", "canvas_cancel_video_analysis",
-                   "canvas_set_video_presentation"})
+                   "canvas_set_video_presentation", "canvas_set_motion_canvas_preview"})
 LAUNCHER_TOOLS = frozenset({"canvas_get_state", "canvas_create_project", "canvas_open_project"})
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}")
 # A page-bridge wait holds the single command slot (heartbeats still run). Cap it

@@ -54,7 +54,8 @@ async function fixture(readOnly = false, active = false) {
     }
     if (url.pathname === `/api/video-edit/jobs/${speechJobId}`) return json({ id: speechJobId, projectId: project.id, nodeId: 'edit', mode: 'transcript',
       inputs: { v1: sourceAsset }, status: 'completed', result: { language: 'zh', durationMs: 4000,
-        source: { frameCount: 96 }, segments: [{ startMs: 250, endMs: 1250, text: '先检查场景' }, { startMs: 1500, endMs: 2000, text: '预览并导出' }] } });
+        source: { frameCount: 96 }, segments: [{ startMs: 250, endMs: 1250, text: '先检查场景',
+          words: [{ startMs: 400, endMs: 800, text: '检查' }] }, { startMs: 1500, endMs: 2000, text: '预览并导出' }] } });
     if (url.pathname === `/api/video-edit/jobs/${cutJobId}`) return json({
       id: cutJobId, status: 'completed', result: {
         removedFrames: 48, frameCount: 96, cuts: [[8, 32], [64, 88]], document: defaultVideoEditDocument(),
@@ -108,6 +109,9 @@ try {
   const transcript = await f.call('canvas_get_video_analysis', { nodeId: 'edit', jobId: started.jobId, limit: 1 });
   assert.equal(transcript.result.segments[0].text, '先检查场景');
   assert.equal(transcript.result.nextOffset, 1);
+  assert.equal(transcript.result.segments[0].words, undefined);
+  const wordTimed = await f.call('canvas_get_video_analysis', { nodeId: 'edit', jobId: started.jobId, limit: 1, includeWords: true });
+  assert.deepEqual(wordTimed.result.segments[0].words, [{ startMs: 400, endMs: 800, text: '检查' }]);
   assert.equal((await f.call('canvas_get_video_analysis', { nodeId: 'source', jobId: started.jobId })).ok, false);
   await panel.getByRole('button', { name: '演示轨' }).click();
   await panel.getByRole('button', { name: '添加演示页' }).click();
