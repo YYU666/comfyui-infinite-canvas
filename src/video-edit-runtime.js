@@ -31,6 +31,24 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
   else signal?.addEventListener('abort', abort, { once: true });
 });
 
+export async function suggestVideoCuts(payload, signal) {
+  signal.throwIfAborted();
+  // Read the submission receipt even if the panel closes during the POST,
+  // so cancellation can still target the newly queued job.
+  const submitted = await request('/auto-cut', payload);
+  try {
+    for (;;) {
+      await sleep(500, signal);
+      const job = await getVideoEditJob(submitted.id, { signal });
+      if (ACTIVE.includes(job.status)) continue;
+      if (job.status === 'completed') return job.result;
+      throw new Error(job.error || job.stage || '自动剪辑分析失败。');
+    }
+  } finally {
+    if (signal.aborted) await cancelVideoEditJob(submitted.id, payload.projectId).catch(() => {});
+  }
+}
+
 /**
  * deps: { getProjectId, getNodes, getEdges, updateNode, saveCanvasMedia, persistProject, jobs (Map id->AbortController), onJobsChange }
  */

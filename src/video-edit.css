@@ -31,6 +31,9 @@
 .video-edit-panel h4 { margin: 4px 0; font-size: 12px; }
 .video-edit-input { display: grid; gap: 3px; padding: 8px; border: 1px solid var(--neo-line, #41434c); border-radius: 5px; }
 .video-edit-input small, .video-edit-panel small, .video-edit-inputs p { color: var(--neo-muted, #969ba9); font-size: 10px; line-height: 1.5; }
+.video-edit-cut-suggestion { display: grid; gap: 6px; }
+.video-edit-cut-suggestion p { margin: 0; }
+.video-edit-cut-ranges { display: grid; gap: 4px; max-height: 150px; overflow: auto; font-variant-numeric: tabular-nums; }
 .video-edit-panel label { display: grid; grid-template-columns: 82px 1fr; align-items: center; gap: 4px 8px; }
 .video-edit-panel label small { grid-column: 2; }
 .video-edit-panel label.check { display: flex; }

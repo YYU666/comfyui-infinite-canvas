@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { X, Plus, Trash2, ArrowUp, ArrowDown, Scissors, Undo2, Redo2, ArrowDownToLine, Square } from 'lucide-react';
 import { normalizeVideoEditDocument, defaultVideoEditDocument, VIDEO_EDIT_VIDEO_PORTS, VIDEO_EDIT_PORTS, framesOf, timecode, ptsToSeconds } from './video-edit-document';
-import { probeVideoAsset } from './video-edit-runtime';
+import { probeVideoAsset, suggestVideoCuts } from './video-edit-runtime';
 
 const FPS_CHOICES = [[{ num: 24, den: 1 }, '24'], [{ num: 25, den: 1 }, '25'], [{ num: 30000, den: 1001 }, '29.97'], [{ num: 30, den: 1 }, '30'], [{ num: 60, den: 1 }, '60']];
 const fpsKey = (fps) => `${fps.num}/${fps.den}`;
@@ -16,9 +16,17 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
   const [selected, setSelected] = useState(0);
   const [probes, setProbes] = useState({});
   const [splitAt, setSplitAt] = useState('');
+  const [cutMode, setCutMode] = useState('black');
+  const [analysisError, setAnalysisError] = useState('');
+  const [suggestion, setSuggestion] = useState(null);
+  const [skippedCuts, setSkippedCuts] = useState([]);
+  const [analyzing, setAnalyzing] = useState(false);
+  const analysis = useRef(null);
   const history = useRef({ past: [], future: [] });
   const running = ['running', 'queued'].includes(data.status) || state.busy;
-  const locked = running || actions.readOnly;
+  const locked = running || analyzing || actions.readOnly;
+
+  useEffect(() => () => analysis.current?.abort(), []);
 
   // Probe every connected input that already is a project asset (frame-exact info).
   useEffect(() => {
@@ -43,8 +51,8 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
     } catch (reason) { setError(reason.message); }
   }, [actions, id, data.editDocument, locked]);
   const change = (mutate) => { if (locked) return; const next = clone(draft); mutate(next); commit(next); };
-  const undo = () => { const previous = history.current.past.pop(); if (!previous) return; history.current.future.push(clone(draft)); commit(previous, { record: false }); };
-  const redo = () => { const next = history.current.future.pop(); if (!next) return; history.current.past.push(clone(draft)); commit(next, { record: false }); };
+  const undo = () => { if (locked) return; const previous = history.current.past.pop(); if (!previous) return; history.current.future.push(clone(draft)); commit(previous, { record: false }); };
+  const redo = () => { if (locked) return; const next = history.current.future.pop(); if (!next) return; history.current.past.push(clone(draft)); commit(next, { record: false }); };
 
   const clips = draft.clips || [];
   const clip = clips[selected];
@@ -74,8 +82,45 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
     item.sourceOutPts = at;
   });
   const safe = (fn) => (...args) => { try { fn(...args); } catch (reason) { setError(reason.message); } };
+  const analyzeCuts = async (slot, assetPath) => {
+    if (locked || analysis.current) return;
+    const controller = new AbortController();
+    analysis.current = controller;
+    setAnalyzing(true);
+    setSuggestion(null);
+    setSkippedCuts([]);
+    setAnalysisError('');
+    try {
+      const result = await suggestVideoCuts({ projectId: actions.projectId, nodeId: id, slot, assetPath, mode: cutMode }, controller.signal);
+      if (!controller.signal.aborted) setSuggestion({ ...result, slot, assetPath });
+    } catch (reason) {
+      if (!controller.signal.aborted) setAnalysisError(reason.message);
+    } finally {
+      analysis.current = null;
+      setAnalyzing(false);
+    }
+  };
+  const currentSuggestion = suggestion && state.inputs[suggestion.slot]?.assetPath === suggestion.assetPath ? suggestion : null;
+  const proposedCuts = currentSuggestion?.cuts?.filter((_, index) => !skippedCuts.includes(index)) || [];
+  const removedFrames = proposedCuts.reduce((sum, [first, last]) => sum + last - first, 0);
+  const applyCuts = () => {
+    if (!proposedCuts.length || locked) return;
+    const next = clone(currentSuggestion.document);
+    const template = next.clips[0];
+    let cursor = 0;
+    next.clips = [];
+    for (const [first, last] of [...proposedCuts, [currentSuggestion.frameCount, currentSuggestion.frameCount]]) {
+      if (cursor < first) next.clips.push({ ...template, id: `auto${next.clips.length + 1}`, sourceInPts: cursor, sourceOutPts: first });
+      cursor = last;
+    }
+    next.outputProfile.crf = draft.outputProfile?.crf ?? next.outputProfile.crf;
+    commit(next);
+    setSelected(0);
+    setSuggestion(null);
+  };
 
   // Keyboard is scoped to this panel: never reaches the canvas delete handler.
+  useEffect(() => { root.current?.focus(); }, []);
   useEffect(() => {
     const element = root.current;
     const onKey = (event) => {
@@ -86,7 +131,6 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
       else if (!typing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
     };
     element?.addEventListener('keydown', onKey);
-    element?.focus();
     return () => element?.removeEventListener('keydown', onKey);
   });
 
@@ -134,10 +178,38 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
               <b>{slot}</b><span>{state.inputs[slot].title}</span>
               <small>{!state.inputs[slot].assetPath ? '生成结果：导出时导入项目素材' : info?.error ? info.error : info ? `${info.width}×${info.height} · ${info.frameCount} 帧 · ${info.fps ? (info.fps.num / info.fps.den).toFixed(3) : '可变'} fps · ${info.hasAudio ? '有声' : '无声'}` : '探测中…'}</small>
               {slot !== 'a1' && <button disabled={locked || !info?.frameTimebase} onClick={safe(() => addWhole(slot))}><Plus size={12} />添加整段</button>}
+              {slot !== 'a1' && state.inputs[slot].assetPath && <button disabled={locked || !info?.frameTimebase || (cutMode === 'silence' && !info.hasAudio)} onClick={() => analyzeCuts(slot, state.inputs[slot].assetPath)}><Scissors size={12} />分析剪辑 {slot}</button>}
             </div>;
           })}
           {!Object.keys(state.inputs).length && <p>把视频素材连接到节点左侧 v1–v8 端口；a1 可连音频作为外挂原声。</p>}
           {Object.values(state.inputs).some((input) => !input.assetPath) && <button disabled={locked} onClick={() => actions.prepareVideoEdit(id).catch((reason) => setError(reason.message))}>导入生成结果到项目素材</button>}
+          {VIDEO_EDIT_VIDEO_PORTS.some((slot) => state.inputs[slot]) && <>
+            <h4>自动剪辑</h4>
+            <label>检测内容<select disabled={locked} value={cutMode} onChange={(event) => { setCutMode(event.target.value); setSuggestion(null); setAnalysisError(''); }}>
+              <option value="black">黑场</option><option value="silence">静音</option>
+            </select></label>
+            <small>{cutMode === 'black' ? '检测至少 1.2 秒的黑场，剪除时会同步剪掉对应原声。' : '检测至少 1.2 秒的静音，每侧保留约 0.2 秒。'}</small>
+            {analyzing && <div role="status">正在分析素材… <button onClick={() => analysis.current?.abort()}>取消分析</button></div>}
+            {analysisError && <p className="video-edit-error" role="alert">{analysisError}</p>}
+            {currentSuggestion && <div className="video-edit-cut-suggestion" aria-live="polite">
+              {currentSuggestion.document ? <>
+                <p>所选区间共 {ptsToSeconds(removedFrames, currentSuggestion.document.timelineTimebase).toFixed(1)} 秒。</p>
+                <div className="video-edit-cut-ranges">
+                  {currentSuggestion.cuts.map(([first, last], index) => (
+                    <label className="check" key={first}>
+                      <input type="checkbox" checked={!skippedCuts.includes(index)} disabled={locked} onChange={(event) => {
+                        const checked = event.target.checked;
+                        setSkippedCuts((items) => checked ? items.filter((item) => item !== index) : [...items, index]);
+                      }} />
+                      {timecode(first, currentSuggestion.document.outputProfile.fps)}～{timecode(last, currentSuggestion.document.outputProfile.fps)}
+                    </label>
+                  ))}
+                </div>
+                <small>应用后使用源帧率和片段原声，可撤销。</small>
+                <button disabled={locked || !proposedCuts.length} onClick={applyCuts}>用建议替换时间线</button>
+              </> : <p>没有符合条件的区间。</p>}
+            </div>}
+          </>}
         </aside>
         <main className="video-edit-preview">
           {source?.url ? <video ref={videoRef} src={source.url} controls preload="metadata" playsInline onTimeUpdate={(event) => {
@@ -187,7 +259,7 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
       <footer>
         <span>{running ? `${data.stage || '导出中'} ${Math.round((data.progress || 0) * 100)}%` : data.editResultAssetPath ? '已有导出结果；再次导出会替换节点内结果（旧文件保留在项目素材中）' : '尚未导出'}</span>
         {running ? <button disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoEdit(id); }}><Square size={12} />取消导出</button>
-          : <button className="video-edit-export" disabled={actions.readOnly || Boolean(error)} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />导出 MP4</button>}
+          : <button className="video-edit-export" disabled={locked || Boolean(error)} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />导出 MP4</button>}
       </footer>
     </section>
   </div>, document.body);
