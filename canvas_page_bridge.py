@@ -13,7 +13,9 @@ from project_store import StoreError
 TOOLS = frozenset({"canvas_move_nodes", "canvas_retry_save", "canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
                    "canvas_generate_node", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset",
                    "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
-                   "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node"})
+                   "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node",
+                   "canvas_start_video_analysis", "canvas_get_video_analysis", "canvas_cancel_video_analysis",
+                   "canvas_set_video_presentation"})
 LAUNCHER_TOOLS = frozenset({"canvas_get_state", "canvas_create_project", "canvas_open_project"})
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}")
 # A page-bridge wait holds the single command slot (heartbeats still run). Cap it
@@ -100,7 +102,12 @@ class CanvasPageBridge:
                 args = self._bounded_wait_args(args)
             identity = {"sessionId": session_id, "projectId": project_id, "tool": tool, "args": args}
             encoded = json.dumps(identity, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
-            if len(encoded) > 32768:
+            settings = args.get("settings")
+            edit_document = settings.get("editDocument") if isinstance(settings, dict) else None
+            has_presentation = tool == "canvas_set_video_presentation" or (
+                tool == "canvas_update_node" and isinstance(edit_document, dict) and "presentation" in edit_document
+            )
+            if len(encoded) > (128 * 1024 if has_presentation else 32 * 1024):
                 raise StoreError("BAD_REQUEST", "画布命令过大。")
             fingerprint = hashlib.sha256(encoded).hexdigest()
             existing = self.commands.get(op_id)

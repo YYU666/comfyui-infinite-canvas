@@ -34,6 +34,27 @@
 .video-edit-cut-suggestion { display: grid; gap: 6px; }
 .video-edit-cut-suggestion p { margin: 0; }
 .video-edit-cut-ranges { display: grid; gap: 4px; max-height: 150px; overflow: auto; font-variant-numeric: tabular-nums; }
+.video-edit-transcript { max-height: 220px; overflow: auto; padding: 0; margin: 0; list-style: none; }
+.video-edit-transcript li { padding: 5px 0; border-top: 1px solid var(--neo-line, #41434c); line-height: 1.45; overflow-wrap: anywhere; }
+.video-edit-transcript time { color: var(--neo-muted, #969ba9); font-variant-numeric: tabular-nums; }
+.video-edit-tabs { display: flex; gap: 5px; flex-wrap: wrap; }
+.video-edit-tabs button[aria-pressed=true], .video-presentation-choice[aria-pressed=true] { background: #2f3650; border-color: #8395dc; }
+.video-presentation-choice { flex-direction: column; align-items: flex-start !important; text-align: left; min-width: 0; overflow-wrap: anywhere; }
+.video-presentation-preview { display: grid; align-content: start; gap: 10px; }
+.video-presentation-stage { position: relative; aspect-ratio: 16/9; background: #0c1019; overflow: auto; container-type: inline-size; }
+.video-presentation-stage > span { position: absolute; inset: 0 42% 0 0; display: grid; place-items: center; color: #8792a6; }
+.video-presentation-stage article { position: relative; min-height: 100%; padding: 9cqw 7cqw 3cqw; background: #101a2b; color: #f3f7ff; overflow-wrap: anywhere; border-top: 3px solid #54d5bd; }
+.video-presentation-stage.side article { margin-left: 58%; padding: 6cqw 3cqw 2cqw; }
+.video-presentation-stage strong { font-size: clamp(12px, 4.4cqw, 30px); }
+.video-presentation-stage ul { color: #c7d5e8; padding-inline-start: 1.2em; font-size: clamp(9px, 2.8cqw, 20px); }
+.video-presentation-stage li + li { margin-top: .45em; }
+.video-presentation-columns input:not([type=number]), .video-presentation-columns textarea { min-width: 0; width: 100%; background: var(--neo-soft, #17181d); color: inherit; border: 1px solid var(--neo-line, #41434c); border-radius: 4px; padding: 6px; resize: vertical; font: inherit; }
+.video-edit-playback { flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; padding: 12px; gap: 8px; }
+.video-edit-playback video { width: 100%; height: 100%; object-fit: contain; background: #111; }
+@media (max-width: 1000px) {
+  .video-presentation-columns { grid-template-columns: minmax(105px, 1fr) minmax(135px, 2fr) minmax(145px, 1.35fr); }
+  .video-presentation-columns label { grid-template-columns: 1fr; }
+}
 .video-edit-panel label { display: grid; grid-template-columns: 82px 1fr; align-items: center; gap: 4px 8px; }
 .video-edit-panel label small { grid-column: 2; }
 .video-edit-panel label.check { display: flex; }

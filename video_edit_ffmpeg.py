@@ -7,6 +7,7 @@ Filter strings are assembled here from validated integers only.
 from __future__ import annotations
 
 import os
+import math
 import shutil
 import subprocess
 import threading
@@ -116,6 +117,15 @@ def _tb(value):
     return Fraction(int(num), int(den))
 
 
+def _audio_bounds(stream, frames):
+    timebase = _tb(stream["tb"])
+    sample_rate = int(stream.get("sample_rate", "0") or 0) or AUDIO_RATE
+    start = min(pts for pts, _, _ in frames) * timebase
+    end = max(pts * timebase + (duration * timebase if duration > 0 else Fraction(size // (2 * AUDIO_CHANNELS), sample_rate))
+              for pts, duration, size in frames)
+    return start, end
+
+
 def probe(runner, path, *, max_read_seconds=None):
     """Decode once and return exact frame times (relative to the first frame)."""
     read_limit = ["-t", str(max_read_seconds)] if max_read_seconds is not None else []
@@ -128,9 +138,8 @@ def probe(runner, path, *, max_read_seconds=None):
     if video is None or not rows.get(video):
         if audio is not None and rows.get(audio):
             atb = _tb(streams[audio]["tb"])
-            rate = int(streams[audio].get("sample_rate", "0") or 0) or AUDIO_RATE
-            samples = sum(row[2] for row in rows[audio]) // (2 * AUDIO_CHANNELS)
-            duration = Fraction(samples, rate)
+            start, end = _audio_bounds(streams[audio], rows[audio])
+            duration = end - start
             return {"width": 0, "height": 0, "frameCount": 0, "frameTimes": [], "duration": duration,
                     "timebase": atb, "frameTimebase": None, "audioOffset": Fraction(0), "audioDuration": duration}
         raise EditDocumentError("素材没有可解码的视频帧。")
@@ -146,12 +155,9 @@ def probe(runner, path, *, max_read_seconds=None):
     result = {"width": width, "height": height, "frameCount": len(times), "frameTimes": times, "duration": duration,
               "timebase": vtb, "frameTimebase": frame_timebase, "audioOffset": None, "audioDuration": None}
     if audio is not None and rows.get(audio):
-        atb = _tb(streams[audio]["tb"])
-        rate = int(streams[audio].get("sample_rate", "0") or 0) or AUDIO_RATE
-        start = min(row[0] for row in rows[audio]) * atb
-        samples = sum(row[2] for row in rows[audio]) // (2 * AUDIO_CHANNELS)
+        start, end = _audio_bounds(streams[audio], rows[audio])
         result["audioOffset"] = start - first
-        result["audioDuration"] = result["audioOffset"] + Fraction(samples, rate)
+        result["audioDuration"] = end - first
     return result
 
 
@@ -239,8 +245,14 @@ def _segment_frames(runner, path, segment, width, height, frame_bytes, workdir):
         spool.unlink(missing_ok=True)
 
 
-def _decode_audio(runner, path, target):
-    runner.run(["-i", str(path), "-map", "0:a:0", "-vn", "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_RATE), "-f", "f32le", str(target)])
+def _decode_audio(runner, path, target, last_sample):
+    # Keep internal timestamp gaps. The caller handles the first audio frame's
+    # offset from video; decoding and speech recognition use the same time origin.
+    duration_us = math.ceil(Fraction(last_sample * 1_000_000, AUDIO_RATE))
+    seconds, micros = divmod(duration_us, 1_000_000)
+    runner.run(["-i", str(path), "-map", "0:a:0", "-vn",
+                "-af", f"asetpts=PTS-STARTPTS,aresample={AUDIO_RATE}:async=1:first_pts=0",
+                "-ac", str(AUDIO_CHANNELS), "-t", f"{seconds}.{micros:06d}", "-f", "f32le", str(target)])
 
 
 def build_audio(runner, plan, files, probes, workdir):
@@ -249,11 +261,22 @@ def build_audio(runner, plan, files, probes, workdir):
     total = plan["sampleBoundary"](plan["totalFrames"])
     output = np.zeros((total, AUDIO_CHANNELS), dtype=np.float32)
     decoded = {}
+    if external := plan["external"]:
+        source_ends = {external["slot"]: external["start"] + Fraction(total, AUDIO_RATE)}
+    else:
+        source_ends = {}
+        for segment in plan["segments"]:
+            slot = segment["slot"]
+            end = segment["sourceStart"] + segment["sourceDuration"]
+            source_ends[slot] = max(source_ends.get(slot, end), end)
 
     def source(slot):
         if slot not in decoded:
             target = Path(workdir) / f"audio-{slot}.f32"
-            _decode_audio(runner, files[slot], target)
+            # Only read through the last requested sample. Two samples cover
+            # independent rounding of the source and destination boundaries.
+            last = math.ceil((source_ends[slot] - probes[slot]["audioOffset"]) * AUDIO_RATE) + 2
+            _decode_audio(runner, files[slot], target, last)
             decoded[slot] = np.fromfile(target, dtype=np.float32).reshape(-1, AUDIO_CHANNELS)
         return decoded[slot]
 
@@ -262,8 +285,10 @@ def build_audio(runner, plan, files, probes, workdir):
         offset = probes[slot]["audioOffset"]
         if offset is None or length <= 0:
             return samples
-        data = source(slot)
         begin = round((start_time - offset) * AUDIO_RATE)
+        if begin + length <= 0:
+            return samples
+        data = source(slot)
         low, high = max(begin, 0), min(begin + length, len(data))
         if high > low:
             samples[low - begin:high - begin] = data[low:high]
@@ -292,6 +317,11 @@ def build_audio(runner, plan, files, probes, workdir):
 def render(runner, document, plan, files, probes, target, workdir, progress=lambda value, stage: None):
     width, height, fps = plan["width"], plan["height"], plan["fps"]
     frame_bytes = width * height * 3 // 2
+    composite = None
+    if pages := document.get("presentation"):
+        from video_presentation import PresentationRenderer
+
+        composite = PresentationRenderer(pages, width, height, fps).frame
     audio_file = None
     if plan["audio"] != "none":
         progress(0.02, "正在装配原声")
@@ -316,14 +346,14 @@ def render(runner, document, plan, files, probes, target, workdir, progress=lamb
         for segment in plan["segments"]:
             last = None
             for chunk in _segment_frames(runner, files[segment["slot"]], segment, width, height, frame_bytes, workdir):
-                encoder.stdin.write(chunk)
+                encoder.stdin.write(composite(written, chunk) if composite else chunk)
                 last = chunk
                 written += 1
                 if written % 12 == 0:
                     progress(0.05 + 0.9 * written / plan["totalFrames"], "正在逐帧导出")
             for _ in range(segment["padFrames"]):
                 runner.check()
-                encoder.stdin.write(last)
+                encoder.stdin.write(composite(written, last) if composite else last)
                 written += 1
         encoder.stdin.close()
         encoder.wait()

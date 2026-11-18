@@ -24,8 +24,11 @@ MAX_CLIPS = 64
 MAX_PAD = 2000
 MAX_PTS = 2 ** 53 - 1
 MAX_OUTPUT_FRAMES = 60 * 60 * 120  # one hour at 120 fps
+MAX_PRESENTATION_PAGES = 48
 AUDIO_RATE = 48000
 CLIP_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+INVALID_PAGE_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff]")
+TEXT_EDGE_SPACES = " \t\n\r\v\f\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 DEFAULT_PROFILE = {"fps": {"num": 24, "den": 1}, "audio": "clips", "videoCodec": "h264", "audioCodec": "aac", "crf": 14}
 
 
@@ -88,9 +91,59 @@ def _range(value, path):
     return start, end
 
 
+def _presentation_text(value, path, maximum):
+    if not isinstance(value, str) or INVALID_PAGE_TEXT.search(value):
+        _fail(f"{path} 必须是 1–{maximum} 个有效字符。")
+    value = value.strip(TEXT_EDGE_SPACES)
+    if not value or len(value) > maximum:
+        _fail(f"{path} 必须是 1–{maximum} 个有效字符。")
+    return value
+
+
+def _normalize_presentation(value):
+    if not isinstance(value, list) or len(value) > MAX_PRESENTATION_PAGES:
+        _fail(f"presentation 必须是最多 {MAX_PRESENTATION_PAGES} 页的数组。")
+    pages, seen, previous_end = [], set(), 0
+    fields = ("id", "startFrame", "endFrame", "title", "bullets", "layout", "motion")
+    for index, page in enumerate(value):
+        path = f"presentation[{index}]"
+        _keys(page, fields, path, fields)
+        page_id = page["id"]
+        if not isinstance(page_id, str) or not CLIP_ID.fullmatch(page_id) or page_id in seen:
+            _fail(f"{path}.id 必须是唯一的 1–64 位字母数字标识。")
+        seen.add(page_id)
+        start = _int(page["startFrame"], f"{path}.startFrame", maximum=MAX_OUTPUT_FRAMES - 1)
+        end = _int(page["endFrame"], f"{path}.endFrame", 1, MAX_OUTPUT_FRAMES)
+        if end <= start:
+            _fail(f"{path}.endFrame 必须大于 startFrame。")
+        if start < previous_end:
+            _fail(f"{path} 必须按成片帧顺序排列，演示页不能重叠。")
+        previous_end = end
+        bullets = page["bullets"]
+        if not isinstance(bullets, list) or len(bullets) > 4:
+            _fail(f"{path}.bullets 必须是最多 4 条的数组。")
+        if page["layout"] not in ("fullscreen", "side"):
+            _fail(f"{path}.layout 必须是 fullscreen 或 side。")
+        if page["motion"] not in ("none", "fade", "reveal"):
+            _fail(f"{path}.motion 必须是 none、fade 或 reveal。")
+        pages.append({
+            "id": page_id, "startFrame": start, "endFrame": end,
+            "title": _presentation_text(page["title"], f"{path}.title", 80),
+            "bullets": [_presentation_text(bullet, f"{path}.bullets[{i}]", 96)
+                        for i, bullet in enumerate(bullets)],
+            "layout": page["layout"], "motion": page["motion"],
+        })
+    return pages
+
+
+def _check_presentation_bounds(pages, total):
+    if pages and pages[-1]["endFrame"] > total:
+        _fail(f"演示页出点超出成片的 {total} 帧，请调整演示页时间。")
+
+
 def normalize_document(document):
     """Validate an untrusted document and return a normalized copy (defaults filled)."""
-    _keys(document, ("schemaVersion", "timelineTimebase", "outputProfile", "clips"), "editDocument", ("schemaVersion", "clips"))
+    _keys(document, ("schemaVersion", "timelineTimebase", "outputProfile", "clips", "presentation"), "editDocument", ("schemaVersion", "clips"))
     if document["schemaVersion"] != SCHEMA_VERSION or type(document["schemaVersion"]) is not int:
         _fail("editDocument.schemaVersion 必须为 1。")
     profile_in = document.get("outputProfile", {})
@@ -155,7 +208,18 @@ def normalize_document(document):
             _fail(f"{path}.gain 必须是 0–1 的线性音量（1 为原音量）。")
         item["gain"] = gain
         clips.append(item)
-    return {"schemaVersion": SCHEMA_VERSION, "timelineTimebase": timebase, "outputProfile": profile, "clips": clips}
+    normalized = {"schemaVersion": SCHEMA_VERSION, "timelineTimebase": timebase, "outputProfile": profile, "clips": clips}
+    pages = _normalize_presentation(document.get("presentation", []))
+    if pages:
+        if all("timebase" in clip for clip in clips):
+            total = 0
+            for clip in clips:
+                source_timebase = as_fraction(clip["timebase"])
+                first, last = _grid_range(clip["sourceInPts"] * source_timebase, clip["sourceOutPts"] * source_timebase, fps)
+                total += last - first + clip["pad"]["count"]
+            _check_presentation_bounds(pages, total)
+        normalized["presentation"] = pages
+    return normalized
 
 
 def used_slots(document):
@@ -240,6 +304,7 @@ def plan(document, probes):
         total += count + padding
     if total > MAX_OUTPUT_FRAMES:
         _fail("成片过长，超过 E1 上限。")
+    _check_presentation_bounds(document.get("presentation", []), total)
     audio = profile["audio"]
     external = None
     if audio == "external":

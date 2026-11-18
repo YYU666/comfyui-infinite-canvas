@@ -8,6 +8,8 @@ export const VIDEO_EDIT_VIDEO_PORTS = ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7',
 export const VIDEO_EDIT_PORTS = [...VIDEO_EDIT_VIDEO_PORTS, 'a1'];
 export const VIDEO_EDIT_MAX_CLIPS = 64;
 export const VIDEO_EDIT_MAX_PAD = 2000;
+export const VIDEO_PRESENTATION_MAX_PAGES = 48;
+const MAX_OUTPUT_FRAMES = 60 * 60 * 120;
 const MAX_PTS = Number.MAX_SAFE_INTEGER;
 const CLIP_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const DEFAULT_PROFILE = { fps: { num: 24, den: 1 }, audio: 'clips', videoCodec: 'h264', audioCodec: 'aac', crf: 14 };
@@ -44,8 +46,36 @@ function range(value, path) {
   return [start, end];
 }
 
+function pageText(value, path, limit) {
+  if (typeof value !== 'string' || !value.trim() || [...value.trim()].length > limit || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\p{Surrogate}]/u.test(value)) {
+    fail(`${path} 须为 1–${limit} 字的普通文本。`);
+  }
+  return value.trim();
+}
+
+export function normalizeVideoPresentation(pages) {
+  if (!Array.isArray(pages) || pages.length > VIDEO_PRESENTATION_MAX_PAGES) fail('演示轨最多 48 页。');
+  const seen = new Set();
+  let previousEnd = 0;
+  return pages.map((page, index) => {
+    const path = `presentation[${index}]`;
+    const fields = ['id', 'startFrame', 'endFrame', 'title', 'bullets', 'layout', 'motion'];
+    keys(page, fields, path, fields);
+    if (typeof page.id !== 'string' || !CLIP_ID.test(page.id) || seen.has(page.id)) fail(`${path}.id 必须是唯一的有效标识。`);
+    seen.add(page.id);
+    const startFrame = int(page.startFrame, `${path}.startFrame`, previousEnd, MAX_OUTPUT_FRAMES - 1);
+    const endFrame = int(page.endFrame, `${path}.endFrame`, startFrame + 1, MAX_OUTPUT_FRAMES);
+    previousEnd = endFrame;
+    if (!Array.isArray(page.bullets) || page.bullets.length > 4) fail(`${path}.bullets 最多 4 项。`);
+    if (!['fullscreen', 'side'].includes(page.layout) || !['none', 'fade', 'reveal'].includes(page.motion)) fail(`${path} 含未知版式或动画。`);
+    const title = pageText(page.title, `${path}.title`, 80);
+    const bullets = page.bullets.map((bullet, i) => pageText(bullet, `${path}.bullets[${i}]`, 96));
+    return { id: page.id, startFrame, endFrame, title, bullets, layout: page.layout, motion: page.motion };
+  });
+}
+
 export function normalizeVideoEditDocument(document) {
-  keys(document, ['schemaVersion', 'timelineTimebase', 'outputProfile', 'clips'], 'editDocument', ['schemaVersion', 'clips']);
+  keys(document, ['schemaVersion', 'timelineTimebase', 'outputProfile', 'clips', 'presentation'], 'editDocument', ['schemaVersion', 'clips']);
   if (document.schemaVersion !== VIDEO_EDIT_SCHEMA_VERSION) fail('editDocument.schemaVersion 必须为 1。');
   const supplied = document.outputProfile ?? {};
   keys(supplied, ['fps', 'width', 'height', 'audio', 'audioFrom', 'videoCodec', 'audioCodec', 'crf'], 'outputProfile');
@@ -96,7 +126,15 @@ export function normalizeVideoEditDocument(document) {
     item.gain = gain;
     return item;
   });
-  return { schemaVersion: VIDEO_EDIT_SCHEMA_VERSION, timelineTimebase: timebase, outputProfile: profile, clips };
+  const presentation = 'presentation' in document ? normalizeVideoPresentation(document.presentation) : [];
+  if (presentation.length) {
+    const lengths = clips.map((clip) => framesOf(clip, profile.fps));
+    if (lengths.every(Number.isSafeInteger) && presentation.at(-1).endFrame > lengths.reduce((sum, length) => sum + length, 0)) {
+      fail('演示页结束帧超出成片，请调整演示页时间。');
+    }
+  }
+  return { schemaVersion: VIDEO_EDIT_SCHEMA_VERSION, timelineTimebase: timebase, outputProfile: profile, clips,
+    ...(presentation.length ? { presentation } : {}) };
 }
 
 export function defaultVideoEditDocument() {
@@ -115,10 +153,14 @@ export function usedVideoEditSlots(document) {
 // ---- time helpers (display only; never the source of truth)
 export function ptsToSeconds(pts, timebase) { return (pts * timebase.num) / timebase.den; }
 export function framesOf(clip, fps) {
-  // Mirrors the Python grid: ceil(out*fps) - ceil(in*fps) when the clip has a timebase.
   if (!clip.timebase) return null;
-  const at = (pts) => Math.ceil((pts * clip.timebase.num * fps.num) / (clip.timebase.den * fps.den) - 1e-9);
-  return at(clip.sourceOutPts) - at(clip.sourceInPts) + (clip.pad?.mode === 'last_frame' ? clip.pad.count : 0);
+  const values = [clip.sourceInPts, clip.sourceOutPts, clip.timebase.num, clip.timebase.den, fps.num, fps.den];
+  if (!values.every(Number.isSafeInteger) || clip.sourceInPts < 0 || clip.sourceOutPts < 0 || clip.timebase.den <= 0 || fps.den <= 0) return null;
+  // Output intervals use exact ceiling on the rational grid, as in Python.
+  const scale = BigInt(clip.timebase.num) * BigInt(fps.num);
+  const divisor = BigInt(clip.timebase.den) * BigInt(fps.den);
+  const at = (pts) => (BigInt(pts) * scale + divisor - 1n) / divisor;
+  return Number(at(clip.sourceOutPts) - at(clip.sourceInPts)) + (clip.pad?.mode === 'last_frame' ? clip.pad.count : 0);
 }
 export function timecode(frames, fps) {
   const rate = fps.num / fps.den, whole = Math.round(rate);

@@ -22,6 +22,7 @@ from project_store import StoreError
 from video_auto_cut import MAX_SOURCE_SECONDS, suggest_cuts
 from video_edit_document import EditDocumentError, INPUT_SLOTS, VIDEO_SLOTS, normalize_document, plan, used_slots
 from video_edit_ffmpeg import Cancelled, FFmpegError, Runner, probe, public_probe, render
+from video_transcript import TranscriptError, transcribe_video
 
 JOB_ID = re.compile(r"ved_[a-f0-9]{32}")
 PROJECT_ID = re.compile(r"prj_[A-Za-z0-9_-]{1,96}")
@@ -131,8 +132,8 @@ class VideoEditJobs:
             raise _bad("自动剪辑需要 projectId、nodeId、slot、assetPath 与 mode。")
         project_id, node_id = self._identity(payload)
         slot, mode = payload["slot"], payload["mode"]
-        if slot not in VIDEO_SLOTS or mode not in ("black", "silence"):
-            raise _bad("自动剪辑只支持视频端口上的黑场或静音检测。")
+        if slot not in VIDEO_SLOTS or mode not in ("black", "silence", "transcript"):
+            raise _bad("视频分析只支持视频端口上的黑场检测、静音检测或语音转写。")
         with self.lock:
             file = self._asset(project_id, payload["assetPath"])
             return self._submit(project_id, node_id, mode=mode, inputs={slot: payload["assetPath"]},
@@ -189,7 +190,7 @@ class VideoEditJobs:
                 job["stage"] = "正在取消"
                 runner = self.runners.get(job_id)
                 if runner:
-                    runner.cancel()  # only this job's FFmpeg processes
+                    runner.cancel()  # only this job's media processes
         return self.get(job_id)
 
     def commit(self, job_id, payload):
@@ -271,8 +272,13 @@ class VideoEditJobs:
             if mode:
                 slot, file = next(iter(files.items()))
                 info = probe(runner, file, max_read_seconds=MAX_SOURCE_SECONDS + 1)
-                self._progress(job)(0.5, "正在识别剪辑区间")
-                result = suggest_cuts(runner, file, info, slot, mode)
+                if mode == "transcript":
+                    self._progress(job)(0.25, "正在转写原声")
+                    result = transcribe_video(runner, file, info, workdir, max_seconds=MAX_SOURCE_SECONDS)
+                    result["source"] = public_probe(info)
+                else:
+                    self._progress(job)(0.5, "正在识别剪辑区间")
+                    result = suggest_cuts(runner, file, info, slot, mode)
                 with self.lock:
                     runner.check()
                     job.update(status="completed", progress=1.0, stage="分析完成", result=result)
@@ -297,7 +303,7 @@ class VideoEditJobs:
         except Cancelled:
             with self.lock:
                 job.update(status="cancelled", stage="已取消")
-        except (EditDocumentError, FFmpegError) as error:
+        except (EditDocumentError, FFmpegError, TranscriptError) as error:
             with self.lock:
                 job.update(status="failed", stage=failure_stage, error=str(error)[:600])
         except Exception as error:  # keep the worker alive; never leak paths

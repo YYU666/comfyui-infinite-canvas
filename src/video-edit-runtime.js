@@ -5,10 +5,10 @@ import { normalizeVideoEditDocument, usedVideoEditSlots, videoEditInputs, isVide
 
 const ACTIVE = ['queued', 'running'];
 
-async function request(path, body, { signal } = {}) {
+async function request(path, body, { signal, keepalive = false } = {}) {
   const response = await fetch(`/api/video-edit${path}`, body === undefined
     ? { credentials: 'same-origin', cache: 'no-store', signal }
-    : { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
+    : { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal, keepalive });
   const value = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(value.message || `视频编辑服务不可用（HTTP ${response.status}）。若刚更新代码，需要重启工作台后端。`);
@@ -21,7 +21,7 @@ async function request(path, body, { signal } = {}) {
 export const probeVideoAsset = (projectId, assetPath, options) => request('/probe', { projectId, assetPath }, options);
 export const submitVideoEditJob = (payload) => request('/jobs', payload);
 export const getVideoEditJob = (jobId, options) => request(`/jobs/${encodeURIComponent(jobId)}`, undefined, options);
-export const cancelVideoEditJob = (jobId, projectId) => request(`/jobs/${encodeURIComponent(jobId)}/cancel`, { projectId });
+export const cancelVideoEditJob = (jobId, projectId, options) => request(`/jobs/${encodeURIComponent(jobId)}/cancel`, { projectId }, options);
 export const commitVideoEditJob = (jobId, projectId, revision) => request(`/jobs/${encodeURIComponent(jobId)}/commit`, { projectId, revision });
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
@@ -31,18 +31,20 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
   else signal?.addEventListener('abort', abort, { once: true });
 });
 
-export async function suggestVideoCuts(payload, signal) {
+export const submitVideoAnalysis = (payload) => request('/auto-cut', payload);
+
+export async function analyzeVideoInput(payload, signal) {
   signal.throwIfAborted();
   // Read the submission receipt even if the panel closes during the POST,
   // so cancellation can still target the newly queued job.
-  const submitted = await request('/auto-cut', payload);
+  const submitted = await submitVideoAnalysis(payload);
   try {
     for (;;) {
       await sleep(500, signal);
       const job = await getVideoEditJob(submitted.id, { signal });
       if (ACTIVE.includes(job.status)) continue;
       if (job.status === 'completed') return job.result;
-      throw new Error(job.error || job.stage || '自动剪辑分析失败。');
+      throw new Error(job.error || job.stage || '素材分析失败。');
     }
   } finally {
     if (signal.aborted) await cancelVideoEditJob(submitted.id, payload.projectId).catch(() => {});

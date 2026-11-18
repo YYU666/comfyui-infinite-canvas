@@ -16,6 +16,7 @@ async function fixture(readOnly = false, active = false) {
   const queued = [], commits = [], cancels = [], saves = [];
   let hold = active;
   const cutJobId = `ved_${'a'.repeat(32)}`;
+  const speechJobId = `ved_${'b'.repeat(32)}`;
   let project = { id: 'prj_editor_fixture', name: 'Synthetic editor', revision: 1, readOnly, shots: [], canvas: {
     viewport: { x: 10, y: 20, zoom: 0.9 },
     nodes: [
@@ -46,9 +47,14 @@ async function fixture(readOnly = false, active = false) {
     if (url.pathname === '/api/queue') return json({ jobs: [] });
     if (url.pathname === '/api/video-edit/probe') return json({ frameCount: 96, frameTimebase: { num: 1, den: 24 }, fps: { num: 24, den: 1 }, width: 128, height: 72, hasAudio: true });
     if (url.pathname === '/api/video-edit/auto-cut') {
-      assert.deepEqual(request.postDataJSON(), { projectId: project.id, nodeId: 'edit', slot: 'v1', assetPath: sourceAsset, mode: 'black' });
-      return json({ id: cutJobId, status: 'queued' }, 201);
+      const payload = request.postDataJSON();
+      assert.ok(['transcript', 'black'].includes(payload.mode));
+      assert.deepEqual(payload, { projectId: project.id, nodeId: 'edit', slot: 'v1', assetPath: sourceAsset, mode: payload.mode });
+      return json({ id: payload.mode === 'transcript' ? speechJobId : cutJobId, status: 'queued' }, 201);
     }
+    if (url.pathname === `/api/video-edit/jobs/${speechJobId}`) return json({ id: speechJobId, projectId: project.id, nodeId: 'edit', mode: 'transcript',
+      inputs: { v1: sourceAsset }, status: 'completed', result: { language: 'zh', durationMs: 4000,
+        source: { frameCount: 96 }, segments: [{ startMs: 250, endMs: 1250, text: '先检查场景' }, { startMs: 1500, endMs: 2000, text: '预览并导出' }] } });
     if (url.pathname === `/api/video-edit/jobs/${cutJobId}`) return json({
       id: cutJobId, status: 'completed', result: {
         removedFrames: 48, frameCount: 96, cuts: [[8, 32], [64, 88]], document: defaultVideoEditDocument(),
@@ -97,6 +103,23 @@ try {
   await panel.getByRole('button', { name: '撤销 (Ctrl+Z)' }).click();
   edited = (await f.state()).nodes.find(n => n.id === 'edit').editDocument;
   assert.deepEqual(edited, defaultVideoEditDocument());
+  const started = await f.call('canvas_start_video_analysis', { nodeId: 'edit', slot: 'v1', mode: 'transcript' });
+  assert.equal(started.jobId, `ved_${'b'.repeat(32)}`);
+  const transcript = await f.call('canvas_get_video_analysis', { nodeId: 'edit', jobId: started.jobId, limit: 1 });
+  assert.equal(transcript.result.segments[0].text, '先检查场景');
+  assert.equal(transcript.result.nextOffset, 1);
+  assert.equal((await f.call('canvas_get_video_analysis', { nodeId: 'source', jobId: started.jobId })).ok, false);
+  await panel.getByRole('button', { name: '演示轨' }).click();
+  await panel.getByRole('button', { name: '添加演示页' }).click();
+  await panel.getByLabel('标题', { exact: true }).fill('检查场景');
+  await panel.getByLabel('要点', { exact: true }).fill('对准视口\n查看灯光');
+  await panel.getByLabel('版式', { exact: true }).selectOption('side');
+  await panel.getByLabel('动画', { exact: true }).selectOption('fade');
+  edited = (await f.state()).nodes.find(n => n.id === 'edit').editDocument;
+  assert.deepEqual(edited.presentation, [{ id: 'page1', startFrame: 0, endFrame: 24, title: '检查场景',
+    bullets: ['对准视口', '查看灯光'], layout: 'side', motion: 'fade' }]);
+  assert.equal((await f.call('canvas_set_video_presentation', { nodeId: 'edit', pages: [] })).pageCount, 0);
+  await panel.getByRole('button', { name: '添加演示页' }).waitFor();
   await panel.getByLabel('关闭', { exact: true }).click();
   const settings = defaultVideoEditDocument(); settings.clips[0].sourceOutPts = 24; settings.clips[0].reverse = true;
   const updated = await f.call('canvas_update_node', { nodeId: 'edit', settings: { editDocument: settings } });
@@ -126,5 +149,5 @@ try {
   assert.equal(readOnly.cancels.length, 0); assert.equal(readOnly.queued.length, 0);
   await readOnly.context.close();
   assert.deepEqual(errors, []);
-  console.log('VIDEO_EDIT_UI_MOCK_OK document/submit/commit, immutable source, reload, cancel retention, readonly; no live services');
+  console.log('VIDEO_EDIT_UI_MOCK_OK document, transcript pagination, native presentation editing, export/commit, reload, cancel and readonly');
 } finally { await browser.close(); }

@@ -10,6 +10,8 @@ import { pasteCanvasSelection } from './src/canvas-clipboard.js';
 const F24 = { num: 1, den: 24 };
 const clip = (extra = {}) => ({ id: 'c1', inputSlot: 'v1', sourceInPts: 0, sourceOutPts: 24, timebase: F24, ...extra });
 const doc = (clips = [clip()], profile = {}) => ({ schemaVersion: 1, outputProfile: { fps: { num: 24, den: 1 }, ...profile }, clips });
+const slide = { id: 'page1', startFrame: 4, endFrame: 21, title: ' 演示标题 ', bullets: ['要点一', '要点二'],
+  layout: 'side', motion: 'reveal' };
 
 // 1. JS schema == Python schema (same accept/reject and same normalized output).
 const cases = [
@@ -17,20 +19,27 @@ const cases = [
   doc([clip()], { fps: { num: 30000, den: 1001 } }), { ...doc(), timelineTimebase: { num: 1, den: 12288 } },
   doc([clip()], { audio: 'external', audioFrom: { inputSlot: 'a1', sourceInPts: 0, sourceOutPts: 24, timebase: F24 } }),
   doc([clip()], { width: 1280, height: 720, crf: 18 }),
+  { ...doc(), presentation: [] }, { ...doc(), presentation: [slide] },
+  { ...doc([clip({ sourceOutPts: 1, timebase: { num: 500000, den: 500001 } })], { fps: { num: 500000, den: 499999 } }),
+    presentation: [{ ...slide, startFrame: 0, endFrame: 2 }] },
   // invalid
   { ...doc(), path: '../forbidden' }, doc([clip({ inputSlot: '../forbidden.mp4' })]), doc([clip({ filter: 'hflip' })]), doc([clip()], { filter: 'x' }),
   doc([clip({ sourceOutPts: 0 })]), doc([clip({ sourceInPts: -1 })]), doc([clip({ sourceInPts: 1.5 })]), doc([clip({ gain: 2 })]),
   doc([clip({ pad: { mode: 'none', count: 2 } })]), doc([clip({ id: 'a b' })]), doc([clip(), clip()]), doc([clip()], { width: 101, height: 72 }),
   doc([clip()], { videoCodec: 'copy' }), { ...doc(), timelineTimebase: { num: 1, den: 25 } }, doc([clip()], { audioFrom: { inputSlot: 'v1', sourceInPts: 0, sourceOutPts: 1 } }),
   doc([]), { ...doc(), schemaVersion: 2 }, doc([clip({ inputSlot: 'a1' })]),
+  { ...doc(), presentation: [{ ...slide, layout: 'custom' }] },
+  { ...doc(), presentation: [{ ...slide, endFrame: 25 }] },
+  { ...doc(), presentation: [slide, { ...slide, id: 'page2', startFrame: 16, endFrame: 24 }] },
+  { ...doc(), presentation: [{ ...slide, title: ' ' }] },
 ];
 const js = cases.map((value) => { try { return normalizeVideoEditDocument(value); } catch { return { error: true }; } });
 const python = process.env.H3_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
-const script = 'import json,sys\nsys.path.insert(0, ".")\nfrom video_edit_document import normalize_document, EditDocumentError\nout=[]\nfor d in json.load(sys.stdin):\n    try: out.append(normalize_document(d))\n    except EditDocumentError: out.append({"error": True})\nprint(json.dumps(out))';
+const script = 'import json,sys\nsys.path.insert(0, ".")\nfrom video_edit_document import normalize_document, EditDocumentError\nout=[]\nfor d in json.load(sys.stdin.buffer):\n    try: out.append(normalize_document(d))\n    except EditDocumentError: out.append({"error": True})\nprint(json.dumps(out))';
 const run = spawnSync(python, ['-c', script], { input: JSON.stringify(cases), encoding: 'utf8' });
 assert.equal(run.status, 0, run.stderr);
 assert.deepEqual(js, JSON.parse(run.stdout), 'JS 与 Python editDocument schema 结果不一致');
-assert.equal(js.filter((item) => item.error).length, 18);
+assert.equal(js.filter((item) => item.error).length, 22);
 
 // 2. Frame count helper mirrors the Python grid.
 assert.equal(framesOf(clip({ sourceInPts: 7, sourceOutPts: 19, pad: { mode: 'last_frame', count: 3 } }), { num: 24, den: 1 }), 15);
@@ -83,6 +92,14 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
     assert.equal(updated.ok, true, updated.error);
     assert.equal(updated.node.clipCount, 2);
     assert.deepEqual(updated.node.editDocument.clips[1].pad, { mode: 'last_frame', count: 4 });
+    const pages = await call('canvas_set_video_presentation', { nodeId: id, pages: [slide] });
+    assert.equal(pages.ok, true, pages.error);
+    assert.equal(pages.pageCount, 1);
+    const withSlides = (await call('canvas_get_state', { nodeId: id })).nodes[0].editDocument;
+    assert.equal(withSlides.presentation[0].title, '演示标题');
+    assert.deepEqual(withSlides.clips, updated.node.editDocument.clips);
+    assert.equal((await call('canvas_set_video_presentation', { nodeId: id, pages: [{ ...slide, endFrame: 1000 }] })).ok, false);
+    assert.equal((await call('canvas_set_video_presentation', { nodeId: id, pages: [] })).pageCount, 0);
     assert.equal(updated.node.editDocument.clips[0].gain, 1, '缺省值已规范化');
     const invalid = await call('canvas_update_node', { nodeId: id, settings: { editDocument: { ...document, clips: [clip({ inputSlot: '../x' })] } } });
     assert.equal(invalid.ok, false);
