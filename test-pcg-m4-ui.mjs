@@ -106,7 +106,7 @@ import pcg_isolation
 from scripts.pcg_m4_rpc_trace import install,write_once
 from scripts.pcg_m4_isolation_trace import IsolationTrace
 ledger=install(pcg_demo_server)
-isolation_trace=IsolationTrace().install(pcg_isolation)
+isolation_trace=IsolationTrace(worker_probe=True).install(pcg_isolation)
 trace_root=pathlib.Path(sys.argv[sys.argv.index('--runtime-dir')+1])
 stop_diagnostics=threading.Event()
 def diagnostic_samples():

@@ -21,7 +21,7 @@ NATIVE_PHASES = {'profile': 'profile', '_request_stdin': 'request-stdin',
 
 
 class IsolationTrace:
-    def __init__(self):
+    def __init__(self, *, worker_probe=False):
         self.lock = threading.RLock()
         self.install_lock = threading.Lock()
         self.local = threading.local()
@@ -35,6 +35,7 @@ class IsolationTrace:
         self.diagnostic_errors = 0
         self.patches = []
         self.native = None
+        self.worker_probe = worker_probe
 
     def _safe(self, function, *args, **kwargs):
         try:
@@ -113,6 +114,13 @@ class IsolationTrace:
             if name == 'Wait':
                 value['lastResult'] = answer if type(answer) is int and answer in (0, 258, 0xffffffff) else -1
                 value['failures'] += answer not in (0, 258)
+                if self.worker_probe:
+                    now = round((time.monotonic() - self.origin) * 1000, 3)
+                    if 'lastReturnMs' in value:
+                        gap = round(now - value['lastReturnMs'], 3)
+                        value['maxReturnGapMs'] = max(value.get('maxReturnGapMs', 0), gap)
+                    value.setdefault('firstReturnMs', now)
+                    value['lastReturnMs'] = now
             else:
                 value['failures'] += not bool(answer)
                 if answer:
@@ -199,6 +207,27 @@ class IsolationTrace:
             values['ok'] = bool(answer)
         if name == 'InitAttrs': values['sizeQuery'] = args[0] is None
         self._mark(phase, 'end', **values)
+        if name == 'ExitCode' and answer and self.worker_probe:
+            from scripts.pcg_m4_worker_trace import cpu_sample
+            sample = cpu_sample(self.native, args[0])
+            if sample is None:
+                self._mark('worker-cpu', 'unavailable')
+            else:
+                self._mark('worker-cpu', 'observed', **sample)
+
+    def _worker_staged(self, session):
+        from scripts.pcg_m4_worker_trace import stage_probe
+        stage_probe(session.worker)
+        self._mark('worker-probe-stage', 'ready')
+
+    def _worker_observed(self, start_ns, stderr):
+        from scripts.pcg_m4_worker_trace import read_markers
+        events = read_markers(stderr, start_ns, time.monotonic_ns())
+        if not events:
+            self._mark('worker-probe', 'no-markers')
+        for event in events:
+            self._mark('worker-' + event['phase'], 'observed',
+                       sinceRunStartMs=event['ms'], childCpuMs=event['childCpuMs'])
 
     def install(self, module, native=None):
         for name in ('preflight', 'execute'):
@@ -214,6 +243,14 @@ class IsolationTrace:
         self._patch(module._Session, '__enter__', self.phase_wrapper('session-prepare', prepare_native))
         self._patch(module._Session, 'stage', self.phase_wrapper('fixed-code-stage'))
         self._patch(module._Session, '__exit__', self.phase_wrapper('session-release'))
+        if self.worker_probe:
+            def stage_wrapper(original):
+                def observed(session):
+                    result = original(session)
+                    self._safe(self._worker_staged, session)
+                    return result
+                return observed
+            self._patch(module._Session, 'stage', stage_wrapper)
         self._patch(module, '_acl', self.phase_wrapper('acl'))
         def subprocess_wrapper(original):
             def observed(*args, **kwargs):
@@ -239,6 +276,7 @@ class IsolationTrace:
         def run_wrapper(original):
             def observed(*args, **kwargs):
                 self._safe(self._mark, 'resource-run', 'begin')
+                start_ns = time.monotonic_ns() if self.worker_probe else None
                 try:
                     answer = original(*args, **kwargs)
                 except BaseException as error:
@@ -253,6 +291,8 @@ class IsolationTrace:
                             if type(number) in (int, float) and 0 < number <= high:
                                 bounded[key] = number
                         self._safe(self._mark_result, reason if type(reason) is str and reason in REASONS else 'NONE' if reason is None else 'OTHER', bounded)
+                        if self.worker_probe:
+                            self._safe(self._worker_observed, start_ns, errors)
                 return answer
             return observed
         self._patch(module._Session, 'run', run_wrapper)

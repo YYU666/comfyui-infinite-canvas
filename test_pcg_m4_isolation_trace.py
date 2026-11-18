@@ -11,9 +11,33 @@ from unittest import mock
 
 from scripts.pcg_m4_isolation_trace import IsolationTrace, MAX_BYTES, NATIVE_PHASES
 from scripts.pcg_m4_rpc_trace import write_once
+from scripts.pcg_m4_worker_trace import PHASES, instrument_worker, read_markers
 
 
 SECRET = 'PRIVATE_PATH_GRAPH_ARGUMENT_CREDENTIAL'
+
+
+class WorkerMarkerTests(unittest.TestCase):
+    def test_bounded_parser_keeps_only_ordered_complete_known_markers(self):
+        lines = [
+            b'PCG_W1:0:999:0', b'PCG_W1:0:1000:0', b'PCG_W1:1:1001:0 ' + SECRET.encode(),
+            b'PCG_W1:12:1002:0', b'PCG_W1:0:1003:0', b'PCG_W1:3:1004:10', b'PCG_W1:4:1002:10',
+            b'PCG_W1:4:9999:10', b'PCG_W1:4:1005:9', b'PCG_W1:4:1005:10',
+        ]
+        markers = read_markers(b'\n'.join(lines), 1000, 2000)
+        self.assertEqual([m['phase'] for m in markers], ['script-enter', 'stdin-read-done'])
+        self.assertEqual(read_markers(b'x' * 65537, 1000, 2000), [])
+        self.assertNotIn(SECRET, json.dumps(markers))
+
+    def test_staged_source_keeps_request_and_validation_anchors(self):
+        source = Path(__file__).with_name('pcg_worker.py').read_text(encoding='utf8')
+        stage = instrument_worker(source)
+        compile(stage, 'fixed-worker-test', 'exec')
+        self.assertIn('require(0 < len(raw) <= 32 * MAX_VALUE_BYTES', stage)
+        self.assertIn('result = evaluate_graph(request)', stage)
+        self.assertIn('response = canonical(output)', stage)
+        with self.assertRaises(ValueError):
+            instrument_worker(source.replace('request = parse_json(raw)', 'request = raw'))
 
 
 def fixture():
@@ -191,6 +215,61 @@ class IsolationTraceTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'nt', 'Native Windows diagnostic boundary only.')
 class NativeIsolationTraceTests(unittest.TestCase):
+    def test_worker_markers_preserve_output_and_capture_evaluation_timeout(self):
+        import pcg_isolation as isolation
+        from pcg_contracts import canonical, load_registry
+        from pcg_graph import plan_graph
+        from test_pcg_graph import node
+        base = Path(sys.executable).resolve().parent
+        if not (base / ('python%d%d.zip' % sys.version_info[:2])).is_file():
+            self.skipTest('Native probe requires an existing self-contained interpreter.')
+
+        plan, _ = plan_graph({'canvas': {'nodes': [node('source', 'primitive')], 'edges': []}}, 'source', load_registry())
+        payload = canonical({'protocolVersion': 2, 'projectId': 'prj_fixture', 'inputHash': 'b' * 64,
+                             'plan': plan, 'cache': {}})
+        expected = json.loads(isolation.execute(payload))
+        trace = IsolationTrace(worker_probe=True).install(isolation)
+        try:
+            actual = json.loads(isolation.execute(payload))
+            self.assertTrue(actual['ok'])
+            for response in (expected, actual):
+                for record in response['result']['records']:
+                    record.pop('elapsedMs')
+            self.assertEqual(actual, expected)
+            self.assertEqual(isolation.execute(b'{'), b'{"error":{"code":"INVALID_CONTRACT","message":"Invalid finite JSON document."},"ok":false}\n')
+
+            def timed_probe():
+                with isolation._Session() as session:
+                    session.stage()
+                    source = session.worker.read_text(encoding='utf8')
+                    anchor = '        _pcg_mark(6)\n'
+                    self.assertEqual(source.count(anchor), 1)
+                    session.worker.write_text(source.replace(anchor, anchor + '        time.sleep(30)\n'), encoding='utf8')
+                    _, _, _, reason = session.run(payload, timeout=5, memory_bytes=128*1024**2,
+                                                 max_output_bytes=16384, cancelled=None)
+                self.assertEqual(reason, 'TIMEOUT')
+                raise isolation.IsolationError(reason, SECRET)
+
+            with self.assertRaises(isolation.IsolationError):
+                trace.call(timed_probe, 'execute')
+            evidence = json.loads(trace.freeze())
+            successful, invalid, _ = (record for record in trace.completed if record['kind'] == 'execute')
+            timed = evidence['failures']['TIMEOUT']
+            self.assertEqual([phase for phase in PHASES if 'worker-' + phase in successful['phases']], list(PHASES))
+            self.assertIn('worker-request-parse-start', invalid['phases'])
+            self.assertNotIn('worker-evaluation-start', invalid['phases'])
+            self.assertIn('worker-evaluation-start', timed['phases'])
+            self.assertNotIn('worker-evaluation-done', timed['phases'])
+            self.assertEqual(timed['phases']['resource-run']['state'], 'TIMEOUT')
+            self.assertEqual(timed['phases']['worker-cpu']['state'], 'observed')
+            self.assertIn('maxReturnGapMs', timed['poll']['Wait'])
+            self.assertEqual(evidence['diagnosticErrors'], 0)
+            self.assertNotIn(SECRET.encode(), trace.freeze())
+            print('WORKER_DIAG_NATIVE=' + trace.freeze().decode('utf8'))
+        finally:
+            trace.restore()
+            isolation.preflight.cache_clear()
+
     def test_real_prepare_rejection_and_owned_native_timeout(self):
         import pcg_isolation as isolation
         import pcg_isolation_win as native
