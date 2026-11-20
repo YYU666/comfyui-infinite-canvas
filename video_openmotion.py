@@ -24,7 +24,7 @@ _MP4_LIMIT = 2 * 1024 ** 3
 _JSON_LIMIT = 8 * 1024 ** 2
 _ACTIONS = {
     "create": {"assetPath"}, "link": {"remoteProjectId"}, "inspect": set(),
-    "render": {"requestId", "audio"}, "import": {"exportId", "revision"},
+    "render": {"requestId", "audio", "versionId", "expectedRevision"}, "import": {"exportId", "revision"},
 }
 
 
@@ -61,8 +61,18 @@ class OpenMotionClient:
             conn.request(method, route, body=body, headers=headers)
             with conn.getresponse() as response:
                 if response.status not in (200, 201, 202):
-                    reason = re.match(rb'\{"error":"([A-Z][A-Z0-9_]{2,60})(?=[:" ])', response.read(4096))
-                    detail = f"，{reason[1].decode('ascii')}" if reason else ""
+                    raw = response.read(4096)
+                    try:
+                        failure = json.loads(raw)
+                    except (UnicodeError, ValueError):
+                        failure = None
+                    reason = re.match(rb'\{"error":"([A-Z][A-Z0-9_]{2,60})(?=[:" ])', raw)
+                    code = reason[1].decode('ascii') if reason else ""
+                    if code in ("VERSION_CONFLICT", "REQUEST_ID_CONFLICT"):
+                        raise _error("OPENMOTION_VERSION_CONFLICT", "OpenMotion 工程版本已变化，请刷新后重试。", 409)
+                    if isinstance(failure, dict) and failure.get("applied") is False:
+                        raise _error("OPENMOTION_REQUEST_REJECTED", f"OpenMotion 未应用此请求（HTTP {response.status}）。", 422)
+                    detail = f"，{code}" if code else ""
                     raise _error("OPENMOTION_REMOTE", f"OpenMotion 未完成请求（HTTP {response.status}{detail}）。", 502)
                 if read:
                     return read(response)
@@ -169,6 +179,8 @@ class OpenMotionBridge:
         return {
             "remoteProjectId": project_id,
             "origin": client.origin,
+            "versionId": detail.get("currentVersionId"),
+            "expectedRevision": detail.get("revision"),
             "studioUrl": f"{client.origin}/?{urlencode({'session': session_id, 'project': project_id})}#project/{project_id}",
             "active": next(({"state": job.get("state"), "stage": job.get("stage")} for job in jobs
                             if job.get("state") in ("pending", "running", "cancelling")), None),
@@ -224,6 +236,8 @@ class OpenMotionBridge:
 
         if action == "import":
             return self.import_export(client, store, project_id, node_id, remote_id, payload)
+        if action == "render":
+            return self.render(client, remote_id, payload)
 
         detail = client.get_project(remote_id)
         summary = self.summary(client, detail)
@@ -234,25 +248,25 @@ class OpenMotionBridge:
         with self.jobs.lock:
             if store is not self.jobs.store:
                 raise _error("OPENMOTION_PROJECT_MOVED", "画布项目位置已切换，请重试。", 409)
-        if action == "render":
-            return self.render(client, detail, payload, summary)
         return summary
 
     @staticmethod
-    def render(client, detail, payload, summary):
+    def render(client, project_id, payload):
         request_id, audio = payload["requestId"], payload["audio"]
-        revision, version_id = detail.get("revision"), detail.get("currentVersionId")
+        revision, version_id = payload["expectedRevision"], payload["versionId"]
         if not _valid(_UUID, request_id) or audio not in ("required", "silent", "optional"):
             raise _error("BAD_REQUEST", "渲染请求或音轨设置无效。")
         if not _valid(_SHA256, revision) or not _valid(_UUID, version_id):
-            raise _error("OPENMOTION_RESPONSE", "OpenMotion 工程缺少可渲染的版本。", 502)
-        project_id = detail["projectId"]
+            raise _error("BAD_REQUEST", "渲染请求缺少有效的 OpenMotion 版本。")
+        # OpenMotion compares the complete payload on replay. An already
+        # accepted render can be recovered even after Studio saves another
+        # version. A first submission against a stale version is rejected.
         result = client.call("openmotion_export_request", {"projectId": project_id, "requestId": request_id,
                              "versionId": version_id, "expectedRevision": revision, "audio": audio})
         job = result.get("job") or {}
         if result.get("projectId") != project_id or not _valid(_UUID, job.get("id")):
             raise _error("OPENMOTION_RESPONSE", "OpenMotion 渲染任务身份无法核对。", 502)
-        return {**summary, "active": {"state": job.get("state"), "stage": job.get("stage")}, "renderId": job["id"]}
+        return {"remoteProjectId": project_id, "active": {"state": job.get("state"), "stage": job.get("stage")}, "renderId": job["id"]}
 
     def import_export(self, client, store, project_id, node_id, remote_id, payload):
         export_id, revision = payload["exportId"], payload["revision"]

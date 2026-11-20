@@ -13,6 +13,8 @@ const motionAsset = `assets/${'c'.repeat(64)}.mp4`;
 const remoteProjectId = 'c0c0c0c0-0000-4000-a000-000000000001';
 const motionExportId = 'd0d0d0d0-0000-4000-a000-000000000002';
 const motionOrigin = 'http://127.0.0.1:49327';
+const motionVersions = ['00000000-0000-4000-a000-100000000001', '00000000-0000-4000-a000-100000000002'];
+const motionRevisions = ['4'.repeat(64), '5'.repeat(64)];
 const browser = await chromium.launch({ headless: true });
 const errors = [];
 async function fixture(readOnly = false, active = false) {
@@ -20,6 +22,8 @@ async function fixture(readOnly = false, active = false) {
   const queued = [], commits = [], cancels = [], saves = [];
   let hold = active;
   let motionRendered = false;
+  let motionVersionIndex = 0;
+  const motionRenderAttempts = [];
   const cutJobId = `ved_${'a'.repeat(32)}`;
   const speechJobId = `ved_${'b'.repeat(32)}`;
   let project = { id: 'prj_editor_fixture', name: 'Synthetic editor', revision: 1, readOnly, shots: [], canvas: {
@@ -32,7 +36,8 @@ async function fixture(readOnly = false, active = false) {
   await context.addInitScript(({ key, id, readOnly }) => {
     sessionStorage.setItem(key, JSON.stringify({ version: 1, id, readOnly }));
     window.fixtureTools = new Map();
-    if (!crypto.randomUUID) Object.defineProperty(crypto, 'randomUUID', { value: () => '00000000-0000-4000-a000-000000000000' });
+    let nonce = 0;
+    if (!crypto.randomUUID) Object.defineProperty(crypto, 'randomUUID', { value: () => `00000000-0000-4000-a000-${String(++nonce).padStart(12, '0')}` });
     Object.defineProperty(document, 'modelContext', { value: { registerTool(tool, options) { window.fixtureTools.set(tool.name, tool); options?.signal?.addEventListener('abort', () => window.fixtureTools.delete(tool.name)); } } });
     window.EventSource = class { addEventListener() {} close() {} };
     window.WebSocket = class { addEventListener() {} close() {} };
@@ -58,6 +63,7 @@ async function fixture(readOnly = false, active = false) {
       assert.equal(body.projectId, project.id);
       assert.equal(body.nodeId, node.id);
       const summary = { remoteProjectId, origin: motionOrigin, studioUrl: `${motionOrigin}/#project/${remoteProjectId}`,
+        versionId: motionVersions[motionVersionIndex], expectedRevision: motionRevisions[motionVersionIndex],
         exports: motionRendered ? [{ id: motionExportId, current: true }] : [] };
       if (action === 'create') {
         assert.equal(body.assetPath, node.data.editResultAssetPath);
@@ -67,6 +73,20 @@ async function fixture(readOnly = false, active = false) {
       if (action === 'render') {
         assert.match(body.requestId, /^[0-9a-f-]{36}$/);
         assert.equal(body.audio, 'required');
+        motionRenderAttempts.push(body);
+        if (motionRenderAttempts.length === 1) {
+          assert.equal(body.versionId, motionVersions[0]);
+          assert.equal(body.expectedRevision, motionRevisions[0]);
+          motionVersionIndex = 1; // Studio save after the original request is lost
+          return json({ code: 'OPENMOTION_UNAVAILABLE', message: 'Connection lost' }, 503);
+        }
+        if (motionRenderAttempts.length === 2) {
+          assert.deepEqual(body, motionRenderAttempts[0], 'an uncertain retry replays the exact original version and request ID');
+          return json({ code: 'OPENMOTION_VERSION_CONFLICT', message: 'Version changed' }, 409);
+        }
+        assert.notEqual(body.requestId, motionRenderAttempts[0].requestId);
+        assert.equal(body.versionId, motionVersions[1]);
+        assert.equal(body.expectedRevision, motionRevisions[1]);
         motionRendered = true;
         return json({ ...summary, renderId: motionExportId, active: { state: 'pending' } });
       }
@@ -183,6 +203,10 @@ try {
   await panel.getByRole('link', { name: '打开 OpenMotion Studio' }).waitFor();
   assert.equal(await panel.getByRole('link', { name: '打开 OpenMotion Studio' }).getAttribute('href'), `${motionOrigin}/#project/${remoteProjectId}`);
   await panel.getByRole('combobox', { name: 'OpenMotion 音轨' }).selectOption('required');
+  await panel.getByRole('button', { name: '渲染 OpenMotion MP4' }).click();
+  await panel.getByText('渲染是否已提交待确认。重试会查询同一请求并保留原版本。').waitFor();
+  await panel.getByRole('button', { name: '渲染 OpenMotion MP4' }).click();
+  await panel.getByText('Studio 的工程版本已变化。工程刷新后可再次点击渲染。').waitFor();
   await panel.getByRole('button', { name: '渲染 OpenMotion MP4' }).click();
   await panel.getByRole('button', { name: '回传所选成片' }).click();
   await panel.getByText('成片已存入当前画布项目。').waitFor();

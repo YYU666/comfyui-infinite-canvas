@@ -22,6 +22,14 @@ SYNTHETIC_SHA = hashlib.sha256(SYNTHETIC_BYTES).hexdigest()
 
 
 class OpenMotionBridgeTests(unittest.TestCase):
+    def test_render_replay_forwards_the_explicit_version_without_refreshing_it(self):
+        client = OpenMotionClient(ORIGIN)
+        render = {"requestId": EXPORT, "audio": "required", "versionId": OTHER, "expectedRevision": "3" * 64}
+        receipt = {"projectId": REMOTE, "job": {"id": EXPORT, "state": "pending"}}
+        with patch.object(client, "call", return_value=receipt) as call:
+            self.assertEqual(OpenMotionBridge.render(client, REMOTE, render)["renderId"], EXPORT)
+            call.assert_called_once_with("openmotion_export_request", {"projectId": REMOTE, **render})
+
     def test_bridge_rejects_result_not_owned_or_not_verified(self):
         completed = {"id": EXPORT, "projectId": REMOTE, "state": "completed",
                      "verification": {"status": "passed", "sha256": SYNTHETIC_SHA}}

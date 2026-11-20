@@ -3,6 +3,7 @@ import { ArrowDownToLine, ExternalLink, RefreshCw } from 'lucide-react';
 import { assetUrl } from './project-store-http.js';
 
 const ACTIVE = ['pending', 'running', 'cancelling'];
+const RENDER_REJECTED = ['OPENMOTION_VERSION_CONFLICT', 'OPENMOTION_REQUEST_REJECTED', 'BAD_REQUEST'];
 const exportLabel = ({ id, createdAt, current }) => {
   const when = Number.isFinite(createdAt) ? new Date(createdAt).toLocaleString() : id.slice(0, 8);
   return `${when} · ${current ? '当前版本' : '历史版本'}`;
@@ -48,8 +49,16 @@ export default function OpenMotionPanel({ id, data, actions, locked }) {
     setError('');
     setMessage('');
     try {
-      const value = await call(id, action, options);
+      if (action === 'render' && !request.current) {
+        const latest = await call(id, 'inspect');
+        setSummary(latest);
+        if (ACTIVE.includes(latest.active?.state)) return;
+        if (!latest.versionId || !latest.expectedRevision) throw new Error('OpenMotion 工程缺少可渲染的版本。');
+        request.current = { requestId: crypto.randomUUID(), audio, versionId: latest.versionId, expectedRevision: latest.expectedRevision };
+      }
+      const value = await call(id, action, action === 'render' ? request.current : options);
       if (action === 'import') setMessage('成片已存入当前画布项目。');
+      else if (action === 'render') setSummary(previous => ({ ...previous, ...value }));
       else setSummary(value);
       if (action === 'create' || action === 'link') {
         setSelected('');
@@ -57,12 +66,18 @@ export default function OpenMotionPanel({ id, data, actions, locked }) {
         request.current = null;
       }
       if (action === 'render') request.current = null;
-    } catch (failure) { setError(failure.message); }
+    } catch (failure) {
+      if (action === 'render' && RENDER_REJECTED.includes(failure.code)) {
+        request.current = null;
+        setSummary(null); // wait for a fresh version before enabling submission
+      }
+      if (action === 'render' && failure.code === 'OPENMOTION_VERSION_CONFLICT') {
+        setError('Studio 的工程版本已变化。工程刷新后可再次点击渲染。');
+      } else {
+        setError(action === 'render' && request.current ? '渲染是否已提交待确认。重试会查询同一请求并保留原版本。' : failure.message);
+      }
+    }
     finally { setBusy(false); }
-  };
-  const render = () => {
-    request.current ||= { requestId: crypto.randomUUID(), audio };
-    run('render', request.current);
   };
   const resultUrl = binding?.resultAssetPath ? assetUrl(actions.projectId, binding.resultAssetPath) : null;
   const exports = current?.exports || [];
@@ -88,10 +103,10 @@ export default function OpenMotionPanel({ id, data, actions, locked }) {
       <h3>渲染与回传</h3>
       <p>在 Studio 保存后，渲染当前版本。技术校验通过的 MP4 会出现在下方。</p>
       <div className="video-openmotion-actions">
-        <select aria-label="OpenMotion 音轨" value={audio} onChange={(event) => { request.current = null; setAudio(event.target.value); }} disabled={disabled || rendering}>
+        <select aria-label="OpenMotion 音轨" value={audio} onChange={(event) => setAudio(event.target.value)} disabled={disabled || rendering || Boolean(request.current)}>
           <option value="optional">按工程保留音轨</option><option value="required">必须包含声音</option><option value="silent">无音轨</option>
         </select>
-        <button onClick={render} disabled={disabled || rendering || !current}>渲染 OpenMotion MP4</button>
+        <button onClick={() => run('render')} disabled={disabled || rendering || !current?.versionId || !current?.expectedRevision}>渲染 OpenMotion MP4</button>
       </div>
       {rendering && <p role="status">OpenMotion 正在渲染或校验…</p>}
       {current?.failed && !rendering && <p role="status">最近一次渲染未完成，可以重试或在 Studio 查看详情。</p>}
