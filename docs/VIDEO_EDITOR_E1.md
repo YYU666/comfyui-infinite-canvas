@@ -37,6 +37,17 @@ Agent 通过当前可见画布按顺序使用这些工具：
 
 打开视频编辑节点的「Motion Canvas」页签，同一原声时钟驱动实际 Motion Canvas 3.17.2 场景。可播放、暂停、拖动进度条，或点击一个触发点核对动画。预览支持首个视频帧与音轨同起点的素材，选取 1–60 秒连续片段。先导出一份已对齐的片段可处理起点不一致的录屏。此试验验证同步和版式，MP4 导出使用现有「演示轨」。[Motion Canvas · Time Events](https://motioncanvas.io/docs/time-events/)
 
+### OpenMotion
+
+在本机启动 OpenMotion Studio v0.2.0，把工作台启动环境中的 `H3_OPENMOTION_ORIGIN` 设置为 Studio 的实际回环地址，例如 `http://127.0.0.1:49327`。工作台接受 `127.0.0.1` 上的 HTTP 端口，Studio 须能本地渲染。接口独立于 ComfyUI。
+
+1. 打开视频编辑节点的「OpenMotion」页签。从该节点已保存的 MP4 创建可编辑工程，或从 Studio 当前工程链接中的 `project` 参数复制 UUID，点击「关联已有本地工程」。重新设置或切换 Studio 端口后请重新关联。
+2. 点击「打开 OpenMotion Studio」编辑。新建工程把已导出的整段 MP4 放在一个视频轨上。字幕、标注和关键帧在 Studio 编辑。画布原剪口仍由视频编辑节点管理。
+3. 在 Studio 保存后，回到同一页签点击「渲染 OpenMotion MP4」。默认按工程保留音轨。教程旁白必需时，选择「必须包含声音」。待渲染和校验完成，选择成片，点击「回传所选成片」。
+4. 回传 MP4 由画布校验 SHA-256，并作为该项目内素材保存。可在同一页签独立预览、下载，之后仍可打开已关联工程。视频编辑节点的原导出继续供原有连线使用。
+
+本地 OpenMotion 工程和渲染历史由 Studio 管理。画布记录工程身份和回传素材，适合把剪辑结果交给 Studio 做动效制作。创建的工程 ZIP 上限依 OpenMotion 为 500 MB。[OpenMotion 工程传输](https://github.com/nexu-io/openmotion/blob/v0.2.0/docs/project-archives.md) · [渲染与校验](https://github.com/nexu-io/openmotion/blob/v0.2.0/docs/mcp-phase1-tools.md#openmotion_export_request)
+
 导出需要已安装的 FFmpeg（优先使用工作台依赖中的 imageio-ffmpeg，其次使用 PATH 中的程序）。本功能不安装软件、下载模型或提交 ComfyUI 任务。导出读取源素材并创建新 MP4，不覆盖输入。后台只写任务临时文件；页面使用当前项目 revision 将结果存入 assets，再更新同一编辑节点。失败或取消保留已有结果；参数改变后会标记已有结果待重新导出。取消仅影响本节点的导出进程。
 
 默认 24 fps、H.264/AAC、CRF 14。输入必须能通过恒定帧率和时基检查；输出按文档帧率重采样。默认使用片段原声，也可选择静音或外部音轨；外部音轨长度须与成片一致。末帧补帧会延长时长，不代表运动插帧模型。

@@ -23,6 +23,7 @@ export const submitVideoEditJob = (payload) => request('/jobs', payload);
 export const getVideoEditJob = (jobId, options) => request(`/jobs/${encodeURIComponent(jobId)}`, undefined, options);
 export const cancelVideoEditJob = (jobId, projectId, options) => request(`/jobs/${encodeURIComponent(jobId)}/cancel`, { projectId }, options);
 export const commitVideoEditJob = (jobId, projectId, revision) => request(`/jobs/${encodeURIComponent(jobId)}/commit`, { projectId, revision });
+const openMotionRequest = (action, payload, options) => request(`/openmotion/${action}`, payload, options);
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
   const abort = () => { clearTimeout(timer); reject(signal.reason || new DOMException('Aborted', 'AbortError')); };
@@ -127,6 +128,48 @@ export function createVideoEditRunner(deps) {
 
   return {
     isBusy: (id) => deps.jobs.has(id),
+    async openMotion(id, action, options) {
+      const projectId = deps.getProjectId();
+      const current = node(id);
+      if (!isVideoEdit(current)) throw new Error('找不到视频编辑节点。');
+      if (action === 'inspect') return openMotionRequest(action, { projectId, nodeId: id });
+      if (!canWrite() || deps.jobs.has(id)) throw new Error('当前节点不可编辑或正在处理其他任务。');
+      const controller = new AbortController();
+      const assertCurrent = () => {
+        controller.signal.throwIfAborted();
+        if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。');
+      };
+      register(id, controller);
+      try {
+        await deps.persistProject?.();
+        assertCurrent();
+        const identity = { projectId, nodeId: id };
+        if (action === 'import') {
+          const saved = await deps.saveCanvasMedia((revision) => {
+            assertCurrent();
+            return openMotionRequest('import', { ...identity, exportId: options.exportId, revision });
+          }, (result) => ({ ok: true, assetPath: result.asset.path }), id);
+          if (!saved?.ok) throw new Error(saved?.error?.message || 'OpenMotion 成片未保存。');
+          assertCurrent();
+          deps.updateNode(id, { openMotion: { ...node(id).data.openMotion, exportId: options.exportId, resultAssetPath: saved.assetPath } });
+          await deps.persistProject?.();
+          return saved;
+        }
+        const assetPath = node(id).data.editResultAssetPath;
+        const payload = action === 'create' ? { ...identity, assetPath } : { ...identity, ...options };
+        const result = await openMotionRequest(action, payload);
+        assertCurrent();
+        if (action === 'create' || action === 'link') {
+          if (action === 'create' && assetPath !== node(id).data.editResultAssetPath) throw new Error('节点成片已变化，请重新选择。');
+          const previous = node(id).data.openMotion;
+          const matching = previous?.remoteProjectId === result.remoteProjectId && previous.origin === result.origin;
+          deps.updateNode(id, { openMotion: { ...(matching ? previous : {}), remoteProjectId: result.remoteProjectId, origin: result.origin,
+            title: result.title, sourceAssetPath: action === 'create' ? assetPath : matching ? previous.sourceAssetPath : null } });
+          await deps.persistProject?.();
+        }
+        return result;
+      } finally { unregister(id, controller); }
+    },
     async run(id) {
       if (!canWrite()) return { ok: false, error: '当前画布不可编辑。' };
       const projectId = deps.getProjectId();

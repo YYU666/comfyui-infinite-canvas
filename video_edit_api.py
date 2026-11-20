@@ -5,6 +5,7 @@ import json
 import re
 
 from project_store import StoreError
+from video_openmotion import OpenMotionBridge
 
 PREFIX = "/api/video-edit/"
 
@@ -12,6 +13,7 @@ PREFIX = "/api/video-edit/"
 class VideoEditAPI:
     def __init__(self, jobs):
         self.jobs = jobs
+        self.openmotion = OpenMotionBridge(jobs)
 
     @staticmethod
     def _json(handler, maximum=64 * 1024):
@@ -55,6 +57,8 @@ class VideoEditAPI:
                 handler.send_json(201, self.jobs.submit_auto_cut(self._json(handler, 4096)))
             elif path == "/api/video-edit/jobs":
                 handler.send_json(201, self.jobs.submit(self._json(handler, 128 * 1024)))
+            elif match := re.fullmatch(r"/api/video-edit/openmotion/(create|link|inspect|render|import)", path):
+                handler.send_json(200, self.openmotion.handle(match[1], self._json(handler, 4096)))
             elif match := re.fullmatch(r"/api/video-edit/jobs/(ved_[a-f0-9]{32})/cancel", path):
                 payload = self._json(handler, 4096)
                 if set(payload) != {"projectId"}:

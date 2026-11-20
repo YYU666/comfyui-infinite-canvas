@@ -127,7 +127,7 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
     if (data.sourceArtDirectorId) data.sourceArtDirectorId = idMap.get(data.sourceArtDirectorId) || null;
     if (source.type === 'videoEdit') {
       Object.assign(data, { status: 'idle', stage: '', progress: 0 });
-      ['videoEditJobId', 'editResultAssetPath', 'editResult', 'editResultDocument', 'editSubmittedDocument', 'editResultJobId', 'editInputCache', 'error'].forEach(key => delete data[key]);
+      ['videoEditJobId', 'editResultAssetPath', 'editResult', 'editResultDocument', 'editSubmittedDocument', 'editResultJobId', 'editInputCache', 'openMotion', 'error'].forEach(key => delete data[key]);
     }
     if (source.type === 'generator' || source.type === 'imageProcess') {
       Object.assign(data, { status: 'idle', progress: 0, stage: '', runs: [] });

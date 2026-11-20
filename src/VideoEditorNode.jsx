@@ -35,6 +35,7 @@ export default function VideoEditorNode({ id, data, actions, title, toolbar }) {
         <span>{fps.den === 1 ? fps.num : (fps.num / fps.den).toFixed(3)} fps</span>
       </div>
       {data.editResult && <div className="video-edit-meta"><span>成片 {data.editResult.frames} 帧</span><span>{data.editResult.width}×{data.editResult.height}</span><span>{data.editResult.audio === 'none' ? '无声' : data.editResult.audio === 'external' ? '外挂原声' : '片段原声'}</span></div>}
+      {data.openMotion?.resultAssetPath && <div className="video-edit-meta">OpenMotion 成片已回传</div>}
       {data.error && <p className="video-edit-error" role="alert">{data.error}</p>}
     </div>
     <footer className="video-edit-footer nodrag">
