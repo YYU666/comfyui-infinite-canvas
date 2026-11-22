@@ -18,6 +18,12 @@ from workbench_security import valid_content_type
 
 
 class SecurityProbeTests(unittest.TestCase):
+    def test_glb_mime_only_for_project_glb_assets(self):
+        headers = {'Content-Length': '64', 'Content-Type': 'model/gltf-binary'}
+        self.assertTrue(valid_content_type('PUT','/api/projects/prj_fixture/assets/lamp.glb',headers))
+        self.assertFalse(valid_content_type('PUT','/api/projects/prj_fixture/assets/lamp.png',headers))
+        self.assertFalse(valid_content_type('POST','/api/native3d/jobs',headers))
+
     def test_extension_archive_types_are_scoped_to_import_post(self):
         for content_type in ["application/vnd.h3pack", "application/zip", "application/octet-stream", "application/json"]:
             headers = {"Content-Length": "20", "Content-Type": content_type}

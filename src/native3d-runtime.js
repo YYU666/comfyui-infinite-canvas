@@ -152,18 +152,23 @@ export function useNative3D(options) {
     }
     let source = sourceFor(o, node);
     if (['source_lod','repair_lod'].includes(node.data.operation) && isGeneratedGLB(source) && !source.data.assetPath) {
-      const previous = node.data.status;
+      const previous = {status:node.data.status || 'idle', stage:node.data.stage || ''};
+      const importId = crypto.randomUUID();
+      const ownsImport = () => {
+        const next = latest.current;
+        return next.projectId === o.projectId && !next.readOnly && !next.switchingRef.current
+          && next.nodesRef.current.find(item => item.id === id)?.data.nativeSourceImport?.id === importId;
+      };
       const { id: sourceId, data: model } = source;
       const projectId = o.projectId;
       const sameSource = () => {
         const next = latest.current;
         const currentNode = next.nodesRef.current.find(item => item.id === id);
         const currentSource = sourceFor(next,currentNode);
-        return next.projectId === projectId && !next.readOnly && !next.switchingRef.current
-          && currentNode?.data.status === 'uploading'
+        return ownsImport() && next.projectId === projectId && currentNode?.data.status === 'uploading'
           && currentSource?.id === sourceId && currentSource.data.url === model.url;
       };
-      patch(id,{status:'uploading',stage:'保存生成的 GLB',error:null});
+      patch(id,{status:'uploading',stage:'保存生成的 GLB',error:null,nativeSourceImport:{id:importId,previous}});
       try {
         const response = await fetch(model.url,{redirect:'error'});
         if (!response.ok) throw Error('生成的 GLB 无法读取，请检查原生成结果。');
@@ -175,10 +180,10 @@ export function useNative3D(options) {
         o.updateNode(sourceId,{assetPath,localFile:true});
         await o.persistProject();
         if (!sameSource()) throw Error('模型输入已改变。');
-        patch(id,{status:previous});
+        patch(id,{...previous,nativeSourceImport:null});
         return run(id);
       } catch (error) {
-        if (sameSource()) patch(id,{status:previous,error:error.message});
+        if (ownsImport()) patch(id,{...previous,nativeSourceImport:null,error:error.message});
         throw error;
       }
     }

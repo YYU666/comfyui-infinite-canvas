@@ -120,6 +120,11 @@ function hasExportResult(node) {
 export function settleSavedNode(node) {
   if (!node?.data || !isActiveTaskStatus(node.data.status)) return node;
   const data = node.data;
+  if (node.type === 'native3d' && data.status === 'uploading' && data.nativeSourceImport) {
+    const previous = data.nativeSourceImport.previous || {};
+    const status = isActiveTaskStatus(previous.status) ? 'idle' : previous.status || 'idle';
+    return { ...node, data: { ...data, status, stage: previous.stage || '', nativeSourceImport: null } };
+  }
   if (node.type === 'native3d' && (data.nativeJobId || data.nativeRun?.opId)) return node;
   if (LOCAL_TASK_TYPES.has(node.type)) {
     return {

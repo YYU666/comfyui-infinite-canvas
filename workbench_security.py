@@ -44,6 +44,8 @@ def valid_content_type(method, path, headers):
         return content_type == "application/octet-stream"
     if method == "POST" and path == "/api/extensions/import":
         return content_type in ARCHIVE_TYPES | {"application/vnd.h3pack", "application/json"}
+    if method == "PUT" and re.fullmatch(r"/api/projects/prj_[A-Za-z0-9_-]+/assets/[^/]+[.]glb", path, re.IGNORECASE) and content_type == "model/gltf-binary":
+        return True
     if method == "PUT" and "/assets/" in path:
         return content_type == "application/octet-stream" or content_type.startswith(("image/", "video/", "audio/"))
     if path in {"/api/projects/import", "/api/projects/migration-backup"}:

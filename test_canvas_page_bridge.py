@@ -155,6 +155,12 @@ class CanvasPageBridgeTests(unittest.TestCase):
         self.assertEqual(result['result']['nodeCount'], 10)
         self.assertIsNone(self.bridge.heartbeat(self.page)['command'])
 
+    def test_native_wait_preserves_job_id(self):
+        job_id = 'n3d_' + 'a' * 32
+        args = {'nodeId': 'lod', 'jobId': job_id, 'timeoutMs': 1500}
+        self.assertEqual(self.bridge._bounded_wait_args(args), args)
+        self.assert_code('BAD_REQUEST', lambda: self.bridge._bounded_wait_args({**args, 'jobId': '../other'}))
+
     def test_wait_for_node_is_bounded_and_not_redelivered(self):
         self.bridge.heartbeat(self.page)
         queued = self.submit('wait_node', tool='canvas_wait_for_node', args={'nodeId': 'g1'})

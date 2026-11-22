@@ -114,3 +114,10 @@ for (const status of ['uploading','queued','running','finishing']) {
 }
 const uncertain3d = {type:'native3d',data:{status:'error',nativeRun:{opId:'x'},nativeSubmissionUncertain:true}};
 assert.equal(canvasHasActiveTask([uncertain3d]),true);
+
+const interruptedImport = {type:'native3d',data:{status:'uploading',nativeJobId:'old-job',
+  nativeSourceImport:{id:'upload-attempt',previous:{status:'completed',stage:'previous result'}}}};
+const coldImport = settleSavedNode(interruptedImport);
+assert.equal(coldImport.data.status,'completed');
+assert.equal(coldImport.data.nativeSourceImport,null);
+assert.equal(canvasHasActiveTask([coldImport]),false);

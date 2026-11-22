@@ -10,6 +10,8 @@ let project = { id: 'prj_native3d_fixture', name: 'Native3D fixture', revision: 
   canvas: { viewport: { x: 0, y: 0, zoom: 0.8 }, nodes: [
     { id: 'saved-model', type: 'native3d', position: { x: 150, y: 450 },
       data: { title: 'Saved model', operation: 'analyze', status: 'completed', assetPath: 'assets/cube.glb' } },
+    { id: 'pixal-glb', type:'media', position:{x:320,y:450}, data:{title:'Pixal result',kind:'model',output:true,
+      assetPath:'assets/'+'a'.repeat(64)+'.glb',filename:'lamp.glb',type:'output'} },
   ], edges: [] } };
 const browser = await chromium.launch({headless: true});
 try {
@@ -23,6 +25,7 @@ try {
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
     const json = data => route.fulfill({json:data});
+    if (url.href === 'https://docs.comfy.org/tutorials/3d/pixal3d') return route.fulfill({body:'Guide opened',contentType:'text/plain'});
     if (url.origin !== origin) return route.abort();
     if (url.pathname === '/api/projects/open') return json(project);
     if (url.pathname === '/api/projects/'+project.id) {
@@ -55,6 +58,24 @@ try {
   await page.locator('.react-flow__edge').waitFor();
   const capabilities = await call('canvas_native3d_capabilities', {});
   assert.equal(capabilities.ok, true, capabilities.error);
+  const direct = await call('canvas_connect_nodes', { sourceId:'pixal-glb', targetId:lod.node.id });
+  assert.equal(direct.ok,true,direct.error);
+  await call('canvas_update_node',{nodeId:lod.node.id,settings:{nativeParameters:{lodCount:5}}});
+  const updated=await call('canvas_update_node',{nodeId:lod.node.id,settings:{nativeParameters:{lodCount:2}}});
+  assert.equal(updated.ok,true,updated.error);
+  const cold = await context.newPage();
+  cold.on('pageerror',error=>errors.push(error.stack));
+  await cold.goto(origin);
+  await cold.waitForFunction(()=>window.fixtureTools.has('canvas_get_state'));
+  const state = await cold.evaluate(async (nodeId) => JSON.parse(await window.fixtureTools.get('canvas_get_state').execute({nodeId})),lod.node.id);
+  assert.equal(state.ok,true,state.error);
+  assert.equal(project.canvas.nodes.find(n=>n.id===lod.node.id).data.nativeParameters.lodCount,2);
+  assert.equal(project.canvas.edges.find(e=>e.target===lod.node.id&&e.targetHandle==='model').source,'pixal-glb');
+  await cold.getByTitle('添加元素',{exact:true}).click();
+  const guide=cold.getByRole('link',{name:'Pixal3D 节点与权重配置'});
+  assert.equal(await guide.getAttribute('href'),'https://docs.comfy.org/tutorials/3d/pixal3d');
+  const [popup] = await Promise.all([context.waitForEvent('page',{timeout:6000}),guide.click({timeout:5000})]);
+  await popup.waitForURL('https://docs.comfy.org/tutorials/3d/pixal3d');
   assert.deepEqual(errors,[]);
   console.log('NATIVE3D_CANVAS_SMOKE_OK');
 } finally { await browser.close(); }

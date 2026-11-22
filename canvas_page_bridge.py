@@ -187,6 +187,9 @@ class CanvasPageBridge:
         timeout = args.get("timeoutMs", PAGE_BRIDGE_WAIT_MS)
         if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1000 or timeout > PAGE_BRIDGE_WAIT_MS:
             raise StoreError("BAD_REQUEST", f"当前页通道的 canvas_wait_for_node 等待时间须在 1000–{PAGE_BRIDGE_WAIT_MS} 毫秒之间，避免占住页面命令。未结束时页面返回 pending，不会重新提交。")
+        job_id = args.get("jobId")
+        if "jobId" in args and (not isinstance(job_id, str) or not re.fullmatch(r"n3d_[a-f0-9]{32}", job_id)):
+            raise StoreError("BAD_REQUEST", "Invalid Native3D jobId.")
         bounded = dict(args)
         bounded["timeoutMs"] = timeout
         return bounded
