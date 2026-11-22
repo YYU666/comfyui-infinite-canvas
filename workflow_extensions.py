@@ -120,7 +120,8 @@ def validate_definition(definition, workflow, expected_id):
         require(isinstance(port, dict) and identifier(port.get("id")) and port["id"] not in inputs, "输入端口身份无效或重复。")
         display_fields(port)
         require(port.get("type") == "image" and port.get("list", False) is False, "首版仅支持单张图像输入端口；可声明多个端口。", "EXTENSION_UNSUPPORTED")
-        require(port.get("required", True) is True, "首版不支持可选图像端口。", "EXTENSION_UNSUPPORTED")
+        dual_body = isinstance(definition.get("execution"), dict) and (definition["execution"].get("version") == 3 and port["id"] == "image_body" or definition["execution"].get("version") in (4, 5) and port["id"] in ("image_body", "image_back"))
+        require(port.get("required", True) is True or dual_body, "首版不支持可选图像端口。", "EXTENSION_UNSUPPORTED")
         inputs[port["id"]] = port
     schema = definition.get("parameters")
     require(isinstance(schema, dict) and schema.get("type") == "object" and isinstance(schema.get("properties"), dict), "参数 JSON Schema 无效。")
@@ -228,7 +229,9 @@ def inspect_package(data):
         definition = read_json(contents[entry["definition"]], "definition")
         workflow = read_json(contents[entry["workflow"]], "workflow")
         if "execution" in definition:
-            require(manifest["compatibility"].get("workbenchVersion") == ">=1.0.2", "分阶段扩展必须声明工作台版本 >=1.0.2。")
+            execution = definition["execution"]
+            minimum = ">=1.0.6" if isinstance(execution, dict) and execution.get("version") in (2, 3, 4, 5) else ">=1.0.2"
+            require(manifest["compatibility"].get("workbenchVersion") == minimum, "分阶段扩展必须声明工作台版本 " + minimum + "。")
         validate_definition(definition, workflow, entry["nodeDefinitionId"])
         nodes.append({"definition": definition, "workflow": workflow})
     return {"digest": hashlib.sha256(data).hexdigest(), "manifest": manifest, "nodes": nodes}
@@ -346,7 +349,15 @@ class ExtensionStore:
         definition, workflow = chosen["definition"], copy.deepcopy(chosen["workflow"])
         inputs, parameters = payload.get("inputs", {}), payload.get("parameters", {})
         require(isinstance(inputs, dict) and isinstance(parameters, dict), "inputs 和 parameters 必须是对象。")
-        require(set(inputs) == {p["id"] for p in definition["inputs"]}, "图像输入缺失或包含未知端口。")
+        role_version = definition.get("execution", {}).get("version") if isinstance(definition.get("execution"), dict) else None
+        if role_version in (3, 4, 5):
+            declared_inputs = {port['id'] for port in definition['inputs']}
+            require({'image_identity'} <= set(inputs) <= declared_inputs, "身份参考图缺失或包含未知端口。")
+            inputs = dict(inputs)
+            if 'image_body' in declared_inputs and 'image_body' not in inputs:
+                inputs['image_body'] = inputs['image_identity']
+        else:
+            require(set(inputs) == {p["id"] for p in definition["inputs"]}, "图像输入缺失或包含未知端口。")
         for value in inputs.values():
             require(isinstance(value, str) and value and len(value) < 1024 and not any(c in value for c in "\\:\x00\r\n") and not value.startswith("/") and all(p not in {"", ".", ".."} for p in value.split("/")), "ComfyUI 图像文件名不安全。")
         properties = definition["parameters"]["properties"]
@@ -358,13 +369,22 @@ class ExtensionStore:
             scalar(value, spec, key)
             values[key] = value
         for binding in definition["bindings"]:
+            if role_version in (4, 5) and binding["sourceKind"] == "input" and binding["sourceId"] == "image_back" and "image_back" not in inputs:
+                continue  # The entire no-back graph is selected below; no fake rear image.
             workflow[binding["nodeId"]]["inputs"][binding["input"]] = (inputs if binding["sourceKind"] == "input" else values)[binding["sourceId"]]
         if "execution" in definition:
             from extension_stages import unpack_stages
             plan = unpack_stages(definition, workflow)
+            if role_version in (4, 5) and plan.get('referenceMode') in ('identityBack', 'identityBodyBack') and 'image_back' not in inputs:
+                from outfit_queue import without_back_plan, validate_plan
+                plan = validate_plan(without_back_plan(plan))
             for graph in [p["single"] for p in plan["panels"]] + [plan["stitch"]]:
                 validate_comfy(graph, object_info)
-            return {"plan": plan, "outputs": [{k: output[k] for k in ("id", "type", "nodeId")} for output in definition["outputs"]], "digest": digest}
+            outputs = [{k: output[k] for k in ("id", "type", "nodeId")} for output in definition["outputs"]]
+            if definition["execution"]["version"] >= 2:
+                for output in outputs:
+                    output["nodeId"] = output["nodeId"][len("stitch__"):]
+            return {"plan": plan, "outputs": outputs, "digest": digest}
         for node_id, node in workflow.items():
             if node["class_type"] in {"SaveImage", "SaveGLB"}:
                 node["inputs"]["filename_prefix"] = f"H3/extensions/{digest[:16]}/{node_id}"
@@ -377,7 +397,9 @@ def validate_compatibility(compatibility):
     if value is None:
         return
     require(isinstance(value, str) and value.strip(), "工作台版本范围无效。")
-    current = tuple(int(p) for p in APP_VERSION.split("."))
+    release = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+][A-Za-z0-9.-]+)?", APP_VERSION)
+    require(release is not None, "当前工作台版本无效。", "EXTENSION_UNSUPPORTED")
+    current = tuple(int(p) for p in release.groups())
     for clause in value.split():
         match = re.fullmatch(r"(>=|<=|>|<|=)?(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?(?:\.(0|[1-9][0-9]*))?", clause)
         require(match is not None, "暂不支持此工作台版本范围，请使用空格分隔的 >=、< 或精确版本。", "EXTENSION_UNSUPPORTED")

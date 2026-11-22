@@ -1,3 +1,4 @@
+import { CHARACTER_SHEET_SETTING_KEYS, validateCharacterSheetSettings } from './character-sheet-settings.js';
 import { useEffect, useRef } from 'react';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
@@ -51,6 +52,7 @@ export const NODE_PRESETS = {
 };
 
 const EDITABLE_SETTINGS = new Set([
+  ...CHARACTER_SHEET_SETTING_KEYS,
   'spriteInputPath', 'spriteOptions',
   'packChannels', 'packPreview',
   ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
@@ -76,6 +78,10 @@ export function describeNodeModels(data = {}) {
 }
 
 export function validateModelSettings(settings, mode) {
+  if (CHARACTER_SHEET_SETTING_KEYS.some(key => key in settings)) {
+    if (mode !== undefined && mode !== 'characterSheet') throw new Error('角色表参数仅适用于角色四视图。');
+    validateCharacterSheetSettings(settings);
+  }
   const choices = { adjustmentType: PHOTO_ADJUSTMENTS.map((item) => item.value), maskChannel: ['luminance', 'red', 'green', 'blue', 'alpha'], hslChannel: HSL_CHANNELS.map((item) => item.value), levelsChannel: LEVEL_CHANNELS.map((item) => item.value), curvesChannel: LEVEL_CHANNELS.map((item) => item.value), colorBalanceRange: ['shadows', 'midtones', 'highlights'], selectiveColorRange: ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'whites', 'neutrals', 'blacks'], channelMixerChannel: ['red', 'green', 'blue'] };
   for (const [key, allowed] of Object.entries(choices)) if (key in settings && !allowed.includes(settings[key])) throw new Error(`不支持的 ${key}。`);
   if ('packPreview' in settings && !['rgb', 'rgba', ...CHANNEL_KEYS].includes(settings.packPreview)) throw new Error('不支持的通道预览。');
@@ -177,6 +183,7 @@ export function nodeSummary(node, includeContent = true) {
       outfitUpscale: node.data.outfitUpscale || 'auto', upscaleModel: node.data.upscaleModel || 'seedvr2_3b',
       models: describeNodeModels(node.data),
     } : {}),
+    ...(node.data.mode === 'characterSheet' ? Object.fromEntries(CHARACTER_SHEET_SETTING_KEYS.filter(key => node.data[key] !== undefined && (includeContent || !['characterSheetBuild','characterSheetLegs','characterSheetTorso','characterSheetShoulders','characterSheetHips','characterSheetPosture','characterSheetPreserveTraits','characterSheetPortraitBrief'].includes(key))).map(key => [key, node.data[key]])) : {}),
     name: node.data.name || node.data.filename,
     position: node.position,
     selected: Boolean(node.selected),

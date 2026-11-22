@@ -40,6 +40,7 @@ const suites = {
     'test-versioned-canvas-models.mjs',
     'test-versioned-canvas-projects.mjs',
     'test-character-sheet-workflow.mjs',
+    'test-generic-character-sheet.mjs',
     'test-generation-queue.mjs',
     'test-flux3-klein.mjs',
     'test-h3-image.mjs',
