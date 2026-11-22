@@ -75,6 +75,8 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
       if (refs.filter((edge) => nodes.find((node) => node.id === edge.source)?.data.kind === source.data.kind).length >= limit) return fail(`此类参考最多连接 ${limit} 个素材。`);
     } else if (mode === 'customWorkflow' && source.data.kind === 'image' && target.data.workflowDefinition?.inputs?.some((port) => port.id === targetHandle && port.type === 'image' && !port.list)) {
       // Explicit single-image custom input.
+    } else if (mode === 'mossPose' && ['guide', 'identity'].includes(targetHandle) && source.data.kind === 'image' && !isMaskNode(source)) {
+      // One pose reference and one optional character sheet.
     } else if (mode === 'frames' && ['first', 'last'].includes(targetHandle) && source.data.kind === 'image') {
       // Keyframe inputs replace one existing source.
     } else if (['swap', 'upscale'].includes(mode) && ((targetHandle === 'guide' && source.data.kind === 'video') || (targetHandle === 'identity' && source.data.kind === 'image'))) {

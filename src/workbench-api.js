@@ -1421,7 +1421,7 @@ export function extractVideos(historyEntry) {
 }
 
 export function extractImages(historyEntry) {
-  return extractMedia(historyEntry, 'image').filter((file) => /^H3_(?:Image(?:_HD)?|MOSS_Image|Flux3Klein(?:_Edit)?|IdentityV2|Qwen21Edit|CharacterSheet|LocalRealism|OutfitQuad|OutfitSingle|OutfitHD)/i.test(file.filename));
+  return extractMedia(historyEntry, 'image').filter((file) => /^H3_(?:Image(?:_HD)?|MOSS_Image|MOSSPose(?:_Identity)?|Flux3Klein(?:_Edit)?|IdentityV2|Qwen21Edit|CharacterSheet|LocalRealism|OutfitQuad|OutfitSingle|OutfitHD)/i.test(file.filename));
 }
 
 async function waitForOutfitPrompt(promptId) {

@@ -1,4 +1,5 @@
 import { CHARACTER_SHEET_SETTING_KEYS, validateCharacterSheetSettings } from './character-sheet-settings.js';
+import { MOSS_POSE_DEFAULTS, validateMossPoseSettings } from './moss-pose.js';
 import { useEffect, useRef } from 'react';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
@@ -13,6 +14,7 @@ import { DEFAULT_SPRITE_OPTIONS, spriteSnapshot } from './sprite-atlas.js';
 import { imageCompactArgs } from './image-inline-output.js';
 
 export const NODE_PRESETS = {
+  moss_pose: ['generator', { ...MOSS_POSE_DEFAULTS, mode: 'mossPose', title: 'MOSS 姿势控制' }],
   sprite_atlas: ['spriteAtlas', { title: '3D 角色转多方向图集', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS } }],
   art_director: ['artDirector', { title: '电子主美 · 图解分析', brief: '', preserve: '', referencePurposes: {} }],
   color_adjust: ['imageProcess', { ...DEFAULT_ADJUSTMENTS, mode: 'colorAdjust', title: '颜色调整' }],
@@ -53,6 +55,7 @@ export const NODE_PRESETS = {
 
 const EDITABLE_SETTINGS = new Set([
   ...CHARACTER_SHEET_SETTING_KEYS,
+  'poseInput', 'poseResolution', 'poseSteps', 'poseCfg', 'poseLoraStrength',
   'spriteInputPath', 'spriteOptions',
   'packChannels', 'packPreview',
   ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
@@ -82,6 +85,7 @@ export function validateModelSettings(settings, mode) {
     if (mode !== undefined && mode !== 'characterSheet') throw new Error('角色表参数仅适用于角色四视图。');
     validateCharacterSheetSettings(settings);
   }
+  if (mode === 'mossPose') validateMossPoseSettings(settings);
   const choices = { adjustmentType: PHOTO_ADJUSTMENTS.map((item) => item.value), maskChannel: ['luminance', 'red', 'green', 'blue', 'alpha'], hslChannel: HSL_CHANNELS.map((item) => item.value), levelsChannel: LEVEL_CHANNELS.map((item) => item.value), curvesChannel: LEVEL_CHANNELS.map((item) => item.value), colorBalanceRange: ['shadows', 'midtones', 'highlights'], selectiveColorRange: ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'whites', 'neutrals', 'blacks'], channelMixerChannel: ['red', 'green', 'blue'] };
   for (const [key, allowed] of Object.entries(choices)) if (key in settings && !allowed.includes(settings[key])) throw new Error(`不支持的 ${key}。`);
   if ('packPreview' in settings && !['rgb', 'rgba', ...CHANNEL_KEYS].includes(settings.packPreview)) throw new Error('不支持的通道预览。');
@@ -213,7 +217,7 @@ function defaultTargetHandle(target, source) {
   if (['reference', 'qwenEdit'].includes(mode)) return 'references';
   if (mode === 'frames') return source?.data.slot === 'last' ? 'last' : 'first';
   if (['swap', 'upscale'].includes(mode)) return source?.data.kind === 'video' ? 'guide' : 'identity';
-  if (['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode)) return 'guide';
+  if (['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism', 'mossPose'].includes(mode)) return 'guide';
   throw new Error('这个生成模式不接受素材连线。');
 }
 

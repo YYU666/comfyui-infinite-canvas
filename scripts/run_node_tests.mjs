@@ -10,6 +10,7 @@ const suites = {
     'browser_video_validation.test.mjs',
     'test-canvas-file-location.mjs',
     'test-image-export.mjs',
+    'test-moss-pose.mjs',
     'test-model-licenses.mjs',
     'test-node-library-publish.mjs',
     'test-sprite-atlas.mjs',
@@ -70,6 +71,7 @@ const suites = {
   browser: [
     'test-image-inline-compact-ui.mjs',
     'test-image-export-ui.mjs',
+    'test-moss-pose-ui.mjs',
     'test-sprite-atlas-ui.mjs',
     'test-pureref-import-ui.mjs',
     'test-art-director-ui.mjs',
