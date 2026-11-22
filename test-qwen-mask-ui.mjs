@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from './test-browser.mjs';
+import { installedImageModelDefinitions } from './test-image-model-fixture.mjs';
 
 // Synthetic browser fixture: every request is intercepted; no live inference/service.
 const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 const origin = 'http://127.0.0.1:8799';
 const browser = await chromium.launch({ headless: true });
 const failures = [], queued = [];
+const definitions = installedImageModelDefinitions('standard', { editing: true, hasMask: true, hasMaskCrop: true });
 const makeProject = (readOnly = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen references fixture', revision: 1, readOnly, shots: [], canvas: {
   viewport: { x: 20, y: 30, zoom: 0.9 },
   nodes: [
@@ -55,6 +57,10 @@ async function fixture(readOnly = false) {
     if (url.pathname === '/api/queue') {
       if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: 'job-fixture', status: 'queued' }); }
       return json({ jobs: [] });
+    }
+    if (url.pathname.startsWith('/api/comfy/object_info/')) {
+      const name = decodeURIComponent(url.pathname.split('/').at(-1));
+      return json(definitions[name] ? { [name]: definitions[name] } : {});
     }
     if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
     if (url.pathname.startsWith('/api/')) return json({});
@@ -127,7 +133,8 @@ try {
   assert.equal(queued.length, 0);
   await call('canvas_connect_nodes', { sourceId: 'image1', targetId: mask.id });
   await page.getByLabel('局部放大重绘', { exact: true }).check();
-  await call('canvas_generate_node', { nodeId: 'qwen' });
+  const run = await call('canvas_generate_node', { nodeId: 'qwen' });
+  assert.equal(run.ok, true, run.error);
   assert.equal(queued.length, 1);
   const busyBefore = await call('canvas_get_state');
   assert.match(JSON.stringify(await call('canvas_connect_nodes', { sourceId: mask.id, targetId: 'qwen', targetHandle: 'mask' })), /生成期间|正在生成/);

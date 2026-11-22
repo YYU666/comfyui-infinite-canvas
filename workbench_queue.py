@@ -342,7 +342,8 @@ class QueueManager:
                 reason = None
             except (KeyError, ValueError):
                 graph, reason = None, "四张图片尚未全部保存，拼接输入不可用。"
-            add("stitch", "最终拼接", graph, submitted[4] if len(submitted) > 4 else None, len(submitted) > 4, reason)
+            stitch_index = len(plan["panels"])
+            add("stitch", "最终拼接", graph, submitted[stitch_index] if len(submitted) > stitch_index else None, len(submitted) > stitch_index, reason)
         else:
             for index, panel in enumerate(plan["panels"]):
                 current = index == state.get("panelIndex")

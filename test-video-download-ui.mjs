@@ -48,9 +48,11 @@ async function fixture(readOnly = false) {
     }
     if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'native fixture only' }, 503);
     if (url.pathname === '/api/import-video') {
-      downloads.push(request.postDataJSON());
+      const body = request.postDataJSON();
+      downloads.push(body);
+      if (String(body.url).includes('fail-download')) return json({ error: '无法加载这个视频链接。请确认视频公开可访问。' }, 400);
       await new Promise(resolve => { releaseDownload = resolve; });
-      return json({ name: 'download-fixture.mp4', title: 'Downloaded fixture video', sourceUrl: request.postDataJSON().url });
+      return json({ name: 'download-fixture.mp4', title: 'Downloaded fixture video', sourceUrl: body.url });
     }
     if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
     if (url.pathname === '/api/queue') {
@@ -126,6 +128,39 @@ try {
   assert.equal((await capacity.call('canvas_get_state')).nodes.filter(n=>n.kind==='video').length,3,'capacity rechecked after download');
   assert.match(await capacity.page.getByTestId('rf__node-welcome').innerText(),/最多连接 3/);
   await capacity.context.close();
+  const agent = await fixture();
+  const quick = await agent.call('canvas_download_video', { nodeId: 'download2', url: 'https://www.youtube.com/watch?v=agentTest1', wait: false });
+  assert.equal(quick.ok, true, JSON.stringify(quick));
+  assert.equal(quick.status, 'queued');
+  assert.equal(quick.nodeId, 'download2');
+  assert.ok(quick.jobId);
+  await agent.page.waitForFunction(() => document.querySelector('#video-url-download2').value.includes('youtube.com/watch?v=agentTest1'));
+  await agent.waitFor(() => agent.downloads.length === 1);
+  const mid = await agent.call('canvas_get_state', { nodeId: 'download2' });
+  assert.equal(mid.nodes[0].downloadStatus, 'downloading');
+  assert.equal(mid.nodes[0].downloadJobId, quick.jobId);
+  assert.match(mid.nodes[0].message, /下载/);
+  assert.equal(mid.nodes[0].sourceUrl, 'https://www.youtube.com/watch?v=agentTest1');
+  await agent.releaseDownload();
+  await agent.waitFor(() => agent.saved().canvas.nodes.some((node) => node.data.kind === 'video'));
+  const done = await agent.call('canvas_get_state', { nodeId: 'download2' });
+  assert.equal(done.nodes[0].downloadStatus, 'done');
+  assert.ok(done.nodes[0].videoNodeId);
+  const placed = (await agent.call('canvas_get_state')).nodes.find((node) => node.id === done.nodes[0].videoNodeId);
+  assert.equal(placed.kind, 'video');
+  assert.equal((await agent.call('canvas_get_state')).edges.some((edge) => edge.source === placed.id || edge.target === placed.id), false);
+  await agent.context.close();
+
+  const failed = await fixture();
+  const bad = await failed.call('canvas_download_video', { nodeId: 'download1', url: 'https://example.com/fail-download', wait: true });
+  assert.equal(bad.ok, false, JSON.stringify(bad));
+  assert.equal(JSON.stringify(bad).includes('s3cret'), false);
+  const failedState = await failed.call('canvas_get_state', { nodeId: 'download1' });
+  assert.equal(failedState.nodes[0].downloadStatus, 'failed');
+  assert.match(failedState.nodes[0].message, /无法加载/);
+  assert.match(await failed.page.locator('#video-url-download1').inputValue(), /fail-download/);
+  await failed.context.close();
+
   assert.equal(queued.length,0); assert.deepEqual(failures,[]);
-  console.log('VIDEO_DOWNLOAD_UI_OK save barrier, project-switch/unload guard, serial import, reload persistence, deleted target and capacity recheck');
+  console.log('VIDEO_DOWNLOAD_UI_OK save barrier, project-switch/unload guard, serial import, reload persistence, deleted target, capacity recheck, agent download command');
 } finally { await browser.close(); }

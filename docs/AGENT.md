@@ -56,6 +56,8 @@ GET  /api/agent/canvas/commands/<opId>
 
 `current` 返回 `epoch/sessionId/projectId`。`projectId` 只在 `visible:true` 的页面里筛选；没有可操作页，或目标只在隐藏／只读页上，返回 `NO_VISIBLE_CANVAS`。多个可见候选且无法唯一确定时返回 `AMBIGUOUS_CANVAS`。不自动创建页面。页面心跳只由前端发送。
 
+当前页可使用 `canvas_download_video` 下载分享链接。必填 `url`，可选 `nodeId`、成对的 `x` 和 `y`；`wait` 默认为 `false`。进度见下载节点。
+
 提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","wait":false}`。显式传入的 `wait` 只要不是 `false`，页桥就返回 400。实际执行发生在现有页面。命令回执 `done` 且 `result.ok` 为真，只表示页面工具已返回；生成终态仍以当前页节点为准。
 
 等待完成用下面之一，不要紧循环打 `canvas_get_state`：
@@ -124,6 +126,11 @@ GET  /api/agent/resources/<protocol|context|schema>
 ```
 
 `status` 仅支持 `active` 和 `paused`。暂停是供其他 Agent 遵循的协调信号，不是硬锁：不会取消生成、不阻止浏览器保存，也不替代 revision/CAS。`handoff` 保存在项目 `settings` 中，旧项目缺省时返回空接力，无需迁移；增量状态会用 `changed: ["handoff"]` 报告变化。画布顶栏“接力”也可填写相同内容。
+
+## 图片自动选模
+
+文生图和图生图在生成前会按任务、已安装模型和收下/否掉历史选择现有下拉里的模型。手动改下拉或点名模型会锁定该节点。用法、评分和 `settings.imageModelHistory` 见 `docs/image-model-picker.md`。当前侧面页的工具是 `canvas_pick_image_model`、`canvas_review_image`；`canvas_generate_node` 会在提交前自动选一次。
+
 
 ## CLI
 

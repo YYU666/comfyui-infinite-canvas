@@ -1,4 +1,8 @@
 import { inlineImageView, compactInlineImages, imageCompactArgs } from './image-inline-output.js';
+import CharacterSheetControls from './CharacterSheetControls.jsx';
+import { CHARACTER_SHEET_STAGES } from './character-sheet-settings.js';
+import VideoSuperResolutionNode from './VideoSuperResolutionNode.jsx';
+import { buildVideoSuperResolutionWorkflow, getVideoSuperResolutionDependencyStatus } from './video-super-resolution.js';
 import { isH3Image, resolveH3ImageDimensions, getH3ImageDependencyStatus } from './h3-image.js';
 import {DEFAULT_GENERATOR, initialCanvas, migrateCanvas} from './canvas-migration.js';
 import {createProjectAccessRecovery, retryCurrentProjectSave} from './project-save-recovery.js';
@@ -38,11 +42,17 @@ import { isMaskNode, maskSourceKey, canvasMaskGuide, qwenCanvasMask, validateCan
 import { planCanvasConnection } from './canvas-connections';
 import ImageLightbox from './ImageLightbox';
 import ModelLicenseNotice from './ModelLicenseNotice.jsx';
+import MossPoseNode from './MossPoseNode.jsx';
+import { buildMossPoseWorkflow, getMossPoseDependencyStatus } from './moss-pose.js';
 import { useCanvasMcp, NODE_PRESETS, describeNodeModels } from './canvas-mcp';
+import { publicDownloadError, validatePublicVideoUrl, videoDownloadSignal } from './video-download.js';
+import { readImageModelInstall } from './image-model-install.js';
+import { appendImageReview, createImageReview, imageModelLabel as imageChoiceLabel, imageResultKey, normalizeImageHistory, planImageModelPick } from './image-model-picker.js';
 import { LOCAL_NODE_TOOLS } from './local-node-tools';
 import WorkflowInspector from './WorkflowInspector';
 import ReferenceLibrary, { REFERENCE_LIBRARIES } from './ReferenceLibrary';
 import NodeLibrary from './NodeLibrary';
+import { createPublishLedger } from './node-library-publish.js';
 import WorkflowLibrary from './WorkflowLibrary';
 import WorkflowDependencies from './WorkflowDependencies';
 import WorkflowShare from './WorkflowShare';
@@ -79,6 +89,21 @@ import { copyPureRefResource, pureRefImageNodes } from './pureref-import.js';
 import { DEFAULT_ADJUSTMENTS } from './image-compositing';
 import { isImageProcess, imageProcessPorts, imageProcessSnapshot } from './image-process-graph';
 import { renderImageProcess } from './image-process-runtime';
+import VideoRhythmNode from './VideoRhythmNode';
+import { defaultSpeedSettings, defaultRemapKeyframes } from './video-rhythm-document';
+import { createVideoRhythmRunner } from './video-rhythm-runtime';
+import VideoChromaKeyNode from './VideoChromaKeyNode';
+import { createVideoChromaRunner } from './video-chroma-runtime';
+import { defaultChromaSettings } from './video-chroma-document';
+import VideoRepairNode from './VideoRepairNode';
+import { createVideoRepairRunner } from './video-repair-runtime';
+import { defaultRepairSettings, repairSourceSignature } from './video-repair-document';
+import VideoPlateNode from './VideoPlateNode';
+import { createVideoPlateRunner } from './video-plate-runtime';
+import { defaultPlateSettings } from './video-plate-document';
+import VideoEditorNode from './VideoEditorNode';
+import { defaultVideoEditDocument, videoEditInputView } from './video-edit-document';
+import { createVideoEditRunner } from './video-edit-runtime';
 import { assetUrl } from './project-store-http';
 import { useLocalConnection } from './use-local-connection';
 import { localConnectionPresentation } from './local-connection';
@@ -87,9 +112,9 @@ import { downloadDoctorLogs } from './doctor-client';
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
 const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' };
+const KIND_LABEL = { image: '图片', video: '视频', audio: '音频', model: 'GLB 模型' };
 
-const KIND_ICON = { image: ImageIcon, video: Video, audio: Music2 };
+const KIND_ICON = { image: ImageIcon, video: Video, audio: Music2, model: ArrowDownToLine };
 
 const formatGb = (bytes) => Number.isFinite(bytes) ? (bytes / 1024 ** 3).toFixed(1) : '--';
 
@@ -163,26 +188,32 @@ function NoteNode({ id, data, selected }) {
   const [error, setError] = useState('');
   const isGuide = id === 'welcome';
   const isVideoDownload = data.noteRole === 'videoDownload';
+  const downloading = importing || (isVideoDownload && ['queued', 'downloading'].includes(data.downloadStatus));
   const videoInputId = isGuide ? 'video-url-input' : `video-url-${id}`;
+  useEffect(() => {
+    if (!isVideoDownload || typeof data.downloadUrl !== 'string' || data.downloadStatus === 'done') return;
+    setUrl(data.downloadUrl);
+  }, [isVideoDownload, data.downloadUrl, data.downloadStatus]);
   const submitUrl = async (event) => {
     event.preventDefault();
-    if (!url.trim() || importing) return;
+    if (!url.trim() || downloading) return;
     setImporting(true); setError('');
     try { await importVideoReference(url.trim(), isVideoDownload ? id : null); setUrl(''); }
-    catch (reason) { setError(reason.message || '视频加载失败，请重试。'); }
+    catch (reason) { setError(publicDownloadError(reason)); }
     finally { setImporting(false); }
   };
+  const shownError = error || (isVideoDownload && data.downloadStatus === 'failed' ? data.downloadMessage : '');
   return <div className={`note-shell ${isGuide ? 'guide-note' : ''} ${selected ? 'selected' : ''}`}>
     <NodeTitle id={id} data={data} kind="note" /><NodeActions id={id} data={data} selected={selected} />
     {!isVideoDownload && <textarea className="nodrag nowheel" value={data.text || ''} onChange={(e) => updateNode(id, { text: e.target.value })} placeholder="写下分镜、角色设定或创作备注……" />}
     {(isGuide || isVideoDownload) && <form className="video-url-import nodrag nowheel" onSubmit={submitUrl} onDoubleClick={(event) => event.stopPropagation()}>
       <label htmlFor={videoInputId}><Link2 size={13} />{isVideoDownload ? '视频链接下载' : '手机分享链接加载参考'}</label>
       <div className="video-url-row">
-        <input id={videoInputId} type="text" inputMode="url" autoComplete="off" spellCheck={false} value={url} disabled={importing} onChange={(event) => setUrl(event.target.value)} placeholder="粘贴抖音 / 小红书分享文字或链接" required />
-        <button type="submit" disabled={importing || !url.trim()} title={isVideoDownload ? '下载并添加到画布' : '提取链接并连接为视频参考'} aria-label="加载视频链接">{importing ? <LoaderCircle className="spin" size={14} /> : <ArrowDownToLine size={14} />}</button>
+        <input id={videoInputId} type="text" inputMode="url" autoComplete="off" spellCheck={false} value={url} disabled={downloading} onChange={(event) => setUrl(event.target.value)} placeholder="粘贴抖音 / 小红书分享文字或链接" required />
+        <button type="submit" disabled={downloading || !url.trim()} title={isVideoDownload ? '下载并添加到画布' : '提取链接并连接为视频参考'} aria-label="加载视频链接">{downloading ? <LoaderCircle className="spin" size={14} /> : <ArrowDownToLine size={14} />}</button>
       </div>
-      <span>{importing ? '正在解析并下载到本机，请保持窗口开启……' : '支持 App 复制的一整段分享内容，会自动提取短链接。'}</span>
-      {error && <p className="video-url-error">{error}</p>}
+      <span>{downloading ? (data.downloadMessage || '正在解析并下载到本机，请保持窗口开启……') : isVideoDownload && data.downloadStatus === 'done' ? '下载完成，视频已放在右侧。' : '支持 App 复制的一整段分享内容，会自动提取短链接。'}</span>
+      {shownError && <p className="video-url-error">{shownError}</p>}
     </form>}
   </div>;
 }
@@ -259,6 +290,11 @@ function MediaNode({ id, data, selected }) {
     const result = await chooseMedia(id, file, null, maskNode ? { maskSourceId: maskGuide.id, maskSourceKey: maskSourceKey(maskGuide) } : {});
     if (!result?.ok) throw new Error(result?.error?.message || '素材保存失败，请重试。');
   };
+  if (kind === 'model') return <div className={`media-shell media-model ${selected ? 'selected' : ''}`}>
+    <NodeTitle id={id} data={data} kind="media" /><NodeActions id={id} data={data} selected={selected} />
+    <div className="media-empty"><ArrowDownToLine size={24} /><strong>{data.name || 'GLB 模型'}</strong>{data.url && <a className="nodrag" href={data.url} download={data.name}>下载 GLB</a>}</div>
+    <Handle type="target" position={Position.Left} id="preview" className="neo-handle target" />
+  </div>;
   return <div className={`media-shell media-${kind} ${kind === 'image' ? 'image-node' : ''} ${selected ? 'selected' : ''} ${data.pinned ? 'pinned' : ''}`}>
     <NodeTitle id={id} data={data} kind="media" /><NodeActions id={id} data={data} selected={selected} />
     <div className={`media-preview ${!data.url ? 'empty' : ''}`} title={maskGuide ? '单击在母图上绘制遮罩' : kind === 'image' && data.url ? '双击预览大图' : undefined} onDoubleClick={(event) => {
@@ -304,7 +340,7 @@ function CustomWorkflowNode({ id, data, selected }) {
     <NodeTitle id={id} data={data} kind="generator" /><NodeActions id={id} data={data} selected={selected} generator />
     <ResultSettingsToggle presentation={presentation} />
     <div className="custom-workflow-identity" title={data.extensionDigest}>{data.extensionPackageId} · {data.extensionVersion} · {data.extensionDigest?.slice(0, 12)}</div>
-    {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
+    {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'model' ? <a className="nodrag" href={data.resultUrl} download>下载 GLB</a> : data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
     {(data.workflowDefinition?.inputs || []).map((port, index, ports) => <div className="custom-workflow-port" key={port.id} style={{ "--compact-port-top": `${20 + index * 60 / Math.max(1, ports.length - 1)}%` }}><Handle type="target" position={Position.Left} id={port.id} title={port.label || port.name || port.id} className="neo-handle target" /><strong>{port.label || port.name || port.id}</strong> · {port.required ? '必填图片' : '可选图片'}<span> · {refs.find((ref) => ref.data.slot === port.id)?.data.title || '未连接'}</span></div>)}
     <div className="custom-workflow-params nodrag nowheel">{Object.entries(data.workflowDefinition?.parameters?.properties || {}).map(([key, field]) => {
       const value = data.workflowParameters?.[key] ?? field.default ?? (field.type === 'boolean' ? false : '');
@@ -316,17 +352,22 @@ function CustomWorkflowNode({ id, data, selected }) {
     {data.dependencyWarning && <p className="custom-workflow-error">{data.dependencyWarning}</p>}
     <div className="custom-workflow-footer"><span>{data.stage || '固定版本 · 本地工作流'}{running ? ` ${data.progress || 0}%` : ''}</span><button className="node-share-button nodrag" disabled={running} onClick={() => checkNodeDependencies(id)}>检查依赖</button><button className="node-share-button nodrag" disabled={running} aria-label="上传此节点" title="上传此节点到节点库" onClick={() => openNodeShare(id)}><Upload size={14} /></button><button className="send-button nodrag" aria-label={running ? '取消工作流' : '运行工作流'} disabled={!running && !serverOnline} onClick={() => running ? cancelNode(id) : generateNode(id)}>{running ? <Square size={16} /> : <ArrowUp size={16} />}</button></div>
     <Handle type="source" position={Position.Right} id="image" className="neo-handle source" /><Handle type="source" position={Position.Right} id="video" style={{ top: '65%' }} className="neo-handle source" />
+    {data.workflowDefinition?.outputs?.some((output) => output.type === 'model') && <Handle type="source" position={Position.Right} id="model" style={{ top: '80%' }} className="neo-handle source" />}
   </div>;
 }
 
 function GeneratorNode(props) {
+  const actions = useContext(NodeContext);
+  if (props.data.mode === 'mossPose') return <MossPoseNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} nodeActions={<NodeActions id={props.id} data={props.data} selected={props.selected} generator />} />;
+  if (props.data.mode === 'videoSuperResolution') return <VideoSuperResolutionNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} nodeActions={<NodeActions id={props.id} data={props.data} selected={props.selected} generator />} />;
   return props.data.mode === 'customWorkflow' ? <CustomWorkflowNode {...props} /> : <BuiltinGeneratorNode {...props} />;
 }
 
 function BuiltinGeneratorNode({ id, data, selected }) {
-  const presentation = useResultPresentation(data, data.resultUrl);
+  const presentation = useResultPresentation(data, data.resultUrl, false, data.mode === 'qwenEdit' && selected);
+  const [sheetAdvanced, setSheetAdvanced] = useState(false);
   const {
-    updateNode, generateNode, cancelNode, serverOnline, getReferences,
+    updateNode, generateNode, cancelNode, reviewImageNode, serverOnline, getReferences,
     getMentionItems, attachFilesToGenerator, openImagePreview, viewTier, openNodeShare, changeQwenReferences, addQwenMask, getQwenMask, readOnly,
   } = useContext(NodeContext);
   const promptEditorRef = useRef(null);
@@ -344,6 +385,9 @@ function BuiltinGeneratorNode({ id, data, selected }) {
   const models = describeNodeModels(data);
   const imageFamily = ['image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode);
   const refs = getReferences(id);
+  const bodyReference = mode === 'characterSheet' ? refs.find(ref=>ref.data.slot==='body_reference') : null;
+  const dualSheet = Boolean(bodyReference);
+  const backReference = mode === 'characterSheet' ? refs.find(ref=>ref.data.slot==='back_reference') : null;
   const mask = mode === 'qwenEdit' ? getQwenMask(id) : null;
   const descriptors = referenceDescriptors(refs);
   const guide = refs.find((node) => node.data.slot === 'guide');
@@ -353,7 +397,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
   const [outputWidth, outputHeight] = ['outfitEdit', 'qwenEdit', 'characterSheet', 'localRealism'].includes(mode) ? [0, 0] : ['image', 'identityEdit'].includes(mode) ? h3Image ? resolveH3ImageDimensions(data.ratio, data.h3ImageResolution) : resolveImageDimensions(data.ratio, isFlux3 ? data.flux3Resolution || '1MP' : undefined) : resolveDimensions(data.ratio, resolution);
   const switchMode = (nextMode) => updateNode(id, { mode: nextMode, error: null });
   const placeholder = mode === 'characterSheet' ? '连接一张角色参考，依次生成四张，再拼成整图' : mode === 'localRealism' ? '连接正面人像，只修复皮肤，不重绘五官' : mode === 'outfitEdit' ? '连接母图与穿搭，按原版面分别换装后合成' : mode === 'qwenEdit' ? '连接参考图片，用图1、图2描述修改目标' : mode === 'identityEdit' ? '连接母图，保持身份并修改姿态、穿搭或场景' : mode === 'image' ? '本地生成人物、场景和分镜参考图' : mode === 'imageUpscale' ? '图片独立高清 · 连接图片后按需运行' : mode === 'swap' ? '源视频换人 · 保留动作、镜头与原音轨' : mode === 'upscale' ? '独立高清二采 · 需要时才运行' : mode === 'reference' ? '用图、文、音、视频共同定义新镜头' : mode === 'frames' ? '首尾帧生成视频' : '输入提示词生成视频';
-  const modelLabel = mode === 'characterSheet' ? `Qwen 2.1 标准版 · 四张原生 9:16 · ${data.qwenSteps || 40} 步 · 无高清` : mode === 'localRealism' ? `Qwen 2.1 · 皮肤区域重绘 · 原图回贴 · ${data.localRealismSteps || 25} 步` : mode === 'outfitEdit' ? `${models.outfitModelLabel} · ${models.outfitSteps} 步 · ${models.outfitHdLabel}` : mode === 'qwenEdit' ? `${models.qwenModelLabel} · 原图比例 · ${models.qwenSteps} 步` : mode === 'identityEdit' ? 'Identity Edit V2 · 参考强度 4 · 8 步' : mode === 'image' ? `${imageModelLabel} · ${h3Image ? data.h3ImageResolution || '4MP' : isFlux3 ? data.flux3Resolution || '1MP' : '约 1MP'} · ${imageSteps} 步` : mode === 'imageUpscale' ? `${models.upscaleModelLabel} · 保真色彩` : mode === 'swap' ? 'Character Swap v1.5 · 潜空间遮罩 · SAM3.1' : mode === 'upscale' ? 'H3 3D Latent 放大 · 4 步 Turbo · 原音轨' : 'MiniMax H3 · 本地生成 · 24 FPS';
+  const modelLabel = mode === 'characterSheet' ? `Qwen 2.1 标准版 · ${CHARACTER_SHEET_STAGES[data.characterSheetStage || 'all']} · ${data.qwenSteps || 40} 步 · 无高清` : mode === 'localRealism' ? `Qwen 2.1 · 皮肤区域重绘 · 原图回贴 · ${data.localRealismSteps || 25} 步` : mode === 'outfitEdit' ? `${models.outfitModelLabel} · ${models.outfitSteps} 步 · ${models.outfitHdLabel}` : mode === 'qwenEdit' ? `${models.qwenModelLabel} · 原图比例 · ${models.qwenSteps} 步` : mode === 'identityEdit' ? 'Identity Edit V2 · 参考强度 4 · 8 步' : mode === 'image' ? `${imageModelLabel} · ${h3Image ? data.h3ImageResolution || '4MP' : isFlux3 ? data.flux3Resolution || '1MP' : '约 1MP'} · ${imageSteps} 步` : mode === 'imageUpscale' ? `${models.upscaleModelLabel} · 保真色彩` : mode === 'swap' ? 'Character Swap v1.5 · 潜空间遮罩 · SAM3.1' : mode === 'upscale' ? 'H3 3D Latent 放大 · 4 步 Turbo · 原音轨' : 'MiniMax H3 · 本地生成 · 24 FPS';
   const outfitLayout = data.outfitLayout || 'legacy';
   const customOutfitPanels = outfitLayout === 'custom' && Array.isArray(data.outfitPanels) && data.outfitPanels.length === 4 ? data.outfitPanels : resolveOutfitPanels({ outfitLayout: 'equalGrid' });
   const changeOutfitLayout = (layout) => {
@@ -366,7 +410,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
     error: null,
   });
 
-  return <div className={`generator-shell h3-node ${presentation.compact ? 'result-compact' : ''} ${mode === 'swap' ? 'swap-node' : ''} ${imageFamily ? 'image-generator-node' : ''} ${selected ? 'selected' : ''} ${running ? 'running' : ''} ${data.pinned ? 'pinned' : ''}`}>
+  return <div className={`generator-shell h3-node ${presentation.compact ? 'result-compact' : ''} ${mode === 'characterSheet' ? `character-sheet-native ${sheetAdvanced ? 'advanced-open' : ''}` : ''} ${mode === 'swap' ? 'swap-node' : ''} ${imageFamily ? 'image-generator-node' : ''} ${selected ? 'selected' : ''} ${running ? 'running' : ''} ${data.pinned ? 'pinned' : ''}`}>
     <NodeTitle id={id} data={data} kind="generator" /><NodeActions id={id} data={data} selected={selected} generator />
     <ResultSettingsToggle presentation={presentation} />
     <div className="generator-preview" title={imageFamily && data.resultUrl ? '双击预览大图' : undefined} onDoubleClick={(event) => {
@@ -384,7 +428,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
       </div>}
       {running && <div className="generation-overlay"><div><i style={{ width: `${data.progress || 3}%` }} /></div><span>{data.stage} · {data.progress || 0}%</span></div>}
     </div>
-    <div className="generator-subline"><span>{mode === 'characterSheet' ? `单格 1152 × 2048 · 整图 2304 × 4096 · ${data.qwenSteps || 40} 步` : mode === 'localRealism' ? `原图尺寸 · 局部 ${data.localRealismSize || 768} · 保护未选区域` : mode === 'outfitEdit' ? `${data.outfitPanel ? '单视图' : '四张单图'} · ${models.outfitHdLabel} · ${(data.outfitLayout || 'legacy') === 'legacy' ? '旧版拼接' : '原版面合成'}` : mode === 'qwenEdit' ? h3Image ? `保持图1比例 · ${data.h3ImageResolution || '4MP'} · 6 步` : isFlux3 ? `保持图1比例 · ${data.flux3Resolution || '1MP'} · 16 步` : `继承原图比例 · 参考精度 ${data.qwenRefResolution || 1024} · ${models.qwenSteps} 步` : ['image', 'identityEdit'].includes(mode) ? `${data.ratio} · ${outputWidth} × ${outputHeight} · ${imageSteps} 步` : mode === 'imageUpscale' ? `${data.imageScale || 1.5} 倍 · 独立图片高清` : `${data.ratio} · ${resolution}${mode === 'upscale' ? ' · 独立二采' : ` · ${data.duration} 秒`}`}</span><b>{data.status === 'done' ? '已完成' : mode === 'characterSheet' ? 'Qwen 2.1 · 无高清' : mode === 'outfitEdit' ? models.outfitModelLabel : mode === 'qwenEdit' ? models.qwenModelLabel : mode === 'identityEdit' ? 'Identity V2' : mode === 'image' ? `${imageModelLabel} 生图` : mode === 'imageUpscale' ? 'SeedVR2 高清' : mode === 'swap' ? 'H3 换人 v1.5' : mode === 'upscale' ? 'H3 高清二采' : 'H3 INT8'}</b></div>
+    <div className="generator-subline"><span>{mode === 'characterSheet' ? `${(data.characterSheetStage || 'all') === 'all' ? '单格 1152 × 2048 · 整图 2304 × 4096' : `${CHARACTER_SHEET_STAGES[data.characterSheetStage]} · 1152 × 2048`} · ${data.qwenSteps || 40} 步` : mode === 'localRealism' ? `原图尺寸 · 局部 ${data.localRealismSize || 768} · 保护未选区域` : mode === 'outfitEdit' ? `${data.outfitPanel ? '单视图' : '四张单图'} · ${models.outfitHdLabel} · ${(data.outfitLayout || 'legacy') === 'legacy' ? '旧版拼接' : '原版面合成'}` : mode === 'qwenEdit' ? h3Image ? `保持图1比例 · ${data.h3ImageResolution || '4MP'} · 6 步` : isFlux3 ? `保持图1比例 · ${data.flux3Resolution || '1MP'} · 16 步` : `继承原图比例 · 参考精度 ${data.qwenRefResolution || 1024} · ${models.qwenSteps} 步` : ['image', 'identityEdit'].includes(mode) ? `${data.ratio} · ${outputWidth} × ${outputHeight} · ${imageSteps} 步` : mode === 'imageUpscale' ? `${data.imageScale || 1.5} 倍 · 独立图片高清` : `${data.ratio} · ${resolution}${mode === 'upscale' ? ' · 独立二采' : ` · ${data.duration} 秒`}`}</span><b>{data.status === 'done' ? '已完成' : mode === 'characterSheet' ? 'Qwen 2.1 · 无高清' : mode === 'outfitEdit' ? models.outfitModelLabel : mode === 'qwenEdit' ? models.qwenModelLabel : mode === 'identityEdit' ? 'Identity V2' : mode === 'image' ? `${imageModelLabel} 生图` : mode === 'imageUpscale' ? 'SeedVR2 高清' : mode === 'swap' ? 'H3 换人 v1.5' : mode === 'upscale' ? 'H3 高清二采' : 'H3 INT8'}</b></div>
     <ModelLicenseNotice data={data} />
     {mode === 'qwenEdit' && !h3Image && <div className="qwen-mask-row nodrag">
       <span title="白色区域修改，黑色区域保留；遮罩不占参考图编号">局部遮罩：{mask ? (mask.data.url ? '已连接' : '待绘制') : '未连接'}</span>
@@ -405,11 +449,17 @@ function BuiltinGeneratorNode({ id, data, selected }) {
     </> : ['outfitEdit', 'localRealism'].includes(mode) ? <>
       <Handle type="target" position={Position.Left} id="guide" className="neo-handle target frame-first" title={mode === 'outfitEdit' ? '连接原始四视图' : '连接人物或场景母图'} />
       <Handle type="target" position={Position.Left} id="identity" className="neo-handle target frame-last" title={mode === 'localRealism' ? '可选：连接自定义局部遮罩图' : mode === 'outfitEdit' ? '可选：连接穿搭参考图' : '可选：连接妆容或风格参考图'} />
+    </> : mode === 'characterSheet' ? <>
+      <Handle type="target" position={Position.Left} id="guide" className="neo-handle target" style={{top:'30%'}} title={data.characterSheetStage === 'back_body' ? '已确认完整正身（背身单格输入）' : '头像 / 单图参考'} />
+      <Handle type="target" position={Position.Left} id="body_reference" className="neo-handle target" style={{top:'54%'}} title="身体比例 / 穿搭参考（可选）" />
+      <Handle type="target" position={Position.Left} id="back_reference" className="neo-handle target" style={{top:'78%'}} title="背面参考（可选：背部穿搭与结构）" />
     </> : ['imageUpscale', 'identityEdit', 'characterSheet', 'outfitEdit'].includes(mode) ? <Handle type="target" position={Position.Left} id="guide" className="neo-handle target" title={mode === 'characterSheet' ? '连接一张单人角色参考图' : mode === 'outfitEdit' ? '连接原始四视图' : mode === 'identityEdit' ? '连接人物或场景母图' : '连接要高清的图片'} /> : null}
     {!imageFamily && <Handle type="target" position={Position.Left} id="prompt" className="neo-handle target prompt-target" title="连接 H3 提示词优化" />}
     <Handle type="source" position={Position.Right} id={imageFamily ? 'image' : 'video'} className="neo-handle source" title={data.resultUrl ? '连接当前已生成的成品；已有连线不会随重新生成更换素材' : '生成后可从这里连接当前成品'} />
 
-    <NodeToolbar isVisible={selected} position={Position.Bottom} offset={12} className="creator-toolbar nodrag">
+    <NodeToolbar isVisible={selected && (mode !== 'qwenEdit' || !presentation.compact)} position={Position.Bottom} offset={12}
+      className={mode === 'qwenEdit' ? 'creator-toolbar qwen-creator-toolbar nodrag' : `creator-toolbar nodrag ${mode === 'characterSheet' ? `character-sheet-basic ${sheetAdvanced ? 'advanced-open' : ''}` : ''}`}>
+      {mode === 'characterSheet' && <p className="character-sheet-basic-note">{(data.characterSheetStage || 'all') === 'all' ? '内部完成全部步骤，默认只输出最终四视图。' : `当前为单格：${CHARACTER_SHEET_STAGES[data.characterSheetStage]}（保留现有设置）`}</p>}
       <div className="creator-modes">
         {imageFamily ? <button className="active">{mode === 'characterSheet' ? '角色四视图生成' : mode === 'outfitEdit' ? '无抠图换装' : mode === 'qwenEdit' ? '图生图' : mode === 'identityEdit' ? '母图编辑 V2' : mode === 'image' ? '文生图' : '图片高清'}</button> : (mode === 'swap' ? [['swap', '角色替换']] : mode === 'upscale' ? [['upscale', '视频高清二采']] : [['reference', '全能参考'], ['frames', '首尾帧'], ...(mode === 'text' ? [['text', '文生视频']] : [])]).map(([value, label]) => <button key={value} className={mode === value ? 'active' : ''} disabled={running} onClick={() => switchMode(value)}>{label}</button>)}
         <span className="local-model"><i />{mode === 'characterSheet' ? 'Qwen 2.1 标准版 · 无高清' : mode === 'outfitEdit' ? `${models.outfitModelLabel} · ${models.outfitHdLabel}` : mode === 'qwenEdit' ? models.qwenModelLabel : mode === 'identityEdit' ? 'Identity Edit V2' : mode === 'image' ? (h3Image ? 'H3-Image · 6 步' : isFlux3 ? 'FLUX 3 Klein · 16 步' : isMoss ? 'MOSS · Spectrum 加速' : 'Krea2 Turbo') : mode === 'imageUpscale' ? models.upscaleModelLabel : mode === 'upscale' ? '高清二采' : 'MiniMax H3'}</span>
@@ -418,7 +468,9 @@ function BuiltinGeneratorNode({ id, data, selected }) {
         <span className={guide ? 'connected' : ''}><Video size={13} />{mode === 'upscale' ? '一采视频' : '源视频'}：{guide?.data.title || '连接左侧上方端口'}</span>
         <span className={identity ? 'connected' : ''}><ImageIcon size={13} />身份图：{identity?.data.title || (mode === 'upscale' ? '可选，连接左侧下方端口' : '连接左侧下方端口')}</span>
       </div>}
-      {['imageUpscale', 'identityEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) && <div className="reference-strip swap-strip"><span className={guide ? 'connected' : ''}><ImageIcon size={13} />{mode === 'characterSheet' ? '单人角色参考' : mode === 'outfitEdit' ? '原始四视图' : mode === 'identityEdit' ? '人物母图' : '输入图片'}：{guide?.data.title || '从图片节点右侧连线到本节点左侧'}</span>{['qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && <span className={identity ? 'connected' : ''}><ImageIcon size={13} />{mode === 'localRealism' ? '自定义遮罩' : mode === 'outfitEdit' ? '穿搭参考' : '妆容 / 风格'}：{identity?.data.title || '可选，连接左侧下方端口'}</span>}</div>}
+      {['imageUpscale', 'identityEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) && <div className="reference-strip swap-strip"><span className={guide ? 'connected' : ''}><ImageIcon size={13} />{mode === 'characterSheet' ? '头像 / 单图参考' : mode === 'outfitEdit' ? '原始四视图' : mode === 'identityEdit' ? '人物母图' : '输入图片'}：{guide?.data.title || '从图片节点右侧连线到本节点左侧'}</span>{['qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && <span className={identity ? 'connected' : ''}><ImageIcon size={13} />{mode === 'localRealism' ? '自定义遮罩' : mode === 'outfitEdit' ? '穿搭参考' : '妆容 / 风格'}：{identity?.data.title || '可选，连接左侧下方端口'}</span>}</div>}
+      {mode === 'characterSheet' && <div className="reference-strip character-sheet-body-role"><span className={dualSheet?'connected':''}>身体比例 / 穿搭：{bodyReference?.data.title || '可选，未连接时沿用单图流程'}</span><strong>{dualSheet?'双参考生效：头像决定身份，身体图决定比例与穿搭（不是已验收单图配方）':'单图参考模式'}</strong></div>}
+      {mode === 'characterSheet' && <div className="reference-strip"><span className={backReference?'connected':''}>背面参考：{backReference?.data.title || '可选，背部穿搭与结构'}</span>{data.characterSheetStage === 'back_body' && <span>当前背面单格：左上输入需连接已确认的完整正身。</span>}</div>}
       {mode === 'reference' && <div className="reference-strip">
         {descriptors.map(({ node, kind, tag }) => <button key={node.id} className={`reference-chip ${kind}`} onClick={() => promptEditorRef.current?.insertReference(node)} title={`${tag} · 点击插入提示词`}>
           {node.data.url && kind === 'image' ? <CanvasImage source={node.data.url} alt="" /> : node.data.url && kind === 'video' ? <CanvasVideo src={node.data.url} muted playsInline preload="metadata" /> : React.createElement(KIND_ICON[kind], { size: 13 })}
@@ -442,14 +494,16 @@ function BuiltinGeneratorNode({ id, data, selected }) {
         onPrompt={(prompt) => updateNode(id, { prompt })}
         onMove={(sourceId, direction) => changeQwenReferences(id, sourceId, direction)}
         onRemove={(sourceId) => changeQwenReferences(id, sourceId, 0)} />}
-      {!['imageUpscale', 'qwenEdit'].includes(mode) && <PromptEditor
+      {mode === 'characterSheet' && <div className="creator-footnote">{data.characterSheetStage?.endsWith('_portrait') ? '头像阶段：请填写下方“头像身份 / 风格要求”；身体配方已保留但本次不使用。' : '身体配方（仅作用于身体格）；头像身份 / 风格使用下方专用输入。'}</div>}
+      {mode === 'characterSheet' && <label className="character-sheet-basic-note">补充要求（可选，仅身体格）</label>}
+      {!['imageUpscale', 'qwenEdit'].includes(mode) && !(mode === 'characterSheet' && data.characterSheetStage?.endsWith('_portrait')) && <PromptEditor
         ref={promptEditorRef}
         value={data.prompt || ''}
         onChange={(prompt) => updateNode(id, { prompt, outfitPreset: null })}
         items={['image', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) ? [] : mentionItems}
         ariaLabel={['image', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) ? '图片提示词' : '视频提示词'}
         disabled={running}
-        placeholder={mode === 'characterSheet' ? '输入角色身份、完整穿搭、身材比例和写实程度；四个视角、统一背景、9:16 与拼版自动处理……' : mode === 'outfitEdit' ? '输入选定的服装描述；保持母图身份、比例和各面板景别，按所选高清策略处理后合成……' : mode === 'qwenEdit' ? '明确写出要保持的人物特征，以及只修改的穿搭、局部或场景；输出继承第一张母图的比例……' : mode === 'identityEdit' ? '说明要保持的人物身份，以及要改变的穿搭、姿态或场景……' : mode === 'image' ? '描述人物全身、穿搭、场景、光线和镜头；生成后可连接到视频参考或首尾帧……' : mode === 'swap' ? '留空自动锁定参考人物的面部、发型、体型和整套穿搭，不只换脸；也可补充可见特征……' : mode === 'upscale' ? '留空自动保持人物、穿搭、动作和场景，只补充高清细节；也可输入额外要求……' : mode === 'reference' ? '输入文字或 @ 参考内容，自由组合图、文、音、视频……\n例如：@角色参考 在雨夜街道回头，电影感，环境雨声。' : '描述主体、动作、镜头和声音……'}
+        placeholder={mode === 'characterSheet' ? (data.characterSheetStage?.endsWith('_portrait') ? '当前为头像阶段，此身体配方不生效；请使用下方“头像身份 / 风格要求”。' : '身体配方：穿搭、鞋履和比例要求；头像身份 / 风格请填写下方专用输入……') : mode === 'outfitEdit' ? '输入选定的服装描述；保持母图身份、比例和各面板景别，按所选高清策略处理后合成……' : mode === 'qwenEdit' ? '明确写出要保持的人物特征，以及只修改的穿搭、局部或场景；输出继承第一张母图的比例……' : mode === 'identityEdit' ? '说明要保持的人物身份，以及要改变的穿搭、姿态或场景……' : mode === 'image' ? '描述人物全身、穿搭、场景、光线和镜头；生成后可连接到视频参考或首尾帧……' : mode === 'swap' ? '留空自动锁定参考人物的面部、发型、体型和整套穿搭，不只换脸；也可补充可见特征……' : mode === 'upscale' ? '留空自动保持人物、穿搭、动作和场景，只补充高清细节；也可输入额外要求……' : mode === 'reference' ? '输入文字或 @ 参考内容，自由组合图、文、音、视频……\n例如：@角色参考 在雨夜街道回头，电影感，环境雨声。' : '描述主体、动作、镜头和声音……'}
       />}
       {mode === 'swap' && <div className="swap-settings">
         <label>换人目标<input value={data.targetDescription || ''} disabled={running} onChange={(e) => updateNode(id, { targetDescription: e.target.value })} placeholder="例如：右侧白色假人；单人可留空" /></label>
@@ -463,22 +517,30 @@ function BuiltinGeneratorNode({ id, data, selected }) {
           {!imageFamily && <label className="param-pill" title={`输出尺寸 ${outputWidth} × ${outputHeight}；分辨率越高，显存占用和生成时间越长`}><Maximize2 size={12} /><select aria-label="分辨率" value={resolution} disabled={running} onChange={(e) => updateNode(id, { resolution: e.target.value })}>{['480P','720P','1080P'].map((x) => <option key={x} value={x}>{x}</option>)}</select><ChevronDown size={11} /></label>}
           {!['upscale', 'image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) && <label className="param-pill"><Clock3 size={12} /><select aria-label="视频时长" value={data.duration} disabled={running} onChange={(e) => updateNode(id, { duration: Number(e.target.value) })}>{[5,6,7,8,9,10,11,12,13,14,15].map((x) => <option key={x} value={x}>{x} 秒</option>)}</select><ChevronDown size={11} /></label>}
           {mode === 'outfitEdit' && <><label className="param-pill"><Layers3 size={12} /><select aria-label="四视图模型版本" value={data.outfitModel || 'qwen21'} disabled={running} onChange={(e) => updateNode(id, { outfitModel: e.target.value, ...(e.target.value === 'muse_v4' ? { imageLora: 'none' } : {}), error: null })}><option value="qwen21">Qwen 2.1 标准版 INT8</option><option value="qwen21_turbo">Qwen 2.1 Turbo INT8 · 8 步</option><option value="muse_v4">Muse V4.0 INT8 · Identity V2</option></select><ChevronDown size={11} /></label><label className="param-pill" title="只对各视图独立高清后按母图版面合成；无高清分支不调用修复模型"><Maximize2 size={12} /><select aria-label="四视图高清策略" value={data.outfitUpscale || 'auto'} disabled={running} onChange={(e) => updateNode(id, { outfitUpscale: e.target.value, ...(e.target.value === 'seedvr2_7b' ? { upscaleModel: 'seedvr2_7b' } : {}) })}><option value="auto">旧版 · 低于 1K 才 3B 高清</option><option value="off">不做高清修复</option><option value="seedvr2_7b">逐视图 SeedVR2 7B INT8</option></select><ChevronDown size={11} /></label>{data.outfitModel === 'muse_v4' ? <label className="param-pill"><Zap size={12} /><select aria-label="Muse V4 采样步数" value={data.museSteps || 16} disabled={running} onChange={(e) => updateNode(id, { museSteps: Number(e.target.value) })}><option value={8}>8 步 · 预览</option><option value={16}>16 步 · 标准</option><option value={20}>20 步 · 对照</option></select><ChevronDown size={11} /></label> : <label className="param-pill" title="Qwen 2.1 专用写实角色 LoRA；改变基座版本后需比较身份保留效果"><Sparkles size={12} /><select aria-label="换装写实强度" value={data.imageLora === 'qwen21Realism' ? String(data.loraStrength ?? 0.6) : 'off'} disabled={running} onChange={(e) => updateNode(id, e.target.value === 'off' ? { imageLora: 'none' } : { imageLora: 'qwen21Realism', loraStrength: Number(e.target.value) })}><option value="off">原版写实</option><option value={0.45}>写实 LoRA · 0.45</option><option value={0.6}>写实 LoRA · 0.6</option><option value={0.7}>写实 LoRA · 0.7</option><option value={0.8}>写实 LoRA · 0.8</option></select><ChevronDown size={11} /></label>}</>}
-          {mode === 'image' && <><label className="param-pill" title="选择本地文生图模型"><Layers3 size={12} /><select aria-label="生图模型" value={data.imageModel || 'krea2'} disabled={running || readOnly} onChange={(e) => updateNode(id, { imageModel: e.target.value, ...(['flux3_klein', 'h3_image'].includes(e.target.value) ? { imageLora: 'none' } : {}), error: null })}><option value="krea2">Krea2 · 快速生图</option><option value="moss">MOSS · 角色与场景</option><option value="h3_image">MiniMax H3 Image INT8</option><option value="flux3_klein">FLUX 3 Image Klein INT8</option></select><ChevronDown size={11} /></label>{!isMoss && !isFlux3 && !h3Image && <label className="param-pill"><Sparkles size={12} /><select aria-label="图片风格" value={data.imageLora || 'none'} disabled={running} onChange={(e) => updateNode(id, { imageLora: e.target.value })}><option value="none">无 LoRA</option><option value="realism">写实增强</option><option value="asian">亚洲人物</option><option value="fantasy">奇幻现实</option><option value="watercolor">柔和水彩</option><option value="retroAnime">复古动漫</option></select><ChevronDown size={11} /></label>}</>}
+          {mode === 'image' && <><label className="param-pill" title="选择本地文生图模型"><Layers3 size={12} /><select aria-label="生图模型" value={data.imageModel || 'krea2'} disabled={running || readOnly} onChange={(e) => updateNode(id, { imageModel: e.target.value, ...(['flux3_klein', 'h3_image'].includes(e.target.value) ? { imageLora: 'none' } : {}), modelLockedByUser: true, modelPickNote: `已手动锁定 ${imageChoiceLabel(e.target.value)}`, error: null })}><option value="krea2">Krea2 · 快速生图</option><option value="moss">MOSS · 角色与场景</option><option value="h3_image">MiniMax H3 Image INT8</option><option value="flux3_klein">FLUX 3 Image Klein INT8</option></select><ChevronDown size={11} /></label>{!isMoss && !isFlux3 && !h3Image && <label className="param-pill"><Sparkles size={12} /><select aria-label="图片风格" value={data.imageLora || 'none'} disabled={running} onChange={(e) => updateNode(id, { imageLora: e.target.value })}><option value="none">无 LoRA</option><option value="realism">写实增强</option><option value="asian">亚洲人物</option><option value="fantasy">奇幻现实</option><option value="watercolor">柔和水彩</option><option value="retroAnime">复古动漫</option></select><ChevronDown size={11} /></label>}</>}
           {h3Image && <label className="param-pill" title="默认约4MP；16MP占用更多显存与时间，24GB显卡建议先用4MP"><Maximize2 size={12} /><select aria-label="H3-Image 输出尺寸" value={data.h3ImageResolution || '4MP'} disabled={running || readOnly} onChange={e => updateNode(id, { h3ImageResolution: e.target.value })}><option value="4MP">约 4MP · 标准</option><option value="16MP">约 16MP · 高显存</option></select><ChevronDown size={11} /></label>}
           {isFlux3 && <label className="param-pill" title="默认约 1MP；2K 与 4K 指长边，尺寸对齐模型；高分辨率占用更多显存与时间"><Maximize2 size={12} /><select aria-label="FLUX 3 输出尺寸" value={data.flux3Resolution || '1MP'} disabled={running || readOnly} onChange={(e) => updateNode(id, { flux3Resolution: e.target.value })}><option value="1MP">约 1MP · 标准</option><option value="2K">2K · 长边 2048</option><option value="4K">4K · 长边 4096</option></select><ChevronDown size={11} /></label>}
           {mode === 'imageUpscale' && <label className="param-pill"><Layers3 size={12} /><select aria-label="高清模型版本" value={data.upscaleModel || 'seedvr2_3b'} disabled={running} onChange={(e) => updateNode(id, { upscaleModel: e.target.value, error: null })}><option value="seedvr2_3b">SeedVR2 3B INT8</option><option value="seedvr2_7b">SeedVR2 7B INT8</option></select><ChevronDown size={11} /></label>}
           {mode === 'imageUpscale' && <label className="param-pill"><Maximize2 size={12} /><select aria-label="图片放大倍数" value={data.imageScale || 1.5} disabled={running} onChange={(e) => updateNode(id, { imageScale: Number(e.target.value) })}><option value={1.5}>1.5× · 约 2K</option><option value={2}>2× · 细节更多</option></select><ChevronDown size={11} /></label>}
-          {mode === 'qwenEdit' && <><label className="param-pill"><Layers3 size={12} /><select aria-label="Qwen 模型版本" value={data.qwenModel || 'standard'} disabled={running || readOnly} onChange={(e) => updateNode(id, { qwenModel: e.target.value, ...(['flux3_klein', 'h3_image'].includes(e.target.value) ? { imageLora: 'none' } : {}), error: null })}><option value="standard">Qwen 2.1 标准版 INT8</option><option value="turbo">Qwen 2.1 Turbo INT8</option><option value="h3_image" disabled={Boolean(mask || data.qwenSourceCrop || data.qwenMaskCrop)}>MiniMax H3 Image INT8</option><option value="flux3_klein" disabled={Boolean(mask || data.qwenSourceCrop || data.qwenMaskCrop)} title="局部遮罩与单格裁切请使用 Qwen">FLUX 3 Image Klein INT8</option></select><ChevronDown size={11} /></label>{h3Image ? <span className="param-pill active"><Zap size={12} />6 步 · H3-Image</span> : isFlux3 ? <span className="param-pill active"><Zap size={12} />16 步 · Klein</span> : data.qwenModel === 'turbo' ? <span className="param-pill active" title="官方 Turbo 8 步采样日程"><Zap size={12} />8 步 · Turbo</span> : <label className="param-pill" title="标准版使用 Euler、Simple、CFG 1"><Zap size={12} /><select aria-label="Qwen 采样步数" value={data.qwenSteps || 40} disabled={running || readOnly} onChange={(e) => updateNode(id, { qwenSteps: Number(e.target.value) })}><option value={25}>25 步 · 预览</option><option value={40}>40 步 · 质量</option></select><ChevronDown size={11} /></label>}{!isFlux3 && !h3Image && <label className="param-pill" title="风格化人物转真人时使用任转真 LoRA；普通编辑可关闭以优先保持原图"><Sparkles size={12} /><select aria-label="图生图真人化强度" value={data.imageLora === 'qwen21Realism' ? String(data.loraStrength ?? 0.6) : 'off'} disabled={running || readOnly} onChange={(e) => updateNode(id, e.target.value === 'off' ? { imageLora: 'none' } : { imageLora: 'qwen21Realism', loraStrength: Number(e.target.value) })}><option value="off">原模型</option><option value={0.45}>真人化 LoRA · 0.45</option><option value={0.6}>真人化 LoRA · 0.6</option><option value={0.8}>真人化 LoRA · 0.8</option></select><ChevronDown size={11} /></label>}</>}
-          {mode === 'characterSheet' && <><label className="param-pill" title="四个视图分别使用相同的 Qwen 2.1 标准版采样质量"><Zap size={12} /><select aria-label="四视图采样步数" value={data.qwenSteps || 40} disabled={running} onChange={(e) => updateNode(id, { qwenSteps: Number(e.target.value) })}><option value={25}>4 × 25 步 · 预览</option><option value={40}>4 × 40 步 · 质量</option></select><ChevronDown size={11} /></label><label className="param-pill" title="风格化人物转真人时可启用；四个视图使用相同强度"><Sparkles size={12} /><select aria-label="四视图真人化强度" value={data.imageLora === 'qwen21Realism' ? String(data.loraStrength ?? 0.6) : 'off'} disabled={running} onChange={(e) => updateNode(id, e.target.value === 'off' ? { imageLora: 'none' } : { imageLora: 'qwen21Realism', loraStrength: Number(e.target.value) })}><option value="off">原模型</option><option value={0.45}>真人化 LoRA · 0.45</option><option value={0.6}>真人化 LoRA · 0.6</option><option value={0.8}>真人化 LoRA · 0.8</option></select><ChevronDown size={11} /></label></>}
+          {mode === 'qwenEdit' && <><label className="param-pill"><Layers3 size={12} /><select aria-label="Qwen 模型版本" value={data.qwenModel || 'standard'} disabled={running || readOnly} onChange={(e) => updateNode(id, { qwenModel: e.target.value, ...(['flux3_klein', 'h3_image'].includes(e.target.value) ? { imageLora: 'none' } : {}), modelLockedByUser: true, modelPickNote: `已手动锁定 ${imageChoiceLabel(e.target.value)}`, error: null })}><option value="standard">Qwen 2.1 标准版 INT8</option><option value="turbo">Qwen 2.1 Turbo INT8</option><option value="h3_image" disabled={Boolean(mask || data.qwenSourceCrop || data.qwenMaskCrop)}>MiniMax H3 Image INT8</option><option value="flux3_klein" disabled={Boolean(mask || data.qwenSourceCrop || data.qwenMaskCrop)} title="局部遮罩与单格裁切请使用 Qwen">FLUX 3 Image Klein INT8</option></select><ChevronDown size={11} /></label>{h3Image ? <span className="param-pill active"><Zap size={12} />6 步 · H3-Image</span> : isFlux3 ? <span className="param-pill active"><Zap size={12} />16 步 · Klein</span> : data.qwenModel === 'turbo' ? <span className="param-pill active" title="官方 Turbo 8 步采样日程"><Zap size={12} />8 步 · Turbo</span> : <label className="param-pill" title="标准版使用 Euler、Simple、CFG 1"><Zap size={12} /><select aria-label="Qwen 采样步数" value={data.qwenSteps || 40} disabled={running || readOnly} onChange={(e) => updateNode(id, { qwenSteps: Number(e.target.value) })}><option value={25}>25 步 · 预览</option><option value={40}>40 步 · 质量</option></select><ChevronDown size={11} /></label>}{!isFlux3 && !h3Image && <label className="param-pill" title="风格化人物转真人时使用任转真 LoRA；普通编辑可关闭以优先保持原图"><Sparkles size={12} /><select aria-label="图生图真人化强度" value={data.imageLora === 'qwen21Realism' ? String(data.loraStrength ?? 0.6) : 'off'} disabled={running || readOnly} onChange={(e) => updateNode(id, e.target.value === 'off' ? { imageLora: 'none' } : { imageLora: 'qwen21Realism', loraStrength: Number(e.target.value) })}><option value="off">原模型</option><option value={0.45}>真人化 LoRA · 0.45</option><option value={0.6}>真人化 LoRA · 0.6</option><option value={0.8}>真人化 LoRA · 0.8</option></select><ChevronDown size={11} /></label>}</>}
+          {mode === 'characterSheet' && <><label className="param-pill" title="四个视图分别使用相同的 Qwen 2.1 标准版采样质量"><Zap size={12} /><select aria-label="四视图采样步数" value={data.qwenSteps || 40} disabled={running} onChange={(e) => updateNode(id, { qwenSteps: Number(e.target.value) })}><option value={25}>每格 25 步 · 预览</option><option value={40}>每格 40 步 · 质量</option></select><ChevronDown size={11} /></label><label className="param-pill" title="风格化人物转真人时可启用；四个视图使用相同强度"><Sparkles size={12} /><select aria-label="四视图真人化强度" value={data.imageLora === 'qwen21Realism' ? String(data.loraStrength ?? 0.6) : 'off'} disabled={running} onChange={(e) => updateNode(id, e.target.value === 'off' ? { imageLora: 'none' } : { imageLora: 'qwen21Realism', loraStrength: Number(e.target.value) })}><option value="off">原模型</option><option value={0.45}>真人化 LoRA · 0.45</option><option value={0.6}>真人化 LoRA · 0.6</option><option value={0.8}>真人化 LoRA · 0.8</option></select><ChevronDown size={11} /></label></>}
           {mode === 'localRealism' && <><label className="param-pill" title="按原图视角选择对应皮肤区域；身体视图使用肤色与区域双重限制"><Crosshair size={12} /><select aria-label="原图视角" value={data.localMaskMode || 'front'} disabled={running} onChange={(e) => updateNode(id, { localMaskMode: e.target.value })}><option value="front">正面近景</option><option value="side">侧面近景</option><option value="back_body">背面全身</option><option value="front_body">正面全身</option></select><ChevronDown size={11} /></label><label className="param-pill" title="仅对皮肤区域采样，之后回贴原图"><Zap size={12} /><select aria-label="局部修复步数" value={data.localRealismSteps || 25} disabled={running} onChange={(e) => updateNode(id, { localRealismSteps: Number(e.target.value) })}><option value={20}>20 步 · 轻修</option><option value={25}>25 步 · 标准</option><option value={30}>30 步 · 精修</option><option value={40}>40 步 · 完整重绘</option></select><ChevronDown size={11} /></label><label className="param-pill" title="局部裁切区域的生成分辨率；最终始终回贴原始尺寸，1536 适合 4K 母图细节对照"><Maximize2 size={12} /><select aria-label="局部修复精度" value={data.localRealismSize || 768} disabled={running} onChange={(e) => updateNode(id, { localRealismSize: Number(e.target.value) })}><option value={768}>局部 768</option><option value={1024}>局部 1024</option><option value={1536}>局部 1536 · 4K 母图</option></select><ChevronDown size={11} /></label><label className="param-pill" title="低强度保留原图结构并轻度增加肤质；1.0 为完整重采样，可能产生接缝"><Zap size={12} /><select aria-label="局部重绘强度" value={data.localRealismDenoise ?? 1} disabled={running} onChange={(e) => updateNode(id, { localRealismDenoise: Number(e.target.value) })}><option value={0.2}>轻修 · 0.20</option><option value={0.35}>自然 · 0.35</option><option value={0.5}>加强 · 0.50</option><option value={1}>完整重采样 · 1.00</option></select><ChevronDown size={11} /></label><label className="param-pill" title="0 最保守；增大后可能碰到五官边缘"><Crosshair size={12} /><select aria-label="皮肤遮罩外扩" value={data.localMaskExpand ?? 0} disabled={running} onChange={(e) => updateNode(id, { localMaskExpand: Number(e.target.value) })}><option value={0}>遮罩不外扩</option><option value={8}>外扩 8 px</option><option value={16}>外扩 16 px</option></select><ChevronDown size={11} /></label><label className="param-pill" title="仅在皮肤遮罩内使用 Qwen 2.1 写实 LoRA；0.45 优先保持人物身份"><Sparkles size={12} /><select aria-label="局部写实强度" value={data.imageLora === 'qwen21Realism' ? String(data.loraStrength ?? 0.45) : 'off'} disabled={running} onChange={(e) => updateNode(id, e.target.value === 'off' ? { imageLora: 'none' } : { imageLora: 'qwen21Realism', loraStrength: Number(e.target.value) })}><option value="off">原模型</option><option value={0.35}>写实 LoRA · 0.35</option><option value={0.45}>写实 LoRA · 0.45</option><option value={0.6}>写实 LoRA · 0.6</option><option value={0.8}>写实 LoRA · 0.8</option></select><ChevronDown size={11} /></label></>}
           {['qwenEdit', 'characterSheet', 'localRealism'].includes(mode) ? null : ['image', 'identityEdit', 'outfitEdit'].includes(mode) ? <span className="param-pill active" title={`${mode === 'outfitEdit' ? `各视图保持原始宽高比；${models.outfitModelLabel}；${models.outfitHdLabel}` : `输出 ${outputWidth} × ${outputHeight}`} ${mode === 'identityEdit' ? '；参考强度 4；自由重构' : ''}`}><Zap size={12} />{mode === 'outfitEdit' ? `${models.outfitSteps} 步 · 原版面合成` : mode === 'identityEdit' ? 'V2 · 强度 4' : h3Image ? '6 步 · H3-Image' : isFlux3 ? '16 步 · Klein' : isMoss ? '25 步 · Spectrum' : '8 步 Turbo'}</span> : mode === 'imageUpscale' ? <span className="param-pill active" title={`${models.upscaleModelLabel} 一步扩散，Lab 保真校色`}><Zap size={12} />1 步 · 保真</span> : mode === 'upscale' ? <span className="param-pill active" title="导演台高清分支参数：4 步 768P Turbo LoRA、Euler、Beta、3 步、0.2 降噪"><Zap size={12} />4 步 Turbo · 3 步二采</span> : mode === 'swap' ? <span className="param-pill active" title="Akatz 官方参数：FL2V Turbo、ER-SDE、Normal、CFG 1"><Zap size={12} />v1.5 · 8 步</span> : <button className={`param-pill turbo-pill ${data.turbo ? 'active' : ''}`} disabled={running} title={data.turbo ? 'Turbo 适合快速看构图；角色或动作参考不准确时请切换标准模式' : '标准模式使用 beta 调度，参考身份与动作更稳定'} onClick={() => updateNode(id, { turbo: !data.turbo })}><Zap size={12} />{data.turbo ? `${mode === 'reference' ? 4 : 8} 步 Turbo` : '标准 20 步'}</button>}
           {mode === 'reference' && <button className={`param-pill ${data.refImageSize === 'max' ? 'active' : ''}`} onClick={() => updateNode(id, { refImageSize: data.refImageSize === 'max' ? 'match' : 'max' })} title="高保真参考更慢，但保留更多主体细节"><Layers3 size={12} />{data.refImageSize === 'max' ? '高保真' : '均衡'}</button>}
           {mode === 'swap' && <span className="param-pill active" title="SAM3.1 遮罩直接作用于源视频 latent，而非生成后回填"><Crosshair size={12} />潜空间保护</span>}
         </div>
         <button className="node-share-button nodrag" disabled={running} aria-label="上传此节点" title="上传此节点到节点库" onClick={() => openNodeShare(id)}><Upload size={14} /></button>
-        {running ? <button className="send-button cancel" onClick={() => cancelNode(id)} title="取消生成"><Square size={15} fill="currentColor" /></button> : <button className="send-button node-generate" onClick={() => generateNode(id)} disabled={!serverOnline} title={mode === 'imageUpscale' ? '本地高清放大' : '本地生成'}><ArrowUp size={17} /></button>}
+        {running ? <button className="send-button cancel" onClick={() => cancelNode(id)} title="取消生成"><Square size={15} fill="currentColor" /></button> : <button className="send-button node-generate" onClick={() => generateNode(id)} disabled={!serverOnline} title={mode === 'imageUpscale' ? '本地高清放大' : '本地生成'} aria-label={mode === 'characterSheet' ? ((data.characterSheetStage || 'all') === 'all' ? '生成四视图' : '生成当前单格') : '本地生成'}>{mode === 'characterSheet' ? ((data.characterSheetStage || 'all') === 'all' ? '生成四视图' : '生成当前单格') : <ArrowUp size={17} />}</button>}
       </div>
-      <div className="creator-footnote"><span>{h3Image ? 'H3-Image · 6步 · 直接使用提示词；24GB显卡建议4MP。编辑时图1决定比例，最多10张参考；不支持Qwen遮罩与LoRA。' : mode === 'characterSheet' ? '正面头像 + 45° 头像 + 无头背面全身 + 无头正面全身；统一浅灰背景；四张原生 9:16；依次保存四张单图后拼接，画布交付最终整图；不做高清化' : mode === 'outfitEdit' ? (outfitLayout === 'legacy' ? '旧版兼容：只换两张身体图并保留近景原图' : `逐面板换装 · ${models.outfitHdLabel}；近景不拉远、全身不补头；保持母图原尺寸与版面`) : mode === 'qwenEdit' ? (isFlux3 ? '最多10张参考，图1决定比例；自动扩写提示词；局部遮罩与裁切请使用 Qwen。' : '最多10张参考；图1决定画幅。点击缩略图引用，在提示词中自由说明结构、场景、画风等用途。') : mode === 'identityEdit' ? 'Krea2 + Identity Edit V2；单图身份编辑，可换装或换姿态；结果可继续连接图片高清' : mode === 'image' ? (isFlux3 ? '自动扩写提示词 · 16 步生成；高分辨率建议先确认 1MP 构图。' : isMoss ? 'MOSS 从零生成新角色和场景；25 步 Spectrum 加速；模型依赖会在提交前检查' : '人物建议写明“全身、完整穿搭”；结果可直接连视频参考或首尾帧') : mode === 'imageUpscale' ? '只放大图片，不重新设计人物和场景；默认 1.5 倍，按需运行' : mode === 'swap' ? '仅运行一采角色替换；需要高清时，再连接独立高清二采节点' : mode === 'upscale' ? '默认 720P；画幅需与一采一致；Sage 加速；保留原音轨' : mode === 'reference' ? `已连接 ${refs.length} 个素材 · 本地上限 9 图 / 3 视频 / 3 音频` : mode === 'frames' ? '从图片节点连接首帧、尾帧；留空图片时按提示词生成视频' : '无需参考素材，直接通过文字生成'}</span><b>本地免费</b></div>
+      {['image', 'qwenEdit'].includes(mode) && (data.modelPickNote || (data.resultUrl && data.status === 'done')) && <div className="image-model-foot nodrag">
+        {data.modelPickNote ? <p className="model-pick-note">{data.modelPickNote}</p> : null}
+        {data.resultUrl && data.status === 'done' && !running && <div className="image-review" role="group" aria-label="图片结果">
+          <button type="button" className={data.imageReview?.accepted === true && data.imageReview.resultKey === imageResultKey(data) ? 'active' : ''} aria-pressed={data.imageReview?.resultKey === imageResultKey(data) && data.imageReview?.accepted === true} aria-label="收下" disabled={readOnly} onClick={() => reviewImageNode(id, true)}>收下</button>
+          <button type="button" className={data.imageReview?.accepted === false && data.imageReview.resultKey === imageResultKey(data) ? 'active' : ''} aria-pressed={data.imageReview?.resultKey === imageResultKey(data) && data.imageReview?.accepted === false} aria-label="否掉" disabled={readOnly} onClick={() => reviewImageNode(id, false)}>否掉</button>
+        </div>}
+      </div>}
+      {mode === 'characterSheet' && <CharacterSheetControls data={data} dualReference={dualSheet} backReference={Boolean(backReference)} onAdvancedToggle={setSheetAdvanced} disabled={running} onChange={(patch) => updateNode(id, patch)} />}
+      <div className="creator-footnote"><span>{h3Image ? 'H3-Image · 6步 · 直接使用提示词；24GB显卡建议4MP。编辑时图1决定比例，最多10张参考；不支持Qwen遮罩与LoRA。' : mode === 'characterSheet' ? '胸以上头像与身体比例分开控制；中间身体图保留头脚，最终身体格裁成无头；可调整取景并单格重试；裁切需人工核对' : mode === 'outfitEdit' ? (outfitLayout === 'legacy' ? '旧版兼容：只换两张身体图并保留近景原图' : `逐面板换装 · ${models.outfitHdLabel}；近景不拉远、全身不补头；保持母图原尺寸与版面`) : mode === 'qwenEdit' ? (isFlux3 ? '最多10张参考，图1决定比例；自动扩写提示词；局部遮罩与裁切请使用 Qwen。' : '最多10张参考；图1决定画幅。点击缩略图引用，在提示词中自由说明结构、场景、画风等用途。') : mode === 'identityEdit' ? 'Krea2 + Identity Edit V2；单图身份编辑，可换装或换姿态；结果可继续连接图片高清' : mode === 'image' ? (isFlux3 ? '自动扩写提示词 · 16 步生成；高分辨率建议先确认 1MP 构图。' : isMoss ? 'MOSS 从零生成新角色和场景；25 步 Spectrum 加速；模型依赖会在提交前检查' : '人物建议写明“全身、完整穿搭”；结果可直接连视频参考或首尾帧') : mode === 'imageUpscale' ? '只放大图片，不重新设计人物和场景；默认 1.5 倍，按需运行' : mode === 'swap' ? '仅运行一采角色替换；需要高清时，再连接独立高清二采节点' : mode === 'upscale' ? '默认 720P；画幅需与一采一致；Sage 加速；保留原音轨' : mode === 'reference' ? `已连接 ${refs.length} 个素材 · 本地上限 9 图 / 3 视频 / 3 音频` : mode === 'frames' ? '从图片节点连接首帧、尾帧；留空图片时按提示词生成视频' : '无需参考素材，直接通过文字生成'}</span><b>本地免费</b></div>
     </NodeToolbar>
   </div>;
 }
@@ -486,6 +548,14 @@ function BuiltinGeneratorNode({ id, data, selected }) {
 function ImageProcessCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <ImageProcessNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
+}
+function VideoRhythmCanvasNode(props) { const actions = useContext(NodeContext); return <VideoRhythmNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />; }
+function VideoChromaCanvasNode(props) { const actions = useContext(NodeContext); return <VideoChromaKeyNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />; }
+function VideoRepairCanvasNode(props) { const actions = useContext(NodeContext); return <VideoRepairNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />; }
+function VideoPlateCanvasNode(props) { const actions = useContext(NodeContext); return <VideoPlateNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />; }
+function VideoEditCanvasNode(props) {
+  const actions = useContext(NodeContext);
+  return <VideoEditorNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
 function ArtDirectorCanvasNode(props) {
   const actions = useContext(NodeContext);
@@ -495,7 +565,7 @@ function SpriteAtlasCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <SpriteAtlasNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
-const nodeTypes = { spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode) };
+const nodeTypes = { videoWhitePlate: React.memo(VideoPlateCanvasNode), videoLocalRepair: React.memo(VideoRepairCanvasNode), videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) };
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
   const saved = useMemo(() => {
@@ -517,6 +587,11 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const [referenceLibraryTab, setReferenceLibraryTab] = useState(null);
   const [nodeLibraryOpen, setNodeLibraryOpen] = useState(false);
   const [nodeLibraryMounted, setNodeLibraryMounted] = useState(false);
+  const publishLedgerRef = useRef(null);
+  const getPublishLedger = () => {
+    if (!publishLedgerRef.current) publishLedgerRef.current = createPublishLedger({storage:window.localStorage,send:async(packet)=>{setReferenceLibrary(null);setNodeLibraryMounted(true);setNodeLibraryOpen(true);setSharePacket(packet);}});
+    return publishLedgerRef.current;
+  };
   const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false);
   const [pureRefSelection, setPureRefSelection] = useState(null);
   const pureRefFileRef = useRef(null);
@@ -577,6 +652,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const filesRef = useRef({});
   const fileIdentitiesRef = useRef({});
   const generationAttemptsRef = useRef(new GenerationAttempts());
+  const imageHistoryRef = useRef(normalizeImageHistory(project.settings?.imageModelHistory));
   const localImageJobsRef = useRef(new Map());
   const [localImageJobsVersion, setLocalImageJobsVersion] = useState(0);
   const isImageProcessBusy = useCallback((id) => localImageJobsRef.current.has(id), []);
@@ -616,7 +692,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       name: project.name,
       canvas: canvasSnapshot(nodesRef.current, edgesRef.current, viewportRef.current),
       write: async ({ name, canvas }) => {
-        const next = await saveProject(project.id, revisionRef.current, name, canvas);
+        const next = await saveProject(project.id, revisionRef.current, name, canvas, { imageModelHistory: imageHistoryRef.current });
         revisionRef.current = next.revision;
         setProjects((rows) => rows.map((row) => row.id === next.id ? projectSummary(next) : row));
         setProjectError('');
@@ -747,6 +823,27 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     });
   }, [setNodes, project.readOnly]);
 
+  const reviewImageNode = useCallback((id, accepted) => {
+    const requested = nodesRef.current.find((node) => node.id === id);
+    const node = requested?.type === 'media' && requested.data?.sourceGeneratorId
+      ? nodesRef.current.find((item) => item.id === requested.data.sourceGeneratorId)
+      : requested;
+    if (!node || !['image', 'qwenEdit'].includes(node.data?.mode)) throw new Error('收下或否掉只记录文生图和图生图节点。');
+    const resultKey = imageResultKey(node.data);
+    if (!resultKey) throw new Error('这个节点还没有可记录的生成结果。');
+    const record = createImageReview(node.data, accepted, resultKey, node.id);
+    imageHistoryRef.current = appendImageReview(imageHistoryRef.current, record);
+    const imageReview = { accepted: record.accepted, model: record.model, taskType: record.taskType, time: record.time, resultKey };
+    updateNode(node.id, { imageReview });
+    return { id: node.id, review: record };
+  }, [updateNode]);
+
+  useEffect(() => {
+    if (project.readOnly || videoImportBusyRef.current) return;
+    const stale = nodesRef.current.filter((node) => node.data.noteRole === 'videoDownload' && ['queued', 'downloading'].includes(node.data.downloadStatus));
+    stale.forEach((node) => updateNode(node.id, { downloadStatus: 'failed', status: 'failed', downloadMessage: '下载已中断，请重试。', stage: '下载已中断，请重试。', error: '下载已中断，请重试。' }));
+  }, [project.id, project.readOnly, updateNode]);
+
   useEffect(() => {
     if (project.readOnly) return;
     setNodes((items) => {
@@ -798,6 +895,21 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (switchingRef.current || project.readOnly) return;
     if (edgesRef.current.some((edge) => edge.source === id && lockedQwenInput(edge))) { setProjectError('此图片正在被生成使用或设有单格裁切，请先完成生成或清除裁切再删除。'); return; }
     const node = nodesRef.current.find((item) => item.id === id);
+    if (node?.type === 'generator' && ['image', 'qwenEdit'].includes(node.data?.mode)) {
+      const resultKey = imageResultKey(node.data);
+      if (node.data.resultUrl && resultKey && node.data.imageReview?.resultKey !== resultKey) {
+        imageHistoryRef.current = appendImageReview(imageHistoryRef.current, createImageReview(node.data, false, resultKey, id));
+      }
+    }
+    if (node?.type === 'media' && node.data?.sourceGeneratorId && node.data.sourcePromptId) {
+      const generator = nodesRef.current.find((item) => item.id === node.data.sourceGeneratorId);
+      const resultKey = imageResultKey(generator?.data || {});
+      if (generator && generator.data.promptId === node.data.sourcePromptId && resultKey && generator.data.imageReview?.resultKey !== resultKey) {
+        const record = createImageReview(generator.data, false, resultKey, generator.id);
+        imageHistoryRef.current = appendImageReview(imageHistoryRef.current, record);
+        updateNode(generator.id, { imageReview: { accepted: false, model: record.model, taskType: record.taskType, time: record.time, resultKey } });
+      }
+    }
     localImageJobsRef.current.get(id)?.abort();
     if ((node?.data.queueJobId || node?.data.promptId) && ['uploading', 'queued', 'running', 'finishing'].includes(node.data.status)) cancelGeneration(node.data).catch(() => {});
     setNodes((items) => items.filter((item) => item.id !== id));
@@ -809,7 +921,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     mediaAttemptsRef.current.delete(id);
     // Keep immutable media records: this deletion may fail its project revision
     // check, and another committed canvas can still reference the same record.
-  }, [setNodes, setEdges, project.readOnly, lockedQwenInput]);
+  }, [setNodes, setEdges, project.readOnly, lockedQwenInput, updateNode]);
 
   const togglePin = useCallback((id) => {
     const node = nodesRef.current.find((item) => item.id === id);
@@ -883,7 +995,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     return edgesRef.current.filter((edge) => edge.target === id).map((edge) => {
       const source = nodesRef.current.find((item) => item.id === edge.source);
       return source?.type === 'media' ? { ...source, data: { ...source.data, slot: edge.targetHandle } } : null;
-    }).filter(Boolean).filter((source) => mode === 'customWorkflow' ? source.data.kind === 'image' && Boolean(customInput(node.data, source.data.slot)) : mode === 'reference' ? source.data.slot === 'references' : mode === 'frames' ? ['first', 'last'].includes(source.data.slot) && source.data.kind === 'image' : ['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) ? source.data.kind === 'image' && (source.data.slot === 'guide' || (['qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && source.data.slot === 'identity')) : ['swap', 'upscale'].includes(mode) ? (source.data.slot === 'guide' && source.data.kind === 'video') || (source.data.slot === 'identity' && source.data.kind === 'image') : false);
+    }).filter(Boolean).filter((source) => mode === 'customWorkflow' ? source.data.kind === 'image' && Boolean(customInput(node.data, source.data.slot)) : mode === 'mossPose' ? source.data.kind === 'image' && ['guide', 'identity'].includes(source.data.slot) : mode === 'reference' ? source.data.slot === 'references' : mode === 'frames' ? ['first', 'last'].includes(source.data.slot) && source.data.kind === 'image' : ['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) ? source.data.kind === 'image' && (source.data.slot === 'guide' || (mode === 'characterSheet' && ['body_reference', 'back_reference'].includes(source.data.slot)) || (['qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && source.data.slot === 'identity')) : mode === 'videoSuperResolution' ? source.data.slot === 'guide' && source.data.kind === 'video' : ['swap', 'upscale'].includes(mode) ? (source.data.slot === 'guide' && source.data.kind === 'video') || (source.data.slot === 'identity' && source.data.kind === 'image') : false);
   }, []);
 
   const getMaskGuide = useCallback((id) => canvasMaskGuide(id, nodesRef.current, edgesRef.current), []);
@@ -938,21 +1050,22 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const history = completedEntry ? { [promptId]: completedEntry } : await getHistory(100);
       const source = nodesRef.current.find((node) => node.id === id);
       const customFiles = source?.data.mode === 'customWorkflow' ? extensionMedia(history?.[promptId], source.data.workflowOutputs || source.data.workflowDefinition?.outputs) : null;
-      const isImage = customFiles ? customFiles[0]?.kind !== 'video' : ['image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(source?.data.mode);
+      const isImage = customFiles ? customFiles[0]?.kind !== 'video' : ['image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism', 'mossPose'].includes(source?.data.mode);
       const outputEntry = source?.data.mode === 'customWorkflow' ? declaredHistory(history?.[promptId], source.data.workflowOutputs || source.data.workflowDefinition?.outputs) : history?.[promptId];
       const files = customFiles || (isImage ? extractImages(outputEntry) : extractVideos(outputEntry));
       if (!files.length) throw new Error(`任务已结束，但没有找到${isImage ? '图片' : '视频'}输出。`);
       const singleOutfit = source?.data.mode === 'outfitEdit' && (source?.data.outfitPanel || source?.data.panelId);
       const preferredImage = files.find((file) => source?.data.mode === 'characterSheet' ? file.filename?.startsWith('H3_CharacterSheet_') : source?.data.mode === 'outfitEdit' ? file.filename?.startsWith(singleOutfit ? `H3_OutfitHD_${singleOutfit}_` : 'H3_OutfitQuad_') : source?.data.mode === 'qwenEdit' ? file.filename?.startsWith(isH3Image(source.data) ? 'H3_Image_Edit_' : 'H3_Qwen21Edit_') : source?.data.mode === 'identityEdit' ? file.filename?.startsWith('H3_IdentityV2_') : source?.data.mode === 'imageUpscale' ? file.filename?.startsWith('H3_Image_HD') : source?.data.mode === 'image' && source?.data.imageModel === 'moss' ? file.filename?.startsWith('H3_MOSS_Image_') : file.filename?.startsWith('H3_Image_'));
       const result = customFiles ? customFiles[0] : isImage ? preferredImage || files[0] : selectCompletedVideo(source?.data.mode, files);
+      const resultKind = customFiles ? result.kind : isImage ? 'image' : 'video';
       const resultModels = describeNodeModels(source?.data);
       const outfitTitle = singleOutfit ? `${resolveOutfitPanels(source.data).find((panel) => panel.id === singleOutfit)?.label || singleOutfit} · ${result.filename?.startsWith(`H3_OutfitSingle_${singleOutfit}_`) ? '原生尺寸 · 未高清' : '独立高清'}` : `四视图 · 单图按需高清${(source?.data.outfitLayout || 'legacy') === 'legacy' ? '拼接' : '原版面合成'}`;
       const title = isH3Image(source?.data) ? (source.data.mode === 'qwenEdit' ? 'H3-Image 编辑' : 'H3-Image 生图') : source?.data.mode === 'characterSheet' ? '角色四视图生成' : source?.data.mode === 'outfitEdit' ? outfitTitle : source?.data.mode === 'qwenEdit' ? '图生图' : source?.data.mode === 'localRealism' ? '局部写实修复' : source?.data.mode === 'identityEdit' ? '母图编辑 V2' : source?.data.mode === 'image' ? (source?.data.imageModel === 'moss' ? 'MOSS 生图' : 'Krea2 生图') : source?.data.mode === 'imageUpscale' ? '图片高清' : source?.data.mode === 'swap' ? '换人一采' : source?.data.mode === 'upscale' ? '高清二采' : '成片';
       const resultIndex = edgesRef.current.filter((edge) => edge.source === id && edge.targetHandle === 'preview').length;
       const resultPosition = findFreePosition(nodesRef.current, { x: (source?.position.x || 0) + 540, y: (source?.position.y || 0) + resultIndex * 340 }, 'media');
       const mediaNode = {
-        id: uid(isImage ? 'image' : 'video'), type: 'media', position: resultPosition,
-        data: { ...result, kind: isImage ? 'image' : 'video', output: true, title: `${source?.data.title || title}${['outfitEdit', 'qwenEdit', 'imageUpscale'].includes(source?.data.mode) ? ` · ${source.data.mode === 'outfitEdit' ? `${resultModels.outfitModelLabel} · ${resultModels.outfitHdLabel}` : source.data.mode === 'qwenEdit' ? resultModels.qwenModelLabel : resultModels.upscaleModelLabel}` : ''} · 成品 ${resultIndex + 1}`, name: result.filename, prompt: source?.data.prompt, sourcePromptId: promptId, sourceQueueJobId: source?.data.queueJobId || null, sourceGeneratorId: id },
+        id: uid(resultKind), type: 'media', position: resultPosition,
+        data: { ...result, kind: resultKind, output: true, title: `${source?.data.title || title}${['outfitEdit', 'qwenEdit', 'imageUpscale'].includes(source?.data.mode) ? ` · ${source.data.mode === 'outfitEdit' ? `${resultModels.outfitModelLabel} · ${resultModels.outfitHdLabel}` : source.data.mode === 'qwenEdit' ? resultModels.qwenModelLabel : resultModels.upscaleModelLabel}` : ''} · 成品 ${resultIndex + 1}`, name: result.filename, prompt: source?.data.prompt, sourcePromptId: promptId, sourceQueueJobId: source?.data.queueJobId || null, sourceGeneratorId: id },
       };
       const registerTake = async () => {
           const current = { ...projectRef.current, revision: revisionRef.current };
@@ -983,7 +1096,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           runs: [{ promptId, status: 'done', stage: patch.takePending ? patch.stage : `${title}已输出`, time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12),
         },
       } : node).concat(pinMedia ? [mediaNode] : []));
-      if (pinMedia) setEdges((items) => addEdge({ id: `edge-${id}-${mediaNode.id}`, source: id, target: mediaNode.id, sourceHandle: isImage ? 'image' : 'video', targetHandle: 'preview' }, items));
+      if (pinMedia) setEdges((items) => addEdge({ id: `edge-${id}-${mediaNode.id}`, source: id, target: mediaNode.id, sourceHandle: resultKind, targetHandle: 'preview' }, items));
       if (pinMedia && customFiles?.length > 1) {
         const extraNodes = customFiles.slice(1).map((file, index) => ({
           id: uid(file.kind), type: 'media', position: { x: resultPosition.x, y: resultPosition.y + (index + 1) * 340 },
@@ -1280,7 +1393,134 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     }
   }, [project.id, project.readOnly, getImageProcessState, chooseMedia, saveCanvasAsset, updateNode, setNodes, setEdges, persistProject]);
 
+  const videoEditDepsRef = useRef({});
+  videoEditDepsRef.current = { updateNode, saveCanvasMedia, persistProject, saveProjectFile: (storageId, file, revision) => saveProjectFile(project.id, storageId, file, revision) };
+  const videoEditRunnerRef = useRef(null);
+  if (!videoEditRunnerRef.current) videoEditRunnerRef.current = createVideoEditRunner({
+    getProjectId: () => projectRef.current.id, getNodes: () => nodesRef.current, getEdges: () => edgesRef.current,
+    canWrite: () => !switchingRef.current && !projectRef.current.readOnly && !autoSaveRef.current?.failure,
+    jobs: localImageJobsRef.current, onJobsChange: () => setLocalImageJobsVersion(version => version + 1),
+    // The runner samples refs immediately before versioned saves and polling.
+    updateNode: (...args) => flushSync(() => videoEditDepsRef.current.updateNode(...args)),
+    saveCanvasMedia: (...args) => videoEditDepsRef.current.saveCanvasMedia(...args),
+    persistProject: () => videoEditDepsRef.current.persistProject(),
+    saveProjectFile: (...args) => videoEditDepsRef.current.saveProjectFile(...args),
+  });
+  const openMotion = useCallback((...args) => videoEditRunnerRef.current.openMotion(...args), []);
+  const getVideoEditState = useCallback(id => {
+    const node = nodesRef.current.find(item => item.id === id);
+    return { inputs: videoEditInputView(id, nodesRef.current, edgesRef.current, path => assetUrl(project.id, path)), busy: localImageJobsRef.current.has(id),
+      resultUrl: node?.data.editResultAssetPath ? assetUrl(project.id, node.data.editResultAssetPath) : null };
+  }, [project.id]);
+
+  const videoRhythmRunnerRef = useRef(null);
+  if (!videoRhythmRunnerRef.current) videoRhythmRunnerRef.current = createVideoRhythmRunner({
+    getProjectId: () => projectRef.current.id, getNodes: () => nodesRef.current, getEdges: () => edgesRef.current,
+    canWrite: () => !switchingRef.current && !projectRef.current.readOnly && !autoSaveRef.current?.failure,
+    jobs: localImageJobsRef.current, onJobsChange: () => setLocalImageJobsVersion((version) => version + 1),
+    updateNode: (...args) => flushSync(() => videoEditDepsRef.current.updateNode(...args)),
+    saveCanvasMedia: (...args) => videoEditDepsRef.current.saveCanvasMedia(...args),
+    persistProject: () => videoEditDepsRef.current.persistProject(),
+    saveProjectFile: (...args) => videoEditDepsRef.current.saveProjectFile(...args),
+  });
+  const getVideoRhythmState = useCallback((id) => {
+    const node = nodesRef.current.find((item) => item.id === id);
+    const edge = edgesRef.current.find((item) => item.target === id && item.targetHandle === 'v1');
+    const source = nodesRef.current.find((item) => item.id === edge?.source);
+    return {
+      busy: localImageJobsRef.current.has(id),
+      input: source ? { nodeId: source.id, title: source.data.title || '视频' } : null,
+      resultUrl: node?.data.rhythmResultAssetPath ? assetUrl(project.id, node.data.rhythmResultAssetPath) : null,
+    };
+  }, [project.id]);
+  const videoChromaRunnerRef = useRef(null);
+  if (!videoChromaRunnerRef.current) videoChromaRunnerRef.current = createVideoChromaRunner({
+    getProjectId: () => projectRef.current.id, getNodes: () => nodesRef.current, getEdges: () => edgesRef.current,
+    canWrite: () => !switchingRef.current && !projectRef.current.readOnly && !autoSaveRef.current?.failure,
+    jobs: localImageJobsRef.current, onJobsChange: () => setLocalImageJobsVersion((version) => version + 1),
+    updateNode: (...args) => flushSync(() => videoEditDepsRef.current.updateNode(...args)),
+    saveCanvasMedia: (...args) => videoEditDepsRef.current.saveCanvasMedia(...args),
+    persistProject: () => videoEditDepsRef.current.persistProject(),
+    saveProjectFile: (...args) => videoEditDepsRef.current.saveProjectFile(...args),
+  });
+  const getVideoChromaState = useCallback((id) => {
+    const node = nodesRef.current.find((item) => item.id === id);
+    const foregroundEdge = edgesRef.current.find((item) => item.target === id && item.targetHandle === 'fg');
+    const backgroundEdge = edgesRef.current.find((item) => item.target === id && item.targetHandle === 'bg');
+    const titleOf = (edge) => {
+      const source = nodesRef.current.find((item) => item.id === edge?.source);
+      return source ? { nodeId: source.id, title: source.data.title || '素材' } : null;
+    };
+    return {
+      busy: localImageJobsRef.current.has(id),
+      foreground: titleOf(foregroundEdge),
+      background: titleOf(backgroundEdge),
+      resultUrl: node?.data.chromaResultAssetPath ? assetUrl(project.id, node.data.chromaResultAssetPath) : null,
+    };
+  }, [project.id]);
+  const videoRepairRunnerRef = useRef(null);
+  if (!videoRepairRunnerRef.current) videoRepairRunnerRef.current = createVideoRepairRunner({
+    getProjectId: () => projectRef.current.id, getNodes: () => nodesRef.current, getEdges: () => edgesRef.current,
+    canWrite: () => !switchingRef.current && !projectRef.current.readOnly && !autoSaveRef.current?.failure,
+    jobs: localImageJobsRef.current, onJobsChange: () => setLocalImageJobsVersion((version) => version + 1),
+    updateNode: (...args) => flushSync(() => videoEditDepsRef.current.updateNode(...args)),
+    saveCanvasMedia: (...args) => videoEditDepsRef.current.saveCanvasMedia(...args),
+    persistProject: () => videoEditDepsRef.current.persistProject(),
+    saveProjectFile: (...args) => videoEditDepsRef.current.saveProjectFile(...args),
+  });
+  const getVideoRepairState = useCallback((id) => {
+    const node = nodesRef.current.find(item => item.id === id);
+    const edge = edgesRef.current.find(item => item.target === id && item.targetHandle === 'video');
+    const source = nodesRef.current.find(item => item.id === edge?.source);
+    return { busy: localImageJobsRef.current.has(id), sourceTitle: source ? source.data.title || source.data.name || source.id : null,
+      sourceSignature: repairSourceSignature(id, nodesRef.current, edgesRef.current),
+      resultUrl: node?.data.repairResultAssetPath ? assetUrl(project.id, node.data.repairResultAssetPath) : null };
+  }, [project.id]);
+  const placePlateResultRef = useRef(() => null);
+  placePlateResultRef.current = (nodeId, assetPath) => {
+    // Every export is a new immutable media reference. Existing consumers keep
+    // their selected asset when this processor is run again.
+    const plate = nodesRef.current.find(item => item.id === nodeId);
+    if (!plate || projectRef.current.readOnly || switchingRef.current) return null;
+    const mediaId = uid('video'), url = assetUrl(projectRef.current.id, assetPath);
+    flushSync(() => {
+      const next = nodesRef.current.map(item => item.id === nodeId ? { ...item, data: { ...item.data, plateResultAssetPath: assetPath, plateResultUrl: url, plateResultNodeId: mediaId } } : item);
+      next.push({ id: mediaId, type: 'media', position: findFreePosition(next, { x: plate.position.x + 460, y: plate.position.y }, 'media'),
+        data: { kind: 'video', output: true, title: '绿幕白模成片', name: 'green-white-plate.mp4', assetPath, url, remoteName: null, localFile: true, sourcePlateId: nodeId } });
+      nodesRef.current = next; setNodes(next);
+      const connections = edgesRef.current.concat({ id: `edge-${nodeId}-${mediaId}-preview`, source: nodeId, target: mediaId, sourceHandle: 'ref', targetHandle: 'preview' });
+      edgesRef.current = connections; setEdges(connections);
+    });
+    return mediaId;
+  };
+  const videoPlateRunnerRef = useRef(null);
+  if (!videoPlateRunnerRef.current) videoPlateRunnerRef.current = createVideoPlateRunner({
+    getProjectId: () => projectRef.current.id, getNodes: () => nodesRef.current, getEdges: () => edgesRef.current,
+    canWrite: () => !switchingRef.current && !projectRef.current.readOnly && !autoSaveRef.current?.failure,
+    jobs: localImageJobsRef.current, onJobsChange: () => setLocalImageJobsVersion((version) => version + 1),
+    updateNode: (...args) => flushSync(() => videoEditDepsRef.current.updateNode(...args)),
+    saveCanvasMedia: (...args) => videoEditDepsRef.current.saveCanvasMedia(...args),
+    persistProject: () => videoEditDepsRef.current.persistProject(),
+    saveProjectFile: (...args) => videoEditDepsRef.current.saveProjectFile(...args),
+    placeResult: (id, assetPath) => placePlateResultRef.current(id, assetPath),
+  });
+  const getVideoPlateState = useCallback((id) => {
+    const node = nodesRef.current.find((item) => item.id === id);
+    const edge = edgesRef.current.find((item) => item.target === id && item.targetHandle === 'v1');
+    const source = nodesRef.current.find((item) => item.id === edge?.source);
+    return {
+      busy: localImageJobsRef.current.has(id),
+      input: source ? { nodeId: source.id, title: source.data.title || '视频' } : null,
+      resultUrl: node?.data.plateResultAssetPath ? assetUrl(project.id, node.data.plateResultAssetPath) : null,
+      resultNodeId: node?.data.plateResultNodeId || null,
+    };
+  }, [project.id]);
   const generateNode = useCallback(async (id) => {
+    if (['videoSpeed', 'videoTimeRemap'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoRhythmRunnerRef.current.run(id);
+    if (['videoChromaKey'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoChromaRunnerRef.current.run(id);
+    if (['videoLocalRepair'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoRepairRunnerRef.current.run(id);
+    if (['videoWhitePlate'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoPlateRunnerRef.current.run(id);
+    if (nodesRef.current.find(node => node.id === id)?.type === 'videoEdit') return videoEditRunnerRef.current.run(id);
     if (nodesRef.current.find(n => n.id === id)?.type === 'spriteAtlas') return spriteRunRef.current?.runSpriteAtlas(id);
     if (nodesRef.current.find(n => n.id === id)?.type === 'artDirector') return artRunRef.current?.(id);
     if (switchingRef.current || project.readOnly) return;
@@ -1288,7 +1528,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     const assertCurrent = () => generationAttemptsRef.current.assert(id, attempt);
     let node = nodesRef.current.find((item) => item.id === id);
     if (isImageProcess(node)) return runImageProcess(id);
-    if (!['customWorkflow', 'swap', 'upscale', 'imageUpscale'].includes(node?.data.mode) && !node?.data.prompt?.trim()) { updateNode(id, { status: 'error', error: '请先输入画面描述。' }); return; }
+    if (!['customWorkflow', 'swap', 'upscale', 'imageUpscale', 'videoSuperResolution'].includes(node?.data.mode) && !node?.data.prompt?.trim()) { updateNode(id, { status: 'error', error: '请先输入画面描述。' }); return; }
     if (mediaWritesRef.current.size) {
       updateNode(id, { status: 'uploading', stage: '正在等待素材写入磁盘', progress: 0, error: null });
       try {
@@ -1307,10 +1547,36 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     }
     if (node.data.mode === 'reference' && !refs.length) { updateNode(id, { status: 'error', error: '全能参考至少需要一个素材；仅用文字生成时，可切换到首尾帧并留空图片。' }); return; }
     if (node.data.mode === 'swap' && (!refs.some((ref) => ref.data.slot === 'guide') || !refs.some((ref) => ref.data.slot === 'identity'))) { updateNode(id, { status: 'error', error: '请连接源视频到上方端口、单人身份图到下方端口。' }); return; }
+    if (node.data.mode === 'videoSuperResolution' && !refs.some(ref => ref.data.slot === 'guide' && ref.data.kind === 'video')) { updateNode(id, { status: 'error', error: '请连接源视频后再超分。' }); return; }
     if (node.data.mode === 'upscale' && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: '请把已经生成的一采视频连接到高清二采节点上方端口。' }); return; }
     if (node.data.mode === 'imageUpscale' && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: '请把一张图片连接到图片高清节点左侧端口。' }); return; }
     if (['identityEdit', 'characterSheet', 'localRealism'].includes(node.data.mode) && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: node.data.mode === 'characterSheet' ? '请把一张单人角色参考图连接到角色四视图节点左侧端口。' : '请把一张人物或场景母图连接到图生图节点左侧端口。' }); return; }
     if (node.data.mode === 'outfitEdit' && !refs.some((ref) => ref.data.slot === 'guide' && ref.data.kind === 'image')) { updateNode(id, { status: 'error', error: '请把原始四视图图片连接到无抠图换装节点左侧端口。' }); return; }
+    if (['image', 'qwenEdit'].includes(node.data.mode)) {
+      const resultKey = imageResultKey(node.data);
+      if (node.data.resultUrl && node.data.status === 'done' && resultKey && node.data.imageReview?.resultKey !== resultKey) {
+        const record = createImageReview(node.data, false, resultKey, id);
+        imageHistoryRef.current = appendImageReview(imageHistoryRef.current, record);
+        const imageReview = { accepted: false, model: record.model, taskType: record.taskType, time: record.time, resultKey };
+        updateNode(id, { imageReview });
+        node = { ...node, data: { ...node.data, imageReview } };
+      }
+      let install;
+      try { install = await readImageModelInstall(); }
+      catch { install = { offline: true, definitions: null }; }
+      const decision = planImageModelPick({
+        data: node.data, mode: node.data.mode, prompt: node.data.prompt || '',
+        referenceCount: node.data.mode === 'qwenEdit' ? refs.length : 0,
+        hasMask: node.data.mode === 'qwenEdit' && Boolean(getQwenMask(id)),
+        hasSourceCrop: Boolean(node.data.qwenSourceCrop), hasMaskCrop: Boolean(node.data.qwenMaskCrop),
+        install, history: imageHistoryRef.current,
+      });
+      if (!decision.ok) { updateNode(id, { status: 'error', error: decision.error, stage: '未改模型' }); return; }
+      if (decision.patch && Object.keys(decision.patch).length) {
+        updateNode(id, decision.patch);
+        node = { ...node, data: { ...node.data, ...decision.patch } };
+      }
+    }
     updateNode(id, { status: 'uploading', stage: '正在准备素材', progress: 0, error: null, promptId: null, queueJobId: null });
     try {
       if (node.data.mode === 'image' && node.data.imageModel === 'moss') {
@@ -1346,10 +1612,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         assertCurrent();
         references.push({ id: mediaNode.id, kind: mediaNode.data.kind, title: mediaNode.data.title, slot: mediaNode.data.slot, name });
       }
-      const seed = node.data.randomSeed ? Math.floor(Math.random() * 2147483647) : Number(isH3Image(node.data) ? node.data.seed ?? 42 : node.data.seed || 42);
+      const seed = node.data.randomSeed ? Math.floor(Math.random() * 2147483647) : Number((isH3Image(node.data) || node.data.mode === 'mossPose') ? node.data.seed ?? 42 : node.data.seed || 42);
       const options = { ...node.data, seed, references };
       updateNode(id, { status: 'queued', stage: '任务已排队', seed });
       let plan = node.data.mode === 'characterSheet' ? buildCharacterSheetQueuePlan(options) : node.data.mode === 'outfitEdit' ? buildOutfitQueuePlan(options) : null;
+      const characterSheetWorkflow = node.data.mode === 'characterSheet' ? plan?.workflow : null;
+      if (characterSheetWorkflow) plan = null;
       let preparedExtension;
       if (node.data.mode === 'customWorkflow') {
         preparedExtension = await prepareExtension(node.data, Object.fromEntries(references.map((ref) => [ref.slot, ref.name])));
@@ -1358,13 +1626,14 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         plan = preparedExtension.plan || null;
         updateNode(id, { workflowOutputs: preparedExtension.outputs });
       }
-      const workflow = preparedExtension ? preparedExtension.workflow || null : plan ? null : node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
+      const workflow = preparedExtension ? preparedExtension.workflow || null : characterSheetWorkflow ? characterSheetWorkflow : plan ? null : node.data.mode === 'mossPose' ? buildMossPoseWorkflow(options) : node.data.mode === 'qwenEdit' ? buildQwen21EditWorkflow(options)
           : node.data.mode === 'localRealism' ? buildLocalRealismWorkflow(options)
           : node.data.mode === 'identityEdit' ? buildIdentityEditWorkflow(options)
             : node.data.mode === 'image' ? buildImageWorkflow(options)
               : node.data.mode === 'imageUpscale' ? buildImageHdWorkflow(options)
                 : node.data.mode === 'swap' ? buildCharacterSwapWorkflow(options)
                   : node.data.mode === 'upscale' ? buildHdRefineWorkflow(options)
+                  : node.data.mode === 'videoSuperResolution' ? buildVideoSuperResolutionWorkflow(options)
                     : node.data.mode === 'reference' ? buildReferenceWorkflow(options)
                       : buildWorkflow({ ...options, firstFrame: references.find((ref) => ref.slot === 'first')?.name, lastFrame: references.find((ref) => ref.slot === 'last')?.name });
       if ((node.data.mode === 'image' && node.data.imageModel === 'flux3_klein') || (node.data.mode === 'qwenEdit' && node.data.qwenModel === 'flux3_klein')) {
@@ -1379,6 +1648,17 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         assertCurrent();
         if (!dependencies.ready) throw new Error(`H3-Image 还缺少：${dependencies.missing.join('、')}。请在画布连接的 ComfyUI 中安装对应模型，更新到支持 MiniMaxH3ImageConditioning 的版本后再生成；仅在另一个后台安装并不会生效。`);
       }
+      if (node.data.mode === 'mossPose') {
+        updateNode(id, { stage: '正在检查 MOSS 姿势、DWPose 与可选 Qwen 依赖' });
+        const dependencies = await getMossPoseDependencyStatus(workflow);
+        assertCurrent();
+        if (!dependencies.ready) throw new Error(`MOSS 姿势还缺少：${dependencies.missing.join('、')}。不会自动下载权重；安装节点后需获准重启 ComfyUI。`);
+      }
+      if (node.data.mode === 'videoSuperResolution') {
+        const dependencies = await getVideoSuperResolutionDependencyStatus(workflow, comfyFetch);
+        assertCurrent();
+        if (!dependencies.ready) throw new Error(`视频超分缺少本机依赖：${dependencies.missing.join('、')}。请补齐后重试；未提交生成。`);
+      }
       const job = await enqueueGeneration({ workflow, plan, projectId: project.id, nodeId: id, clientId });
       if (!generationAttemptsRef.current.isCurrent(id, attempt)) {
         // The response may arrive after cancellation/retry. The server job now
@@ -1390,9 +1670,10 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     } catch (error) {
       if (generationAttemptsRef.current.isCurrent(id, attempt) && error.code !== 'GENERATION_CANCELLED') updateNode(id, { status: 'error', error: error.message, stage: '提交失败' });
     }
-  }, [clientId, getReferences, project.id, project.readOnly, updateNode, runImageProcess]);
+  }, [clientId, getReferences, getQwenMask, project.id, project.readOnly, updateNode, runImageProcess]);
 
   const cancelNode = useCallback(async (id) => {
+    if (nodesRef.current.find(node => node.id === id)?.type === 'videoLocalRepair') return videoRepairRunnerRef.current.cancel(id);
     const node = nodesRef.current.find((item) => item.id === id);
     if (node?.type === 'spriteAtlas') return spriteRunRef.current?.cancelSpriteAtlas(id);
     if (localImageJobsRef.current.has(id)) { localImageJobsRef.current.get(id).abort(); return; }
@@ -1478,6 +1759,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     else if (type === 'spriteAtlas') data = { title: '3D 角色转多方向图集', status: 'idle', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS }, ...extra };
     else if (type === 'artDirector') data = { title: '电子主美 · 图解分析', status: 'idle', brief: '', preserve: '', referencePurposes: {}, ...extra };
     else if (type === 'imageProcess') data = { ...DEFAULT_ADJUSTMENTS, adjustmentType: 'basic', mode: 'colorAdjust', title: '颜色调整', status: 'idle', blendMode: 'normal', opacity: 100, fit: 'cover', maskChannel: 'luminance', maskInvert: false, ...extra };
+    else if (type === 'videoSpeed') data = { title: '恒定速度', status: 'idle', ...defaultSpeedSettings(), ...extra };
+    else if (type === 'videoTimeRemap') data = { title: '时间重映射', status: 'idle', remapKeyframes: defaultRemapKeyframes(), ...extra };
+    else if (type === 'videoChromaKey') data = { title: '绿幕扣像合成', status: 'idle', ...defaultChromaSettings(), ...extra };
+    else if (type === 'videoLocalRepair') data = { title: '局部水印修补', status: 'idle', ...defaultRepairSettings(), ...extra };
+    else if (type === 'videoWhitePlate') data = { title: '绿幕白模', status: 'idle', ...defaultPlateSettings(), ...extra };
+    else if (type === 'videoEdit') data = { title: '视频编辑', status: 'idle', editDocument: defaultVideoEditDocument(), ...extra };
     else if (type === 'prompt') data = { title: 'H3 提示词优化', idea: '', optimizedPrompt: '', status: 'idle', ...extra };
     else if (type === 'note') data = { title: '创作备注', text: '', ...extra };
     else {
@@ -1654,20 +1941,28 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     return () => window.removeEventListener('paste', onPaste);
   }, [addNode, chooseMedia, imagePreview, workflowInspection, libraryModalOpen, pasteClipboard, screenToFlowPosition, project.readOnly]);
 
-  const attachFilesToGenerator = useCallback((generatorId, files) => {
+  const attachFilesToGenerator = useCallback((generatorId, files, targetHandle = 'references') => {
     const generator = nodesRef.current.find((node) => node.id === generatorId);
-    if (!generator) return;
-    const positions = planReferencePositions(nodesRef.current, generator, files.length);
-    files.forEach((file, index) => {
+    if (!generator || projectRef.current.readOnly || switchingRef.current || autoSaveRef.current?.conflict || ['uploading', 'queued', 'running', 'finishing'].includes(generator.data.status)) return;
+    const videoGuide = generator.data.mode === 'videoSuperResolution' && targetHandle === 'guide';
+    if (targetHandle !== 'references' && !videoGuide) return;
+    const selected = Array.from(files || []);
+    if (videoGuide && (selected.length !== 1 || !selected[0].type.startsWith('video/'))) {
+      updateNode(generatorId, { status: 'error', error: '请选择一段视频作为超分输入。' });
+      return;
+    }
+    const positions = planReferencePositions(nodesRef.current, generator, selected.length);
+    selected.forEach((file, index) => {
       const kind = file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'image';
       const position = positions[index];
       const id = addNode(kind, { title: file.name.replace(/\.[^.]+$/, '') }, position);
       chooseMedia(id, file);
-      setEdges((items) => addEdge({ id: `edge-${id}-${generatorId}`, source: id, target: generatorId, sourceHandle: 'ref', targetHandle: 'references' }, items));
+      setEdges((items) => addEdge({ id: `edge-${id}-${generatorId}`, source: id, target: generatorId, sourceHandle: 'ref', targetHandle }, videoGuide ? items.filter(edge => edge.target !== generatorId || edge.targetHandle !== 'guide') : items));
     });
-  }, [addNode, chooseMedia, setEdges]);
+  }, [addNode, chooseMedia, setEdges, updateNode]);
 
   const importVideoReference = useCallback(async (url, downloadNodeId = null) => {
+    const cleanUrl = validatePublicVideoUrl(url);
     if (switchingRef.current || projectRef.current.readOnly || autoSaveRef.current?.conflict) throw new Error('当前画布不可写，请先处理保存状态后重试。');
     if (videoImportBusyRef.current) throw new Error('另一段视频正在下载或保存，请完成后再导入。');
     const projectId = projectRef.current.id;
@@ -1692,8 +1987,21 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     videoImportBusyRef.current = operation;
     autoSaveRef.current?.suspend();
     setSaveState('保存中');
+    const markDownload = (patch) => {
+      if (!downloadNodeId) return;
+      flushSync(() => updateNode(downloadNodeId, patch));
+    };
+    markDownload({
+      downloadUrl: cleanUrl, sourceUrl: cleanUrl, downloadStatus: 'downloading', status: 'downloading',
+      downloadMessage: '正在解析并下载到本机', stage: '正在下载', error: null,
+    });
     const pending = (async () => {
-      const result = await importVideoFromUrl(url);
+      let result;
+      try { result = await importVideoFromUrl(cleanUrl, { signal: videoDownloadSignal() }); }
+      catch (error) {
+        if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw new Error('视频下载超时，请换较短的视频，或下载后手动上传。');
+        throw error;
+      }
       if (videoImportBusyRef.current !== operation || projectRef.current.id !== projectId || switchingRef.current || projectRef.current.readOnly || autoSaveRef.current?.conflict) throw new Error('当前画布已改变或不可写，尚未添加视频。');
       const { current, videoCount } = validateTarget();
       const remoteName = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
@@ -1702,19 +2010,27 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       let id;
       flushSync(() => {
         id = addNode('video', { title: result.title || (downloadNodeId ? '下载的视频' : '在线视频参考'), name: result.name, remoteName,
-          url: remoteMediaUrl(remoteName), sourceUrl: result.sourceUrl || url, localFile: false }, position);
+          url: remoteMediaUrl(remoteName), sourceUrl: result.sourceUrl || cleanUrl, localFile: false }, position);
         if (!downloadNodeId) setEdges((items) => addEdge({ id: `edge-${id}-${current.id}`, source: id, target: current.id, sourceHandle: 'ref', targetHandle }, items));
       });
       return id;
     })();
     mediaWritesRef.current.set(operation.id, pending);
+    let createdId = null;
+    let failure = null;
     try {
-      const id = await pending;
+      createdId = await pending;
       // Remove our own barrier before flushing, otherwise the flush awaits itself.
       mediaWritesRef.current.delete(operation.id);
+      markDownload({ downloadStatus: 'done', status: 'done', downloadMessage: '下载完成', stage: '下载完成', videoNodeId: createdId, error: null });
       try { await persistProject(); }
       catch (error) { throw new Error(`视频已下载并保留在画布，但尚未保存：${error.message}。请重试保存，不要重复下载。`); }
-      return id;
+    } catch (error) {
+      failure = error;
+      if (downloadNodeId && nodesRef.current.find((node) => node.id === downloadNodeId)?.data.downloadStatus !== 'done') {
+        const message = publicDownloadError(error);
+        markDownload({ downloadStatus: 'failed', status: 'failed', downloadMessage: message, stage: message, error: message });
+      }
     } finally {
       mediaWritesRef.current.delete(operation.id);
       if (videoImportBusyRef.current === operation) {
@@ -1722,7 +2038,14 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         autoSaveRef.current?.observe(nameRef.current, { nodes: nodesRef.current, edges: edgesRef.current, viewport: viewportRef.current }, { defer: mediaWritesRef.current.size > 0 || interactionRef.current });
       }
     }
-  }, [addNode, setEdges, persistProject]);
+    if (failure) {
+      if (downloadNodeId && nodesRef.current.find((node) => node.id === downloadNodeId)?.data.downloadStatus === 'failed') {
+        try { await persistProject(); } catch { /* The open page still shows the failure. */ }
+      }
+      throw new Error(publicDownloadError(failure));
+    }
+    return createdId;
+  }, [addNode, setEdges, persistProject, updateNode]);
 
   const changeQwenReferences = useCallback((id, sourceId, direction) => {
     if (switchingRef.current || project.readOnly) return;
@@ -1775,6 +2098,14 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       updateNode(target.id, { prompt: bindQwenPrompt(target.data.prompt || '', nextRefs), qwenReferenceOrder: nextRefs.map((ref) => ref.id), error: null });
     }
     setEdges((items) => addEdge(edge, items.filter((item) => multiple || (!(item.target === target.id && item.targetHandle === edge.targetHandle) && !(source.type === 'prompt' && item.source === source.id && item.sourceHandle === 'prompt')))));
+    const produced = source.type === 'generator' ? source : source.type === 'media' && source.data?.sourceGeneratorId ? nodesRef.current.find((item) => item.id === source.data.sourceGeneratorId) : null;
+    const sameResult = produced && (!source.data?.sourcePromptId || produced.data.promptId === source.data.sourcePromptId);
+    const resultKey = sameResult ? imageResultKey(produced.data) : '';
+    if (sameResult && produced.data.resultUrl && produced.data.status === 'done' && resultKey && produced.data.imageReview?.resultKey !== resultKey) {
+      const record = createImageReview(produced.data, true, resultKey, produced.id);
+      imageHistoryRef.current = appendImageReview(imageHistoryRef.current, record);
+      updateNode(produced.id, { imageReview: { accepted: true, model: record.model, taskType: record.taskType, time: record.time, resultKey } });
+    }
     setConnectionNotice(resolvedFrom ? '已连接当前成品素材；重新生成不会替换此参考。' : '');
     return { edgeId: edge.id, ...plan.connection };
   }, [connectionPlan, setEdges, updateNode]);
@@ -1912,7 +2243,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const spriteAtlas = useSpriteAtlas({ project, projectRef, revisionRef, switchingRef, nodes, nodesRef, updateNode, persistProject, localImageJobsRef, setLocalImageJobsVersion });
   spriteRunRef.current = spriteAtlas;
   artRunRef.current = (id) => { const state = artDirector.getArtDirectorState(id); return state.node?.data.analysis?.sourceVersion === state.signature ? artDirector.exportArtBoard(id) : artDirector.runArtAnalysis(id); };
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [spriteAtlas, artDirector, updateNode, removeNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -1930,7 +2261,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   useCanvasMcp({
     nodesRef, edgesRef, projectName, projectId: project.id, readOnly: project.readOnly, server,
-    actions: { imageCompact: (args) => {
+    actions: { importVideoReference, isVideoDownloadBusy: () => Boolean(videoImportBusyRef.current), patchNode: (id, patch) => { flushSync(() => updateNode(id, patch)); }, publishExtension: args=>getPublishLedger().publish(args), getExtensionPublishStatus: requestId=>getPublishLedger().status(requestId), imageCompact: (args) => {
       const { nodeIds, dryRun } = imageCompactArgs(args);
       if (projectRef.current.id !== project.id || projectRef.current.readOnly || switchingRef.current
         || autoSaveRef.current?.failure || autoSaveRef.current?.conflict) throw new Error('当前画布不可写，请先处理保存状态或项目切换。');
@@ -1949,7 +2280,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const bundle = await getExtension(digest);
       if (switchingRef.current || project.readOnly) throw new Error('当前画布不可写。');
       return addNode('generator', extensionNodeData(bundle, nodeDefinitionId), position, focus);
-    }, updateNode, removeNode, onConnect, generateNode, cancelNode, tidyCanvas, focusNode, inspectNode, openReferenceLibrary, persistProject, retryProjectSave,
+    }, updateNode, removeNode, reviewImageNode, onConnect, generateNode, cancelNode, tidyCanvas, focusNode, inspectNode, openReferenceLibrary, persistProject, retryProjectSave,
+      getImageModelHistory: () => imageHistoryRef.current,
       prepareProjectSwitch, commitProjectSwitch, abandonProjectSwitch,
       importAsset: async (nodeId, assetPath, name, sourceProjectId) => {
         if (switchingRef.current || project.readOnly) throw new Error('当前项目无法导入素材。');
@@ -2127,9 +2459,19 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={() => addNode('video', {}, addMenu.flow)}><i><Video size={17} /></i><span>视频素材<small>动作、运镜或内容参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('audio', {}, addMenu.flow)}><i><Music2 size={17} /></i><span>音频素材<small>音色、配乐或声音参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('note', {}, addMenu.flow)}><i><Type size={17} /></i><span>文本备注<small>分镜与创作设定</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoSpeed', { title: '恒定速度' }, addMenu.flow)}><i><Film size={17} /></i><span>恒定速度<small>0.5× 升格慢放 · 2× 快放</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoTimeRemap', { title: '时间重映射' }, addMenu.flow)}><i><Film size={17} /></i><span>时间重映射<small>关键帧曲线 · 走平为定格 · 缓入缓出</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoChromaKey', { title: '绿幕扣像合成' }, addMenu.flow)}><i><Film size={17} /></i><span>绿幕扣像合成<small>绿幕人物叠到图片或视频背景</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoLocalRepair', { title: '局部水印修补' }, addMenu.flow)}><i><Film size={17} /></i><span>局部水印修补<small>CPU 邻域填补 · 小块文字 · 原片声音</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoWhitePlate', { title: '绿幕白模' }, addMenu.flow)}><i><Film size={17} /></i><span>绿幕白模<small>人物和杆子留白，地板和背景变成纯绿</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('videoEdit', { title: '视频编辑' }, addMenu.flow)}><i><Film size={17} /></i><span>视频编辑<small>裁切 · 分割 · 倒放 · 补帧 · 拼接 · 原声</small></span><Plus size={13} /></button>
+          <div className="add-menu-title">视频增强 · 本地模型</div>
+          <button onClick={() => addNode('generator', { mode: 'videoSuperResolution', title: '视频超分', videoUpscaleModel: 'rtx', videoUpscaleScale: 2, rtxQuality: 'ULTRA', rtxStrength: 1, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>视频超分<small>RTX 超分 / 降噪 / 去模糊 · SeedVR2</small></span><Plus size={13} /></button>
+          <button disabled title="官方 HyperFlow 必需双时间模型与逐步终点条件；本机尚无经过验证的兼容运行时。普通 LoRA 转换不能替代。"><i><Sparkles size={17} /></i><span>2K 精修 · Open-H3 IC<small>兼容适配未完成 · 暂不可运行</small></span></button>
           <div className="add-menu-title">付费 API 节点</div>
           <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>云端视觉 API · 按服务商计费 · 上传作品及参考</small></span><Plus size={13} /></button>
           <div className="add-menu-title">第三方工具</div>
+          <button onClick={() => addNode(...NODE_PRESETS.moss_pose, addMenu.flow)}><i><WandSparkles size={17} /></i><span>MOSS 姿势控制<small>Apache-2.0 · OpenPose + 可选 Qwen 身份对齐 · 待本地实测</small></span><Plus size={13} /></button>
           {LOCAL_NODE_TOOLS.filter((tool) => NODE_PRESETS[tool.preset]).map((tool) => <button key={tool.preset} onClick={() => addNode(...NODE_PRESETS[tool.preset], addMenu.flow)}><i><WandSparkles size={17} /></i><span>{tool.label}<small>{tool.description}</small></span><Plus size={13} /></button>)}
           <button onClick={() => { setAddMenu(null); setWorkflowLibraryOpen(true); }}><i><Library size={17} /></i><span>已安装的节点工具<small>选择从节点库下载或本地导入的工作流</small></span><Plus size={13} /></button>
         </div>}
@@ -2195,7 +2537,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       {imagePreview && <ImageLightbox preview={imagePreview} onClose={() => setImagePreview(null)} closeRef={previewCloseRef} />}
       {workflowInspection && <WorkflowInspector key={workflowInspection.nonce} request={workflowInspection} onClose={() => setWorkflowInspection(null)} />}
       {workflowLibraryOpen && <WorkflowLibrary onClose={() => setWorkflowLibraryOpen(false)} onAdd={async (bundle, definitionId) => { if (project.readOnly || switchingRef.current) throw new Error('当前画布不可写。'); flushSync(() => addNode('generator', extensionNodeData(bundle, definitionId))); await persistProject(); }} />}
-      {nodeLibraryMounted && <NodeLibrary open={nodeLibraryOpen} onClose={() => { if (!catalogBusyRef.current) setNodeLibraryOpen(false); }} onOpenLocal={() => { if (!catalogBusyRef.current) { setNodeLibraryOpen(false); setWorkflowLibraryOpen(true); } }} onImport={importCatalogNode} sharePacket={sharePacket} onShareSent={(requestId) => setSharePacket((value) => value?.requestId === requestId ? null : value)} />}
+      {nodeLibraryMounted && <NodeLibrary open={nodeLibraryOpen} onClose={() => { if (!catalogBusyRef.current) setNodeLibraryOpen(false); }} onOpenLocal={() => { if (!catalogBusyRef.current) { setNodeLibraryOpen(false); setWorkflowLibraryOpen(true); } }} onImport={importCatalogNode} sharePacket={sharePacket} onShareResult={data=>getPublishLedger().result(data)} onShareSent={async (requestId) => { await getPublishLedger().sent(requestId); setSharePacket((value) => value?.requestId === requestId ? null : value); }} />}
       {dependencyRequest && <WorkflowDependencies request={dependencyRequest} onClose={closeDependencies} onAdd={async (bundle, definitionId, parameters, report) => {
         if (dependencyRequest.projectId !== projectRef.current.id) throw new Error('项目已改变，请重新检查。');
         await addImportedExtension(bundle, definitionId, parameters, report, dependencyRequest.existingId);

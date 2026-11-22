@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from canvas_page_bridge import CanvasPageBridge
@@ -83,6 +84,17 @@ class CanvasPageBridgeTests(unittest.TestCase):
                          "tool": "canvas_generate_node", "args": {"nodeId": "g1", "wait": False}}))
         self.assert_code("BAD_REQUEST", lambda: self.bridge.heartbeat({**page, "sessionId": "bad_page", "projectId": "other"}))
 
+    def test_full_presentation_payload_fits_without_raising_unrelated_tool_limits(self):
+        self.bridge.heartbeat(self.page)
+        pages = [{"id": f"slide{i}", "startFrame": i * 30, "endFrame": (i + 1) * 30,
+                  "title": "演" * 80, "bullets": ["讲" * 96] * 4, "layout": "side", "motion": "reveal"}
+                 for i in range(48)]
+        self.assertEqual(self.submit(tool="canvas_set_video_presentation", args={"nodeId": "edit", "pages": pages})["status"], "queued")
+        self.assertEqual(self.submit("editor", tool="canvas_update_node", args={"nodeId": "edit", "settings": {
+            "editDocument": {"presentation": pages}}})["status"], "queued")
+        self.assert_code("BAD_REQUEST", lambda: self.submit("long_prompt", tool="canvas_update_node",
+                         args={"nodeId": "edit", "prompt": "讲" * 12000}))
+
     def test_open_project_command_stays_bound_to_original_page(self):
         self.bridge.heartbeat(self.page)
         request = {**self.bridge.current(), "opId": "open_project", "tool": "canvas_open_project", "args": {"projectId": "prj_two"}}
@@ -91,6 +103,31 @@ class CanvasPageBridgeTests(unittest.TestCase):
         self.assert_code("CANVAS_SESSION_CHANGED", lambda: self.bridge.complete({**command,
                          "projectId": "prj_two", "result": {"ok": True}}))
         self.assertEqual(self.bridge.complete({**command, "result": {"ok": True}})["status"], "done")
+
+    def test_download_video_accepts_wait_without_opening_a_browser(self):
+        self.bridge.heartbeat(self.page)
+        queued = self.submit('download_now', tool='canvas_download_video', args={
+            'url': 'https://www.bilibili.com/video/BV1xx', 'wait': False, 'x': 40, 'y': 80,
+        })
+        self.assertEqual(queued['status'], 'queued')
+        command = self.bridge.heartbeat(self.page)['command']
+        self.assertEqual(command['tool'], 'canvas_download_video')
+        self.assertEqual(command['args']['wait'], False)
+        self.assertNotIn('password', json.dumps(command))
+        self.bridge.complete({**command, 'result': {
+            'ok': True, 'nodeId': 'note_download', 'jobId': 'job_download', 'status': 'queued', 'message': '已排队，准备下载',
+        }})
+        waiting = self.submit('download_wait', tool='canvas_download_video', args={
+            'nodeId': 'note_download', 'url': 'https://www.youtube.com/watch?v=abcdefghijk', 'wait': True,
+        })
+        self.assertEqual(waiting['status'], 'queued')
+        follow = self.bridge.heartbeat(self.page)['command']
+        self.assertTrue(follow['args']['wait'])
+        done = self.bridge.complete({**follow, 'result': {
+            'ok': True, 'nodeId': 'note_download', 'jobId': 'job_wait', 'status': 'done', 'videoNodeId': 'media_video', 'message': '下载完成',
+        }})
+        self.assertEqual(done['result']['videoNodeId'], 'media_video')
+        self.assert_code('BAD_REQUEST', lambda: self.submit('generate_still_rejects_wait', args={'nodeId': 'g1', 'wait': True}))
 
     def test_reference_library_dispatches_without_claiming_remote_load(self):
         self.bridge.heartbeat(self.page)

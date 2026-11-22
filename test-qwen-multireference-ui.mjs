@@ -2,25 +2,27 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from './test-browser.mjs';
+import { installedImageModelDefinitions } from './test-image-model-fixture.mjs';
 
 // Synthetic browser fixture: every request is intercepted; no live inference/service.
 const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 const origin = 'http://127.0.0.1:8799';
 const browser = await chromium.launch({ headless: true });
 const failures = [], queued = [];
-const makeProject = (readOnly = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen references fixture', revision: 1, readOnly, shots: [], canvas: {
-  viewport: { x: 20, y: 30, zoom: 0.9 },
+const definitions = installedImageModelDefinitions('turbo', { editing: true });
+const makeProject = (readOnly = false, completed = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen references fixture', revision: 1, readOnly, shots: [], canvas: {
+  viewport: { x: 20, y: 30, zoom: completed ? 0.45 : 0.9 },
   nodes: [
     ...['地编截图', '场景氛围', '手绘笔触'].map((title, i) => ({ id: `image${i + 1}`, type: 'media', position: { x: 20, y: 10 + i * 240 }, data: { kind: 'image', title, remoteName: `${i + 1}.png`, url: `${origin}/fixture-${i + 1}.svg` } })),
-    { id: 'qwen', type: 'generator', selected: true, position: { x: 420, y: 40 }, data: { mode: 'qwenEdit', title: '保留的概念设计标题', prompt: '保留图1的路线，使用图2的场景氛围。', qwenSteps: 40, seed: 42, randomSeed: false, status: 'idle' } },
+    { id: 'qwen', type: 'generator', selected: !completed, position: { x: 420, y: 40 }, data: { mode: 'qwenEdit', title: '保留的概念设计标题', prompt: '保留图1的路线，使用图2的场景氛围。', qwenSteps: 40, seed: 42, randomSeed: false, ...(completed ? { status: 'done', resultUrl: '/fixture-result.svg' } : { status: 'idle' }) } },
     { id: 'prompt', type: 'prompt', position: { x: -900, y: 0 }, data: { title: 'Prompt fixture', idea: '保留地形' } },
   ], edges: [
     { id: 'old-style', source: 'image2', target: 'qwen', sourceHandle: 'ref', targetHandle: 'identity' },
     { id: 'old-guide', source: 'image1', target: 'qwen', sourceHandle: 'ref', targetHandle: 'guide' },
   ],
 } });
-async function fixture(readOnly = false) {
-  let project = makeProject(readOnly);
+async function fixture(readOnly = false, completed = false) {
+  let project = makeProject(readOnly, completed);
   const context = await browser.newContext({ viewport: { width: 1360, height: 1040 } });
   await context.addInitScript(() => {
     window.fixtureTools = new Map();
@@ -46,6 +48,10 @@ async function fixture(readOnly = false) {
       if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: 'job-fixture', status: 'queued' }); }
       return json({ jobs: [] });
     }
+    if (url.pathname.startsWith('/api/comfy/object_info/')) {
+      const name = decodeURIComponent(url.pathname.split('/').at(-1));
+      return json(definitions[name] ? { [name]: definitions[name] } : {});
+    }
     if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
     if (url.pathname.startsWith('/api/')) return json({});
     const file = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
@@ -54,7 +60,7 @@ async function fixture(readOnly = false) {
   const page = await context.newPage();
   page.on('pageerror', (error) => failures.push(error.message));
   await page.goto(origin); await page.locator('.project-open').click();
-  await page.getByLabel('Qwen 模型版本').waitFor();
+  if (!completed) await page.getByLabel('Qwen 模型版本').waitFor();
   const call = (name, args = {}) => page.evaluate(async ({ name, args }) => JSON.parse(await window.fixtureTools.get(name).execute(args)), { name, args });
   return { page, context, call };
 }
@@ -116,7 +122,8 @@ try {
   assert.equal(updated.ok, true);
   await node.getByLabel('Qwen 模型版本').selectOption('turbo');
   assert.match(await node.innerText(), /8 步 · Turbo/);
-  await call('canvas_generate_node', { nodeId: 'qwen' });
+  const run = await call('canvas_generate_node', { nodeId: 'qwen' });
+  assert.equal(run.ok, true, run.error);
   assert.equal(queued.length, 1);
   assert.equal(queued[0].workflow.encode.inputs.prompt, '保留<image1>的结构，参考<image2>氛围，使用<image3>的笔触。');
   assert.equal(queued[0].workflow.sigmas.inputs.sigmas.split(',').length, 9);
@@ -134,6 +141,26 @@ try {
   const replacement = await call('canvas_get_state', { nodeId: prewritten.node.id, includePrompt: true });
   assert.match(replacement.nodes[0].prompt, /已断开的图片引用/, 'prewritten ordinal binds on first connection and never silently retargets after deletion');
   await context.close();
+  const completed = await fixture(false, true);
+  const completedCard = completed.page.getByTestId('rf__node-qwen');
+  const completedPrompt = completed.page.getByLabel('图片提示词');
+  await completedCard.locator('.result-compact').waitFor();
+  await completed.page.locator('.canvas-view-compact').waitFor();
+  assert.equal(await completedPrompt.isVisible(), false, 'an unselected completed card stays compact');
+  await completedCard.locator('.generator-preview').click();
+  await completedPrompt.waitFor();
+  assert.equal(await completedPrompt.inputValue(), '保留图1的路线，使用图2的场景氛围。');
+  assert.equal(await completedPrompt.isEditable(), true);
+  await completedPrompt.fill('参考图1的形状。');
+  const completedState = await completed.call('canvas_get_state', { nodeId: 'qwen', includePrompt: true });
+  assert.equal(completedState.nodes[0].prompt, '参考图1的形状。');
+  const resultSettings = completedCard.getByRole('button', { name: '调整设置' });
+  assert.equal(await resultSettings.getAttribute('aria-expanded'), 'true');
+  await resultSettings.click();
+  await completedPrompt.waitFor({ state: 'hidden' });
+  await resultSettings.click();
+  await completedPrompt.waitFor();
+  await completed.context.close();
   const readonly = await fixture(true);
   assert.equal(await readonly.page.getByLabel('Qwen 模型版本').isDisabled(), true);
   assert.equal(await readonly.page.getByLabel('图片提示词').isDisabled(), true);

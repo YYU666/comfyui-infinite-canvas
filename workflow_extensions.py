@@ -120,7 +120,8 @@ def validate_definition(definition, workflow, expected_id):
         require(isinstance(port, dict) and identifier(port.get("id")) and port["id"] not in inputs, "输入端口身份无效或重复。")
         display_fields(port)
         require(port.get("type") == "image" and port.get("list", False) is False, "首版仅支持单张图像输入端口；可声明多个端口。", "EXTENSION_UNSUPPORTED")
-        require(port.get("required", True) is True, "首版不支持可选图像端口。", "EXTENSION_UNSUPPORTED")
+        dual_body = isinstance(definition.get("execution"), dict) and (definition["execution"].get("version") == 3 and port["id"] == "image_body" or definition["execution"].get("version") in (4, 5) and port["id"] in ("image_body", "image_back"))
+        require(port.get("required", True) is True or dual_body, "首版不支持可选图像端口。", "EXTENSION_UNSUPPORTED")
         inputs[port["id"]] = port
     schema = definition.get("parameters")
     require(isinstance(schema, dict) and schema.get("type") == "object" and isinstance(schema.get("properties"), dict), "参数 JSON Schema 无效。")
@@ -152,7 +153,7 @@ def validate_definition(definition, workflow, expected_id):
         require(node_id in workflow and field in workflow[node_id]["inputs"], "绑定目标字段不存在。")
         require((node_id, field) not in targets and not isinstance(workflow[node_id]["inputs"][field], list), "绑定字段重复或覆盖工作流连接。")
         require((node_id, field) not in internal, "阶段内部图片不能绑定外部输入或参数。")
-        require(not (workflow[node_id]["class_type"] == "SaveImage" and field == "filename_prefix"), "输出文件名前缀由工作台安全生成。")
+        require(not (workflow[node_id]["class_type"] in {"SaveImage", "SaveGLB"} and field == "filename_prefix"), "输出文件名前缀由工作台安全生成。")
         if kind == "input":
             require(workflow[node_id]["class_type"] == "LoadImage" and field == "image", "首版图像端口必须绑定 LoadImage.image。", "EXTENSION_UNSUPPORTED")
         else:
@@ -162,11 +163,18 @@ def validate_definition(definition, workflow, expected_id):
     require(all(("input", k) in sources for k in inputs) and all(("parameter", k) in sources for k in properties), "存在未绑定的输入或参数。")
     require(all((node_id, "image") in targets | internal for node_id, node in workflow.items() if node["class_type"] == "LoadImage"), "所有 LoadImage 必须绑定画布图像端口。")
     output_ids = set()
-    require(definition["outputs"], "节点必须声明图像输出。")
+    require(definition["outputs"], "节点必须声明图片或 GLB 输出。")
+    exporters = {"image": {"SaveImage", "PreviewImage"}, "model": {"SaveGLB"}}
     for output in definition["outputs"]:
         require(isinstance(output, dict) and identifier(output.get("id")) and output["id"] not in output_ids, "输出身份无效或重复。")
         display_fields(output)
-        require(output.get("type") == "image" and output.get("list", False) is False and isinstance(output.get("nodeId"), str) and output["nodeId"] in workflow and workflow[output["nodeId"]]["class_type"] in {"SaveImage", "PreviewImage"}, "首版输出必须是 SaveImage 或 PreviewImage 图像。", "EXTENSION_UNSUPPORTED")
+        output_type, node_id = output.get("type"), output.get("nodeId")
+        require(isinstance(output_type, str) and output.get("list", False) is False and
+                isinstance(node_id, str) and node_id in workflow and
+                workflow[node_id]["class_type"] in exporters.get(output_type, ()),
+                "图片输出必须使用 SaveImage 或 PreviewImage，GLB 输出必须使用 SaveGLB。", "EXTENSION_UNSUPPORTED")
+        require(output_type != "model" or "execution" not in definition,
+                "阶段式工作流尚不支持 GLB 输出。", "EXTENSION_UNSUPPORTED")
         output_ids.add(output["id"])
 
 
@@ -221,7 +229,9 @@ def inspect_package(data):
         definition = read_json(contents[entry["definition"]], "definition")
         workflow = read_json(contents[entry["workflow"]], "workflow")
         if "execution" in definition:
-            require(manifest["compatibility"].get("workbenchVersion") == ">=1.0.2", "分阶段扩展必须声明工作台版本 >=1.0.2。")
+            execution = definition["execution"]
+            minimum = ">=1.0.6" if isinstance(execution, dict) and execution.get("version") in (2, 3, 4, 5) else ">=1.0.2"
+            require(manifest["compatibility"].get("workbenchVersion") == minimum, "分阶段扩展必须声明工作台版本 " + minimum + "。")
         validate_definition(definition, workflow, entry["nodeDefinitionId"])
         nodes.append({"definition": definition, "workflow": workflow})
     return {"digest": hashlib.sha256(data).hexdigest(), "manifest": manifest, "nodes": nodes}
@@ -240,10 +250,12 @@ def convert_api_json(data, filename="workflow.json"):
             node["inputs"]["image"] = "input.png"
         if node["class_type"] in {"SaveImage", "PreviewImage"}:
             definition["outputs"].append({"id": f"image_{node_id}", "type": "image", "nodeId": node_id})
+        elif node["class_type"] == "SaveGLB":
+            definition["outputs"].append({"id": f"model_{node_id}", "type": "model", "nodeId": node_id})
         for field, value in node["inputs"].items():
             if isinstance(value, list) or (node["class_type"] == "LoadImage" and field == "image"):
                 continue
-            if node["class_type"] == "SaveImage" and field == "filename_prefix":
+            if node["class_type"] in {"SaveImage", "SaveGLB"} and field == "filename_prefix":
                 node["inputs"][field] = "H3/extensions/workflow"
                 continue
             key = f"node_{node_id}__{field}"
@@ -337,7 +349,15 @@ class ExtensionStore:
         definition, workflow = chosen["definition"], copy.deepcopy(chosen["workflow"])
         inputs, parameters = payload.get("inputs", {}), payload.get("parameters", {})
         require(isinstance(inputs, dict) and isinstance(parameters, dict), "inputs 和 parameters 必须是对象。")
-        require(set(inputs) == {p["id"] for p in definition["inputs"]}, "图像输入缺失或包含未知端口。")
+        role_version = definition.get("execution", {}).get("version") if isinstance(definition.get("execution"), dict) else None
+        if role_version in (3, 4, 5):
+            declared_inputs = {port['id'] for port in definition['inputs']}
+            require({'image_identity'} <= set(inputs) <= declared_inputs, "身份参考图缺失或包含未知端口。")
+            inputs = dict(inputs)
+            if 'image_body' in declared_inputs and 'image_body' not in inputs:
+                inputs['image_body'] = inputs['image_identity']
+        else:
+            require(set(inputs) == {p["id"] for p in definition["inputs"]}, "图像输入缺失或包含未知端口。")
         for value in inputs.values():
             require(isinstance(value, str) and value and len(value) < 1024 and not any(c in value for c in "\\:\x00\r\n") and not value.startswith("/") and all(p not in {"", ".", ".."} for p in value.split("/")), "ComfyUI 图像文件名不安全。")
         properties = definition["parameters"]["properties"]
@@ -349,15 +369,24 @@ class ExtensionStore:
             scalar(value, spec, key)
             values[key] = value
         for binding in definition["bindings"]:
+            if role_version in (4, 5) and binding["sourceKind"] == "input" and binding["sourceId"] == "image_back" and "image_back" not in inputs:
+                continue  # The entire no-back graph is selected below; no fake rear image.
             workflow[binding["nodeId"]]["inputs"][binding["input"]] = (inputs if binding["sourceKind"] == "input" else values)[binding["sourceId"]]
         if "execution" in definition:
             from extension_stages import unpack_stages
             plan = unpack_stages(definition, workflow)
+            if role_version in (4, 5) and plan.get('referenceMode') in ('identityBack', 'identityBodyBack') and 'image_back' not in inputs:
+                from outfit_queue import without_back_plan, validate_plan
+                plan = validate_plan(without_back_plan(plan))
             for graph in [p["single"] for p in plan["panels"]] + [plan["stitch"]]:
                 validate_comfy(graph, object_info)
-            return {"plan": plan, "outputs": [{k: output[k] for k in ("id", "type", "nodeId")} for output in definition["outputs"]], "digest": digest}
+            outputs = [{k: output[k] for k in ("id", "type", "nodeId")} for output in definition["outputs"]]
+            if definition["execution"]["version"] >= 2:
+                for output in outputs:
+                    output["nodeId"] = output["nodeId"][len("stitch__"):]
+            return {"plan": plan, "outputs": outputs, "digest": digest}
         for node_id, node in workflow.items():
-            if node["class_type"] == "SaveImage":
+            if node["class_type"] in {"SaveImage", "SaveGLB"}:
                 node["inputs"]["filename_prefix"] = f"H3/extensions/{digest[:16]}/{node_id}"
         validate_comfy(workflow, object_info)
         return {"workflow": workflow, "outputs": [{k: output[k] for k in ("id", "type", "nodeId")} for output in definition["outputs"]], "digest": digest}
@@ -368,7 +397,9 @@ def validate_compatibility(compatibility):
     if value is None:
         return
     require(isinstance(value, str) and value.strip(), "工作台版本范围无效。")
-    current = tuple(int(p) for p in APP_VERSION.split("."))
+    release = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+][A-Za-z0-9.-]+)?", APP_VERSION)
+    require(release is not None, "当前工作台版本无效。", "EXTENSION_UNSUPPORTED")
+    current = tuple(int(p) for p in release.groups())
     for clause in value.split():
         match = re.fullmatch(r"(>=|<=|>|<|=)?(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?(?:\.(0|[1-9][0-9]*))?", clause)
         require(match is not None, "暂不支持此工作台版本范围，请使用空格分隔的 >=、< 或精确版本。", "EXTENSION_UNSUPPORTED")
@@ -378,7 +409,7 @@ def validate_compatibility(compatibility):
         require(valid, "扩展要求不同工作台版本：" + value, "INCOMPATIBLE_WORKBENCH")
 
 
-def comfy_input_fields(metadata):
+def comfy_input_fields(metadata, live_inputs=None):
     """Expand the official V3 autogrow template into its declared dotted fields."""
     fields = metadata.get("input", {})
     required, optional = dict(fields.get("required", {})), dict(fields.get("optional", {}))
@@ -410,6 +441,30 @@ def comfy_input_fields(metadata):
                 target[qualified] = inner
     for section in (required, optional):
         for key, spec in list(section.items()):
+            if isinstance(spec, (list, tuple)) and spec and spec[0] == "COMFY_DYNAMICCOMBO_V3":
+                config = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+                options = config.get("options")
+                require(isinstance(options, list), "ComfyUI 动态选项定义无效。")
+                selections = {
+                    option["key"]: option["inputs"] for option in options
+                    if isinstance(option, dict) and isinstance(option.get("key"), str)
+                    and isinstance(option.get("inputs"), dict)
+                }
+                if live_inputs is None:
+                    continue
+                selected = live_inputs.get(key)
+                require(isinstance(selected, str) and selected in selections, "ComfyUI 动态选项无效。")
+                for kind, dest in (("required", required), ("optional", optional)):
+                    fields = selections[selected].get(kind, {})
+                    require(isinstance(fields, dict), "ComfyUI 动态字段定义无效。")
+                    for child, child_spec in fields.items():
+                        qualified = f"{key}.{child}"
+                        require(identifier(child) and qualified not in required and qualified not in optional, "ComfyUI 动态字段冲突。")
+                        require(isinstance(child_spec, (list, tuple)) and child_spec and child_spec[0] in ("INT", "FLOAT", "STRING", "BOOLEAN"),
+                                "动态选项目前仅支持标量字段。", "EXTENSION_UNSUPPORTED")
+                        dest[qualified] = child_spec
+                section[key] = [[selected], config]
+                continue
             if not isinstance(spec, (list, tuple)) or not spec or spec[0] != "COMBO":
                 continue
             config = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
@@ -426,7 +481,7 @@ def validate_comfy(workflow, object_info):
     require(not missing, "ComfyUI 缺少节点：" + ", ".join(missing), "COMFY_NODES_MISSING")
     for node_id, node in workflow.items():
         metadata = object_info[node["class_type"]]
-        required, optional = comfy_input_fields(metadata)
+        required, optional = comfy_input_fields(metadata, node["inputs"])
         require(set(required) <= set(node["inputs"]), f"节点 {node_id} 缺少必填字段。")
         for field, value in node["inputs"].items():
             spec = required.get(field, optional.get(field))
@@ -436,12 +491,22 @@ def validate_comfy(workflow, object_info):
                 source = workflow[value[0]]
                 outputs = object_info[source["class_type"]].get("output", [])
                 require(value[1] < len(outputs), f"节点 {node_id}/{field} 引用不存在的输出。")
-                require(not isinstance(expected, list) and (expected == "*" or outputs[value[1]] == "*" or expected == outputs[value[1]]), f"节点 {node_id}/{field} 连接类型不匹配。")
+                source_type = outputs[value[1]]
+                if node["class_type"] == "SaveGLB" and field == "mesh":
+                    # SaveGLB also accepts passthrough formats, but this canvas contract is GLB-only.
+                    compatible = source_type in {"MESH", "FILE_3D_GLB"} and isinstance(expected, str) and source_type in expected.split(",")
+                else:
+                    compatible = not isinstance(expected, list) and (expected == "*" or source_type == "*" or expected == source_type)
+                require(compatible, f"节点 {node_id}/{field} 连接类型不匹配。")
             elif isinstance(expected, list):
                 # LoadImage filenames come from the upload API and may not yet appear in cached enums.
                 if not (node["class_type"] == "LoadImage" and field == "image"):
                     require(value in expected, f"节点 {node_id}/{field} 的模型或选项未安装：{str(value)[:160]}", "COMFY_VALUE_MISSING")
             else:
+                if expected == "COLOR":
+                    require(isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value),
+                            f"节点 {node_id}/{field} 需要 #RRGGBB 颜色。")
+                    continue
                 kind = {"INT": "integer", "FLOAT": "number", "STRING": "string", "BOOLEAN": "boolean"}.get(expected)
                 require(kind is not None, f"节点 {node_id}/{field} 需要工作流连接。")
                 constraints = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}

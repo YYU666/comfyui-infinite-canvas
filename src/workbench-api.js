@@ -1,4 +1,8 @@
+import { resolveCharacterSheetRecipe } from './character-sheet-recipe.js';
+import { CHARACTER_SHEET_DELIVERY_CROP, validateCharacterSheetSettings, characterSheetBodyInstructions } from './character-sheet-settings.js';
 import { buildH3ImageWorkflow } from './h3-image.js';
+import { buildCharacterSwapMapWorkflow } from './character-swap-map.js';
+import { assertCharacterSwapMapAvailable } from './character-swap-map-availability.js';
 import { orderQwenReferences, compileQwenPrompt, validateQwenReferences } from './qwen-references.js';
 import { buildFlux3KleinWorkflow, scaleFlux3Dimensions } from './flux3-klein.js';
 import { LOCAL_RECONNECTED } from './local-connection.js';
@@ -441,75 +445,105 @@ export function validateCharacterSheetAngleSeed(seed) {
 export const CHARACTER_SHEET_VIEWS = Object.freeze([
   { id: 'front_portrait', label: '正面头像', seedOffset: 0 },
   { id: 'three_quarter_portrait', label: '45 度侧面头像', seedOffset: 0 },
-  { id: 'back_body', label: '无头背面全身', seedOffset: 0 },
-  { id: 'front_body', label: '无头正面全身', seedOffset: 0 },
+  { id: 'front_body', label: '完整正面身体', seedOffset: 0 },
+  { id: 'back_body', label: '完整背面身体', seedOffset: 0 },
 ]);
-
+// Legacy exported geometry retained for previously saved workflows; new generation never crops bodies.
 export const CHARACTER_SHEET_BODY_CROP = Object.freeze({ x: 108, y: 384, width: 936, height: 1664 });
-
-// Fixed templates: establish the front portrait from the reference, then inherit
-// its framing for the turn. Only body views receive the full outfit/proportion brief.
-export const CHARACTER_SHEET_PROMPT_VERSION = 'fixed-views-v1';
-const CHARACTER_SHEET_SHARED = 'Create ONE photographic image with exactly ONE INSTANCE of the same adult person, in ONE pose, from ONE camera angle, on a 9:16 canvas. Preserve the recognizable facial identity, hairstyle, hair length and accessories from <image1>. Use a neutral light-gray seamless studio background (#D9D9D9), soft even studio lighting and clear natural skin detail. No collage, split screen, inset portrait, extra person, text, border or watermark. ';
-
-export function buildCharacterSheetPanelPrompt(brief, viewId) {
-  const shared = CHARACTER_SHEET_SHARED;
-  if (viewId === 'front_portrait') return `Edit <image1> only. Create a FRONT-FACING CHEST-UP IDENTITY PORTRAIT of the same person. Use the reference for identity, complete hairstyle and visible upper garment. Reframe the source as needed to show the complete hair silhouette, neck, both shoulders and a short band of upper chest; leave a small clear margin above the topmost hair and crop the bottom at the upper chest. The head is upright without tilt, the face is centered and facing directly into the camera, and both eyes look into the camera. Preserve the visible garment and accessories. ${shared}Do not show the waist or hands, and do not turn this portrait into a half-body or full-body shot.`;
-  // This short edit instruction is the generic form of the successful standalone
-  // male 45-degree test. Do not impose fresh landmark positions on its input.
-  if (viewId === 'three_quarter_portrait') return 'Edit <image1> only. 只修改头部和视线方向：将人物的脸和视线从正面转为向角色左侧45度，头部保持直立，不歪头。严格保持输入图的胸以上特写景别、头部在画面中的大小和位置、五官身份、发型、可见上衣、浅灰背景、光线和画质不变。不要拉远，不要生成全身像或半身像，不要改变画幅。输出仍然是一张单人的9:16胸以上头像。';
-  // Full heads establish anatomy before the existing deterministic body crop.
-  // Position hints remain tied to that crop; the model is not asked to crop itself.
-  const bodyFraming = 'Show one complete natural head and the entire body down to the soles. Keep 5% clear background above the hair, the base of the neck near 18% of frame height, and both feet fully visible near 95% of frame height. Both arms, hands, legs and feet remain fully inside the frame, with arms relaxed at the sides. ';
-  if (viewId === 'back_body') return `Edit <image1> only. Create a HEAD-TO-TOE FULL-BODY BACK VIEW of the same person standing naturally. The head, shoulders, torso and feet face directly away from the camera; do not look back or show the face. ${bodyFraming}${shared}Use the following outfit and body-proportion specification for this one person, keeping natural anatomy and consistent garment colors, materials and fit: ${brief.trim()}`;
-  if (viewId === 'front_body') return `Edit <image1> only. Create a HEAD-TO-TOE FULL-BODY FRONT VIEW of the same person standing naturally, facing directly toward the camera. ${bodyFraming}${shared}Use the following outfit and body-proportion specification for this one person, keeping natural anatomy and consistent garment colors, materials and fit: ${brief.trim()}`;
+export const CHARACTER_SHEET_PROMPT_VERSION = 'portrait-proportions-v2';
+const CHARACTER_SHEET_SHARED = 'Create exactly ONE INSTANCE of the same person, in ONE pose, from ONE camera angle, on a 9:16 canvas. Preserve identity, age, skin tone, hairstyle and distinctive traits from <image1>. Use a neutral light-gray seamless studio background (#D9D9D9), soft even studio lighting. Preserve the reference visual style unless explicitly changed. No beautification, collage, split screen, inset portrait, extra person, text, border or watermark. ';
+export const CHARACTER_SHEET_PORTRAIT_FRAMING = 'Required portrait framing (chest-above-v3): a tight head-and-shoulders close-up, NOT a half-body portrait. The image contains the complete crown, face, neck, clavicles and only the tops of the shoulders. The bottom edge ends immediately below the clavicles, ABOVE the chest/bust; no full chest, abdomen, waist, belt, elbows, hands, skirt or shoes in this portrait. Enlarge the head in the frame instead of filling the lower canvas with torso. Long hair and clothing continue outside the crop; do not zoom out to show their full length. These framing boundaries override the reference crop and any clothing or accessory visibility request. Preserve facial anatomy by reframing the camera, never by stretching the head or neck. This same chest-above framing is required for BOTH the front and 45-degree portraits.';
+export function buildCharacterSheetPanelPrompt(brief, viewId, settings = {}) {
+  validateCharacterSheetSettings(settings);
+  const portrait = settings.characterSheetPortraitBrief?.trim();
+  const identity = (portrait ? `Portrait-only identity/style instructions (keep the required head-close-up framing): ${portrait}. ` : '') + (settings.characterSheetPreserveTraits?.trim() ? `Explicit traits to preserve: ${settings.characterSheetPreserveTraits.trim()}. ` : '');
+  if (settings.characterSheetIdentityMode === 'source-anchored-v1' && viewId.endsWith('_portrait')) {
+    const authority = viewId === 'front_portrait' ? '<image1> is the ORIGINAL identity reference and the sole authority for facial anatomy.' : '<image1> supplies the front portrait identity, lighting and rendering, NOT its crop or output scale. If it shows a half-body or torso, reframe it as the required chest-above close-up. <image2> is the ORIGINAL identity reference and is authoritative for facial anatomy whenever the generated portrait differs. Reference images determine identity, not output orientation: the following pose instruction is authoritative for orientation. Rotate the head and shoulders together 45 degrees toward the viewer\'s left, keeping the head upright. The eyes follow the turned head; do not merely shift the eyes while leaving the head frontal, and do not look back at the camera. Show a clearly three-quarter face with visibly asymmetric cheek exposure and a narrower, foreshortened far eye; both eyes remain visible, not a full profile. Preserve the same facial anatomy in perspective; do not reshape the face to achieve the turn or copy either reference\'s frontal pose.';
+    const sourceIdentity = settings.characterSheetPreserveTraits?.trim();
+    const portraitInstructions = (sourceIdentity ? `Explicit user identity preservation requirements (highest priority): ${sourceIdentity}. ` : '') + (portrait ? `Additional portrait/style request (lower priority; apply only where compatible with source identity, facial geometry and required view/framing): ${portrait}. ` : '');
+    return `${CHARACTER_SHEET_PORTRAIT_FRAMING} Create one ${viewId === 'front_portrait' ? 'FRONT-FACING' : 'THREE-QUARTER 45-DEGREE'} head-close-up portrait of the exact same person. ${authority} Priority order: ORIGINAL identity and facial geometry first, requested view and framing second, lighting and material realism third. Preserve individual face width and length, jaw and chin silhouette, cheek volume, brow shape, age, skin tone, hairline and visible hairstyle. Match the ORIGINAL source eye contour: upper and lower eyelid curves, inner and outer canthus relative height and tilt, eye aperture width-to-height ratio, iris size relative to the aperture and eyelid overlap, and inter-eye spacing. Preserve the actual source values and relationships, including its nose bridge, tip and nostril proportions, lip contour and relative upper/lower lip fullness, mouth width and eye-nose-mouth proportions. Do not impose a generic eye shape, enlarge or round the eyes, or replace these features with an idealized model face or average facial proportions. Preserve anatomy in the requested perspective, allowing natural foreshortening and occlusion; do not freeze frontal 2D landmark positions in a rotated view. Keep even stylized source proportions unchanged; material and lighting transformation must not alter facial geometry. Never redesign the face to realistic human norms. Change only the requested view and rendering treatment. Show the complete crown and side hair with a small margin, down to the clavicle; do not zoom out to include long hair lengths. Fill the entire 9:16 canvas with continuous neutral light-gray studio background and even lighting. No letterbox bands, white strips, border, collage, extra person, text or watermark. ${settings.imageLora === 'qwen21Realism' ? 'Mandatory photographic transformation of materials and lighting, with the original facial geometry locked: render realistic skin microtexture and subtle subsurface translucency, wet corneal highlights and detailed irises within the unchanged eye proportions, individual hair fibers, and photographic studio key/fill lighting with natural shadows on a neutral studio background. Replace baked game lighting, plastic surfaces and game shaders. Both source facial proportions and photographic materials/lighting are required; do not retain game rendering as a shortcut to identity preservation. Limit photographic treatment to skin microtexture, surface materials and light response; retain the source facial geometry and distinctive features.' : 'Preserve the original visual style.'} Photographic treatment must not beautify or redesign facial structure. Identity and accessory requirements below apply ONLY to features visible inside the required portrait crop; never expand the crop to show body clothing, back details, skirts or footwear. ${portraitInstructions} ${CHARACTER_SHEET_PORTRAIT_FRAMING}`;
+  }
+  if (viewId === 'front_portrait') return `${CHARACTER_SHEET_PORTRAIT_FRAMING} Edit <image1> only. Create a FRONT-FACING HEAD CLOSE-UP IDENTITY PORTRAIT. Show the complete crown, scalp and side hair framing with a small clear margin above the topmost hair; bottom edge at the clavicle. Long hair lengths naturally continue beyond the lower edge; never shorten the hairstyle or pull back to include its full length. Keep the head upright without tilt, face centered and facing directly into the camera. Preserve visible accessories and upper garment. Do not pull back to show torso, waist or hands. ${CHARACTER_SHEET_SHARED}${identity} ${CHARACTER_SHEET_PORTRAIT_FRAMING}`;
+  if (viewId === 'three_quarter_portrait') return `${CHARACTER_SHEET_PORTRAIT_FRAMING} Edit the accepted front portrait <image1> only. If its framing shows torso or half-body, correct the crop instead of preserving that error. 只修改头部和视线方向：向角色左侧45度，头部保持直立。仅当原图已是胸上近景时保持头部大小与位置；保持头顶、头皮及两侧发型完整入镜，下沿锁骨的近景、头部大小与位置；长发可自然延伸到下沿画外，不缩短发型，也不为纳入全部发长而拉远。保持、五官身份、发型、可见上衣、浅灰背景、光线和画质不变。不要拉远，不要改变画幅。 ${identity} ${CHARACTER_SHEET_PORTRAIT_FRAMING}`;
+  const framing = 'Show one complete natural head and the entire body down to the soles with clear margins around the hair and both feet fully visible. Both arms, hands, legs and feet remain fully inside the frame. Use natural neck, spine, shoulder, hip and knee joints; do not force landmarks to fixed frame percentages. ';
+  const body = `${framing}${CHARACTER_SHEET_SHARED}${characterSheetBodyInstructions(settings)} Explicit outfit/body brief: ${(brief || '').trim() || 'Preserve the reference.'}`;
+  if (viewId === 'front_body' && settings.characterSheetDualReference) return `Create exactly one upright person in a HEAD-TO-TOE FULL-BODY FRONT VIEW on a 9:16 canvas, facing directly toward the camera. Preserve natural anatomy. Do not inherit a side/back camera angle or a cropped composition from the body reference; reconstruct the complete head-to-soles front view. Reference roles are distinct: <image1> is the BODY PROPORTIONS AND OUTFIT reference and controls body shape, shoulder/hip/leg/torso proportions, clothing and footwear; its normalized canvas sets output dimensions, not its camera angle or crop. <image2> is the accepted generated FRONT PORTRAIT and controls facial identity, skin tone and hairstyle only; do not copy its portrait framing or visible outfit over the body reference. Preserve the body reference proportions and clothing unless explicitly overridden below. Show the entire head, both hands and both feet with natural joints, a neutral light-gray studio background, no collage and no extra person. ${characterSheetBodyInstructions(settings)} Explicit user body overrides: ${(brief || '').trim() || 'None; preserve <image1> body and outfit.'}`;
+  if (viewId === 'front_body') return `Edit <image1> only. Create a HEAD-TO-TOE FULL-BODY FRONT VIEW, facing directly toward the camera. ${body}`;
+  if (viewId === 'back_body' && settings.characterSheetBackReference) return 'Create exactly one HEAD-TO-TOE FULL-BODY BACK VIEW on a 9:16 canvas. <image1> is the saved COMPLETE GENERATED FRONT BODY: preserve its person, identity, hairstyle, skin tone, body build, proportions, scale and rendering style. It sets the output canvas dimensions. <image2> is the REAR OUTFIT AND STRUCTURE reference: use it as authoritative evidence for rear clothing, seams, materials, fasteners and back construction. Do not copy its facial identity, body build, camera angle or cropped framing. Turn head, shoulders, torso and feet directly away from camera; no face, no looking back. Show the complete natural head, both hands and both soles fully inside the frame with natural joints and clear margins. Do not copy front buttons, chest pockets or necklace pendants onto the back unless the rear reference explicitly shows them. Retain neutral light-gray background and even studio lighting from <image1>; no collage, extra person, text or watermark.';
+  if (viewId === 'back_body') return `Edit the accepted complete FRONT BODY <image1> only. Turn the same person 180 degrees into a HEAD-TO-TOE FULL-BODY BACK VIEW. Head, shoulders, torso and feet face away; no face or looking back. Preserve its exact body build, scale, garment design, colors, materials and footwear. Do not copy front pockets, buttons or pendants onto the back. Unseen back details are design completion, not recovered facts. ${body}`;
   throw new Error('未知的角色四视图面板。');
 }
 
 // One self-contained ComfyUI API graph: one reference, four native Qwen edits,
 // then a lossless 2×2 stitch. No intermediate SaveImage and no HD/refine stage.
 export function buildCharacterSheetWorkflow(options) {
+  options = resolveCharacterSheetRecipe(options);
+  validateCharacterSheetSettings(options);
   const cacheDevice = validateQwenCacheDevice(options.qwenCacheDevice === undefined ? 'auto' : options.qwenCacheDevice);
   const angleSeed = validateCharacterSheetAngleSeed(options.characterSheetAngleSeed === undefined ? CHARACTER_SHEET_ANGLE_SEED : options.characterSheetAngleSeed);
   const source = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'image');
   if (!source) throw new Error('角色四视图生成需要连接一张单人角色参考图。');
-  const brief = options.prompt?.trim();
-  if (!brief) throw new Error('请先输入角色身份、穿搭和身材比例等创作要求。');
+  const brief = options.prompt?.trim() || '';
+  const backReference = options.references?.find(ref=>ref.slot==='back_reference' && ref.kind==='image');
+  const sourceAnchored = options.characterSheetIdentityMode === 'source-anchored-v1';
   const useRealism = options.imageLora === 'qwen21Realism';
   const graph = {
     model: { class_type: 'UNETLoader', inputs: { unet_name: QWEN21_EDIT_MODEL.unet, weight_dtype: 'default' } },
-    ...(useRealism ? { realism: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: QWEN21_EDIT_MODEL.realismLora, strength_model: Number(options.loraStrength ?? 0.6) } } } : {}),
+    ...(useRealism ? { realism: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['model', 0], lora_name: QWEN21_EDIT_MODEL.realismLora, strength_model: Number(options.loraStrength ?? (sourceAnchored ? 0.45 : 0.6)) } } } : {}),
     text: { class_type: 'CLIPLoader', inputs: { clip_name: QWEN21_EDIT_MODEL.clip, type: 'qwen_image', device: 'default' } },
     vae: { class_type: 'VAELoader', inputs: { vae_name: QWEN21_EDIT_MODEL.vae } },
     source: { class_type: 'LoadImage', inputs: { image: source.name } },
     // Qwen derives its output latent from this reference canvas. Normalizing it
     // fixes all four native outputs to 9:16 without a generative HD redraw.
-    reference: { class_type: 'ImageScale', inputs: { image: ['source', 0], upscale_method: 'lanczos', width: CHARACTER_SHEET_PANEL.width, height: CHARACTER_SHEET_PANEL.height, crop: 'center' } },
+    reference: { class_type: 'ResizeAndPadImage', inputs: { image: ['source', 0], target_width: CHARACTER_SHEET_PANEL.width, target_height: CHARACTER_SHEET_PANEL.height, padding_color: 'white', interpolation: 'lanczos' } },
   };
   const sampledModel = cacheDevice === 'cpu' ? addQwenCpuReferenceCache(graph, [useRealism ? 'realism' : 'model', 0]) : [useRealism ? 'realism' : 'model', 0];
+  if(options.characterSheetDualReference) {
+    graph.body_source={class_type:'LoadImage',inputs:{image:options.references.find(ref=>ref.slot==='body_reference'&&ref.kind==='image').name}};
+    graph.body_reference={class_type:'ResizeAndPadImage',inputs:{...graph.reference.inputs,image:['body_source',0]}};
+  }
+
+  if (backReference) {
+    graph.back_source={class_type:'LoadImage',inputs:{image:backReference.name}};
+    graph.back_reference={class_type:'ResizeAndPadImage',inputs:{...graph.reference.inputs,image:['back_source',0]}};
+  }
+  if (options.characterSheetPortraitCrop) {
+    graph.portrait_crop = {class_type:'ImageCrop',inputs:{image:['source',0],...options.characterSheetPortraitCrop}};
+    graph.portrait_reference = {class_type:'ResizeAndPadImage',inputs:{...graph.reference.inputs,image:['portrait_crop',0]}};
+  }
+
+  if (sourceAnchored) graph.portrait_reference = {class_type:'ImageScale',inputs:{image:[options.characterSheetPortraitCrop?'portrait_crop':'source',0],upscale_method:'lanczos',width:1152,height:2048,crop:'center'}};
+
   for (const view of CHARACTER_SHEET_VIEWS) {
     graph[`${view.id}_encode`] = { class_type: 'TextEncodeQwenImage21', inputs: {
-      clip: ['text', 0], prompt: buildCharacterSheetPanelPrompt(brief, view.id), negative_prompt: '',
+      clip: ['text', 0], prompt: view.id==='back_body' && backReference ? buildCharacterSheetPanelPrompt(brief,view.id,{...options,characterSheetBackReference:true}) : buildCharacterSheetPanelPrompt(brief, view.id, options), negative_prompt: '',
       resolution: Number(options.qwenRefResolution || 1536),
-      'images.image_1': view.id === 'three_quarter_portrait' ? ['front_portrait_decode', 0] : ['reference', 0],
+      'images.image_1': view.id === 'three_quarter_portrait' ? ['front_portrait_decode', 0] : view.id === 'back_body' ? ['front_body_decode', 0] : view.id === 'front_portrait' && options.characterSheetPortraitCrop ? ['portrait_reference', 0] : ['reference', 0],
       vae: ['vae', 0],
     } };
+    if(sourceAnchored && view.id === 'front_portrait') graph.front_portrait_encode.inputs['images.image_1']=['portrait_reference',0];
+    if(sourceAnchored && view.id === 'three_quarter_portrait') graph.three_quarter_portrait_encode.inputs['images.image_2']=['portrait_reference',0];
+    if(view.id === 'front_body' && options.characterSheetDualReference) {
+      graph[`${view.id}_encode`].inputs['images.image_1']=['body_reference',0];
+      graph[`${view.id}_encode`].inputs['images.image_2']=['front_portrait_decode',0];
+    }
+    if(view.id==='back_body' && backReference) graph.back_body_encode.inputs['images.image_2']=['back_reference',0];
     graph[`${view.id}_sample`] = { class_type: 'KSampler', inputs: {
-      model: sampledModel, seed: view.id === 'three_quarter_portrait' ? angleSeed : Number(options.seed) + view.seedOffset,
+      model: sampledModel, seed: options.characterSheetStageSeeds?.[view.id] ?? (view.id === 'three_quarter_portrait' ? angleSeed : Number(options.seed) + view.seedOffset),
       steps: Number(options.qwenSteps || 40), cfg: 1, sampler_name: 'euler', scheduler: 'simple',
       positive: [`${view.id}_encode`, 0], negative: [`${view.id}_encode`, 1], latent_image: [`${view.id}_encode`, 2], denoise: 1,
     } };
     graph[`${view.id}_decode`] = { class_type: 'VAEDecode', inputs: { samples: [`${view.id}_sample`, 0], vae: ['vae', 0] } };
-    if (view.id.endsWith('_body')) {
-      graph[`${view.id}_crop`] = { class_type: 'ImageCrop', inputs: { image: [`${view.id}_decode`, 0], ...CHARACTER_SHEET_BODY_CROP } };
-      graph[`${view.id}_output`] = { class_type: 'ImageScale', inputs: {
-        image: [`${view.id}_crop`, 0], upscale_method: 'lanczos',
-        width: CHARACTER_SHEET_PANEL.width, height: CHARACTER_SHEET_PANEL.height, crop: 'disabled',
-      } };
-    }
   }
+
   graph.top_row = { class_type: 'ImageStitch', inputs: { image1: ['front_portrait_decode', 0], image2: ['three_quarter_portrait_decode', 0], direction: 'right', match_image_size: false, spacing_width: 0, spacing_color: 'white' } };
-  graph.bottom_row = { class_type: 'ImageStitch', inputs: { image1: ['back_body_output', 0], image2: ['front_body_output', 0], direction: 'right', match_image_size: false, spacing_width: 0, spacing_color: 'white' } };
+  graph.bottom_row = { class_type: 'ImageStitch', inputs: { image1: ['back_body_decode', 0], image2: ['front_body_decode', 0], direction: 'right', match_image_size: false, spacing_width: 0, spacing_color: 'white' } };
+  for (const id of ['front_body','back_body']) {
+    graph[`${id}_delivery_crop`] = {class_type:'ImageCrop',inputs:{image:[`${id}_decode`,0],...(options.characterSheetDeliveryCrop || CHARACTER_SHEET_DELIVERY_CROP)}};
+    graph[`${id}_delivery_pad`] = {class_type:'ResizeAndPadImage',inputs:{image:[`${id}_delivery_crop`,0],target_width:1152,target_height:2048,padding_color:'white',interpolation:'lanczos'}};
+  }
+  graph.bottom_row.inputs.image1 = ['back_body_delivery_pad',0];
+  graph.bottom_row.inputs.image2 = ['front_body_delivery_pad',0];
   graph.quad = { class_type: 'ImageStitch', inputs: { image1: ['top_row', 0], image2: ['bottom_row', 0], direction: 'down', match_image_size: false, spacing_width: 0, spacing_color: 'white' } };
   graph.save = { class_type: 'SaveImage', inputs: { images: ['quad', 0], filename_prefix: 'image/H3_CharacterSheet' } };
   return graph;
@@ -520,7 +554,11 @@ export const LOCAL_REALISM_PROMPT = 'Edit <image1>: enhance only the selected sk
 // Derive each persisted stage from the comparison graph so model, prompt,
 // sampling and body-crop settings have one source of truth.
 export function buildCharacterSheetQueuePlan(options) {
+  options = resolveCharacterSheetRecipe(options);
   const graph = buildCharacterSheetWorkflow(options);
+  const hasBackReference = options.references?.some(ref=>ref.slot==='back_reference'&&ref.kind==='image');
+  const sourceAnchored = options.characterSheetIdentityMode === 'source-anchored-v1';
+  const mappedRoles = sourceAnchored || options.characterSheetDualReference || hasBackReference;
   const panelInput = (id) => `__H3_CHARACTER_SHEET_PANEL_${id}__`;
   const collect = (source, output) => {
     const result = {};
@@ -536,17 +574,44 @@ export function buildCharacterSheetQueuePlan(options) {
   };
   const panels = CHARACTER_SHEET_VIEWS.map((view) => {
     const source = structuredClone(graph);
-    const angle = view.id === 'three_quarter_portrait';
-    if (angle) {
+    const dependency = view.id === 'three_quarter_portrait' ? 'front_portrait' : view.id === 'back_body' ? 'front_body' : view.id === 'front_portrait' && options.characterSheetPortraitCrop && !sourceAnchored ? 'portrait_reference' : null;
+    if (dependency) {
       // SaveImage -> upload -> LoadImage uses the same RGB boundary as a
       // standalone edit, rather than retaining the prior decoded tensor.
-      source.angle_source = { class_type: 'LoadImage', inputs: { image: panelInput('front_portrait') } };
+      source.angle_source = { class_type: 'LoadImage', inputs: { image: panelInput(dependency) } };
       source[`${view.id}_encode`].inputs['images.image_1'] = ['angle_source', 0];
+      if (dependency === 'portrait_reference') {
+        source.reference.inputs.image = ['angle_source',0];
+        source[`${view.id}_encode`].inputs['images.image_1'] = ['reference',0];
+      }
     }
-    const output = `${view.id}_${view.id.endsWith('_body') ? 'output' : 'decode'}`;
+    if (view.id === 'front_body' && options.characterSheetDualReference) {
+      source.identity_source={class_type:'LoadImage',inputs:{image:panelInput('front_portrait')}};
+      source.front_body_encode.inputs['images.image_2']=['identity_source',0];
+    }
+    const output = `${view.id}_decode`;
     source.save = { class_type: 'SaveImage', inputs: { images: [output, 0], filename_prefix: `image/H3_CharacterSheetPanel_${view.id}` } };
-    return { id: view.id, label: view.label, dependsOn: angle ? ['front_portrait'] : [], single: collect(source, 'save') };
+    const single=collect(source,'save');
+    return { id: view.id, label: view.label, dependsOn: view.id==='front_body' && options.characterSheetDualReference ? ['front_portrait'] : dependency ? [dependency] : [], single, ...(mappedRoles ? {inputRoles: Object.fromEntries(Object.entries(single).filter(([key,node])=>node.class_type==='LoadImage' && ['source','body_source','back_source'].includes(key)).map(([key])=>[key,key==='body_source'?'body':key==='back_source'?'back':'identity']))} : {}) };
   });
+  if (options.characterSheetPortraitCrop && !sourceAnchored) {
+    const prep = {source:structuredClone(graph.source),crop:{class_type:'ImageCrop',inputs:{image:['source',0],...options.characterSheetPortraitCrop}},pad:{class_type:'ResizeAndPadImage',inputs:{...graph.reference.inputs,image:['crop',0]}},save:{class_type:'SaveImage',inputs:{images:['pad',0],filename_prefix:'image/H3_CharacterSheetPanel_portrait_reference'}}};
+    panels.unshift({id:'portrait_reference',label:'头像参考取景',dependsOn:[],single:prep,...(mappedRoles?{inputRoles:{source:'identity'}}:{})});
+  }
+  const selected = options.characterSheetStage || 'all';
+  if (selected !== 'all') {
+    const workflow = panels.find((panel) => panel.id === selected).single;
+    if (workflow.identity_source) workflow.identity_source.inputs.image = options.references.find(ref=>ref.slot==='guide'&&ref.kind==='image').name;
+    if (workflow.angle_source) workflow.angle_source.inputs.image = options.references.find((ref) => ref.slot === 'guide' && ref.kind === 'image').name;
+    // Single-panel retries always use the visible node seed, including the angle.
+    workflow[`${selected}_sample`].inputs.seed = Number(options.seed);
+    workflow.save.inputs.filename_prefix = `image/H3_CharacterSheet_${selected}`;
+    return { workflow };
+  }
+  if(hasBackReference) {
+    const withoutBack=buildCharacterSheetQueuePlan({...options,references:options.references.filter(ref=>ref.slot!=='back_reference')});
+    panels.find(panel=>panel.id==='back_body').withoutBackSingle=withoutBack.panels.find(panel=>panel.id==='back_body').single;
+  }
   const stitch = {};
   for (const view of CHARACTER_SHEET_VIEWS) stitch[`${view.id}_load`] = { class_type: 'LoadImage', inputs: { image: panelInput(view.id) } };
   for (const id of ['top_row', 'bottom_row', 'quad', 'save']) stitch[id] = structuredClone(graph[id]);
@@ -554,7 +619,14 @@ export function buildCharacterSheetQueuePlan(options) {
   stitch.top_row.inputs.image2 = ['three_quarter_portrait_load', 0];
   stitch.bottom_row.inputs.image1 = ['back_body_load', 0];
   stitch.bottom_row.inputs.image2 = ['front_body_load', 0];
-  return { kind: 'characterSheet', memoryPolicy: 'preserve', panels, stitch };
+  // Crop delivery only. Persisted full-body stages remain the back-view conditioning source.
+  for (const id of ['front_body', 'back_body']) {
+    stitch[`${id}_delivery_crop`] = { class_type: 'ImageCrop', inputs: { image: [`${id}_load`, 0], ...(options.characterSheetDeliveryCrop || CHARACTER_SHEET_DELIVERY_CROP) } };
+    stitch[`${id}_delivery_pad`] = { class_type: 'ResizeAndPadImage', inputs: { image: [`${id}_delivery_crop`, 0], target_width: 1152, target_height: 2048, padding_color: 'white', interpolation: 'lanczos' } };
+  }
+  stitch.bottom_row.inputs.image1 = ['back_body_delivery_pad', 0];
+  stitch.bottom_row.inputs.image2 = ['front_body_delivery_pad', 0];
+  return { kind: 'characterSheet', memoryPolicy: 'preserve', panels, stitch, ...(sourceAnchored?{fidelityMode:'sourceAnchored',referenceMode:'identity'}:{}), ...(hasBackReference?{referenceMode:options.characterSheetDualReference?'identityBodyBack':'identityBack'}:options.characterSheetDualReference?{referenceMode:'identityBody'}:{}) };
 }
 
 export function buildLocalRealismWorkflow(options) {
@@ -1035,6 +1107,10 @@ export function buildCharacterSwapPrompt(details = '', target = '') {
 }
 
 export function buildCharacterSwapWorkflow(options) {
+  if (options.characterSwapMethod === 'preprocessorMap') {
+    assertCharacterSwapMapAvailable();
+    return buildCharacterSwapMapWorkflow(options, MODEL_INFO, CHARACTER_SWAP_MODELS, resolveDimensions, durationToFrames);
+  }
   const guide = options.references?.find((ref) => ref.slot === 'guide' && ref.kind === 'video');
   const identity = options.references?.find((ref) => ref.slot === 'identity' && ref.kind === 'image');
   if (!guide || !identity) throw new Error('角色替换需要连接一段源视频和一张人物参考图；单人照片或同一人物的多视角设定图均可。');
@@ -1226,10 +1302,11 @@ export async function uploadMedia(file, kind = 'image') {
   return result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
 }
 
-export async function importVideoFromUrl(url) {
+export async function importVideoFromUrl(url, { signal } = {}) {
   const response = await fetch('/api/import-video', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
+    signal,
   });
   return parseResponse(response);
 }
@@ -1351,7 +1428,7 @@ export function extractVideos(historyEntry) {
 }
 
 export function extractImages(historyEntry) {
-  return extractMedia(historyEntry, 'image').filter((file) => /^H3_(?:Image(?:_HD)?|MOSS_Image|Flux3Klein(?:_Edit)?|IdentityV2|Qwen21Edit|CharacterSheet|LocalRealism|OutfitQuad|OutfitSingle|OutfitHD)/i.test(file.filename));
+  return extractMedia(historyEntry, 'image').filter((file) => /^H3_(?:Image(?:_HD)?|MOSS_Image|MOSSPose(?:_Identity)?|Flux3Klein(?:_Edit)?|IdentityV2|Qwen21Edit|CharacterSheet|LocalRealism|OutfitQuad|OutfitSingle|OutfitHD)/i.test(file.filename));
 }
 
 async function waitForOutfitPrompt(promptId) {

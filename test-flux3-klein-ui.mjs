@@ -88,7 +88,13 @@ try {
     await page.evaluate(async () => window.fixtureTools.get('canvas_generate_node').execute({ nodeId: 'generator', wait: false }));
     await page.locator('.generator-error').filter({ hasText: missingNode }).waitFor();
     assert.equal(queued.length, 0, 'missing runtime nodes must never enqueue');
+    const saved = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_retry_save').execute({})));
+    assert.equal(saved.ok, true, saved.error);
     missingNode = undefined;
+    await page.reload();
+    await page.waitForFunction(() => window.fixtureTools.has('canvas_generate_node'));
+    const restored = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_get_state').execute({ nodeId: 'generator' })));
+    assert.equal(restored.nodes[0][mode === 'image' ? 'imageModel' : 'qwenModel'], 'flux3_klein');
     const result = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_generate_node').execute({ nodeId: 'generator', wait: false })));
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(queued.length, 1);

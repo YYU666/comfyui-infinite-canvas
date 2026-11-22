@@ -1,4 +1,14 @@
+import { CHARACTER_SHEET_SETTING_KEYS, validateCharacterSheetSettings } from './character-sheet-settings.js';
+import { MOSS_POSE_DEFAULTS, validateMossPoseSettings } from './moss-pose.js';
+import { normalizeVideoSuperResolutionSettings } from './video-super-resolution.js';
 import { useEffect, useRef } from 'react';
+import { isVideoRhythm, normalizeSpeedDocument, normalizeRemapDocument, videoRhythmSummary } from './video-rhythm-document.js';
+import { CHROMA_FIELDS, chromaDocumentFromNode, defaultChromaHandle, defaultChromaSettings, isVideoChroma, normalizePreviewTime, videoChromaSummary } from './video-chroma-document.js';
+import { REPAIR_FIELDS, defaultRepairSettings, isVideoRepair, normalizeRepairDocument, normalizeRepairPreviewTime, videoRepairSummary } from './video-repair-document.js';
+import { PLATE_FIELDS, PLATE_PORT, defaultPlateSettings, isVideoPlate, plateDocumentFromNode, videoPlateSummary } from './video-plate-document.js';
+import { isVideoEdit, normalizeVideoEditDocument, nextVideoEditPort, videoEditSummary, videoEditInputView, VIDEO_EDIT_VIDEO_PORTS } from './video-edit-document.js';
+import { submitVideoAnalysis, getVideoEditJob, cancelVideoEditJob } from './video-edit-runtime.js';
+import { MOTION_CANVAS_MAX_CUES, normalizeMotionCanvasPreview } from './motion-canvas-pilot.js';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
 import { validateCharacterSheetAngleSeed, validateQwenCacheDevice, validateQwenSourceCrop } from './workbench-api.js';
@@ -7,11 +17,15 @@ import { isImageProcess, imageProcessSettings } from './image-process-graph.js';
 import { PHOTO_ADJUSTMENTS, DEFAULT_PHOTO_SETTINGS, normalizePhotoAdjustment } from './photo-adjustments.js';
 import { CHANNEL_KEYS, normalizeChannelPackSettings } from './channel-packing.js';
 import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-references.js';
+import { readImageModelInstall } from './image-model-install.js';
+import { planImageModelPick } from './image-model-picker.js';
 import { availableNodePresets } from './local-node-tools.js';
 import { DEFAULT_SPRITE_OPTIONS, spriteSnapshot } from './sprite-atlas.js';
 import { imageCompactArgs } from './image-inline-output.js';
+import { publicDownloadError, validatePublicVideoUrl, videoDownloadState } from './video-download.js';
 
 export const NODE_PRESETS = {
+  moss_pose: ['generator', { ...MOSS_POSE_DEFAULTS, mode: 'mossPose', title: 'MOSS 姿势控制' }],
   sprite_atlas: ['spriteAtlas', { title: '3D 角色转多方向图集', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS } }],
   art_director: ['artDirector', { title: '电子主美 · 图解分析', brief: '', preserve: '', referencePurposes: {} }],
   color_adjust: ['imageProcess', { ...DEFAULT_ADJUSTMENTS, mode: 'colorAdjust', title: '颜色调整' }],
@@ -23,6 +37,12 @@ export const NODE_PRESETS = {
   image_asset: ['image', {}],
   local_mask: ['image', { mediaRole: 'mask', title: '局部遮罩修改' }],
   video_asset: ['video', {}],
+  video_speed: ['videoSpeed', { title: '恒定速度', speed: 0.5, rhythmAudio: 'preserve' }],
+  video_time_remap: ['videoTimeRemap', { title: '时间重映射', remapKeyframes: [{ output: 0, source: 0, interpolation: 'linear' }, { output: 1, source: 1, interpolation: 'linear' }] }],
+  video_chroma_key: ['videoChromaKey', { title: '绿幕扣像合成', ...defaultChromaSettings() }],
+  video_local_repair: ['videoLocalRepair', { title: '局部水印修补', ...defaultRepairSettings() }],
+  video_white_plate: ['videoWhitePlate', { title: '绿幕白模', ...defaultPlateSettings() }],
+  video_edit: ['videoEdit', { title: '视频编辑' }],
   video_download: ['note', { title: '视频链接下载', noteRole: 'videoDownload' }],
   audio_asset: ['audio', {}],
   note: ['note', {}],
@@ -47,10 +67,15 @@ export const NODE_PRESETS = {
   outfit_muse_v4: ['generator', { mode: 'outfitEdit', title: 'Muse V4.0 INT8 · 四视图 · 无高清', outfitModel: 'muse_v4', outfitUpscale: 'off', outfitLayout: 'mixedGrid', randomSeed: false, seed: 281306, museSteps: 16 }],
   image_upscale: ['generator', { mode: 'imageUpscale', title: '图片高清', imageScale: 1.5, randomSeed: false }],
   image_upscale_7b: ['generator', { mode: 'imageUpscale', title: 'SeedVR2 7B INT8 · 图片高清', upscaleModel: 'seedvr2_7b', imageScale: 1.5, randomSeed: false }],
+  video_super_resolution: ['generator', { mode: 'videoSuperResolution', title: '视频超分', videoUpscaleModel: 'rtx', videoUpscaleScale: 2, rtxQuality: 'ULTRA', rtxStrength: 1, randomSeed: false }],
   video_upscale: ['generator', { mode: 'upscale', title: '视频高清二采', resolution: '720P', randomSeed: false }],
 };
 
 const EDITABLE_SETTINGS = new Set([
+  ...CHARACTER_SHEET_SETTING_KEYS,
+  'poseInput', 'poseResolution', 'poseSteps', 'poseCfg', 'poseLoraStrength',
+  'videoUpscaleModel', 'videoUpscaleScale', 'rtxQuality', 'rtxStrength',
+  ...PLATE_FIELDS, ...REPAIR_FIELDS, ...CHROMA_FIELDS, 'speed', 'rhythmAudio', 'remapKeyframes', 'editDocument',
   'spriteInputPath', 'spriteOptions',
   'packChannels', 'packPreview',
   ...Object.keys(DEFAULT_PHOTO_SETTINGS), 'curvesChannel', 'colorBalanceRange', 'selectiveColorRange', 'channelMixerChannel',
@@ -76,6 +101,15 @@ export function describeNodeModels(data = {}) {
 }
 
 export function validateModelSettings(settings, mode) {
+  if (CHARACTER_SHEET_SETTING_KEYS.some(key => key in settings)) {
+    if (mode !== undefined && mode !== 'characterSheet') throw new Error('角色表参数仅适用于角色四视图。');
+    validateCharacterSheetSettings(settings);
+  }
+  if (mode === 'mossPose') validateMossPoseSettings(settings);
+  if (['videoUpscaleModel', 'videoUpscaleScale', 'rtxQuality', 'rtxStrength'].some(key => key in settings)) {
+    if (mode !== undefined && mode !== 'videoSuperResolution') throw new Error('视频超分参数只适用于视频超分节点。');
+    normalizeVideoSuperResolutionSettings(settings);
+  }
   const choices = { adjustmentType: PHOTO_ADJUSTMENTS.map((item) => item.value), maskChannel: ['luminance', 'red', 'green', 'blue', 'alpha'], hslChannel: HSL_CHANNELS.map((item) => item.value), levelsChannel: LEVEL_CHANNELS.map((item) => item.value), curvesChannel: LEVEL_CHANNELS.map((item) => item.value), colorBalanceRange: ['shadows', 'midtones', 'highlights'], selectiveColorRange: ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'whites', 'neutrals', 'blacks'], channelMixerChannel: ['red', 'green', 'blue'] };
   for (const [key, allowed] of Object.entries(choices)) if (key in settings && !allowed.includes(settings[key])) throw new Error(`不支持的 ${key}。`);
   if ('packPreview' in settings && !['rgb', 'rgba', ...CHANNEL_KEYS].includes(settings.packPreview)) throw new Error('不支持的通道预览。');
@@ -151,7 +185,7 @@ function mediaLocation(data = {}) {
   return Object.keys(media).length ? media : null;
 }
 
-export function nodeSummary(node, includeContent = true) {
+export function nodeSummary(node, includeContent = true, graph = {}) {
   if (!node) return null;
   const media = mediaLocation(node.data);
   return {
@@ -164,8 +198,10 @@ export function nodeSummary(node, includeContent = true) {
     mode: node.data.mode,
     ...(isImageProcess(node) ? { processingSettings: imageProcessSettings(node.data), processedAssetPath: node.data.processedAssetPath, processedTgaAssetPath: node.data.processedTgaAssetPath, processedResultId: node.data.processedResultId } : {}),
     ...(node.data.mode === 'customWorkflow' ? { extensionDigest: node.data.extensionDigest, nodeDefinitionId: node.data.nodeDefinitionId, workflowDefinition: node.data.workflowDefinition, workflowParameters: node.data.workflowParameters } : {}),
+    ...(node.data.mode === 'videoSuperResolution' ? { videoUpscaleModel: node.data.videoUpscaleModel || 'rtx', videoUpscaleScale: node.data.videoUpscaleScale ?? 2, rtxQuality: node.data.rtxQuality || 'ULTRA', rtxStrength: node.data.rtxStrength ?? 1 } : {}),
     status: node.data.status,
     stage: node.data.stage,
+    ...(videoDownloadState(node.data) || {}),
     progress: node.data.progress,
     promptId: node.data.promptId,
     queueJobId: node.data.queueJobId,
@@ -177,12 +213,24 @@ export function nodeSummary(node, includeContent = true) {
       outfitUpscale: node.data.outfitUpscale || 'auto', upscaleModel: node.data.upscaleModel || 'seedvr2_3b',
       models: describeNodeModels(node.data),
     } : {}),
+    ...(node.data.mode === 'characterSheet' ? Object.fromEntries(CHARACTER_SHEET_SETTING_KEYS.filter(key => node.data[key] !== undefined && (includeContent || !['characterSheetBuild','characterSheetLegs','characterSheetTorso','characterSheetShoulders','characterSheetHips','characterSheetPosture','characterSheetPreserveTraits','characterSheetPortraitBrief'].includes(key))).map(key => [key, node.data[key]])) : {}),
     name: node.data.name || node.data.filename,
     position: node.position,
     selected: Boolean(node.selected),
     pinned: Boolean(node.data.pinned),
-    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath),
+    hasMedia: Boolean(node.data.url || node.data.resultUrl || node.data.processedAssetPath || node.data.assetPath || node.data.editResultAssetPath || node.data.rhythmResultAssetPath || node.data.chromaResultAssetPath || node.data.repairResultAssetPath || node.data.plateResultAssetPath),
+    ...(isVideoRhythm(node) ? videoRhythmSummary(node.data, node.type) : {}),
+    ...(isVideoChroma(node) ? videoChromaSummary(node.data) : {}),
+    ...(isVideoRepair(node) ? videoRepairSummary(node.data, { ...graph, nodeId: node.id }) : {}),
+    ...(isVideoPlate(node) ? videoPlateSummary(node.data) : {}),
+    ...(isVideoEdit(node) ? videoEditSummary(node.data) : {}),
     ...(media ? { media } : {}),
+    ...(['image', 'qwenEdit'].includes(node.data.mode) ? {
+      modelLockedByUser: Boolean(node.data.modelLockedByUser),
+      ...(node.data.modelPickNote ? { modelPickNote: node.data.modelPickNote } : {}),
+      ...(node.data.imageTaskType ? { imageTaskType: node.data.imageTaskType } : {}),
+      ...(node.data.imageReview ? { imageReview: node.data.imageReview } : {}),
+    } : {}),
   };
 }
 
@@ -196,7 +244,11 @@ function edgeSummary(edge) {
   };
 }
 
-function defaultTargetHandle(target, source) {
+function defaultTargetHandle(target, source, edges = []) {
+  if (isVideoChroma(target)) return defaultChromaHandle(target, source, edges);
+  if (isVideoRepair(target)) return 'video';
+  if (isVideoPlate(target)) return PLATE_PORT;
+  if (isVideoRhythm(target)) return 'v1';
   if (target.type === 'artDirector') return 'artwork';
   if (isImageProcess(target)) return target.data.mode === 'channelPack' ? 'red' : target.data.mode === 'imageBlend' ? 'base' : 'guide';
   if (source?.type === 'prompt') return 'prompt';
@@ -205,8 +257,9 @@ function defaultTargetHandle(target, source) {
   const mode = target?.data.mode || 'reference';
   if (['reference', 'qwenEdit'].includes(mode)) return 'references';
   if (mode === 'frames') return source?.data.slot === 'last' ? 'last' : 'first';
-  if (['swap', 'upscale'].includes(mode)) return source?.data.kind === 'video' ? 'guide' : 'identity';
-  if (['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode)) return 'guide';
+  if (mode === 'videoSuperResolution') return 'guide';
+  if (['swap', 'upscale'].includes(mode)) return source?.data.kind === 'video' || isVideoPlate(source) ? 'guide' : 'identity';
+  if (['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism', 'mossPose'].includes(mode)) return 'guide';
   throw new Error('这个生成模式不接受素材连线。');
 }
 
@@ -232,6 +285,16 @@ function mcpNode(latest, id) {
   return node;
 }
 
+async function waitForVideoJob(latest, nodeId, jobKey, jobId, timeoutMs, waitImpl) {
+  if (!jobId) throw new Error('这个视频编辑节点还没有提交导出。');
+  const node = await waitImpl(() => {
+    const current = mcpNode(latest, nodeId);
+    if (current.data[jobKey] !== jobId) throw new Error('视频编辑任务已更换。');
+    return ['done', 'error', 'cancelled'].includes(current.data.status) ? current : null;
+  }, timeoutMs, 500);
+  return { node: nodeSummary(node), resultNode: null };
+}
+
 export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
   if (['uploading', 'queued', 'running', 'finishing'].includes(initial.data.status)) throw new Error('节点已经在生成，请使用 canvas_wait_for_node 等待，避免重复提交。');
@@ -251,6 +314,15 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     if (!result?.ok) throw new Error(result?.error || '解析图输出失败。');
     return { node: nodeSummary(mcpNode(latest, nodeId)), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
   }
+  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial) || isVideoPlate(initial)) {
+    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : isVideoRepair(initial) ? 'repairJobId' : 'plateJobId';
+    const result = await latest.current.actions.generateNode(nodeId);
+    if (!result?.ok) throw new Error(result?.error || '视频导出提交失败。');
+    if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId };
+    const finished = await waitForVideoJob(latest, nodeId, jobKey, result.jobId, timeoutMs, waitImpl);
+    if (finished.node.status !== 'done') throw new Error(finished.node.error || '视频编辑未交付。');
+    return finished;
+  }
   if (isImageProcess(initial)) {
     const result = await latest.current.actions.generateNode(nodeId);
     if (!result?.ok) throw new Error(result?.error || '图片输出失败。');
@@ -267,7 +339,7 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     if (node.data.status === 'error') throw new Error(node.data.error || '生成提交失败。');
     return node.data.queueJobId && node.data.queueJobId !== before ? node : null;
   }, 30000);
-  if (!wait) return { node: nodeSummary(submitted) };
+  if (!wait) return { node: nodeSummary(submitted), ...(submitted.data.modelPickNote ? { announcement: submitted.data.modelPickNote } : {}) };
   const finished = await waitImpl(() => {
     const node = mcpNode(latest, nodeId);
     if (node.data.queueJobId !== submitted.data.queueJobId) return null;
@@ -278,11 +350,20 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
   const resultEdges = latest.current.edgesRef.current.filter((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
   const resultEdge = resultEdges.find((edge) => mcpNode(latest, edge.target).data.sourcePromptId === submitted.data.promptId) || resultEdges.at(-1);
   const resultNode = resultEdge ? mcpNode(latest, resultEdge.target) : null;
-  return { node: nodeSummary(finished), resultNode: nodeSummary(resultNode) };
+  return { node: nodeSummary(finished), resultNode: nodeSummary(resultNode), ...(finished.data.modelPickNote ? { announcement: finished.data.modelPickNote } : {}) };
 }
 
 export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
+  if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial) || isVideoPlate(initial)) {
+    const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : isVideoRepair(initial) ? 'repairJobId' : 'plateJobId';
+    try {
+      return { pending: false, ...await waitForVideoJob(latest, nodeId, jobKey, initial.data[jobKey], timeoutMs, waitImpl) };
+    } catch (error) {
+      if (!/超时|timeout/i.test(error.message)) throw error;
+      return { pending: true, node: nodeSummary(mcpNode(latest, nodeId)), resultNode: null };
+    }
+  }
   if (initial.type === 'spriteAtlas') {
     if (!initial.data.spriteJobId) throw new Error('精灵图节点尚未提交任务。');
     try {
@@ -318,6 +399,84 @@ export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, 
   return { pending: false, node: nodeSummary(finished), resultNode: resultEdge ? nodeSummary(mcpNode(latest, resultEdge.target)) : null };
 }
 
+function patchDownloadNode(latest, nodeId, patch) {
+  const apply = latest.current.actions.patchNode || latest.current.actions.updateNode;
+  if (!apply) throw new Error('当前画布不能更新下载节点。');
+  apply(nodeId, patch);
+}
+
+function newDownloadJobId() {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid || `video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function rememberDownloadFailure(latest, nodeId, error) {
+  const node = latest.current.nodesRef.current.find((item) => item.id === nodeId);
+  if (!node || node.data.downloadStatus === 'done' || node.data.downloadStatus === 'failed') return Promise.resolve();
+  const message = publicDownloadError(error);
+  patchDownloadNode(latest, nodeId, {
+    downloadStatus: 'failed', status: 'failed', downloadMessage: message, stage: message, error: message,
+  });
+  return Promise.resolve(latest.current.actions.persistProject?.()).catch(() => {});
+}
+
+// Runs the page's importVideoReference path. wait:false returns as soon as the
+// download node shows the link and a queued job; the video node is created later
+// by that same path. wait:true resolves with the new video node id.
+export async function downloadVideoForMcp(latest, args = {}, waitImpl = waitFor) {
+  const url = validatePublicVideoUrl(args?.url);
+  const wait = args.wait === true;
+  if (latest.current.actions.isVideoDownloadBusy?.()) throw new Error('另一段视频正在下载或保存，请完成后再导入。');
+  const hasX = args.x !== undefined && args.x !== null;
+  const hasY = args.y !== undefined && args.y !== null;
+  let nodeId = args.nodeId;
+  if (!nodeId && (hasX !== hasY || (hasX && !Number.isFinite(Number(args.x))) || (hasY && !Number.isFinite(Number(args.y))))) {
+    throw new Error('新建下载节点时请同时提供有效的 x 和 y。');
+  }
+  if (nodeId) {
+    const node = mcpNode(latest, nodeId);
+    if (node.type !== 'note' || node.data.noteRole !== 'videoDownload') throw new Error('nodeId 必须是视频链接下载节点。');
+  } else {
+    const position = hasX ? { x: Number(args.x), y: Number(args.y) } : null;
+    nodeId = latest.current.actions.addNode('note', { title: '视频链接下载', noteRole: 'videoDownload' }, position, false);
+    await waitImpl(() => latest.current.nodesRef.current.find((node) => node.id === nodeId) || null);
+  }
+  const jobId = newDownloadJobId();
+  patchDownloadNode(latest, nodeId, {
+    downloadUrl: url,
+    sourceUrl: url,
+    downloadStatus: 'queued',
+    status: 'queued',
+    downloadMessage: '已排队，准备下载',
+    stage: '已排队，准备下载',
+    downloadJobId: jobId,
+    videoNodeId: null,
+    error: null,
+  });
+  try {
+    await latest.current.actions.persistProject?.();
+  } catch (error) {
+    const message = publicDownloadError(error);
+    patchDownloadNode(latest, nodeId, { downloadStatus: 'failed', status: 'failed', downloadMessage: message, stage: message, error: message });
+    throw new Error(message || '下载节点尚未保存。');
+  }
+  if (!latest.current.actions.importVideoReference) {
+    const message = '当前页面没有视频下载流程。';
+    patchDownloadNode(latest, nodeId, { downloadStatus: 'failed', status: 'failed', downloadMessage: message, stage: message, error: message });
+    throw new Error(message);
+  }
+  const task = Promise.resolve().then(() => latest.current.actions.importVideoReference(url, nodeId)).catch(async (error) => {
+    await rememberDownloadFailure(latest, nodeId, error);
+    throw new Error(publicDownloadError(error));
+  });
+  if (!wait) {
+    task.catch(() => {});
+    return { nodeId, jobId, status: 'queued', message: '已排队，准备下载' };
+  }
+  const videoNodeId = await task;
+  return { nodeId, jobId, status: 'done', videoNodeId, message: '下载完成' };
+}
+
 export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readOnly = false, server, actions }) {
   const latest = useRef(null);
   latest.current = { nodesRef, edgesRef, projectName, projectId, readOnly, server, actions };
@@ -328,6 +487,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
 // Registration is shared by the mounted page and isolated protocol tests.
 export function registerCanvasMcp(latest, { context = document.modelContext, startPage = startCurrentCanvasPage } = {}) {
     const controller = new AbortController();
+    const ownedAnalyses = new Map();
     const getNode = (id) => {
       const node = latest.current.nodesRef.current.find((item) => item.id === id);
       if (!node) throw new Error(`找不到节点：${id}`);
@@ -341,6 +501,59 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         return JSON.stringify({ ok: false, error: error?.message || String(error) });
       }
     };
+    const analysisSource = (nodeId) => {
+      if (!isVideoEdit(getNode(nodeId))) throw new Error('请先选择视频编辑节点。');
+      const { projectId, nodesRef, edgesRef } = latest.current;
+      return { projectId, inputs: videoEditInputView(nodeId, nodesRef.current, edgesRef.current, (path) => path) };
+    };
+    const ownsAnalysis = ({ projectId, nodeId, slot, assetPath }) => {
+      if (controller.signal.aborted || latest.current.readOnly || latest.current.projectId !== projectId) return false;
+      if (!latest.current.nodesRef.current.some((node) => node.id === nodeId && isVideoEdit(node))) return false;
+      return analysisSource(nodeId).inputs[slot]?.assetPath === assetPath;
+    };
+    const releaseAnalysis = (jobId, cancel = false) => {
+      const owner = ownedAnalyses.get(jobId);
+      if (!owner) return;
+      clearTimeout(owner.timer);
+      ownedAnalyses.delete(jobId);
+      if (cancel) cancelVideoEditJob(jobId, owner.projectId, { keepalive: true }).catch(() => {});
+    };
+    const cancelOwnedAnalyses = () => {
+      for (const jobId of ownedAnalyses.keys()) releaseAnalysis(jobId, true);
+    };
+    function watchAnalysis(jobId, owner) {
+      owner.timer = setTimeout(async () => {
+        if (!ownsAnalysis(owner)) { releaseAnalysis(jobId, true); return; }
+        try {
+          const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]);
+          const job = await getVideoEditJob(jobId, { signal });
+          if (!['queued', 'running'].includes(job.status)) { releaseAnalysis(jobId); return; }
+        } catch (error) {
+          if (error.status === 404) { releaseAnalysis(jobId); return; }
+        }
+        if (ownedAnalyses.has(jobId)) watchAnalysis(jobId, owner);
+      }, 2000);
+    }
+    const readAnalysis = async (nodeId, jobId) => {
+      if (typeof jobId !== 'string' || !/^ved_[a-f0-9]{32}$/.test(jobId)) throw new Error('分析任务 ID 无效。');
+      const { projectId } = analysisSource(nodeId);
+      const job = await getVideoEditJob(jobId, { signal: controller.signal });
+      if (!job.mode || job.nodeId !== nodeId || job.projectId !== projectId || latest.current.projectId !== projectId) {
+        throw new Error('分析任务不属于当前画布节点。');
+      }
+      if (!['queued', 'running'].includes(job.status)) releaseAnalysis(jobId);
+      return job;
+    };
+    const imagePickInput = (node, prompt) => ({
+      data: node.data,
+      mode: node.data.mode,
+      prompt,
+      referenceCount: node.data.mode === 'qwenEdit' ? qwenCanvasReferences(node, latest.current.nodesRef.current, latest.current.edgesRef.current).length : 0,
+      hasMask: latest.current.edgesRef.current.some((edge) => edge.target === node.id && edge.targetHandle === 'mask'),
+      hasSourceCrop: Boolean(node.data.qwenSourceCrop),
+      hasMaskCrop: Boolean(node.data.qwenMaskCrop),
+      history: latest.current.actions.getImageModelHistory?.() || [],
+    });
     const tools = [
       {
         name:'canvas_move_nodes',description:'仅移动指定的1至30个当前节点，保留其余节点位置。',
@@ -363,7 +576,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
             server: latest.current.server,
             nodeCount: latest.current.nodesRef.current.length,
             nodes: nodes.map((node) => {
-              const summary = nodeSummary(node, includePrompt);
+              const summary = nodeSummary(node, includePrompt, { nodes: latest.current.nodesRef.current, edges: latest.current.edgesRef.current });
               if (node.data.mode !== 'qwenEdit') return summary;
               const references = qwenCanvasReferences(node, latest.current.nodesRef.current, latest.current.edgesRef.current);
               return { ...summary, maskNodeId: latest.current.edgesRef.current.find((edge) => edge.target === node.id && edge.targetHandle === 'mask')?.source || null, referenceNodeIds: references.map((ref) => ref.id), referenceCount: references.length,
@@ -426,6 +639,119 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         }),
       },
       {
+        name: 'canvas_start_video_analysis',
+        description: '分析当前视频编辑节点已连线的项目视频。transcript 本地转写旁白并返回源时间码，black 和 silence 提议剪口。先取得 jobId，再调用 canvas_get_video_analysis 获取结果。',
+        inputSchema: schema({ nodeId: nodeIdProperty, slot: { type: 'string', enum: VIDEO_EDIT_VIDEO_PORTS },
+          mode: { type: 'string', enum: ['black', 'silence', 'transcript'] } }, ['nodeId', 'slot', 'mode']),
+        execute: respond(async ({ nodeId, slot, mode }) => {
+          if (!VIDEO_EDIT_VIDEO_PORTS.includes(slot) || !['black', 'silence', 'transcript'].includes(mode)) throw new Error('分析端口或方式无效。');
+          const { projectId, inputs } = analysisSource(nodeId);
+          const assetPath = inputs[slot]?.assetPath;
+          if (!assetPath) throw new Error('请先将该端口的视频导入项目素材。');
+          const owner = { projectId, nodeId, slot, assetPath };
+          const job = await submitVideoAnalysis({ ...owner, mode });
+          if (!ownsAnalysis(owner)) {
+            await cancelVideoEditJob(job.id, projectId, { keepalive: true }).catch(() => {});
+            throw new Error('当前画布或素材已更换，分析已取消。');
+          }
+          ownedAnalyses.set(job.id, owner);
+          watchAnalysis(job.id, owner);
+          return { jobId: job.id, status: job.status, mode, slot };
+        }),
+      },
+      {
+        name: 'canvas_get_video_analysis',
+        description: '查询素材分析。转写分页返回源时间毫秒与讲解原文。includeWords:true 时返回模型实际识别的词或短语时间，用于安排口播动效。缺失时序的词应复核原片。',
+        inputSchema: schema({ nodeId: nodeIdProperty, jobId: { type: 'string' },
+          offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 30 },
+          includeWords: { type: 'boolean' } }, ['nodeId', 'jobId']),
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        execute: respond(async ({ nodeId, jobId, offset = 0, limit = 20, includeWords = false }) => {
+          if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 30 || typeof includeWords !== 'boolean') throw new Error('转写分页参数无效。');
+          const job = await readAnalysis(nodeId, jobId);
+          const { inputs } = analysisSource(nodeId);
+          if (!Object.entries(job.inputs).every(([slot, path]) => inputs[slot]?.assetPath === path)) {
+            throw new Error('分析后输入素材已更换，请重新分析。');
+          }
+          const summary = { jobId, status: job.status, stage: job.stage, mode: job.mode, progress: job.progress, error: job.error };
+          if (!job.result || job.mode !== 'transcript') return { ...summary, result: job.result };
+          const { segments, source, language, durationMs, wordTimingsTruncated } = job.result;
+          const page = [];
+          const encoder = new TextEncoder();
+          let bytes = 0;
+          for (const { startMs, endMs, text, words } of segments.slice(offset, offset + limit)) {
+            const segment = { startMs, endMs, text, ...(includeWords && words?.length ? { words } : {}) };
+            bytes += encoder.encode(JSON.stringify(segment)).length + 1;
+            if (bytes > 64 * 1024 && page.length) break;
+            page.push(segment);
+          }
+          const nextOffset = offset + page.length < segments.length ? offset + page.length : null;
+          return { ...summary, result: { segments: page, source, language, durationMs, segmentCount: segments.length, nextOffset,
+            ...(includeWords && wordTimingsTruncated ? { wordTimingsTruncated: true } : {}) } };
+        }),
+      },
+      {
+        name: 'canvas_cancel_video_analysis',
+        description: '取消当前视频编辑节点指定的素材分析，不影响其他导出作业。',
+        inputSchema: schema({ nodeId: nodeIdProperty, jobId: { type: 'string' } }, ['nodeId', 'jobId']),
+        execute: respond(async ({ nodeId, jobId }) => {
+          const job = await readAnalysis(nodeId, jobId);
+          const cancelled = await cancelVideoEditJob(jobId, job.projectId);
+          releaseAnalysis(jobId);
+          return { jobId, status: cancelled.status, stage: cancelled.stage };
+        }),
+      },
+      {
+        name: 'canvas_set_motion_canvas_preview',
+        description: '通过可见视频编辑节点保存 Motion Canvas 流程动效预览。完整保留所选区间的原声。根据 canvas_get_video_analysis 的词或短语时间选择触发点。时间为源视频绝对毫秒，Agent 只提交内容和时间数据。',
+        inputSchema: schema({ nodeId: nodeIdProperty, slot: { type: 'string', enum: VIDEO_EDIT_VIDEO_PORTS },
+          transcriptJobId: { type: 'string', description: '用于核对转写时间与当前素材的已完成转写任务。' },
+          sourceInMs: { type: 'integer', minimum: 0 }, sourceOutMs: { type: 'integer', minimum: 1 },
+          title: { type: 'string', minLength: 1, maxLength: 42 },
+          cues: { type: 'array', minItems: 1, maxItems: MOTION_CANVAS_MAX_CUES, items: schema({
+            atMs: { type: 'integer', minimum: 0 }, label: { type: 'string', minLength: 1, maxLength: 24 },
+            detail: { type: 'string', minLength: 1, maxLength: 52 },
+          }, ['atMs', 'label', 'detail']) },
+        }, ['nodeId', 'slot', 'transcriptJobId', 'sourceInMs', 'sourceOutMs', 'title', 'cues']),
+        execute: respond(async ({ nodeId, transcriptJobId, ...plan }) => {
+          const preview = normalizeMotionCanvasPreview(plan);
+          const job = await readAnalysis(nodeId, transcriptJobId);
+          if (job.mode !== 'transcript' || job.status !== 'completed') throw new Error('请先完成该素材的语音转写。');
+          const { inputs } = analysisSource(nodeId);
+          const assetPath = inputs[preview.slot]?.assetPath;
+          if (!assetPath) throw new Error('请先将该端口的视频导入项目素材。');
+          if (latest.current.readOnly || job.inputs[preview.slot] !== assetPath) throw new Error('画布或素材已更换，请重新分析。');
+          const { durationMs, source } = job.result;
+          if (source?.audioOffset?.num !== 0) throw new Error('试验仅支持首帧与音轨同时开始的素材，请先导出一份已对齐的片段。');
+          if (!Number.isSafeInteger(durationMs) || preview.sourceOutMs > durationMs) throw new Error('动效预览结束时间超出源视频。');
+          const motionCanvasPreview = { ...preview, assetPath };
+          latest.current.actions.updateNode(nodeId, { motionCanvasPreview });
+          await waitFor(() => getNode(nodeId).data.motionCanvasPreview === motionCanvasPreview);
+          return { nodeId, cueCount: motionCanvasPreview.cues.length };
+        }),
+      },
+      {
+        name: 'canvas_set_video_presentation',
+        description: '为当前视频编辑节点设置可编辑的演示轨，按成片帧落位，保留剪辑和原声。根据转写的讲解分段安排页标题和要点。传空数组可清空演示轨。',
+        inputSchema: schema({ nodeId: nodeIdProperty, pages: { type: 'array', maxItems: 48, items: schema({
+          id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' },
+          startFrame: { type: 'integer', minimum: 0 }, endFrame: { type: 'integer', minimum: 1, description: '结束帧不含。页面按起始帧顺序排列，区间不能重叠。' },
+          title: { type: 'string', minLength: 1, maxLength: 80 },
+          bullets: { type: 'array', maxItems: 4, items: { type: 'string', minLength: 1, maxLength: 96 } },
+          layout: { type: 'string', enum: ['fullscreen', 'side'], description: '全屏演示或右侧要点卡。' },
+          motion: { type: 'string', enum: ['none', 'fade', 'reveal'], description: '直接出现、淡入淡出或逐项显示。' },
+        }, ['id', 'startFrame', 'endFrame', 'title', 'bullets', 'layout', 'motion']) } }, ['nodeId', 'pages']),
+        execute: respond(async ({ nodeId, pages }) => {
+          const node = getNode(nodeId);
+          if (!isVideoEdit(node)) throw new Error('演示轨只用于视频编辑节点。');
+          if (['queued', 'running'].includes(node.data.status)) throw new Error('正在导出，请在结束后修改演示轨。');
+          const editDocument = normalizeVideoEditDocument({ ...node.data.editDocument, presentation: pages });
+          latest.current.actions.updateNode(nodeId, { editDocument, error: null });
+          await waitFor(() => getNode(nodeId).data.editDocument === editDocument);
+          return { nodeId, pageCount: editDocument.presentation?.length || 0 };
+        }),
+      },
+      {
         name: 'canvas_update_node',
         description: '修改当前画布节点的标题、提示词、备注或受支持的生成参数。只允许白名单参数，不会绕过节点校验。',
         inputSchema: schema({
@@ -437,25 +763,102 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         }, ['nodeId']),
         execute: respond(async ({ nodeId, title, prompt, text, settings = {} }) => {
           const current = getNode(nodeId);
-          if (['uploading', 'queued', 'running', 'finishing'].includes(current.data.status)) throw new Error('节点正在生成，请先完成或取消后再修改。');
+          if (current.data.noteRole === 'videoDownload') {
+            if (latest.current.actions.isVideoDownloadBusy?.() && ['queued', 'downloading'].includes(current.data.downloadStatus)) throw new Error('节点正在下载，请完成后再修改。');
+          } else if (['uploading', 'queued', 'running', 'finishing'].includes(current.data.status)) throw new Error('节点正在生成，请先完成或取消后再修改。');
           const unknown = Object.keys(settings).filter((key) => !EDITABLE_SETTINGS.has(key));
           if (unknown.length) throw new Error(`不支持的参数：${unknown.join(', ')}`);
           if ('spriteInputPath' in settings || 'spriteOptions' in settings) {
             if (current.type !== 'spriteAtlas') throw new Error('精灵图参数仅用于精灵图节点。');
             spriteSnapshot({ ...current.data, ...settings });
           }
+          if ('speed' in settings || 'rhythmAudio' in settings) {
+            if (current.type !== 'videoSpeed') throw new Error('速度参数仅用于恒定速度节点。');
+            normalizeSpeedDocument({ schemaVersion: 1, speed: settings.speed ?? current.data.speed, audio: settings.rhythmAudio ?? current.data.rhythmAudio });
+          }
+          if ('remapKeyframes' in settings) { if (current.type !== 'videoTimeRemap') throw new Error('曲线参数仅用于时间重映射节点。'); normalizeRemapDocument({ schemaVersion: 1, keyframes: settings.remapKeyframes }); }
+          if (CHROMA_FIELDS.some(key => key in settings && !(key === 'previewTime' && isVideoRepair(current)))) { if (!isVideoChroma(current)) throw new Error('绿幕参数仅用于绿幕合成节点。'); chromaDocumentFromNode({ ...current.data, ...settings }); if ('previewTime' in settings) normalizePreviewTime(settings.previewTime); }
+          if ('editDocument' in settings && !isVideoEdit(current)) throw new Error('editDocument 仅适用于视频编辑节点。');
           validateModelSettings(settings, current.data.mode ?? '');
           const patch = { ...settings };
+          if (PLATE_FIELDS.some(key => key in settings)) { if (!isVideoPlate(current)) throw new Error('绿幕白模参数仅用于白模节点。'); const normalized = plateDocumentFromNode({ ...current.data, ...settings }); for (const key of PLATE_FIELDS) if (key in settings) patch[key] = normalized[key]; }
+          if ('repairSettings' in settings && !isVideoRepair(current)) throw new Error('repairSettings 仅用于局部修补。');
+          if (isVideoRepair(current)) { if ('repairSettings' in settings) patch.repairSettings = normalizeRepairDocument(settings.repairSettings); if ('previewTime' in settings) patch.previewTime = normalizeRepairPreviewTime(settings.previewTime); }
+          if (current.type === 'videoChromaKey' && CHROMA_FIELDS.some((key) => key in settings)) {
+            const merged = chromaDocumentFromNode({ ...current.data, ...settings });
+            const exported = {
+              keyColor: merged.keyColor, similarity: merged.similarity, blend: merged.blend, despill: merged.despill,
+              choke: merged.choke, feather: merged.feather,
+              secondKey: merged.secondKey, secondKeyColor: merged.secondKeyColor, secondSimilarity: merged.secondSimilarity, secondBlend: merged.secondBlend,
+              scale: merged.scale, offsetX: merged.offsetX, offsetY: merged.offsetY,
+              anchor: merged.anchor, backgroundFit: merged.backgroundFit, outputSize: merged.outputSize,
+              chromaAudio: merged.audio, startOffset: merged.startOffset,
+            };
+            for (const [key, value] of Object.entries(exported)) if (key in settings) patch[key] = value;
+            if ('previewTime' in settings) patch.previewTime = normalizePreviewTime(settings.previewTime);
+          }
+
+          if ('editDocument' in settings) patch.editDocument = normalizeVideoEditDocument(settings.editDocument);
           if ('workflowParameters' in settings) patch.workflowParameters = validateWorkflowParameters(current.data, settings.workflowParameters);
           if (title !== undefined) patch.title = title;
           if (prompt !== undefined) { patch.prompt = current.data.mode === 'qwenEdit' ? bindQwenPrompt(prompt, qwenCanvasReferences(current, latest.current.nodesRef.current, latest.current.edgesRef.current)) : prompt; patch.outfitPreset = null; }
           if (text !== undefined) patch.text = text;
+          const activeField = current.data.mode === 'image' ? 'imageModel' : current.data.mode === 'qwenEdit' ? 'qwenModel' : null;
+          if (activeField && Object.hasOwn(settings, activeField)) {
+            const decision = planImageModelPick({ ...imagePickInput(current, prompt ?? current.data.prompt), requestedModel: settings[activeField], install: await readImageModelInstall(), data: { ...current.data, modelLockedByUser: false } });
+            if (!decision.ok) throw new Error(decision.error);
+            Object.assign(patch, decision.patch);
+          }
           latest.current.actions.updateNode(nodeId, patch);
           const node = await waitFor(() => {
             const current = getNode(nodeId);
             return Object.entries(patch).every(([key, value]) => current.data[key] === value) ? current : null;
           });
           return { node: nodeSummary(node) };
+        }),
+      },
+      {
+        name: 'canvas_pick_image_model',
+        description: '为文生图或图生图节点自动选择已安装且兼容的模型，并写入现有 imageModel 或 qwenModel。用户点名或该节点已手动锁定时不改下拉。点名的模型未安装时返回缺项，不会换成别的模型。',
+        inputSchema: schema({
+          nodeId: nodeIdProperty,
+          model: { type: 'string', description: '可选。点名 krea2、moss、h3_image、flux3_klein、standard 或 turbo；未安装时失败且不替换。' },
+          prompt: { type: 'string', description: '可选。只用于判断任务类型，不改节点提示词。省略时用节点上的提示词。' },
+        }, ['nodeId']),
+        execute: respond(async ({ nodeId, model, prompt }) => {
+          const node = getNode(nodeId);
+          if (!['image', 'qwenEdit'].includes(node.data.mode)) throw new Error('自动选模只用于文生图或图生图节点。');
+          const decision = planImageModelPick({ ...imagePickInput(node, prompt === undefined ? node.data.prompt || '' : prompt), requestedModel: model, install: await readImageModelInstall() });
+          if (!decision.ok) throw new Error(decision.error);
+          if (decision.patch && Object.keys(decision.patch).length) {
+            latest.current.actions.updateNode(nodeId, decision.patch);
+            await waitFor(() => {
+              const current = getNode(nodeId);
+              return Object.entries(decision.patch).every(([key, value]) => current.data[key] === value) ? current : null;
+            });
+          }
+          const current = getNode(nodeId);
+          return {
+            announcement: decision.announcement, field: decision.field, model: decision.model || current.data[decision.field] || null,
+            taskType: decision.taskType, locked: Boolean(current.data.modelLockedByUser), changed: Boolean(decision.changed), offline: Boolean(decision.offline),
+          };
+        }),
+      },
+      {
+        name: 'canvas_review_image',
+        description: '记录文生图或图生图结果的收下或否掉。写入节点 imageReview，并追加到项目 settings.imageModelHistory，供之后自动选模按 30 天半衰期使用。',
+        inputSchema: schema({
+          nodeId: nodeIdProperty,
+          accepted: { type: 'boolean', description: 'true 为收下，false 为否掉。' },
+        }, ['nodeId', 'accepted']),
+        execute: respond(async ({ nodeId, accepted }) => {
+          if (typeof accepted !== 'boolean') throw new Error('accepted 必须是布尔值。');
+          const reviewed = latest.current.actions.reviewImageNode(nodeId, accepted);
+          const node = await waitFor(() => {
+            const current = getNode(reviewed.id);
+            return current.data.imageReview?.accepted === accepted ? current : null;
+          });
+          return { node: nodeSummary(node), review: reviewed.review, historyCount: (latest.current.actions.getImageModelHistory?.() || []).length };
         }),
       },
       {
@@ -469,7 +872,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         execute: respond(async ({ sourceId, targetId, targetHandle }) => {
           const source = getNode(sourceId);
           const target = getNode(targetId);
-          const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || defaultTargetHandle(target, source);
+          const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || (isVideoEdit(target) ? nextVideoEditPort(target, source, latest.current.edgesRef.current) : defaultTargetHandle(target, source, latest.current.edgesRef.current));
           const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
           if (connected?.error) throw new Error(connected.error);
           const edge = await waitFor(() => {
@@ -541,6 +944,8 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         }),
       },
     ];
+    tools.push({name:'canvas_publish_extension',description:'显式发布已安装的精确工作流包或新版本到当前登录用户的节点库。同一requestId固定同一包，查询/重放不重复上传；提交不代表发布成功，使用状态工具查询。不会更新画布已固定版本。',inputSchema:schema({requestId:nodeIdProperty,digest:{type:'string',pattern:'^[a-f0-9]{64}$'},packageId:{type:'string'},version:{type:'string'},mode:{type:'string',enum:['update','publish'],default:'update'}},['requestId','digest','packageId','version']),execute:respond(args=>latest.current.actions.publishExtension(args))});
+    tools.push({name:'canvas_get_extension_publish_status',description:'只读查询发布请求状态；不重试上传，不返回节点包或媒体。',inputSchema:schema({requestId:nodeIdProperty},['requestId']),execute:respond(({requestId})=>latest.current.actions.getExtensionPublishStatus(requestId))});
     tools.push({
       name: 'canvas_image_compact',
       description: '整理指定已完成图片生成节点的重复结果卡，保留媒体身份、文件、历史及下游引用；多输出保留独立卡。默认 dryRun:true 仅预览，执行需显式 false。当前画布忙碌、只读或保存异常时拒绝。',
@@ -573,14 +978,26 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         return { node: nodeSummary(getNode(nodeId)) };
       }),
     });
+    tools.push({
+      name: 'canvas_download_video',
+      description: '在当前页把 http/https 分享链接下载为视频素材。复用视频链接下载节点和页面已有的下载流程：写入链接、下载、在旁边创建视频节点并保存。wait 默认 false，立即返回下载节点与 queued 任务；wait 为 true 时返回新视频节点。进度与错误用 canvas_get_state 读取该下载节点的 downloadStatus（queued/downloading/done/failed）和 message。',
+      inputSchema: schema({
+        nodeId: { ...nodeIdProperty, description: '可选。已有「视频链接下载」节点的 ID。省略则新建。' },
+        x: { type: 'number', description: '新建下载节点时的画布坐标 X，需与 y 同时提供。' },
+        y: { type: 'number', description: '新建下载节点时的画布坐标 Y，需与 x 同时提供。' },
+        url: { type: 'string', description: 'http 或 https 视频链接，或包含一个该链接的分享文字。不能包含账号或密码。' },
+        wait: { type: 'boolean', description: '是否等待下载结束，默认 false。' },
+      }, ['url']),
+      execute: respond((args) => downloadVideoForMcp(latest, args)),
+    });
     for (const tool of tools) {
       const original = tool.execute;
       tool.execute = async (args = {}, executionOptions) => {
         const compactPreview = tool.name === 'canvas_image_compact' && args?.dryRun !== false;
-        const mutation = !compactPreview && !['canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
+        const mutation = !compactPreview && !['canvas_get_extension_publish_status', 'canvas_get_state', 'canvas_get_video_analysis', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
         const result = JSON.parse(await original(args, executionOptions));
-        if (mutation && result.ok && !['canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
+        if (mutation && result.ok && !['canvas_download_video', 'canvas_publish_extension', 'canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
           try { await latest.current.actions.persistProject?.(); }
           catch (error) { return JSON.stringify({ ...result, ok: false, error: error.message, localChangesRetained: true }); }
         }
@@ -595,5 +1012,11 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
     // the user may switch to another app while this same canvas keeps running.
     const stop = startPage({ tools, getPage: () => ({ projectId: latest.current.projectId,
       readOnly: latest.current.readOnly, visible: !latest.current.readOnly }) });
-    return () => { stop(); controller.abort(); };
+    globalThis.addEventListener?.('pagehide', cancelOwnedAnalyses);
+    return () => {
+      stop();
+      controller.abort();
+      cancelOwnedAnalyses();
+      globalThis.removeEventListener?.('pagehide', cancelOwnedAnalyses);
+    };
 }

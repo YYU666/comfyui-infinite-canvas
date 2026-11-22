@@ -56,6 +56,44 @@ class ExtensionTests(unittest.TestCase):
         self.digest = self.imported["digest"]
         self.payload = {"nodeDefinitionId": "workflow", "inputs": {"image_a": "uploads/first.png", "image_b": "second.png", "image_c": "third.png"}, "parameters": {}}
 
+    def test_v3_dynamic_combo_validates_selected_nested_inputs(self):
+        info = {
+            "DecimateMesh": {"input": {"required": {
+                "placement_mode": ["COMFY_DYNAMICCOMBO_V3", {"options": [
+                    {"key": "midpoint", "inputs": {"required": {}}},
+                    {"key": "qem", "inputs": {"required": {"weight": ["FLOAT", {}]}}},
+                ]}],
+            }}},
+        }
+        graph = {"decimate": {"class_type": "DecimateMesh", "inputs": {"placement_mode": "midpoint"}}}
+        validate_comfy(graph, info)
+        graph["decimate"]["inputs"]["placement_mode"] = "qem"
+        with self.assertRaises(ExtensionError):
+            validate_comfy(graph, info)
+        graph["decimate"]["inputs"]["placement_mode.weight"] = 1.0
+        validate_comfy(graph, info)
+        graph["decimate"]["inputs"]["placement_mode"] = "midpoint"
+        with self.assertRaises(ExtensionError):
+            validate_comfy(graph, info)
+
+    def test_glb_output_uses_saveglb_and_managed_prefix(self):
+        graph = {
+            "mesh": {"class_type": "MeshFixture", "inputs": {}},
+            "save": {"class_type": "SaveGLB", "inputs": {"mesh": ["mesh", 0], "filename_prefix": "../../unsafe"}},
+        }
+        info = {
+            "MeshFixture": {"output": ["MESH"]},
+            "SaveGLB": {"input": {"required": {"mesh": ["MESH,FILE_3D_GLB,FILE_3D_OBJ"], "filename_prefix": ["STRING"]}}},
+        }
+        imported = self.store.import_bytes(json.dumps(graph).encode(), "lamp.json")
+        payload = {"nodeDefinitionId": "workflow", "inputs": {}, "parameters": {}}
+        prepared = self.store.prepare(imported["digest"], payload, info)
+        self.assertEqual(prepared["outputs"], [{"id": "model_save", "type": "model", "nodeId": "save"}])
+        self.assertTrue(prepared["workflow"]["save"]["inputs"]["filename_prefix"].startswith("H3/extensions/"))
+        info["MeshFixture"]["output"] = ["FILE_3D_OBJ"]
+        with self.assertRaises(ExtensionError):
+            self.store.prepare(imported["digest"], payload, info)
+
     def test_three_images_and_immutable_conversion(self):
         prepared = self.store.prepare(self.digest, self.payload, info_fixture())
         self.assertEqual(prepared["workflow"]["a"]["inputs"]["image"], "uploads/first.png")

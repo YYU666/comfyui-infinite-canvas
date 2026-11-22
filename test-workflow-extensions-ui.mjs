@@ -16,6 +16,11 @@ assert.deepEqual(extensionMedia(history, definition.outputs).map((item) => item.
 const pairedOutputs = [...definition.outputs, { id: 'second-result', type: 'image', nodeId: '10' }];
 assert.throws(() => extensionMedia(history, pairedOutputs), /second-result.*10/);
 assert.throws(() => extensionMedia({ outputs: { ...history.outputs, '10': { videos: [file('wrong-kind.mp4')] } } }, pairedOutputs), /second-result.*10/);
+const modelOutput = [{ id: 'lamp', type: 'model', nodeId: '30' }];
+const lampGlb = { filename: 'shade.glb', subfolder: 'H3/extensions/test', type: 'output' };
+const modelHistory = { outputs: { '30': { '3d': [lampGlb, { ...lampGlb, type: 'temp' }, { ...lampGlb, filename: 'shade.obj' }], images: [lampGlb] }, '31': { '3d': [lampGlb] } } };
+assert.deepEqual(extensionMedia(modelHistory, modelOutput).map(({ filename, kind }) => [filename, kind]), [['shade.glb', 'model']]);
+assert.throws(() => extensionMedia({ outputs: { '30': { images: [lampGlb] } } }, modelOutput), /lamp.*30/);
 const sharedHistory = { outputs: { '9': { images: [file('shared.png')] }, '10': { images: [file('shared.png')] } } };
 assert.equal(extensionMedia(sharedHistory, pairedOutputs).length, 1, 'each declared output is validated before shared-file deduplication');
 assert.equal(extensionMedia(sharedHistory, [...definition.outputs, { id: 'same-node-alias', type: 'image', nodeId: '9' }]).length, 1);
@@ -154,6 +159,40 @@ try {
   await share.getByRole('button', { name: '关闭上传节点到节点库' }).click();
   await mkdir('.cache/extensions-review', { recursive: true });
   await page.screenshot({ path: '.cache/extensions-review/three-image-workflow.jpg', type: 'jpeg', quality: 75 });
+  // A SaveGLB result is saved as a model card and keeps its model edge across reload.
+  stagedRun = false;
+  delete definition.execution;
+  definition.outputs = modelOutput;
+  const modelNode = (await call('canvas_create_extension', { digest, nodeDefinitionId: definition.nodeDefinitionId, x: 1700, y: 0 })).node;
+  assert.ok(modelNode);
+  for (const port of ['left', 'middle', 'right']) assert.equal((await call('canvas_connect_nodes', { sourceId: port, targetId: modelNode.id, targetHandle: port })).ok, true);
+  await call('canvas_generate_node', { nodeId: modelNode.id, wait: false });
+  await page.waitForFunction((id) => document.querySelector(`.react-flow__node[data-id="${id}"] .custom-workflow-footer`).textContent.includes('已加入后台队列'), modelNode.id);
+  await page.evaluate(({ nodeId, projectId, history }) => {
+    const source = window.fixtureSources.findLast((item) => item.url === '/api/queue/events' && !item.closed);
+    source.listeners['job.done']({ data: JSON.stringify({ job: { id: 'job_fixture', nodeId, projectId, status: 'done', comfyPromptId: 'prompt_model', history } }) });
+  }, { nodeId: modelNode.id, projectId: project.id, history: modelHistory });
+  await page.waitForFunction(async () => {
+    const result = JSON.parse(await window.fixtureTools.get('canvas_get_state').execute({}));
+    return result.nodes.some((item) => item.name === 'shade.glb');
+  }, null, { timeout: 10000 }).catch(async (error) => {
+    const snapshot = await call('canvas_get_state');
+    throw new Error(JSON.stringify({ node: snapshot.nodes.find((item) => item.id === modelNode.id), pages: failures }), { cause: error });
+  });
+  state = await call('canvas_get_state');
+  const modelResult = state.nodes.find((item) => item.name === 'shade.glb');
+  assert.equal(modelResult.kind, 'model');
+  await call('canvas_focus_node', { nodeId: modelResult.id });
+  const modelCard = page.locator('.media-model');
+  await modelCard.waitFor();
+  assert.match(await modelCard.getByRole('link', { name: '下载 GLB' }).getAttribute('href'), /filename=shade\.glb/);
+  assert.ok(state.edges.some((edge) => edge.source === modelNode.id && edge.target === modelResult.id && edge.sourceHandle === 'model'));
+  assert.equal((await call('canvas_update_node', { nodeId: modelNode.id, title: 'Saved GLB workflow' })).ok, true);
+  await page.reload();
+  await page.locator('.neo-header').waitFor();
+  await call('canvas_focus_node', { nodeId: modelResult.id });
+  await modelCard.waitFor();
+  assert.equal(await modelCard.getByRole('link', { name: '下载 GLB' }).getAttribute('download'), 'shade.glb');
   assert.deepEqual(failures, []);
   console.log('PASS: local import, dynamic inputs, typed parameters, single/staged queue completion, final declared outputs only, persistence, dependency rejection, staged re-share consent, current-page create tool; all network intercepted.');
 } finally { await browser.close(); }

@@ -27,7 +27,11 @@ export function nodeModelPaths(data = {}) {
   const add = (category, name) => { if (name) paths.push(`${category}/${name}`.replaceAll('\\', '/')); };
   const image = (model) => { add('diffusion_models', model.unet); add('text_encoders', model.clip); add('vae', model.vae); };
   const mode = data.mode || 'reference';
-  if ((mode === 'image' && data.imageModel === 'h3_image') || (mode === 'qwenEdit' && data.qwenModel === 'h3_image')) image(H3_IMAGE_MODEL);
+  if (mode === 'mossPose') {
+    image(MOSS_IMAGE_MODEL); add('loras', 'moss_image_sft_pose_control_lora.safetensors');
+    if (data.poseHasIdentity) image(QWEN21_EDIT_MODEL);
+  }
+  else if ((mode === 'image' && data.imageModel === 'h3_image') || (mode === 'qwenEdit' && data.qwenModel === 'h3_image')) image(H3_IMAGE_MODEL);
   else if ((mode === 'image' && data.imageModel === 'flux3_klein') || (mode === 'qwenEdit' && data.qwenModel === 'flux3_klein')) { image(FLUX3_KLEIN_MODEL); add('text_encoders', FLUX3_KLEIN_MODEL.upsampler); }
   else if (mode === 'image' && data.imageModel === 'moss') image(MOSS_IMAGE_MODEL);
   else if (mode === 'image') { image(IMAGE_MODEL); add('loras', IMAGE_LORAS[data.imageLora]); }
