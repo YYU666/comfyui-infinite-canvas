@@ -7,6 +7,8 @@ import { isH3Image, resolveH3ImageDimensions, getH3ImageDependencyStatus } from 
 import {DEFAULT_GENERATOR, initialCanvas, migrateCanvas} from './canvas-migration.js';
 import {createProjectAccessRecovery, retryCurrentProjectSave} from './project-save-recovery.js';
 import {moveSpecifiedNodes} from './canvas-move.js';
+import { nativeDeliveryError } from './native3d-delivery.js';
+import { recoverNative3DFragment } from './native3d-recovery.js';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Background, BackgroundVariant, MiniMap, NodeToolbar,
@@ -108,7 +110,11 @@ import { assetUrl } from './project-store-http';
 import { useLocalConnection } from './use-local-connection';
 import { localConnectionPresentation } from './local-connection';
 import { downloadDoctorLogs } from './doctor-client';
-
+import { Native3DNode, Native3DContext, Native3DViewer } from './Native3D.jsx';
+import { useNative3D } from './native3d-runtime';
+import { NATIVE3D_PRESETS } from './native3d.js';
+import { nativeStageEdgeLabel } from './native3d-stage.js';
+import { linkNativeDiagnostic, linkNativeProcess } from './native3d-diagnostic.js';
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
 const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -134,6 +140,7 @@ function CanvasEdge(props) {
   const [hoverPoint, setHoverPoint] = useState(null);
   const leaveTimer = useRef(null);
   const [path, labelX, labelY] = getBezierPath(props);
+  const stageLabel = nativeStageEdgeLabel(props);
   const keepVisible = () => clearTimeout(leaveTimer.current);
   const leave = () => { keepVisible(); leaveTimer.current = setTimeout(() => setHoverPoint(null), 220); };
   useEffect(() => () => clearTimeout(leaveTimer.current), []);
@@ -142,6 +149,9 @@ function CanvasEdge(props) {
     <g onMouseEnter={(event) => { keepVisible(); setHoverPoint(screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false })); }} onMouseLeave={leave}>
       <BaseEdge id={props.id} path={path} style={props.style} markerStart={props.markerStart} markerEnd={props.markerEnd} interactionWidth={26} />
     </g>
+    {stageLabel && <EdgeLabelRenderer>
+      <span className="native3d-edge-label" style={{position:'absolute',pointerEvents:'none',transform:`translate(-50%, 0) translate(${labelX}px, ${labelY + 8}px)`,fontSize:11,lineHeight:'18px',padding:'0 5px',borderRadius:4,color:'#d6e3f2',background:'#202630e8'}}>{stageLabel}</span>
+    </EdgeLabelRenderer>}
     {!readOnly && (hoverPoint || props.selected) && <EdgeLabelRenderer>
       <button className="canvas-edge-disconnect nodrag nopan" data-edge-id={props.id}
         style={{ transform: `translate(-50%, -100%) translate(${point.x}px, ${point.y - 12}px)` }}
@@ -317,11 +327,11 @@ function MediaNode({ id, data, selected }) {
         ? <button className="media-download nodrag" title="导出图片" aria-label="导出图片" onClick={() => openImagePreview({ url: data.url, title: data.title, name: data.name })}><ArrowDownToLine size={13} /></button>
         : <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>)}
     </div>
-    <div className="media-caption"><span>{data.artDirectorStale ? `旧版解析 · ${data.artDirectorStaleReason || '待重新输出'}` : maskNode || maskGuide ? '局部遮罩' : data.output ? '生成结果' : KIND_LABEL[kind]}</span><b title={showResolution ? '原始图片分辨率（像素）' : data.name}>{showResolution ? resolutionLabel : data.name || (data.url ? data.title : maskGuide ? '尚未绘制' : '未上传')}</b></div>
+    <div className="media-caption"><span>{data.artDirectorStale ? `旧版解析 · ${data.artDirectorStaleReason || '待重新输出'}` : maskNode || maskGuide ? '局部遮罩' : data.nativeProcessEvidenceImageAssetPath && data.nativeProcessEvidenceImageAssetPath === data.assetPath ? '过程展示' : data.nativeDiagnosticSources?.length ? '诊断参考' : data.output ? '生成结果' : KIND_LABEL[kind]}</span><b title={showResolution ? '原始图片分辨率（像素）' : data.name}>{showResolution ? resolutionLabel : data.name || (data.url ? data.title : maskGuide ? '尚未绘制' : '未上传')}</b></div>
     {kind === 'image' && data.url && !maskNode && <button className="nodrag art-image-shortcut" disabled={readOnly} onClick={() => createArtDirector(id)}>电子主美 · 图解分析</button>}
     {mediaError && <div className="generator-error">{mediaError}</div>}
     <input ref={input} hidden type="file" accept={accept} onChange={(e) => { if (e.target.files?.[0]) void chooseFile(e.target.files[0]).catch((error) => setMediaError(error.message)); e.target.value = ''; }} />
-    {data.output && <Handle type="target" position={Position.Left} id="preview" className="neo-handle target" />}
+    {(data.output || data.nativeDiagnosticSources?.length>0 || (data.nativeProcessEvidenceImageAssetPath && data.nativeProcessEvidenceImageAssetPath===data.assetPath)) && <Handle type="target" position={Position.Left} id="preview" className="neo-handle target" />}
     {maskNode && <Handle type="target" position={Position.Left} id="guide" className="neo-handle target" title="底图 · 与图生图的图1相同" />}
 
     <Handle type="source" position={Position.Right} id={maskNode ? "mask" : "ref"} className="neo-handle source" title={maskNode ? "连接图生图的遮罩输入" : "连接图片参考"} />
@@ -565,7 +575,7 @@ function SpriteAtlasCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <SpriteAtlasNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
-const nodeTypes = { videoWhitePlate: React.memo(VideoPlateCanvasNode), videoLocalRepair: React.memo(VideoRepairCanvasNode), videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) };
+const nodeTypes = { native3d: React.memo(Native3DNode), videoWhitePlate: React.memo(VideoPlateCanvasNode), videoLocalRepair: React.memo(VideoRepairCanvasNode), videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) };
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
   const saved = useMemo(() => {
@@ -1393,6 +1403,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     }
   }, [project.id, project.readOnly, getImageProcessState, chooseMedia, saveCanvasAsset, updateNode, setNodes, setEdges, persistProject]);
 
+  const nativeRunRef = useRef(null);
   const videoEditDepsRef = useRef({});
   videoEditDepsRef.current = { updateNode, saveCanvasMedia, persistProject, saveProjectFile: (storageId, file, revision) => saveProjectFile(project.id, storageId, file, revision) };
   const videoEditRunnerRef = useRef(null);
@@ -1523,6 +1534,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (nodesRef.current.find(node => node.id === id)?.type === 'videoEdit') return videoEditRunnerRef.current.run(id);
     if (nodesRef.current.find(n => n.id === id)?.type === 'spriteAtlas') return spriteRunRef.current?.runSpriteAtlas(id);
     if (nodesRef.current.find(n => n.id === id)?.type === 'artDirector') return artRunRef.current?.(id);
+    if (nodesRef.current.find(n => n.id === id)?.type === 'native3d') return nativeRunRef.current.run(id);
     if (switchingRef.current || project.readOnly) return;
     const attempt = generationAttemptsRef.current.begin(id);
     const assertCurrent = () => generationAttemptsRef.current.assert(id, attempt);
@@ -1675,6 +1687,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const cancelNode = useCallback(async (id) => {
     if (nodesRef.current.find(node => node.id === id)?.type === 'videoLocalRepair') return videoRepairRunnerRef.current.cancel(id);
     const node = nodesRef.current.find((item) => item.id === id);
+    if (node?.type === 'native3d') return nativeRunRef.current?.cancel(id);
     if (node?.type === 'spriteAtlas') return spriteRunRef.current?.cancelSpriteAtlas(id);
     if (localImageJobsRef.current.has(id)) { localImageJobsRef.current.get(id).abort(); return; }
     const cancelledAttempt = generationAttemptsRef.current.cancel(id);
@@ -1756,6 +1769,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     const id = uid(type);
     let data;
     if (type === 'generator') data = { ...DEFAULT_GENERATOR, ...extra };
+    else if (type === 'native3d') data = { title: '3D模型', operation: 'analyze', status: 'idle', nativeParameters: {}, ...extra };
     else if (type === 'spriteAtlas') data = { title: '3D 角色转多方向图集', status: 'idle', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS }, ...extra };
     else if (type === 'artDirector') data = { title: '电子主美 · 图解分析', status: 'idle', brief: '', preserve: '', referencePurposes: {}, ...extra };
     else if (type === 'imageProcess') data = { ...DEFAULT_ADJUSTMENTS, adjustmentType: 'basic', mode: 'colorAdjust', title: '颜色调整', status: 'idle', blendMode: 'normal', opacity: 100, fit: 'cover', maskChannel: 'luminance', maskInvert: false, ...extra };
@@ -2196,10 +2210,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     setAddMenu({ ...point, flow: screenToFlowPosition(screenPoint) });
   };
   const openAddMenu = (event) => {
+    if (event.target.closest('.native3d-overlay')) return;
     if (event.target.closest('.react-flow__node,button,input,textarea,.react-flow__controls,.react-flow__minimap,.node-top-toolbar,.creator-toolbar')) return;
     placeAddMenu({ x: event.clientX, y: event.clientY });
   };
   const openContextMenu = (event) => {
+    if (event.target.closest('.native3d-overlay')) return;
     if (event.target.closest('input,textarea,select,button,a,[contenteditable="true"],.node-top-toolbar,.creator-toolbar,.add-node-menu,.node-context-menu')) return;
     event.preventDefault();
     const nodeElement = event.target.closest('.react-flow__node');
@@ -2239,6 +2255,40 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   // Refmuse-style progressive detail: only cross render tiers, not on every zoom frame.
   const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
+  const saveNativeFile = async (file) => {
+    if (switchingRef.current || project.readOnly) throw new Error('当前画布不可编辑。');
+    const savedProjectId=project.id,savedAutoSave=autoSaveRef.current;
+    const assertUploadCurrent=()=>{if(switchingRef.current||projectRef.current.id!==savedProjectId||projectRef.current.readOnly||autoSaveRef.current!==savedAutoSave)throw new Error('项目或权限已改变，素材未交付。');};
+    const storageId = uid('native3d');
+    autoSaveRef.current?.suspend();
+    const idle = autoSaveRef.current?.waitForIdle() || Promise.resolve();
+    const pending = Promise.all([idle, mediaUploadTailRef.current])
+      .catch(error => { throw nativeDeliveryError(error, 'wait_save', { name: file.name }); })
+      .then(async () => {
+        assertUploadCurrent();
+        try { return await saveProjectFile(savedProjectId, storageId, file, revisionRef.current); }
+        catch (error) { throw nativeDeliveryError(error, 'upload', { name: file.name }); }
+      });
+    mediaUploadTailRef.current = pending.catch(() => {});
+    mediaWritesRef.current.set(storageId, pending);
+    try {
+      const result = await pending;
+      assertUploadCurrent();
+      revisionRef.current = Math.max(revisionRef.current, result.revision);
+      return result.asset.path;
+    } finally {
+      mediaWritesRef.current.delete(storageId);
+      if(projectRef.current.id===savedProjectId&&autoSaveRef.current===savedAutoSave&&!switchingRef.current&&!projectRef.current.readOnly)savedAutoSave?.observe(nameRef.current, { nodes: nodesRef.current, edges: edgesRef.current, viewport: viewportRef.current }, { defer: mediaWritesRef.current.size > 0 || interactionRef.current });
+    }
+  };
+  const nativePatch = (id, patch) => {
+    if (switchingRef.current || project.readOnly) throw new Error('当前画布不可编辑。');
+    const next = nodesRef.current.map(n => n.id === id ? { ...n, data: { ...n.data, ...patch } } : n);
+    nodesRef.current = next; setNodes(next);
+  };
+  const native3d = useNative3D({ projectId: project.id, readOnly: project.readOnly, switchingRef, nodesRef, edgesRef, updateNode: nativePatch, chooseMedia, saveNativeFile, persistProject, setNodes, setEdges, focusNode,
+    recordHistory: (nextNodes,nextEdges) => historyRef.current.observe(nextNodes,nextEdges) });
+  nativeRunRef.current = native3d;
   const artDirector = useArtDirector({ project, projectRef, switchingRef, nodes, edges, nodesRef, edgesRef, setNodes, setEdges, updateNode, addNode, chooseMedia, saveCanvasAsset, persistProject, localImageJobsRef, setLocalImageJobsVersion, mediaWritesRef, assetUrl, findFreePosition, uid, onConnect });
   const spriteAtlas = useSpriteAtlas({ project, projectRef, revisionRef, switchingRef, nodes, nodesRef, updateNode, persistProject, localImageJobsRef, setLocalImageJobsVersion });
   spriteRunRef.current = spriteAtlas;
@@ -2261,7 +2311,40 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   useCanvasMcp({
     nodesRef, edgesRef, projectName, projectId: project.id, readOnly: project.readOnly, server,
-    actions: { importVideoReference, isVideoDownloadBusy: () => Boolean(videoImportBusyRef.current), patchNode: (id, patch) => { flushSync(() => updateNode(id, patch)); }, publishExtension: args=>getPublishLedger().publish(args), getExtensionPublishStatus: requestId=>getPublishLedger().status(requestId), imageCompact: (args) => {
+    actions: { native3dSyncTask: id=>native3d.syncTask(id), native3dRetryLOD: id=>native3d.retryLOD(id), native3dRepairLOD: (id,settings)=>native3d.repairLOD(id,settings), native3dCreateResolution: (id,percent)=>native3d.createResolution(id,percent), native3dNextStep: (id,action)=>native3d.nextStep(id,action), native3dRetryStage: id => native3d.rerunResult(id), native3dStage: request => native3d.createStage(request), native3dUVPreview: id => native3d.refreshUVPreview(id), native3dDiagnosticPreview:id=>native3d.refreshDiagnosticPreview(id), native3dPlanReview:id=>native3d.openPlan(id), native3dViewerClose:()=>{native3d.closeViewer();return {closed:true};}, native3dPlanConfirm:(id,hash)=>native3d.confirmPlan(id,hash),
+      linkNativeDiagnostic: request => {
+        if (project.readOnly || switchingRef.current) throw new Error('当前画布不可编辑。');
+        const result=linkNativeDiagnostic(nodesRef.current,edgesRef.current,request);
+        historyRef.current.observe(nodesRef.current,edgesRef.current);
+        nodesRef.current=result.nodes;edgesRef.current=result.edges;
+        setNodes(result.nodes);setEdges(result.edges);historyRef.current.observe(result.nodes,result.edges);
+        return {imageId:request.imageId,sourceIds:result.linkedSourceIds};
+      },
+      linkNativeProcess: request => {
+        if (project.readOnly || switchingRef.current) throw new Error('当前画布不可编辑。');
+        const result=linkNativeProcess(nodesRef.current,edgesRef.current,request);
+        historyRef.current.observe(nodesRef.current,edgesRef.current);
+        nodesRef.current=result.nodes;edgesRef.current=result.edges;
+        setNodes(result.nodes);setEdges(result.edges);historyRef.current.observe(result.nodes,result.edges);
+        return {edgeIds:result.edgeIds,nonExecuting:true};
+      },
+      recoverNative3D: async request => {
+        const assertCurrent = () => { if (request.projectId !== projectRef.current.id || project.readOnly || switchingRef.current || hasActiveTask()) throw new Error('当前项目不能恢复3D节点。'); };
+        assertCurrent();
+        const response = await fetch(`/api/projects/${encodeURIComponent(request.projectId)}/native3d-backup/${request.backupRevision}`);
+        const fragment = await response.json();
+        if (!response.ok) throw new Error(fragment.message || '读取3D备份失败。');
+        assertCurrent();
+        if (fragment.projectId !== request.projectId) throw new Error('备份项目不匹配。');
+        const restored = recoverNative3DFragment(nodesRef.current, edgesRef.current, fragment);
+        historyRef.current.observe(nodesRef.current, edgesRef.current);
+        nodesRef.current = restored.nodes; edgesRef.current = restored.edges;
+        setNodes(restored.nodes); setEdges(restored.edges);
+        historyRef.current.observe(restored.nodes, restored.edges);
+        return { addedNodeIds: restored.addedNodeIds, addedEdgeIds: restored.addedEdgeIds };
+      },
+      native3dCompact: async request => ({...await native3d.compactResults(request),revision:revisionRef.current}),
+      native3dCapabilities: () => ({ capabilities: native3d.capabilities, error: native3d.capabilityError,uiFeatures:{inlineResultsVersion:1,compactViaTidy:true} }), importVideoReference, isVideoDownloadBusy: () => Boolean(videoImportBusyRef.current), patchNode: (id, patch) => { flushSync(() => updateNode(id, patch)); }, publishExtension: args=>getPublishLedger().publish(args), getExtensionPublishStatus: requestId=>getPublishLedger().status(requestId), imageCompact: (args) => {
       const { nodeIds, dryRun } = imageCompactArgs(args);
       if (projectRef.current.id !== project.id || projectRef.current.readOnly || switchingRef.current
         || autoSaveRef.current?.failure || autoSaveRef.current?.conflict) throw new Error('当前画布不可写，请先处理保存状态或项目切换。');
@@ -2288,6 +2371,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         const file = await readProjectFile({ id: sourceProjectId || project.id }, nodeId, assetPath);
         if (!file) throw new Error('当前项目素材不存在。');
         const node = nodesRef.current.find((item) => item.id === nodeId);
+        if (node?.type === 'native3d') { await native3d.importModel(nodeId, new File([file], name || file.name, { type: file.type })); return; }
         if (!node || node.type !== 'media' || !file.type.startsWith(`${node.data.kind}/`)) throw new Error('素材类型与当前节点不匹配。');
         const imported = await chooseMedia(nodeId, new File([file], name || file.name, { type: file.type }));
         if (!imported?.ok) throw new Error(imported?.error?.message || '素材导入失败。');
@@ -2311,7 +2395,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const pinnedNodes = nodes.filter((node) => node.data.pinned);
   const vramPercent = metrics.vramTotal ? Math.min(100, Math.max(0, metrics.vramUsed / metrics.vramTotal * 100)) : 0;
   const cpuPercent = Number.isFinite(metrics.cpuPercent) ? Math.min(100, Math.max(0, metrics.cpuPercent)) : 0;
-  return <CanvasPreviewTier.Provider value={viewTier}><NodeContext.Provider value={context}>
+  return <CanvasPreviewTier.Provider value={viewTier}><NodeContext.Provider value={context}><Native3DContext.Provider value={native3d}>
+    {native3d.viewer && <Native3DViewer onRepair={native3d.repairLOD} onResolve={native3d.createResolution} readOnly={native3d.readOnly} asset={native3d.viewer} projectId={project.id} close={native3d.closeViewer} onLoaded={native3d.planLoaded} onConfirm={native3d.confirmPlan} onPreviews={native3d.planPreviews} />}
     <div className="neo-app">
       <header className="neo-header" inert={libraryModalOpen ? true : undefined}>
         {onLauncher && <button className="launcher-return" disabled={projectBusy || hasActiveTask()} onClick={async () => {
@@ -2438,6 +2523,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         </div>
         {addMenu && <div className="add-node-menu" role="menu" aria-label="添加节点" style={{ left: addMenu.x, top: addMenu.y }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}>
           <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>
+          <div className="add-menu-title">3D 资产加工</div>
+          {Object.entries(NATIVE3D_PRESETS).filter(([key]) => key !== "model_lod_legacy").map(([key, [type, settings]]) => <button key={key} onClick={() => addNode(type, settings, addMenu.flow)}><i><Layers3 size={17} /></i><span>{settings.title}</span><Plus size={13} /></button>)}
           <div className="add-menu-title">游戏美术 / 精灵图</div>
           <button onClick={() => addNode(...NODE_PRESETS.sprite_atlas, addMenu.flow)}><i><Grid2X2 size={17} /></i><span>3D 角色转多方向图集<small>Blender CPU · 颜色 + 相机空间法线 + JSON</small></span><Plus size={13} /></button>
           <div className="add-menu-title">本地模型节点</div>
@@ -2546,7 +2633,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       {nodeShare && <WorkflowShare {...nodeShare} onClose={() => setNodeShare(null)} onSend={async (packet) => { setReferenceLibrary(null); setNodeLibraryMounted(true); setNodeLibraryOpen(true); setSharePacket(packet); setNodeShare(null); }} />}
       {referenceLibraryTab && <ReferenceLibrary library={referenceLibraryTab} open={Boolean(referenceLibrary)} onLibraryChange={openReferenceLibrary} readOnly={project.readOnly} onImport={importReference} onClose={() => setReferenceLibrary(null)} />}
     </div>
-  </NodeContext.Provider></CanvasPreviewTier.Provider>;
+  </Native3DContext.Provider></NodeContext.Provider></CanvasPreviewTier.Provider>;
 }
 
 export default function CanvasWorkbench({ initialProject = null, onActiveProjectChange, ...props }) {

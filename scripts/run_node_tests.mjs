@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const suites = {
   node: [
+    'test-native3d-state.mjs',
+    'test-native3d-mcp-connect.mjs',
     'test-image-inline-output.mjs',
     'browser_video_validation.test.mjs',
     'test-canvas-file-location.mjs',
@@ -79,6 +81,7 @@ const suites = {
     'test-update-offer.mjs',
   ],
   browser: [
+    'test-native3d-release-ui.mjs',
     'test-image-inline-compact-ui.mjs',
     'test-image-export-ui.mjs',
     'test-moss-pose-ui.mjs',

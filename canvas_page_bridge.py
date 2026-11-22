@@ -10,13 +10,13 @@ import uuid
 
 from project_store import StoreError
 
-TOOLS = frozenset({"canvas_move_nodes", "canvas_retry_save", "canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
+TOOLS = frozenset({"canvas_native3d_sync_task", "canvas_native3d_retry_lod", "canvas_native3d_repair_lod", "canvas_native3d_create_resolution", "canvas_native3d_next_step", "canvas_native3d_retry_stage", "canvas_native3d_diagnostic_preview", "canvas_link_native3d_process", "canvas_link_native3d_diagnostic", "canvas_native3d_uv_preview", "canvas_recover_native3d", "canvas_native3d_capabilities", "canvas_native3d_stage", "canvas_move_nodes", "canvas_retry_save", "canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
                    "canvas_generate_node", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset", "canvas_download_video",
                    "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
                    "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node",
                    "canvas_image_compact", "canvas_publish_extension", "canvas_get_extension_publish_status",
                    "canvas_start_video_analysis", "canvas_get_video_analysis", "canvas_cancel_video_analysis",
-                   "canvas_set_video_presentation", "canvas_set_motion_canvas_preview"})
+                   "canvas_set_video_presentation", "canvas_set_motion_canvas_preview", "canvas_native3d_plan_review", "canvas_native3d_plan_confirm", "canvas_native3d_viewer_close", "canvas_native3d_create_resolution", "canvas_native3d_capabilities"})
 LAUNCHER_TOOLS = frozenset({"canvas_get_state", "canvas_create_project", "canvas_open_project"})
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}")
 # A page-bridge wait holds the single command slot (heartbeats still run). Cap it
@@ -95,6 +95,8 @@ class CanvasPageBridge:
             tool, args = payload.get("tool"), payload.get("args", {})
             if not isinstance(tool, str) or tool not in TOOLS or not isinstance(args, dict):
                 raise StoreError("BAD_REQUEST", "Unsupported canvas tool or arguments.")
+            if tool in {"canvas_native3d_capabilities", "canvas_native3d_viewer_close"} and args:
+                raise StoreError("BAD_REQUEST", "Native3D query/viewer close takes no arguments.")
             if project_id == "launcher" and tool not in LAUNCHER_TOOLS:
                 raise StoreError("BAD_REQUEST", "请先在当前页面打开项目，再操作画布节点。")
             if tool == "canvas_generate_node" and args.get("wait", False) is not False:
@@ -123,6 +125,8 @@ class CanvasPageBridge:
                             or not isinstance(args.get("mode", "update"), str) or args.get("mode", "update") not in ("update", "publish")):
                         raise StoreError("BAD_REQUEST", "Invalid publication package identity.")
                     args = {**args, "mode": args.get("mode", "update")}
+            if tool == "canvas_native3d_retry_stage" and (set(args) != {"nodeId"} or not isinstance(args.get("nodeId"), str) or not IDENTIFIER.fullmatch(args["nodeId"])):
+                raise StoreError("BAD_REQUEST", "Stage retry accepts only a nodeId.")
             identity = {"sessionId": session_id, "projectId": project_id, "tool": tool, "args": args}
             encoded = json.dumps(identity, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
             settings = args.get("settings")

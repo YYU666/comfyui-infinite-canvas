@@ -58,6 +58,7 @@ def parser():
     commands.add_parser("schema")
     start = commands.add_parser("start", help="确保本地画布和 ComfyUI 已就绪，再返回地址；不打开额外网页。")
     start.add_argument("--timeout", type=float, default=120, help="等待服务就绪的秒数，最多 600 秒。")
+    start.add_argument("--native3d-only", action="store_true", help="仅启动画布，不启动或等待ComfyUI；当前Python须已安装画布服务依赖。")
     return root
 
 
@@ -74,7 +75,7 @@ def main(argv=None):
         from workbench_lifecycle import ensure_workbench
         if args.url or args.token:
             raise ValueError("start 使用本地实例配置，不接受 --url 或 --token。")
-        result = ensure_workbench(args.timeout)
+        result = ensure_workbench(args.timeout, native3d_only=True) if args.native3d_only else ensure_workbench(args.timeout)
     elif args.command in {"protocol", "schema"}:
         result = protocol_resource() if args.command == "protocol" else schema_resource()
     else:

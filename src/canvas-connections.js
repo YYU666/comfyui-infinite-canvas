@@ -1,4 +1,6 @@
 import { ART_PORTS } from './art-director.js';
+import {nativeOutputNode} from './native3d-output.js';
+import { nativeModelConnection } from './native3d.js';
 import { isMaskNode } from './canvas-mask.js';
 import { qwenCanvasReferences } from './qwen-references.js';
 import { isImageProcess, acceptsImageProcessConnection } from './image-process-graph.js';
@@ -24,6 +26,24 @@ export function resolvePlateAsset(source, nodes) {
 // Resolve to its media node so changing/re-running the generator cannot silently
 // replace an existing reference. Ambiguous custom outputs require explicit choice.
 export function resolveConnectionSource(source, handle, nodes, edges) {
+  if(source?.type==='native3d'&&source.data.nativeCurrentOutputId){if(busy(source))return fail('3D节点正在处理，请完成并保存结果后再连接。');try{return {source:nativeOutputNode(source)};}catch(error){return fail(error.message);}}
+  if (source?.type==='native3d' && source.data.operation==='analyze' && source.data.nativeUVPlan && handle==='plan' && source.data.status==='completed') return {source};
+  if (source?.type==='native3d' && source.data.operation==='uv_plan' && handle==='plan') {
+    const outputs=nodes.filter(n=>n.data?.nativeUVPlan?.jobId===source.data.nativeJobId && n.id!==source.id && n.data.status==='completed');
+    if (busy(source) || outputs.length!==1) return fail('切缝方案尚未完成或结果不唯一。');
+    return {source:outputs[0],resolvedFrom:source.id};
+  }
+  if (source?.type === 'native3d' && source.data.operation !== 'analyze') {
+    if (busy(source)) return fail('3D节点正在处理，请完成并保存结果后再连接。');
+    if (source.data.status !== 'completed' || !source.data.nativeJobId || !source.data.resultAssetPath || (handle && handle !== 'model')) return fail('此3D节点还没有当前已保存的模型结果，请先完成生成。');
+    const outputs = nodes.filter(node => node.type === 'native3d'
+      && node.data.operation === 'analyze' && node.data.status === 'completed'
+      && node.data.sourceJobId === source.data.nativeJobId
+      && (!node.data.sourceNodeId || node.data.sourceNodeId === source.id)
+      && node.data.assetPath === source.data.resultAssetPath);
+    if (outputs.length !== 1) return fail('找不到唯一的当前3D模型成品，请直接从要使用的模型结果节点连线。');
+    return { source: outputs[0], resolvedFrom: source.id };
+  }
   if (source?.type !== 'generator') return { source };
   if (!source.data.resultUrl) return fail('此节点还没有生成结果，请先生成，再连接成品素材。');
   const outputs = nodes.filter((node) => node.type === 'media' && node.data.output && !isMaskNode(node)
@@ -46,6 +66,8 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   const source = resolved.source;
   if (source.id === target.id) return fail('不能连接当前成品自身。');
   if (busy(target)) return fail('目标节点正在生成，请完成后再修改连接。');
+  const nativePlan = nativeModelConnection(connection, source, target, edges);
+  if (nativePlan) return { ...nativePlan, resolvedFrom: resolved.resolvedFrom };
   if (target.type === 'artDirector') {
     if (source.type !== 'media' || source.data.kind !== 'image' || isMaskNode(source) || !ART_PORTS.includes(connection.targetHandle)) return fail('电子主美只接受作品与可选参考图片。');
     const queue = [target.id], seen = new Set();

@@ -24,6 +24,35 @@ async function probeReadiness({ fetchImpl = fetch, signal } = {}) {
   } catch {
     return { online: false, backendOnline: false, label: '工作台服务未连接，点击启动本地服务', metrics: { ...EMPTY_METRICS } };
   }
+  // System monitoring is independent of either generation engine's readiness.
+  const readHardware = async () => {
+    try {
+      const response = await read('/api/hardware-metrics');
+      return response.ok ? hardwareMetrics(await response.json()) : { ...EMPTY_METRICS };
+    } catch { return { ...EMPTY_METRICS }; }
+  };
+  if (health.native3dOnly === true) {
+    const unavailable = async (label, sessionRefreshed = false) => ({ online: false, backendOnline: true,
+      native3dOnly: true, native3dOnline: false, comfyEnabled: false, sessionRefreshed, label, metrics: await readHardware() });
+    if (health.native3d?.service !== true) return unavailable('工作台已连接，但3D服务未就绪。ComfyUI未启动（仅3D模式）。');
+    let sessionRefreshed = false;
+    try {
+      let response = await read('/api/native3d/capabilities');
+      if (response.status === 401) {
+        const bootstrap = await read('/');
+        if (!bootstrap.ok) throw new Error('Session bootstrap failed');
+        await bootstrap.body?.cancel();
+        response = await read('/api/native3d/capabilities');
+        sessionRefreshed = response.status !== 401;
+      }
+      if (response.status === 401 || response.status === 403) return unavailable('3D工作台会话连接失败，请稍后点击重试；当前画布已保留。ComfyUI未启动（仅3D模式）。', sessionRefreshed);
+      if (!response.ok) throw new Error('3D service unavailable');
+      return { online: false, backendOnline: true, native3dOnly: true, native3dOnline: true, comfyEnabled: false, sessionRefreshed,
+        label: '3D服务已连接。ComfyUI未启动（仅3D模式）；图片和视频生成当前未就绪。', metrics: await readHardware() };
+    } catch {
+      return unavailable('工作台已连接，但3D服务暂不可用。ComfyUI未启动（仅3D模式）。', sessionRefreshed);
+    }
+  }
   let sessionRefreshed = false;
   try {
     let response = await read('/api/comfy/system_stats');
@@ -108,7 +137,7 @@ export function requestLocalStart() {
 }
 
 export function localConnectionPresentation(server, starting = false) {
-  const text = server.online ? (server.comfy?.degraded ? '已连接·素材库停用' : '本地已连接')
+  const text = server.native3dOnline && !server.online ? '本地 3D 已连接' : server.online ? (server.comfy?.degraded ? '已连接·素材库停用' : '本地已连接')
     : starting || server.state === 'starting' ? '正在启动…' : server.state === 'session_error' ? '会话异常'
     : server.state === 'connection_timeout' ? '连接超时' : ['exited', 'failed', 'timeout', 'port_conflict'].includes(server.state) ? '启动失败' : '本地未连接';
   return { connected: Boolean(server.online), text };

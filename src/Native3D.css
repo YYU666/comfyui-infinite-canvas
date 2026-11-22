@@ -1,0 +1,84 @@
+/* Natural preview height; workflow actions remain visible below the image. */
+.native3d-node{width:360px;display:grid;grid-template-columns:1fr;background:#202630;border:1px solid #414b59;border-radius:14px;color:#edf2f7;overflow:visible}
+.native3d-node.selected{border-color:#74b8ff}
+.native3d-node{position:relative}
+.native3d-port-high,.native3d-port-plan{position:absolute;left:-33px;font-size:10px;color:#d7c4a2;pointer-events:none}
+.native3d-port-high{top:calc(72% - 6px)}
+.native3d-port-plan{top:calc(88% - 6px);color:#c6b5ed}
+.native3d-plan-dialog{width:min(92vw,1100px);color:#edf2f7}
+.native3d-plan-viewport{width:100%;height:min(66vh,720px);min-height:240px;overflow:hidden}
+.native3d-plan-toolbar,.native3d-plan-dialog footer{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:8px 0}
+.native3d-plan-dialog button{background:#35465d;color:inherit;border:0;border-radius:6px;padding:7px 11px;cursor:pointer}
+.native3d-plan-dialog button[aria-pressed=true]{background:#276ca0}
+.native3d-plan-dialog button:disabled{opacity:.45;cursor:default}
+.native3d-node>header{grid-column:1/-1;padding:10px 12px;display:flex;justify-content:space-between;gap:8px}
+.native3d-node>header strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.native3d-poster{align-self:start;min-height:48px;overflow:hidden;display:grid;place-items:center;background:#151a22;color:#96a1b1}
+.native3d-poster img{width:100%;height:auto;min-height:0;max-height:180px;object-fit:contain;cursor:zoom-in}
+.native3d-body{position:relative;align-self:start;min-height:0;align-content:start;padding:8px;display:grid;gap:5px}
+.native3d-body label{display:grid;gap:4px}
+.native3d-body input,.native3d-body select{max-width:100%;background:#151a22;color:inherit;border:1px solid #4a5667;padding:7px}
+.native3d-body button{font-size:11px;padding:4px 6px;background:#35465d;color:inherit;border:0;border-radius:6px;cursor:pointer}
+.native3d-body button:disabled{opacity:.45;cursor:default}
+.native3d-body small{color:#aebdcd;font-size:11px;line-height:1.35}
+.native3d-body>a{font-size:12px}
+.native3d-body details summary{cursor:pointer;color:#aebdcd;font-size:12px}
+.native3d-body details p{font-size:12px;margin:6px 0}
+.native3d-body details a{display:block;margin-top:5px;overflow-wrap:anywhere}
+.native3d-settings-content{display:grid;gap:8px;padding-top:8px;overflow-wrap:anywhere}
+.native3d-actions{display:flex;gap:4px;flex-wrap:wrap}
+.native3d-actions button[aria-pressed=true]{background:#276ca0;outline:1px solid #91c8ef}
+.native3d-error{color:#ffb7aa;font-size:12px;margin:0}
+.native3d-node .react-flow__handle{width:12px;height:12px;z-index:5;border:2px solid #a7d1ff;background:#346b9e;pointer-events:all}
+.native3d-lineage{display:grid;gap:4px;border-left:2px solid #7898bd;padding:6px 9px;background:#18212d}
+
+/* Shared image and interactive model viewers. */
+.native3d-overlay{position:fixed;inset:0;background:#000b;z-index:10000;display:grid;place-items:center}
+.native3d-overlay>div{max-width:95vw;max-height:95vh;overflow:auto;background:#202630;border-radius:14px;padding:16px}
+.native3d-overlay header{display:flex;justify-content:space-between;padding-bottom:10px}
+.native3d-overlay canvas{max-width:100%;height:auto!important}
+.native3d-uv-full{display:block;width:640px;max-width:85vw;max-height:80vh;height:auto;object-fit:contain}
+.native3d-image-dialog{color:#edf2f7}
+.native3d-image-dialog header{gap:12px;align-items:center}
+.native3d-image-dialog header strong{max-width:75vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.native3d-image-toolbar{display:flex;gap:10px;align-items:center;padding-bottom:10px;flex-wrap:wrap;font-size:12px}
+.native3d-image-dialog button{background:#35465d;color:inherit;border:0;border-radius:6px;padding:6px 10px;cursor:pointer}
+.native3d-image-toolbar output{min-width:40px;font-variant-numeric:tabular-nums}
+.native3d-image-toolbar small{color:#aebdcd}
+.native3d-image-viewport{position:relative;width:min(90vw,1000px);height:min(72vh,750px);overflow:hidden;background:#11161d;touch-action:none;overscroll-behavior:contain;cursor:grab}
+.native3d-image-viewport.panning{cursor:grabbing}
+.native3d-image-viewport img{position:absolute;left:0;top:0;width:auto;height:auto;max-width:none;max-height:none;transform-origin:0 0;user-select:none;pointer-events:none}
+
+.native3d-next-step { margin: 8px 0; padding: 9px; border: 1px solid #709a89; border-radius: 8px; background: #31483b18; }
+.native3d-next-step .native3d-actions button { font-weight: 600; border-color: #709a89; }
+
+.native3d-resolution-compact { display:flex; flex-direction:column; gap:4px; font-size:11px; line-height:1.4; }
+.native3d-resolution-compact p { margin:0; }
+.native3d-resolution-compact small { margin:0; line-height:1.4; }
+.native3d-resolution-compact details { margin:0; }
+.native3d-resolution-compact summary { cursor:pointer; font-size:11px; }
+.native3d-resolution:not(.native3d-resolution-compact) { display:flex; flex-direction:column; align-items:flex-start; gap:8px; }
+.native3d-resolution:not(.native3d-resolution-compact) p { margin:4px 0; }
+.native3d-local-repair-button { border:1px solid #729ac8; background:#365577; font-weight:600; }
+
+.native3d-stepbar{display:flex;gap:5px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #455366;padding:0 0 8px;margin-bottom:4px;font-size:11px;color:#9fb0c3}
+.native3d-stepbar [aria-current=step]{color:#dceeff;background:#304f71;border-radius:5px;padding:3px 6px}
+.native3d-next-step{display:grid;gap:6px;padding:9px;background:#172b3e;border:1px solid #406b91;border-radius:8px}
+.native3d-next-step button{padding:7px 9px;background:#315e86}
+.native3d-key-settings{display:flex;flex-wrap:wrap;gap:8px;padding:7px;background:#18212d;border-radius:6px}
+.native3d-key-settings label{flex:1;min-width:110px;font-size:11px}
+
+.native3d-rerun{display:grid;gap:6px;padding-top:6px;border-top:1px solid #3c4857}.native3d-rerun strong{font-size:12px}
+
+.native3d-orientation{display:grid;gap:6px;padding:8px;background:#18212d;border-radius:6px}
+.native3d-body .native3d-orientation label{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.5;cursor:pointer}
+.native3d-body .native3d-orientation input[type=checkbox]{flex:0 0 16px;width:16px;height:16px;min-width:16px;margin:0;padding:0;accent-color:#74b8ff}
+.native3d-poster>span{padding:10px;text-align:center;font-size:12px;line-height:1.5}
+
+.native3d-reviewed-warning{display:grid;gap:6px;padding:9px;border:1px solid #8c774b;background:#332d20;border-radius:7px;color:#e4c995;font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+
+.native3d-node.native3d-busy{border-color:#70b5ed;box-shadow:0 0 0 2px #509bdb33}
+.native3d-progress-panel{display:grid;gap:6px;padding:10px 12px;background:#17364e;color:#e2f2ff;font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+.native3d-progress-panel strong{font-size:14px}.native3d-progress-panel progress{width:100%;height:8px;accent-color:#78c4ff}.native3d-progress-panel small{color:#bed3e5}
+
+.native3d-sound-toggle{justify-self:end;margin:0 10px 6px;padding:3px 6px;background:transparent;border:1px solid #48596b;border-radius:5px;color:#b9cddd;font-size:11px;cursor:pointer}
