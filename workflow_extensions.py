@@ -457,6 +457,10 @@ def validate_comfy(workflow, object_info):
                 if not (node["class_type"] == "LoadImage" and field == "image"):
                     require(value in expected, f"节点 {node_id}/{field} 的模型或选项未安装：{str(value)[:160]}", "COMFY_VALUE_MISSING")
             else:
+                if expected == "COLOR":
+                    require(isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value),
+                            f"节点 {node_id}/{field} 需要 #RRGGBB 颜色。")
+                    continue
                 kind = {"INT": "integer", "FLOAT": "number", "STRING": "string", "BOOLEAN": "boolean"}.get(expected)
                 require(kind is not None, f"节点 {node_id}/{field} 需要工作流连接。")
                 constraints = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}

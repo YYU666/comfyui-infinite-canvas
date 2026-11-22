@@ -5,32 +5,28 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
-# The Pixal3D-only path does not require the alternative TRELLIS.2 UNet.
-# The two TRELLIS.2 VAEs are shared and are still required.
-MODEL_INPUTS = {
-    "UNETLoader": ("unet_name", ("pixal3d_int8_convrot.safetensors",)),
-    "VAELoader": (
-        "vae_name",
-        ("trellis_2_shape_vae_bf16.safetensors", "trellis_2_texture_vae_bf16.safetensors"),
-    ),
-    "CLIPVisionLoader": ("clip_name", ("dino_v3_L_naf_fp32.safetensors",)),
-    "LoadMoGeModel": ("model_name", ("moge_2_vitl_normal_fp16.safetensors",)),
-    "LoadBackgroundRemovalModel": ("bg_removal_name", ("birefnet.safetensors",)),
+RECIPE_PATH = Path(__file__).resolve().parents[1] / "workflows" / "pixal3d_lamp_shade_api.json"
+with RECIPE_PATH.open(encoding="utf-8") as recipe_file:
+    RECIPE = json.load(recipe_file)
+
+MODEL_FIELDS = {
+    "UNETLoader": "unet_name",
+    "VAELoader": "vae_name",
+    "CLIPVisionLoader": "clip_name",
+    "LoadMoGeModel": "model_name",
+    "LoadBackgroundRemovalModel": "bg_removal_name",
 }
-RECIPE_NODES = (
-    "LoadImage",
-    "Pixal3DConditioning",
-    "Trellis2ShapeStage",
-    "Trellis2UpsampleStage",
-    "Trellis2TextureStage",
-    "VaeDecodeStructureTrellis2",
-    "VaeDecodeShapeTrellis",
-    "VaeDecodeTextureTrellis",
-    "SaveGLB",
-)
+MODEL_INPUTS = {
+    name: (field, tuple(
+        node["inputs"][field] for node in RECIPE.values() if node["class_type"] == name
+    ))
+    for name, field in MODEL_FIELDS.items()
+}
+RECIPE_NODES = tuple(sorted({node["class_type"] for node in RECIPE.values()}))
 
 
 def loader_options(node, field):
@@ -46,14 +42,14 @@ def loader_options(node, field):
 
 def check_readiness(object_info):
     missing_nodes = [
-        name for name in (*MODEL_INPUTS, *RECIPE_NODES) if name not in object_info
+        name for name in RECIPE_NODES if name not in object_info
     ]
     models = {}
     for node_name, (field, expected) in MODEL_INPUTS.items():
         options = loader_options(object_info.get(node_name, {}), field)
         by_name = {}
         for option in options:
-            name = option.replace(chr(92), "/").rsplit("/", 1)[-1]
+            name = option.replace("\\", "/").rsplit("/", 1)[-1]
             by_name.setdefault(name, []).append(option)
         for name in expected:
             candidates = by_name.get(name, [])
