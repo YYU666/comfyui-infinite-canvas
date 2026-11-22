@@ -14,7 +14,8 @@ const errors = [];
 async function fixture(readOnly = false, active = false) {
   const context = await browser.newContext({ viewport: { width: 1500, height: 1080 }, serviceWorkers: 'block' });
   const queued = [], commits = [], cancels = [], saves = [];
-  let hold = false;
+  let hold = active;
+  const cutJobId = `ved_${'a'.repeat(32)}`;
   let project = { id: 'prj_editor_fixture', name: 'Synthetic editor', revision: 1, readOnly, shots: [], canvas: {
     viewport: { x: 10, y: 20, zoom: 0.9 },
     nodes: [
@@ -44,6 +45,15 @@ async function fixture(readOnly = false, active = false) {
     if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
     if (url.pathname === '/api/queue') return json({ jobs: [] });
     if (url.pathname === '/api/video-edit/probe') return json({ frameCount: 96, frameTimebase: { num: 1, den: 24 }, fps: { num: 24, den: 1 }, width: 128, height: 72, hasAudio: true });
+    if (url.pathname === '/api/video-edit/auto-cut') {
+      assert.deepEqual(request.postDataJSON(), { projectId: project.id, nodeId: 'edit', slot: 'v1', assetPath: sourceAsset, mode: 'black' });
+      return json({ id: cutJobId, status: 'queued' }, 201);
+    }
+    if (url.pathname === `/api/video-edit/jobs/${cutJobId}`) return json({
+      id: cutJobId, status: 'completed', result: {
+        removedFrames: 48, frameCount: 96, cuts: [[8, 32], [64, 88]], document: defaultVideoEditDocument(),
+      },
+    });
     if (url.pathname === '/api/video-edit/jobs') {
       queued.push(request.postDataJSON());
       return json({ id: `ved_${String(queued.length).repeat(32)}`, status: 'queued', stage: '排队中', progress: 0 }, 201);
@@ -76,6 +86,17 @@ try {
   const editor = page.getByTestId('rf__node-edit');
   await editor.getByRole('button', { name: '编辑视频', exact: true }).click();
   const panel = page.getByRole('dialog', { name: '视频编辑' }); await panel.waitFor();
+  await panel.getByRole('button', { name: '分析剪辑 v1' }).click();
+  const suggestions = panel.getByRole('button', { name: '用建议替换时间线' });
+  await suggestions.waitFor();
+  assert.equal((await f.state()).nodes.find(n => n.id === 'edit').editDocument.clips[0].sourceOutPts, 24);
+  await panel.getByRole('checkbox', { name: '00:00:00:08～00:00:01:08' }).uncheck();
+  await suggestions.click();
+  let edited = (await f.state()).nodes.find(n => n.id === 'edit').editDocument;
+  assert.deepEqual(edited.clips.map(c => [c.sourceInPts, c.sourceOutPts]), [[0, 64], [88, 96]]);
+  await panel.getByRole('button', { name: '撤销 (Ctrl+Z)' }).click();
+  edited = (await f.state()).nodes.find(n => n.id === 'edit').editDocument;
+  assert.deepEqual(edited, defaultVideoEditDocument());
   await panel.getByLabel('关闭', { exact: true }).click();
   const settings = defaultVideoEditDocument(); settings.clips[0].sourceOutPts = 24; settings.clips[0].reverse = true;
   const updated = await f.call('canvas_update_node', { nodeId: 'edit', settings: { editDocument: settings } });
