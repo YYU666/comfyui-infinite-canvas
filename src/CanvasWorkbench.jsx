@@ -87,9 +87,9 @@ import { downloadDoctorLogs } from './doctor-client';
 const SNAP_KEY = 'h3-canvas-snap-v1';
 const NodeContext = createContext(null);
 const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-const KIND_LABEL = { image: '图片', video: '视频', audio: '音频' };
+const KIND_LABEL = { image: '图片', video: '视频', audio: '音频', model: 'GLB 模型' };
 
-const KIND_ICON = { image: ImageIcon, video: Video, audio: Music2 };
+const KIND_ICON = { image: ImageIcon, video: Video, audio: Music2, model: ArrowDownToLine };
 
 const formatGb = (bytes) => Number.isFinite(bytes) ? (bytes / 1024 ** 3).toFixed(1) : '--';
 
@@ -259,6 +259,11 @@ function MediaNode({ id, data, selected }) {
     const result = await chooseMedia(id, file, null, maskNode ? { maskSourceId: maskGuide.id, maskSourceKey: maskSourceKey(maskGuide) } : {});
     if (!result?.ok) throw new Error(result?.error?.message || '素材保存失败，请重试。');
   };
+  if (kind === 'model') return <div className={`media-shell media-model ${selected ? 'selected' : ''}`}>
+    <NodeTitle id={id} data={data} kind="media" /><NodeActions id={id} data={data} selected={selected} />
+    <div className="media-empty"><ArrowDownToLine size={24} /><strong>{data.name || 'GLB 模型'}</strong>{data.url && <a className="nodrag" href={data.url} download={data.name}>下载 GLB</a>}</div>
+    <Handle type="target" position={Position.Left} id="preview" className="neo-handle target" />
+  </div>;
   return <div className={`media-shell media-${kind} ${kind === 'image' ? 'image-node' : ''} ${selected ? 'selected' : ''} ${data.pinned ? 'pinned' : ''}`}>
     <NodeTitle id={id} data={data} kind="media" /><NodeActions id={id} data={data} selected={selected} />
     <div className={`media-preview ${!data.url ? 'empty' : ''}`} title={maskGuide ? '单击在母图上绘制遮罩' : kind === 'image' && data.url ? '双击预览大图' : undefined} onDoubleClick={(event) => {
@@ -304,7 +309,7 @@ function CustomWorkflowNode({ id, data, selected }) {
     <NodeTitle id={id} data={data} kind="generator" /><NodeActions id={id} data={data} selected={selected} generator />
     <ResultSettingsToggle presentation={presentation} />
     <div className="custom-workflow-identity" title={data.extensionDigest}>{data.extensionPackageId} · {data.extensionVersion} · {data.extensionDigest?.slice(0, 12)}</div>
-    {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
+    {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'model' ? <a className="nodrag" href={data.resultUrl} download>下载 GLB</a> : data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
     {(data.workflowDefinition?.inputs || []).map((port, index, ports) => <div className="custom-workflow-port" key={port.id} style={{ "--compact-port-top": `${20 + index * 60 / Math.max(1, ports.length - 1)}%` }}><Handle type="target" position={Position.Left} id={port.id} title={port.label || port.name || port.id} className="neo-handle target" /><strong>{port.label || port.name || port.id}</strong> · {port.required ? '必填图片' : '可选图片'}<span> · {refs.find((ref) => ref.data.slot === port.id)?.data.title || '未连接'}</span></div>)}
     <div className="custom-workflow-params nodrag nowheel">{Object.entries(data.workflowDefinition?.parameters?.properties || {}).map(([key, field]) => {
       const value = data.workflowParameters?.[key] ?? field.default ?? (field.type === 'boolean' ? false : '');
@@ -316,6 +321,7 @@ function CustomWorkflowNode({ id, data, selected }) {
     {data.dependencyWarning && <p className="custom-workflow-error">{data.dependencyWarning}</p>}
     <div className="custom-workflow-footer"><span>{data.stage || '固定版本 · 本地工作流'}{running ? ` ${data.progress || 0}%` : ''}</span><button className="node-share-button nodrag" disabled={running} onClick={() => checkNodeDependencies(id)}>检查依赖</button><button className="node-share-button nodrag" disabled={running} aria-label="上传此节点" title="上传此节点到节点库" onClick={() => openNodeShare(id)}><Upload size={14} /></button><button className="send-button nodrag" aria-label={running ? '取消工作流' : '运行工作流'} disabled={!running && !serverOnline} onClick={() => running ? cancelNode(id) : generateNode(id)}>{running ? <Square size={16} /> : <ArrowUp size={16} />}</button></div>
     <Handle type="source" position={Position.Right} id="image" className="neo-handle source" /><Handle type="source" position={Position.Right} id="video" style={{ top: '65%' }} className="neo-handle source" />
+    {data.workflowDefinition?.outputs?.some((output) => output.type === 'model') && <Handle type="source" position={Position.Right} id="model" style={{ top: '80%' }} className="neo-handle source" />}
   </div>;
 }
 
@@ -945,14 +951,15 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const singleOutfit = source?.data.mode === 'outfitEdit' && (source?.data.outfitPanel || source?.data.panelId);
       const preferredImage = files.find((file) => source?.data.mode === 'characterSheet' ? file.filename?.startsWith('H3_CharacterSheet_') : source?.data.mode === 'outfitEdit' ? file.filename?.startsWith(singleOutfit ? `H3_OutfitHD_${singleOutfit}_` : 'H3_OutfitQuad_') : source?.data.mode === 'qwenEdit' ? file.filename?.startsWith(isH3Image(source.data) ? 'H3_Image_Edit_' : 'H3_Qwen21Edit_') : source?.data.mode === 'identityEdit' ? file.filename?.startsWith('H3_IdentityV2_') : source?.data.mode === 'imageUpscale' ? file.filename?.startsWith('H3_Image_HD') : source?.data.mode === 'image' && source?.data.imageModel === 'moss' ? file.filename?.startsWith('H3_MOSS_Image_') : file.filename?.startsWith('H3_Image_'));
       const result = customFiles ? customFiles[0] : isImage ? preferredImage || files[0] : selectCompletedVideo(source?.data.mode, files);
+      const resultKind = customFiles ? result.kind : isImage ? 'image' : 'video';
       const resultModels = describeNodeModels(source?.data);
       const outfitTitle = singleOutfit ? `${resolveOutfitPanels(source.data).find((panel) => panel.id === singleOutfit)?.label || singleOutfit} · ${result.filename?.startsWith(`H3_OutfitSingle_${singleOutfit}_`) ? '原生尺寸 · 未高清' : '独立高清'}` : `四视图 · 单图按需高清${(source?.data.outfitLayout || 'legacy') === 'legacy' ? '拼接' : '原版面合成'}`;
       const title = isH3Image(source?.data) ? (source.data.mode === 'qwenEdit' ? 'H3-Image 编辑' : 'H3-Image 生图') : source?.data.mode === 'characterSheet' ? '角色四视图生成' : source?.data.mode === 'outfitEdit' ? outfitTitle : source?.data.mode === 'qwenEdit' ? '图生图' : source?.data.mode === 'localRealism' ? '局部写实修复' : source?.data.mode === 'identityEdit' ? '母图编辑 V2' : source?.data.mode === 'image' ? (source?.data.imageModel === 'moss' ? 'MOSS 生图' : 'Krea2 生图') : source?.data.mode === 'imageUpscale' ? '图片高清' : source?.data.mode === 'swap' ? '换人一采' : source?.data.mode === 'upscale' ? '高清二采' : '成片';
       const resultIndex = edgesRef.current.filter((edge) => edge.source === id && edge.targetHandle === 'preview').length;
       const resultPosition = findFreePosition(nodesRef.current, { x: (source?.position.x || 0) + 540, y: (source?.position.y || 0) + resultIndex * 340 }, 'media');
       const mediaNode = {
-        id: uid(isImage ? 'image' : 'video'), type: 'media', position: resultPosition,
-        data: { ...result, kind: isImage ? 'image' : 'video', output: true, title: `${source?.data.title || title}${['outfitEdit', 'qwenEdit', 'imageUpscale'].includes(source?.data.mode) ? ` · ${source.data.mode === 'outfitEdit' ? `${resultModels.outfitModelLabel} · ${resultModels.outfitHdLabel}` : source.data.mode === 'qwenEdit' ? resultModels.qwenModelLabel : resultModels.upscaleModelLabel}` : ''} · 成品 ${resultIndex + 1}`, name: result.filename, prompt: source?.data.prompt, sourcePromptId: promptId, sourceQueueJobId: source?.data.queueJobId || null, sourceGeneratorId: id },
+        id: uid(resultKind), type: 'media', position: resultPosition,
+        data: { ...result, kind: resultKind, output: true, title: `${source?.data.title || title}${['outfitEdit', 'qwenEdit', 'imageUpscale'].includes(source?.data.mode) ? ` · ${source.data.mode === 'outfitEdit' ? `${resultModels.outfitModelLabel} · ${resultModels.outfitHdLabel}` : source.data.mode === 'qwenEdit' ? resultModels.qwenModelLabel : resultModels.upscaleModelLabel}` : ''} · 成品 ${resultIndex + 1}`, name: result.filename, prompt: source?.data.prompt, sourcePromptId: promptId, sourceQueueJobId: source?.data.queueJobId || null, sourceGeneratorId: id },
       };
       const registerTake = async () => {
           const current = { ...projectRef.current, revision: revisionRef.current };
@@ -983,7 +990,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           runs: [{ promptId, status: 'done', stage: patch.takePending ? patch.stage : `${title}已输出`, time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12),
         },
       } : node).concat(pinMedia ? [mediaNode] : []));
-      if (pinMedia) setEdges((items) => addEdge({ id: `edge-${id}-${mediaNode.id}`, source: id, target: mediaNode.id, sourceHandle: isImage ? 'image' : 'video', targetHandle: 'preview' }, items));
+      if (pinMedia) setEdges((items) => addEdge({ id: `edge-${id}-${mediaNode.id}`, source: id, target: mediaNode.id, sourceHandle: resultKind, targetHandle: 'preview' }, items));
       if (pinMedia && customFiles?.length > 1) {
         const extraNodes = customFiles.slice(1).map((file, index) => ({
           id: uid(file.kind), type: 'media', position: { x: resultPosition.x, y: resultPosition.y + (index + 1) * 340 },
