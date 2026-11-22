@@ -56,7 +56,7 @@ class ExtensionTests(unittest.TestCase):
         self.digest = self.imported["digest"]
         self.payload = {"nodeDefinitionId": "workflow", "inputs": {"image_a": "uploads/first.png", "image_b": "second.png", "image_c": "third.png"}, "parameters": {}}
 
-    def test_v3_dynamic_combo_accepts_only_options_without_nested_inputs(self):
+    def test_v3_dynamic_combo_validates_selected_nested_inputs(self):
         info = {
             "DecimateMesh": {"input": {"required": {
                 "placement_mode": ["COMFY_DYNAMICCOMBO_V3", {"options": [
@@ -68,6 +68,11 @@ class ExtensionTests(unittest.TestCase):
         graph = {"decimate": {"class_type": "DecimateMesh", "inputs": {"placement_mode": "midpoint"}}}
         validate_comfy(graph, info)
         graph["decimate"]["inputs"]["placement_mode"] = "qem"
+        with self.assertRaises(ExtensionError):
+            validate_comfy(graph, info)
+        graph["decimate"]["inputs"]["placement_mode.weight"] = 1.0
+        validate_comfy(graph, info)
+        graph["decimate"]["inputs"]["placement_mode"] = "midpoint"
         with self.assertRaises(ExtensionError):
             validate_comfy(graph, info)
 

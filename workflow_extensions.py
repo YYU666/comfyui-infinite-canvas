@@ -387,7 +387,7 @@ def validate_compatibility(compatibility):
         require(valid, "扩展要求不同工作台版本：" + value, "INCOMPATIBLE_WORKBENCH")
 
 
-def comfy_input_fields(metadata):
+def comfy_input_fields(metadata, live_inputs=None):
     """Expand the official V3 autogrow template into its declared dotted fields."""
     fields = metadata.get("input", {})
     required, optional = dict(fields.get("required", {})), dict(fields.get("optional", {}))
@@ -423,14 +423,25 @@ def comfy_input_fields(metadata):
                 config = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
                 options = config.get("options")
                 require(isinstance(options, list), "ComfyUI 动态选项定义无效。")
-                keys = [
-                    option["key"] for option in options
+                selections = {
+                    option["key"]: option["inputs"] for option in options
                     if isinstance(option, dict) and isinstance(option.get("key"), str)
                     and isinstance(option.get("inputs"), dict)
-                    and not any(option["inputs"].values())
-                ]
-                require(bool(keys), "动态选项需要额外输入，当前不支持。", "EXTENSION_UNSUPPORTED")
-                section[key] = [keys, config]
+                }
+                if live_inputs is None:
+                    continue
+                selected = live_inputs.get(key)
+                require(isinstance(selected, str) and selected in selections, "ComfyUI 动态选项无效。")
+                for kind, dest in (("required", required), ("optional", optional)):
+                    fields = selections[selected].get(kind, {})
+                    require(isinstance(fields, dict), "ComfyUI 动态字段定义无效。")
+                    for child, child_spec in fields.items():
+                        qualified = f"{key}.{child}"
+                        require(identifier(child) and qualified not in required and qualified not in optional, "ComfyUI 动态字段冲突。")
+                        require(isinstance(child_spec, (list, tuple)) and child_spec and child_spec[0] in ("INT", "FLOAT", "STRING", "BOOLEAN"),
+                                "动态选项目前仅支持标量字段。", "EXTENSION_UNSUPPORTED")
+                        dest[qualified] = child_spec
+                section[key] = [[selected], config]
                 continue
             if not isinstance(spec, (list, tuple)) or not spec or spec[0] != "COMBO":
                 continue
@@ -448,7 +459,7 @@ def validate_comfy(workflow, object_info):
     require(not missing, "ComfyUI 缺少节点：" + ", ".join(missing), "COMFY_NODES_MISSING")
     for node_id, node in workflow.items():
         metadata = object_info[node["class_type"]]
-        required, optional = comfy_input_fields(metadata)
+        required, optional = comfy_input_fields(metadata, node["inputs"])
         require(set(required) <= set(node["inputs"]), f"节点 {node_id} 缺少必填字段。")
         for field, value in node["inputs"].items():
             spec = required.get(field, optional.get(field))

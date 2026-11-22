@@ -278,11 +278,30 @@
       ]
     }
   },
+  "rebuild_surface": {
+    "class_type": "RemeshMesh",
+    "inputs": {
+      "mesh": [
+        "high_mesh",
+        0
+      ],
+      "resolution": 384,
+      "sign_mode": "solid",
+      "sign_mode.fill": 80.0,
+      "sign_mode.qef": false,
+      "band": 1.0,
+      "project_back": 0.0,
+      "fix_poles": false,
+      "smooth_iters": 0,
+      "drop_small_components": 0.01,
+      "precluster_max_verts": 2000000
+    }
+  },
   "bounded_high_mesh": {
     "class_type": "DecimateMesh",
     "inputs": {
       "mesh": [
-        "high_mesh",
+        "rebuild_surface",
         0
       ],
       "target_face_count": 300000,
