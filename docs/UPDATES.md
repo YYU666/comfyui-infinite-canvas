@@ -34,24 +34,12 @@ Git 安装会在下载前和重启前两次检查代码。更新器造成的差�
 
 ## 发布新版
 
-1. 在同一个提交中更新 `package.json`、`package-lock.json` 的版本，以及 `workbench_lifecycle.py` 的 `APP_VERSION`。三者与 Release 标签去掉开头 `v` 后必须一致，例如 `v1.1.0` 对应 `1.1.0`。
-2. 运行完整测试和构建，再创建带发布说明的 GitHub Release。语义化版本比较支持 `rc.1` 等预发布标识；GitHub“最新 Release”接口的选择规则保持不变。
-3. `.github/workflows/release.yml` 在 Release **发布之后**执行（创建标签本身不会上传这些资产）。它用 Node 22 按 CI 的方式构建前端，然后生成三组文件并附加到同一 Release：
+1. 在同一个提交中更新 `package.json`、`package-lock.json` 的根版本和根包记录，以及 `workbench_lifecycle.py` 的 `APP_VERSION`。它们都必须与去掉 `v` 的 Release 标签一致，例如 `v1.1.0` 对应 `1.1.0`。
+2. 在 GitHub Actions 手动运行 `.github/workflows/release.yml`。默认模式验证候选提交并上传 Actions artifact，可从候选分支运行，无需提前创建远端标签。检查测试、构建和六份候选文件。
+3. 候选验收后，将该提交纳入默认分支并创建指向它的远端版本标签。正式发布由默认分支手动运行同一工作流，明确选择发布并提交完整 commit SHA。工作流核对远端标签与所提交的 SHA，向草稿上传三种 ZIP 及各自的 `.sha256`，核验远端六份资产成功后才公开 Release。已有草稿的发布说明会保留，已公开 Release 会被拒绝改写。
+4. 确认 Release 公开且资产齐备后，再通知用户检查更新。更新从 GitHub `releases/latest` 发现正式版。普通提交、合并 PR、创建标签或仅运行候选校验都不会触发用户升级提示。
 
-   ```bat
-   npm ci
-   npm run build
-   python scripts\build_update_package.py --tag v1.1.0 --output .release
-   python scripts\build_portable_package.py --tag v1.1.0 --dist dist --output .release
-   python scripts\build_runtime_package.py --output .release
-   ```
-
-   更新包只读取 Git 跟踪文件，不包含 `dist/`、本地项目、模型、密钥或 Python 运行时。便携包在同一份公开源码之外加入本次构建的 `dist/`。Windows amd64 运行时是单独的 zip，不打进更新包。
-4. 等 Release 资源上传工作流成功结束，再通知用户检查更新。缺少升级包或校验文件时，界面只允许手动查看 Release，不会尝试不安全安装。
-
-普通提交、合并 PR 或创建标签不会直接通知用户。小修复可合并成一个补丁版本并发布 Release，说明用户能感知的修复。检查源为 GitHub `releases/latest`，预发布版本不会进入正式版通知渠道；尚未发布正式 Release 时，手动检查会明确说明，而不会声称网络失败或已是最新版本。旧后端缺少更新接口时，需先按 README 更新并在任务结束后重新启动工作台。
-
-手动打包后也必须同时上传 `.zip` 与 `.zip.sha256`，不能只上传 GitHub 自动生成的 Source code ZIP。
+更新包由 Git 跟踪的公开程序文件生成；便携包另带本次构建的 `dist/`。Windows amd64 Python 运行时使用独立 ZIP。程序包排除本地项目、模型和密钥。GitHub 自动生成的 Source code ZIP 用于查看源码；用户安装和升级需要产品 ZIP 及其校验文件。
 
 ## 开发者验证
 

@@ -1,50 +1,115 @@
-name: Release update package
+name: Validate or publish release packages
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag (for example v1.1.0)
+        required: true
+        type: string
+      publish:
+        description: Publish the verified packages as a GitHub Release
+        default: false
+        type: boolean
+      expected_sha:
+        description: Full commit SHA (required for publishing, must match the selected ref)
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   package:
     runs-on: windows-latest
+    outputs:
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      PUBLISH: ${{ inputs.publish }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Check release inputs and source versions
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ((git rev-parse HEAD) -cne $env:GITHUB_SHA) { throw "Unexpected checkout SHA" }
+          if ($env:PUBLISH -eq 'true') {
+            if ($env:GITHUB_REF -cne "refs/heads/$env:DEFAULT_BRANCH") { throw "Dispatch publishing from the default branch" }
+            if ($env:EXPECTED_SHA -cne $env:GITHUB_SHA) { throw "expected_sha must match the full dispatch commit SHA" }
+          }
+          python scripts/release_candidate.py "$env:RELEASE_TAG"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-      - name: Build frontend the same way as CI
+      - name: Build frontend
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           npm ci
           npm run build
-          if (-not (Test-Path dist/index.html)) { throw "vite build did not write dist/index.html" }
-      - name: Build update, portable, and Windows runtime packages
-        shell: pwsh
+          if (-not (Test-Path dist/index.html -PathType Leaf)) { throw "vite build did not write dist/index.html" }
+      - name: Build and verify update, portable, and Windows runtime packages
         env:
-          TAG: ${{ github.event.release.tag_name }}
-        run: |
-          $out = Join-Path $env:RUNNER_TEMP "refmuse-release"
-          python scripts/build_update_package.py --tag $env:TAG --output $out
-          python scripts/build_portable_package.py --tag $env:TAG --dist dist --output $out
-          python scripts/build_runtime_package.py --output $out
-      - name: Attach update, portable, and runtime packages
+          RELEASE_OUT: ${{ runner.temp }}/refmuse-release
         shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python scripts/build_update_package.py --tag "$env:RELEASE_TAG" --output "$env:RELEASE_OUT"
+          python scripts/build_portable_package.py --tag "$env:RELEASE_TAG" --dist dist --output "$env:RELEASE_OUT"
+          python scripts/build_runtime_package.py --output "$env:RELEASE_OUT"
+          python scripts/release_candidate.py "$env:RELEASE_TAG" --packages "$env:RELEASE_OUT"
+      - uses: actions/upload-artifact@v4
+        id: artifact
+        with:
+          name: refmuse-release-candidate-${{ github.sha }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            ${{ runner.temp }}/refmuse-release/*.zip
+            ${{ runner.temp }}/refmuse-release/*.zip.sha256
+
+  publish:
+    if: inputs.publish && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: package
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: refmuse-release-publication
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/refmuse-release
+      - name: Verify and publish the draft
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
+          RELEASE_OUT: ${{ runner.temp }}/refmuse-release
+        shell: pwsh
         run: |
-          $out = Join-Path $env:RUNNER_TEMP "refmuse-release"
-          $assets = @(
-            (Join-Path $out "refmuse-update-$env:TAG.zip"),
-            (Join-Path $out "refmuse-update-$env:TAG.zip.sha256"),
-            (Join-Path $out "refmuse-portable-$env:TAG.zip"),
-            (Join-Path $out "refmuse-portable-$env:TAG.zip.sha256")
-          ) + @(Get-ChildItem $out -File -Filter "refmuse-runtime-python-win-amd64-*.zip*" | ForEach-Object { $_.FullName })
-          gh release upload $env:TAG @assets --clobber
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:EXPECTED_SHA -cne $env:GITHUB_SHA -or (git rev-parse HEAD) -cne $env:EXPECTED_SHA) { throw "Unexpected publication SHA" }
+          python scripts/release_candidate.py "$env:RELEASE_TAG" --packages "$env:RELEASE_OUT" --publish-sha "$env:EXPECTED_SHA"

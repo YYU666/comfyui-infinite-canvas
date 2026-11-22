@@ -12,6 +12,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
@@ -178,7 +179,7 @@ def _license_notes(embed_dir, licenses_dir):
     (licenses_dir / "THIRD-PARTY.txt").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
-def _zip_tree(archive, identity_dir):
+def _zip_tree(archive, identity_dir, identity):
     members = {}
     for path in sorted(identity_dir.rglob("*")):
         if path.is_symlink():
@@ -186,9 +187,38 @@ def _zip_tree(archive, identity_dir):
         if not path.is_file():
             continue
         # Drop the executable bit from unrelated files; keep scripts executable.
-        relative = path.relative_to(identity_dir.parent).as_posix()
-        members[relative] = path.read_bytes()
+        relative = path.relative_to(identity_dir).as_posix()
+        members[f"{identity}/{relative}"] = path.read_bytes()
     write_deterministic_zip(archive, members)
+
+
+
+def _publish_runtime(staged_archive, staged_checksum, archive, checksum):
+    # Serialize the two replaces so concurrent builds cannot mix their asset pairs.
+    lock = archive.parent / ".runtime-publish.lock"
+    # Windows removes the lock automatically on close, including if the process exits.
+    temporary_flag = getattr(os, "O_TEMPORARY", 0)
+    try:
+        handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY | temporary_flag)
+    except FileExistsError as exc:
+        raise RuntimeError("Another runtime build is publishing to the same output directory.") from exc
+    try:
+        previous_archive = staged_archive.with_name("previous.zip")
+        if archive.exists():
+            shutil.copyfile(archive, previous_archive)
+        staged_archive.replace(archive)
+        try:
+            staged_checksum.replace(checksum)
+        except OSError:
+            if previous_archive.exists():
+                previous_archive.replace(archive)
+            else:
+                archive.unlink()
+            raise
+    finally:
+        os.close(handle)
+        if not temporary_flag:
+            lock.unlink()
 
 
 def build_runtime(output):
@@ -202,53 +232,54 @@ def build_runtime(output):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     identity = runtime_identity()
-    stage = output / f".{identity}.stage"
-    if stage.exists():
-        shutil.rmtree(stage)
-    identity_dir = stage / identity
-    embed_dir = identity_dir / "python_embeded"
-    embed = _download(EMBED_URL, EMBED_BYTES, EMBED_SHA256, {"www.python.org"})
-    _safe_extract(embed, embed_dir)
-    _enable_site(embed_dir)
-    get_pip = _download(GET_PIP_URL, GET_PIP_BYTES, GET_PIP_SHA256, {"bootstrap.pypa.io"})
-    installer = embed_dir / "get-pip.py"
-    installer.write_bytes(get_pip)
-    python = embed_dir / "python.exe"
-    pythonw = embed_dir / "pythonw.exe"
-    if not python.is_file() or not pythonw.is_file():
-        raise RuntimeError("官方 embed 包缺少 python.exe 或 pythonw.exe。")
-    env = os.environ.copy()
-    env["PYTHONNOUSERSITE"] = "1"
-    env["PYTHONUTF8"] = "1"
-    env.pop("PYTHONPATH", None)
-    _run([str(python), str(installer), "--no-warn-script-location"], embed_dir, env)
-    installer.unlink()
-    _run([str(python), "-m", "pip", "install", "--require-hashes", "-r", str(ROOT / "requirements.lock")], ROOT, env)
-    _run([str(python), "-c", "import psutil, imageio_ffmpeg, jsonschema, PIL, yt_dlp"], ROOT, env)
-    licenses = identity_dir / "LICENSES"
-    licenses.mkdir()
-    _license_notes(embed_dir, licenses)
-    manifest = {
-        "format": 1,
-        "package": PACKAGE_ID,
-        "identity": identity,
-        "pythonVersion": PYTHON_VERSION,
-        "platform": "win-amd64",
-        "implementation": "CPython",
-        "macRuntime": False,
-        "embed": {"url": EMBED_URL, "bytes": EMBED_BYTES, "sha256": EMBED_SHA256, "spdx": EMBED_SPDX_URL},
-        "requirementsLockSha256": lock_sha256(),
-        "h3ComfyRoot": "本 identity 目录。包含 python_embeded/pythonw.exe。这是工作台进程 Python 根，不是 ComfyUI 根。",
-        "pythonw": "python_embeded/pythonw.exe",
-    }
-    (identity_dir / "runtime-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     archive = output / runtime_asset_name()
-    _zip_tree(archive, identity_dir)
-    checksum = write_checksum(archive, with_bytes=True)
-    try:
-        shutil.rmtree(stage)
-    except OSError:
-        pass
+    checksum = archive.with_name(archive.name + ".sha256")
+    # Keep imports of Windows extension modules clear of legacy path limits.
+    # The release identity is only needed in the manifest and ZIP members.
+    with tempfile.TemporaryDirectory(prefix="r3-") as stage:
+        identity_dir = Path(stage) / "r"
+        embed_dir = identity_dir / "python_embeded"
+        embed = _download(EMBED_URL, EMBED_BYTES, EMBED_SHA256, {"www.python.org"})
+        _safe_extract(embed, embed_dir)
+        _enable_site(embed_dir)
+        get_pip = _download(GET_PIP_URL, GET_PIP_BYTES, GET_PIP_SHA256, {"bootstrap.pypa.io"})
+        installer = embed_dir / "get-pip.py"
+        installer.write_bytes(get_pip)
+        python = embed_dir / "python.exe"
+        pythonw = embed_dir / "pythonw.exe"
+        if not python.is_file() or not pythonw.is_file():
+            raise RuntimeError("官方 embed 包缺少 python.exe 或 pythonw.exe。")
+        env = os.environ.copy()
+        env["PYTHONNOUSERSITE"] = "1"
+        env["PYTHONUTF8"] = "1"
+        env.pop("PYTHONPATH", None)
+        _run([str(python), str(installer), "--no-warn-script-location"], embed_dir, env)
+        installer.unlink()
+        _run([str(python), "-m", "pip", "install", "--require-hashes", "-r", str(ROOT / "requirements.lock")], ROOT, env)
+        _run([str(python), "-c", "import psutil, imageio_ffmpeg, jsonschema, PIL, yt_dlp"], ROOT, env)
+        licenses = identity_dir / "LICENSES"
+        licenses.mkdir()
+        _license_notes(embed_dir, licenses)
+        manifest = {
+            "format": 1,
+            "package": PACKAGE_ID,
+            "identity": identity,
+            "pythonVersion": PYTHON_VERSION,
+            "platform": "win-amd64",
+            "implementation": "CPython",
+            "macRuntime": False,
+            "embed": {"url": EMBED_URL, "bytes": EMBED_BYTES, "sha256": EMBED_SHA256, "spdx": EMBED_SPDX_URL},
+            "requirementsLockSha256": lock_sha256(),
+            "h3ComfyRoot": "本 identity 目录。包含 python_embeded/pythonw.exe。这是工作台进程 Python 根，不是 ComfyUI 根。",
+            "pythonw": "python_embeded/pythonw.exe",
+        }
+        (identity_dir / "runtime-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+        # Stage complete assets on the destination volume before replacing them.
+        with tempfile.TemporaryDirectory(prefix=".r3-", dir=output) as publish_dir:
+            staged_archive = Path(publish_dir) / archive.name
+            _zip_tree(staged_archive, identity_dir, identity)
+            staged_checksum = write_checksum(staged_archive, with_bytes=True)
+            _publish_runtime(staged_archive, staged_checksum, archive, checksum)
     print(json.dumps({"archive": str(archive), "checksum": str(checksum), "bytes": archive.stat().st_size, "identity": identity, "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}, ensure_ascii=False))
     return archive, checksum
 

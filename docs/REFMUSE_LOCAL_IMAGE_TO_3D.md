@@ -4,7 +4,7 @@
 
 ## 开始使用
 
-1. 启动本分支的 Refmuse 工作台与本地 ComfyUI。ComfyUI 需要能加载本流程使用的原生 3D 节点和下表的六个权重。按官方教程核对节点与权重来源。 [ComfyUI 官方教程](https://docs.comfy.org/tutorials/3d/pixal3d) · [Comfy-Org 权重](https://huggingface.co/Comfy-Org/Pixal3D)
+1. 启动 Refmuse v1.1.0 工作台与本地 ComfyUI。ComfyUI 需要能加载本流程使用的原生 3D 节点和下表的六个权重。按官方教程核对节点与权重来源。 [ComfyUI 官方教程](https://docs.comfy.org/tutorials/3d/pixal3d) · [Comfy-Org 权重](https://huggingface.co/Comfy-Org/Pixal3D)
 2. 在仓库根目录运行依赖预检。Windows 便携版可用 Python 的完整路径替换命令中的 `python`。若报告 `missingNodes` 或 `missing`，按报告补齐后再运行。预检仅检查当前服务的节点注册和权重选项。
 
    ```powershell
@@ -25,5 +25,5 @@
 ## 当前验收范围
 
 - 本机 RTX 3090 Ti 24 GB 已用灯罩参考图完成 GLB 导出，当前 ComfyUI 0.45.0 的预检通过。其他显卡及干净安装环境的端到端复跑有待验证。
-- 本分支交付单图到单个带贴图的 GLB。灯罩演示中的双 LOD、曲率旧化和 AI 脏迹加工，以及后续参数化部件装配，各有独立的验证和交付范围。
+- 本工作流交付单图到单个带贴图的 GLB。灯罩演示中的双 LOD、曲率旧化和 AI 脏迹加工，以及后续参数化部件装配，各有独立的验证和交付范围。
 - 工作流引用本机已安装的权重。参考图从画布输入口提供，`input.png` 只是 API 工作流中的占位名。
