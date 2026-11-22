@@ -56,6 +56,8 @@ GET  /api/agent/canvas/commands/<opId>
 
 `current` 返回 `epoch/sessionId/projectId`。`projectId` 只在 `visible:true` 的页面里筛选；没有可操作页，或目标只在隐藏／只读页上，返回 `NO_VISIBLE_CANVAS`。多个可见候选且无法唯一确定时返回 `AMBIGUOUS_CANVAS`。不自动创建页面。页面心跳只由前端发送。
 
+当前页可使用 `canvas_download_video` 下载分享链接。必填 `url`，可选 `nodeId`、成对的 `x` 和 `y`；`wait` 默认为 `false`。进度见下载节点。
+
 提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","wait":false}`。显式传入的 `wait` 只要不是 `false`，页桥就返回 400。实际执行发生在现有页面。命令回执 `done` 且 `result.ok` 为真，只表示页面工具已返回；生成终态仍以当前页节点为准。
 
 等待完成用下面之一，不要紧循环打 `canvas_get_state`：

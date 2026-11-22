@@ -45,6 +45,7 @@ const suites = {
     'test-canvas-layout-roundtrip.mjs',
     'test-canvas-connections.mjs',
     'test-canvas-mcp-queue.mjs',
+    'test-canvas-download-video.mjs',
     'test-canvas-current-page.mjs',
     'test-versioned-canvas-models.mjs',
     'test-versioned-canvas-projects.mjs',
