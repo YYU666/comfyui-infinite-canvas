@@ -43,6 +43,7 @@ import { LOCAL_NODE_TOOLS } from './local-node-tools';
 import WorkflowInspector from './WorkflowInspector';
 import ReferenceLibrary, { REFERENCE_LIBRARIES } from './ReferenceLibrary';
 import NodeLibrary from './NodeLibrary';
+import { createPublishLedger } from './node-library-publish.js';
 import WorkflowLibrary from './WorkflowLibrary';
 import WorkflowDependencies from './WorkflowDependencies';
 import WorkflowShare from './WorkflowShare';
@@ -524,6 +525,11 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const [referenceLibraryTab, setReferenceLibraryTab] = useState(null);
   const [nodeLibraryOpen, setNodeLibraryOpen] = useState(false);
   const [nodeLibraryMounted, setNodeLibraryMounted] = useState(false);
+  const publishLedgerRef = useRef(null);
+  const getPublishLedger = () => {
+    if (!publishLedgerRef.current) publishLedgerRef.current = createPublishLedger({storage:window.localStorage,send:async(packet)=>{setReferenceLibrary(null);setNodeLibraryMounted(true);setNodeLibraryOpen(true);setSharePacket(packet);}});
+    return publishLedgerRef.current;
+  };
   const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false);
   const [pureRefSelection, setPureRefSelection] = useState(null);
   const pureRefFileRef = useRef(null);
@@ -1938,7 +1944,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   useCanvasMcp({
     nodesRef, edgesRef, projectName, projectId: project.id, readOnly: project.readOnly, server,
-    actions: { imageCompact: (args) => {
+    actions: { publishExtension: args=>getPublishLedger().publish(args), getExtensionPublishStatus: requestId=>getPublishLedger().status(requestId), imageCompact: (args) => {
       const { nodeIds, dryRun } = imageCompactArgs(args);
       if (projectRef.current.id !== project.id || projectRef.current.readOnly || switchingRef.current
         || autoSaveRef.current?.failure || autoSaveRef.current?.conflict) throw new Error('当前画布不可写，请先处理保存状态或项目切换。');
@@ -2203,7 +2209,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       {imagePreview && <ImageLightbox preview={imagePreview} onClose={() => setImagePreview(null)} closeRef={previewCloseRef} />}
       {workflowInspection && <WorkflowInspector key={workflowInspection.nonce} request={workflowInspection} onClose={() => setWorkflowInspection(null)} />}
       {workflowLibraryOpen && <WorkflowLibrary onClose={() => setWorkflowLibraryOpen(false)} onAdd={async (bundle, definitionId) => { if (project.readOnly || switchingRef.current) throw new Error('当前画布不可写。'); flushSync(() => addNode('generator', extensionNodeData(bundle, definitionId))); await persistProject(); }} />}
-      {nodeLibraryMounted && <NodeLibrary open={nodeLibraryOpen} onClose={() => { if (!catalogBusyRef.current) setNodeLibraryOpen(false); }} onOpenLocal={() => { if (!catalogBusyRef.current) { setNodeLibraryOpen(false); setWorkflowLibraryOpen(true); } }} onImport={importCatalogNode} sharePacket={sharePacket} onShareSent={(requestId) => setSharePacket((value) => value?.requestId === requestId ? null : value)} />}
+      {nodeLibraryMounted && <NodeLibrary open={nodeLibraryOpen} onClose={() => { if (!catalogBusyRef.current) setNodeLibraryOpen(false); }} onOpenLocal={() => { if (!catalogBusyRef.current) { setNodeLibraryOpen(false); setWorkflowLibraryOpen(true); } }} onImport={importCatalogNode} sharePacket={sharePacket} onShareResult={data=>getPublishLedger().result(data)} onShareSent={async (requestId) => { await getPublishLedger().sent(requestId); setSharePacket((value) => value?.requestId === requestId ? null : value); }} />}
       {dependencyRequest && <WorkflowDependencies request={dependencyRequest} onClose={closeDependencies} onAdd={async (bundle, definitionId, parameters, report) => {
         if (dependencyRequest.projectId !== projectRef.current.id) throw new Error('项目已改变，请重新检查。');
         await addImportedExtension(bundle, definitionId, parameters, report, dependencyRequest.existingId);

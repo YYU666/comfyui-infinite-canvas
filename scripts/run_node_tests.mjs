@@ -11,6 +11,7 @@ const suites = {
     'test-canvas-file-location.mjs',
     'test-image-export.mjs',
     'test-model-licenses.mjs',
+    'test-node-library-publish.mjs',
     'test-sprite-atlas.mjs',
     'test-comfy-connectivity.mjs',
     'test-pureref-import.mjs',
