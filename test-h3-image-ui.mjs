@@ -84,7 +84,10 @@ try {
  let state=await call('canvas_get_state');
  assert.equal(state.nodes.find(n=>n.id==='qwen').qwenModel,'h3_image');
  await call('canvas_update_node',{nodeId:'qwen',settings:{seed:0,randomSeed:false,h3ImageResolution:'4MP'}});
- await page.getByRole('button',{name:'本地生成',exact:true}).click();
+ await Promise.all([
+   page.waitForResponse(response => new URL(response.url()).pathname === '/api/queue' && response.request().method() === 'POST' && response.ok()),
+   page.getByRole('button',{name:'本地生成',exact:true}).click(),
+ ]);
  await page.waitForFunction(()=>document.querySelector('.cancel'));
  assert.equal(queued.length,1);
  assert.equal(queued[0].workflow.sample.inputs.seed,0);
