@@ -10,6 +10,7 @@ import argparse
 import datetime
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,7 +21,20 @@ import time
 import urllib.request
 import uuid
 import zipfile
+from logging.handlers import RotatingFileHandler
 from pathlib import Path, PurePosixPath
+
+
+# This detached helper cannot import workbench_doctor while replacing the application.
+# Apply its credential redactions here and also hide pip index URLs.
+PIP_SECRET_PATTERNS = (
+    r"(?i)\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+",
+    r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+=*",
+    r"(?i)(authorization\s*[:=]\s*)[^\r\n]+",
+    r"(?i)(cookie\s*[:=]\s*)[^\r\n]+",
+    r"(?i)([\"']?(?:api[_-]?key|token|deepseek[_-]?key|password|secret)[\"']?\s*[:=]\s*[\"']?)[^\s,;\"'}]+",
+    r"\bsk-[A-Za-z0-9_-]{8,}\b",
+)
 
 
 class OldProcessTimeout(RuntimeError):
@@ -182,12 +196,45 @@ def restore_program(root, backup, new_paths, old_paths):
             shutil.copytree(backup / name, target)
 
 
-def install_dependencies(python, requirements, runner=None):
+def log_dependency_failure(runtime, stage, outcome, output):
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    detail = output or ""
+    for pattern in PIP_SECRET_PATTERNS:
+        detail = re.sub(pattern, lambda match: (match.group(1) if match.lastindex else "") + "[REDACTED]", detail)
+    detail = re.sub(r"[\x00-\x1f\x7f]+", " ", detail).strip()[-2048:]
+    log_path = Path(runtime) / "logs" / "app.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8", delay=True)
+        try:
+            handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            handler.handle(logging.LogRecord(
+                __name__, logging.ERROR, __file__, 0,
+                "更新 Python 依赖失败（%s，%s）：%s", (stage, outcome, detail or "无输出"), None,
+            ))
+        finally:
+            handler.close()
+    except OSError:
+        # A log write failure must not prevent program recovery.
+        pass
+
+
+def install_dependencies(python, requirements, runner=None, *, runtime, stage):
     runner = runner or subprocess.run
-    result = runner([str(python), "-m", "pip", "install", "--require-hashes", "-r", str(requirements)],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900, check=False)
+    error_message = "Python 依赖安装失败。"
+    try:
+        result = runner([str(python), "-m", "pip", "install", "--require-hashes", "-r", str(requirements)],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900, check=False)
+    except subprocess.TimeoutExpired as exc:
+        log_dependency_failure(runtime, stage, "超时", exc.stderr or exc.stdout)
+        raise RuntimeError(error_message) from exc
+    except OSError as exc:
+        log_dependency_failure(runtime, stage, f"{type(exc).__name__} (errno={exc.errno})", exc.strerror)
+        raise RuntimeError(error_message) from exc
     if result.returncode:
-        raise RuntimeError("Python 依赖安装失败。")
+        log_dependency_failure(runtime, stage, f"exit {result.returncode}", result.stderr or result.stdout)
+        raise RuntimeError(error_message)
 
 
 def start_workbench(python, root):
@@ -254,7 +301,7 @@ def run(request):
     process = None
     try:
         replace_program(root, source, backup, new_paths, old_paths)
-        install_dependencies(request["python"], root / "requirements.lock")
+        install_dependencies(request["python"], root / "requirements.lock", runtime=request["runtimeDir"], stage="安装新版")
         process = start_workbench(request["python"], root)
         health = wait_for_health(request["runtimeDir"], request["targetVersion"], expected_pid=process.pid)
         manifest = json.loads(Path(request["manifest"]).read_text(encoding="utf-8"))
@@ -271,7 +318,8 @@ def run(request):
             process.wait(timeout=30)
         restore_program(root, backup, new_paths, old_paths)
         try:
-            install_dependencies(request["python"], backup / "program" / "requirements.lock")
+            install_dependencies(request["python"], backup / "program" / "requirements.lock",
+                                 runtime=request["runtimeDir"], stage="恢复旧版")
         except Exception:
             atomic_json(status_path, {"phase": "error", "message": "新版安装失败，程序文件已恢复，但旧版 Python 依赖恢复失败。请运行 install.bat。", "version": request["targetVersion"]})
             raise

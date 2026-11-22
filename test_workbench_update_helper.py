@@ -93,7 +93,7 @@ class HelperTests(unittest.TestCase):
     def test_failed_dependency_install_restores_old_program_and_dependencies(self):
         started_at = datetime.datetime.now(datetime.timezone.utc)
         calls = []
-        def dependencies(python, requirements):
+        def dependencies(python, requirements, **_):
             calls.append(Path(requirements).read_text(encoding="utf-8"))
             if len(calls) == 1: raise RuntimeError("synthetic pip failure")
         with mock.patch("workbench_update_helper.install_dependencies", side_effect=dependencies), \
@@ -109,6 +109,33 @@ class HelperTests(unittest.TestCase):
         self.assertIn("已恢复并重新启动旧版", status["message"])
         self.assertEqual(status["version"], self.request["targetVersion"])
         self.assertGreaterEqual(datetime.datetime.fromisoformat(status["updatedAt"]), started_at)
+        self.assert_user_data_untouched()
+
+    def test_dependency_failures_log_redacted_details_for_install_and_restore(self):
+        install_error = subprocess.CompletedProcess([], 1, stdout="ignored", stderr=(
+            "very early line\n" + "x" * 3000 +
+            "\nLooking in indexes: https://user:private-credential@example.invalid/simple?signature=private-signature"
+            "\nAPI_KEY=private-key\nAuthorization: Basic private-header"
+            "\nERROR: No matching distribution found for numpy==2.3.5"
+        ))
+        restore_error = subprocess.TimeoutExpired([], 900, stderr=b"ERROR: Timed out acquiring package lock")
+        with mock.patch("workbench_update_helper.subprocess.run", side_effect=[install_error, restore_error]):
+            with self.assertRaisesRegex(RuntimeError, "^Python 依赖安装失败。$"):
+                run(self.request)
+
+        log = (self.runtime / "logs" / "app.log").read_text(encoding="utf-8")
+        self.assertIn("安装新版，exit 1", log)
+        self.assertIn("No matching distribution found for numpy==2.3.5", log)
+        self.assertIn("恢复旧版，超时", log)
+        self.assertIn("Timed out acquiring package lock", log)
+        self.assertIn("[REDACTED]", log)
+        self.assertLess(len(log), 2400)
+        for secret in ("private-credential", "private-signature", "private-key", "private-header", "very early line"):
+            self.assertNotIn(secret, log)
+        status = json.loads(self.status.read_text(encoding="utf-8"))
+        self.assertEqual(status["phase"], "error")
+        self.assertNotIn("numpy", status["message"])
+        self.assertNotIn("package lock", status["message"])
         self.assert_user_data_untouched()
 
     def test_exit_timeout_writes_actionable_error_without_replacing_files(self):
