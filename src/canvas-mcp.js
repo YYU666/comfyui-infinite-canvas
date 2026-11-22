@@ -109,6 +109,7 @@ export function validateModelSettings(settings, mode) {
   if (['videoUpscaleModel', 'videoUpscaleScale', 'rtxQuality', 'rtxStrength'].some(key => key in settings)) {
     if (mode !== undefined && mode !== 'videoSuperResolution') throw new Error('视频超分参数只适用于视频超分节点。');
     normalizeVideoSuperResolutionSettings(settings);
+  }
   const choices = { adjustmentType: PHOTO_ADJUSTMENTS.map((item) => item.value), maskChannel: ['luminance', 'red', 'green', 'blue', 'alpha'], hslChannel: HSL_CHANNELS.map((item) => item.value), levelsChannel: LEVEL_CHANNELS.map((item) => item.value), curvesChannel: LEVEL_CHANNELS.map((item) => item.value), colorBalanceRange: ['shadows', 'midtones', 'highlights'], selectiveColorRange: ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'whites', 'neutrals', 'blacks'], channelMixerChannel: ['red', 'green', 'blue'] };
   for (const [key, allowed] of Object.entries(choices)) if (key in settings && !allowed.includes(settings[key])) throw new Error(`不支持的 ${key}。`);
   if ('packPreview' in settings && !['rgb', 'rgba', ...CHANNEL_KEYS].includes(settings.packPreview)) throw new Error('不支持的通道预览。');

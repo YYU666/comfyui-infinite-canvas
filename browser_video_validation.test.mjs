@@ -47,9 +47,10 @@ test('CLI input errors are redacted before any browser or network setup', async 
   const {execFile} = await import('node:child_process');
   const {promisify} = await import('node:util');
   const execute = promisify(execFile);
-  const script = new URL('./browser_video_import.mjs', import.meta.url);
+  const {fileURLToPath} = await import('node:url');
+  const script = fileURLToPath(new URL('./browser_video_import.mjs', import.meta.url));
   for (const args of [[], ['--url','https://www.douyin.com/video/123'], ['--url','http://[?token=synthetic-sensitive','--output','synthetic-output.mp4']]) {
-    await assert.rejects(execute(process.execPath, [script.pathname.replace(/^\/([A-Za-z]:)/,'$1'), ...args], {windowsHide:true}), error => {
+    await assert.rejects(execute(process.execPath, [script, ...args], {windowsHide:true}), error => {
       assert.ok(!error.stderr.includes('synthetic-sensitive'));
       assert.ok(!error.stderr.includes('SyntaxError'));
       assert.ok(!error.stderr.includes('at file:'));
