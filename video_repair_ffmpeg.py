@@ -21,9 +21,9 @@ class _ProbeRunner:
     def __init__(self, runner):
         self.runner = runner
 
-    def run(self, args):
+    def run(self, args, timeout=60):
         return self.runner.run(["-max_alloc", "268435456", *INPUT_GUARDS, *args[:-1],
-                                "-t", str(MAX_SECONDS + 1), "-frames:v", str(MAX_FRAMES + 1), args[-1]], timeout=60)
+                                "-t", str(MAX_SECONDS + 1), "-frames:v", str(MAX_FRAMES + 1), args[-1]], timeout=min(timeout, 60))
 
 
 def bounded_probe(runner, source):

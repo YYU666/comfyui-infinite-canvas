@@ -71,6 +71,8 @@ export async function runVideoProcessorFixture(config) {
       assert.equal(project.canvas.nodes.filter(n => n.type === 'media' && n.data.sourcePlateId === 'processor').length, 2);
     }
     assert.equal(project.canvas.nodes.find(n => n.id === 'source').data.assetPath, input);
+    for (let i = 0; i < 100 && project.canvas.nodes.find(n => n.id === 'processor')?.data[config.resultKey] !== output; i++) await page.waitForTimeout(40);
+    assert.equal(project.canvas.nodes.find(n => n.id === 'processor')?.data[config.resultKey], output, 'export completed its project save');
     await page.reload(); await page.getByTestId('rf__node-processor').waitFor();
     assert.equal((await state()).nodes.find(n => n.id === 'processor')[config.resultKey], output);
     hold = true;
