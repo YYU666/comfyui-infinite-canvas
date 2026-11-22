@@ -265,11 +265,60 @@
       "denoise": 1
     }
   },
+  "refine_stage": {
+    "class_type": "Trellis2UpsampleStage",
+    "inputs": {
+      "positive": [
+        "shape_stage",
+        0
+      ],
+      "negative": [
+        "shape_stage",
+        1
+      ],
+      "shape_latent": [
+        "sample_coarse_shape",
+        0
+      ],
+      "vae": [
+        "shape_vae",
+        0
+      ],
+      "target_resolution": 1024
+    }
+  },
+  "sample_refined_shape": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "shape_model",
+        0
+      ],
+      "positive": [
+        "refine_stage",
+        0
+      ],
+      "negative": [
+        "refine_stage",
+        1
+      ],
+      "latent_image": [
+        "refine_stage",
+        2
+      ],
+      "seed": 42,
+      "steps": 12,
+      "cfg": 7.5,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1
+    }
+  },
   "high_mesh": {
     "class_type": "VaeDecodeShapeTrellis",
     "inputs": {
       "samples": [
-        "sample_coarse_shape",
+        "sample_refined_shape",
         0
       ],
       "vae": [
@@ -312,15 +361,15 @@
     "class_type": "Trellis2TextureStage",
     "inputs": {
       "positive": [
-        "shape_stage",
+        "refine_stage",
         0
       ],
       "negative": [
-        "shape_stage",
+        "refine_stage",
         1
       ],
       "shape_latent": [
-        "sample_coarse_shape",
+        "sample_refined_shape",
         0
       ]
     }
@@ -369,15 +418,25 @@
       ]
     }
   },
-  "unwrap_high": {
-    "class_type": "UnwrapMesh",
+  "smooth_surface": {
+    "class_type": "MeshSmoothNormals",
     "inputs": {
       "mesh": [
         "bounded_high_mesh",
         0
       ],
+      "crease_angle": 180
+    }
+  },
+  "unwrap_high": {
+    "class_type": "UnwrapMesh",
+    "inputs": {
+      "mesh": [
+        "smooth_surface",
+        0
+      ],
       "segmenter": "pec",
-      "resolution": 512,
+      "resolution": 1024,
       "padding": 1,
       "weld_distance": 0.0002
     }
@@ -394,10 +453,44 @@
         0
       ],
       "reference_mesh": [
-        "bounded_high_mesh",
+        "high_mesh",
         0
       ],
-      "texture_size": 512
+      "texture_size": 1024
+    }
+  },
+  "transfer_normal": {
+    "class_type": "BakeNormalMapFromMesh",
+    "inputs": {
+      "low_poly": [
+        "unwrap_high",
+        0
+      ],
+      "high_poly": [
+        "rebuild_surface",
+        0
+      ],
+      "resolution": 1024,
+      "cage_distance": 0.05,
+      "ignore_backfaces": true
+    }
+  },
+  "transfer_occlusion": {
+    "class_type": "BakeAmbientOcclusion",
+    "inputs": {
+      "low_poly": [
+        "unwrap_high",
+        0
+      ],
+      "high_poly": [
+        "rebuild_surface",
+        0
+      ],
+      "resolution": 512,
+      "samples": 32,
+      "max_distance": 0.71,
+      "strength": 1,
+      "bias": 0.01
     }
   },
   "materials": {
@@ -418,14 +511,32 @@
       "roughness": [
         "project_color",
         2
+      ],
+      "normal_map": [
+        "transfer_normal",
+        0
+      ],
+      "occlusion": [
+        "transfer_occlusion",
+        0
       ]
+    }
+  },
+  "smooth_export": {
+    "class_type": "MeshSmoothNormals",
+    "inputs": {
+      "mesh": [
+        "materials",
+        0
+      ],
+      "crease_angle": 180
     }
   },
   "save_high_glb": {
     "class_type": "SaveGLB",
     "inputs": {
       "mesh": [
-        "materials",
+        "smooth_export",
         0
       ],
       "filename_prefix": "H3/extensions/lamp-shade"
