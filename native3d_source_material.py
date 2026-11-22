@@ -65,7 +65,7 @@ def srgb_decode(value):
     return np.where(value <= .04045, value / 12.92, ((value + .055) / 1.055) ** 2.4)
 
 
-def bilinear(pixels, coords, srgb=False):
+def bilinear(pixels, coords, srgb=False, wrapping=(10497, 10497)):
     """Trimesh local UV (bottom-left); decode BEFORE interpolation."""
     pixels = np.asarray(pixels)
     coords = np.asarray(coords, dtype=float)
@@ -75,11 +75,16 @@ def bilinear(pixels, coords, srgb=False):
     h, w = pixels.shape[:2]
     for start in range(0, len(coords), MAX_SAMPLES):
         c = coords[start:start + MAX_SAMPLES]
-        xy = np.column_stack([(c[:, 0] % 1) * w - .5, (1 - c[:, 1] % 1) * h - .5])
-        ij = np.floor(xy).astype(np.int64); f = xy - ij
-        x, y = ij[:, 0] % w, ij[:, 1] % h
-        taps = [pixels[y, x], pixels[y, (x + 1) % w],
-                pixels[(y + 1) % h, x], pixels[(y + 1) % h, (x + 1) % w]]
+        repeat_s, repeat_t = (mode == 10497 for mode in wrapping)
+        u = c[:, 0] % 1 if repeat_s else np.clip(c[:, 0], 0, 1)
+        v = c[:, 1] % 1 if repeat_t else np.clip(c[:, 1], 0, 1)
+        xy = np.column_stack([u * w - .5, (1 - v) * h - .5])
+        ij = np.floor(xy).astype(np.int64)
+        f = xy - ij
+        x, y = ij.T
+        x0, x1 = (x % w, (x + 1) % w) if repeat_s else (np.clip(x, 0, w - 1), np.clip(x + 1, 0, w - 1))
+        y0, y1 = (y % h, (y + 1) % h) if repeat_t else (np.clip(y, 0, h - 1), np.clip(y + 1, 0, h - 1))
+        taps = [pixels[y0, x0], pixels[y0, x1], pixels[y1, x0], pixels[y1, x1]]
         taps = [srgb_decode(t / 255.) if srgb else t / 255. for t in taps]
         output[start:start + len(c)] = (taps[0] * (1-f[:, :1]) * (1-f[:, 1:]) +
             taps[1] * f[:, :1] * (1-f[:, 1:]) + taps[2] * (1-f[:, :1]) * f[:, 1:] +
@@ -100,6 +105,8 @@ class SourceMaterial:
             raise ValueError('Source UV must be finite per-vertex coordinates')
         material = getattr(mesh.visual, 'material', None)
         self.images = {}
+        self.wrapping = {}
+        wrapping = mesh.metadata.get('nativeTextureWrapping', [])
         for channel in ('baseColorTexture', 'metallicRoughnessTexture', 'normalTexture', 'occlusionTexture'):
             spec = (self.pbr if channel in ('baseColorTexture', 'metallicRoughnessTexture') else self.material).get(channel, {})
             if spec.get('texCoord', 0) != 0 or spec.get('extensions'):
@@ -111,6 +118,10 @@ class SourceMaterial:
                 if self.uv is None or not mesh.metadata.get('nativeSourceUV'):
                     raise ValueError('Textured high mesh requires source UV')
                 self.images[channel] = np.asarray(image.convert('RGB'))
+                index = spec.get('index')
+                if wrapping and spec and (type(index) is not int or not 0 <= index < len(wrapping)):
+                    raise ValueError('Invalid glTF material texture index')
+                self.wrapping[channel] = wrapping[index] if wrapping and index is not None else (10497, 10497)
         self.normal_scale = float(self.material.get('normalTexture', {}).get('scale', 1))
         self.ao_strength = float(self.material.get('occlusionTexture', {}).get('strength', 1))
         if not np.isfinite(self.normal_scale) or not 0 <= self.ao_strength <= 1:
@@ -136,7 +147,8 @@ class SourceMaterial:
         return np.einsum('ni,nij->nj', weights, tri)
 
     def sample(self, channel, ids, primitive_uvs):
-        return bilinear(self.images[channel], self.coordinates(ids, primitive_uvs), srgb=channel == 'baseColorTexture')
+        return bilinear(self.images[channel], self.coordinates(ids, primitive_uvs),
+                        srgb=channel == 'baseColorTexture', wrapping=self.wrapping[channel])
 
     def world_normals(self, ids, primitive_uvs):
         ids = np.asarray(ids, dtype=np.int64)

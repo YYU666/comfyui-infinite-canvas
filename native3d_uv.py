@@ -332,7 +332,9 @@ def unwrap(mesh, params, reference_mesh=None, face_labels=None, high_guided_evid
         from PIL import Image,ImageDraw
         folder=Path(diagnostics);folder.mkdir(parents=True,exist_ok=True)
         image=Image.new('RGB',(resolution,resolution),(25,25,25));draw=ImageDraw.Draw(image)
-        for face in faces: draw.polygon([tuple(p) for p in uv[face]*resolution],outline=(210,210,210))
+        from native3d_bake_basis import uv_raster_coordinates
+        raster_uv = uv_raster_coordinates(uv, resolution)
+        for face in faces: draw.polygon([tuple(p) for p in raster_uv[face]],outline=(210,210,210))
         image.save(folder/'uv-layout.png')
         y,x=np.indices((resolution,resolution)); checker=(((x//32+y//32)%2)*120+70).astype(np.uint8)
         Image.fromarray(np.repeat(checker[:,:,None],3,axis=2)).save(folder/'uv-checker.png')

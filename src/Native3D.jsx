@@ -170,7 +170,7 @@ export function Native3DNode({ id, data, selected }) {
       {data.nativeLocalRepair&&<p>当前候选局部修复 · {data.nativeParameters.localRepairStage?.toUpperCase()} · {data.stage||data.status}</p>}
       {data.operation==='source_lod' && !data.nativeLocalRepair && <small>{data.nativeParameters?.retryStage?`LOD${Number(data.nativeParameters.retryStage.slice(3))-1} → ${data.nativeParameters.retryStage.toUpperCase()} · 仅重试本档 · 种子 ${data.nativeParameters.seed}`:'原高模 → LOD0 → LOD1–4 · 设置中编辑保留百分比'}</small>}
       {data.operation==='uv_plan' && <small>候选缝 / 分区 / AO · 此步骤不展开UV</small>}
-      {data.operation==='uv' && <small>{planStatus?.ready?'已绑定当前确认方案':planStatus?.message || '连接低模、高模和已确认方案'}</small>}
+      {data.operation==='uv' && <small>{planStatus?.mode==='coherent'?'CPU 连续展 UV':planStatus?.mode==='structural'?'CPU 结构展 UV':planStatus?.ready?'已绑定当前确认方案':planStatus?.message || '连接低模、高模和已确认方案'}</small>}
       {data.nativeUVPlan && <button disabled={locked} onClick={()=>{try{api.openPlan(id);}catch(e){setUVError(e.message);}}}>3D审阅 / 确认方案</button>}
       {planPreviews&&<><div className="native3d-actions">{PLAN_PREVIEW_MODES.map(mode=><button key={mode} aria-pressed={planMode===mode} disabled={locked} onClick={()=>api.patch(id,{nativePlanPreviewMode:mode})}>{planLabels[mode]}</button>)}</div><small>真实候选：蓝分区 · 黄凸角 · 橙凹角 · 粉AO；尚未展开UV。</small></>}
       {planOutput && <small>确认后从方案端口连接UV展开</small>}

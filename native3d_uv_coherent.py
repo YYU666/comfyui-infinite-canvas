@@ -340,6 +340,7 @@ def coherent_unwrap(mesh,params,face_labels=None,high_guided_evidence=None,_over
             'referenceAxis':axis,'directionConfidence':confidence,'axisSupportAreaFraction':support,
             'densityNormalizationScale':density_scale,'sourceArea':source_area,'initialUVArea':uv_area,
             'rotationDegrees':float(np.degrees(theta)),'worldUpResidualDegrees':residual if axis==[0.,1.,0.] else None})
+    annular_plan = _frozen_plan is not None and _frozen_plan.get('parameterizationBackend') == 'annular_main_seams'
     packing=params.get('packingMode','efficient')
     if packing not in ('efficient','legacy_fixed'):raise ValueError('Invalid coherent packingMode')
     extents=np.asarray([c[2] for c in charts])
@@ -395,7 +396,7 @@ def coherent_unwrap(mesh,params,face_labels=None,high_guided_evidence=None,_over
     metrics,_=uv_metrics(result,uv,resolution,padding)
     timer.enter('uv_final_geometry')
     metrics.update(geometry_checks.evaluate(result,uv,resolution,padding))
-    if macro_pack:
+    if macro_pack or annular_plan:
         exported_uv=uv.astype('f4').astype(float)
         float_metrics=geometry_checks.evaluate(result,exported_uv,resolution,padding)
         float_raster,_=uv_metrics(result,exported_uv,resolution,padding)
@@ -404,9 +405,12 @@ def coherent_unwrap(mesh,params,face_labels=None,high_guided_evidence=None,_over
         if (np.any(signed<=0) or float_metrics['geometricOverlapPairs'] or float_metrics['geometricPaddingViolationPairs']
                 or float_metrics['geometricOutOfBoundsTriangles'] or float_raster['overlapInteriorPixels']):
             raise ValueError('Natural UV float32 export geometry/spacing failed')
-        pack_receipt['float32Geometry']=float_metrics
-        pack_receipt['float32Raster']=float_raster
-        pack_receipt['float32NonpositiveTriangles']=int(np.sum(signed<=0))
+        if pack_receipt is not None:
+            pack_receipt['float32Geometry']=float_metrics
+            pack_receipt['float32Raster']=float_raster
+            pack_receipt['float32NonpositiveTriangles']=int(np.sum(signed<=0))
+    if annular_plan and (len(charts) != 4 or parameterization['extraCutCount']):
+        raise ValueError('Annular UV requires exactly four islands with no additional cuts')
     timer.enter('uv_finalize')
     if metrics['geometricOverlapPairs'] or metrics['overlapInteriorPixels']:
         raise ValueError('Coherent UV blocked: final geometric/raster overlap gate failed')
@@ -451,7 +455,11 @@ def coherent_unwrap(mesh,params,face_labels=None,high_guided_evidence=None,_over
             report['structurePolicy']=parameterization['structurePolicy']
             if (metrics['degenerateUVTriangles'] or metrics['mixedOrientationTriangles'] or metrics['geometricPaddingViolationPairs'] or metrics['geometricOutOfBoundsTriangles'] or not verified):
                 raise ValueError('Coarse harmonic final geometry/spacing/orientation gate failed')
-    if high_report is not None:
+    if annular_plan:
+        report['float32Geometry'] = float_metrics
+        report['additionalSeamPolicy'] = 'Four annular regions and one opening cut per region; additional cuts rejected'
+        report['seamReasons'] = {'%d:%d'%edge: reason for edge, reason in reasons.items()}
+    elif high_report is not None:
         report['highGuidedUV']=high_report
         report['seamReasons']={'%d:%d'%edge:reason for edge,reason in reasons.items()}
     if high_guided_evidence is not None:
@@ -465,7 +473,9 @@ def coherent_unwrap(mesh,params,face_labels=None,high_guided_evidence=None,_over
     if params.get('diagnosticsDirectory'):
         from PIL import Image,ImageDraw
         folder=Path(params['diagnosticsDirectory']);folder.mkdir(parents=True,exist_ok=True);image=Image.new('RGB',(resolution,resolution),(25,25,25));draw=ImageDraw.Draw(image)
-        for face in result.faces:draw.polygon([tuple(p) for p in uv[face]*resolution],outline=(220,220,220))
+        from native3d_bake_basis import uv_raster_coordinates
+        raster_uv = uv_raster_coordinates(uv, resolution)
+        for face in result.faces:draw.polygon([tuple(p) for p in raster_uv[face]],outline=(220,220,220))
         image.save(folder/'uv-layout.png');y,x=np.indices((resolution,resolution));checker=(((x//32+y//32)%2)*120+70).astype(np.uint8);Image.fromarray(np.repeat(checker[:,:,None],3,axis=2)).save(folder/'uv-checker.png')
         report['checkerDiagnostic']='Pattern only; use model surface checker renderer for visual distortion review';report['diagnostics']=['uv-layout.png','uv-checker.png']
     timer.finish()

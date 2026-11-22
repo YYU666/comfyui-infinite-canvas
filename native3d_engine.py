@@ -318,6 +318,7 @@ def read_mesh(path):
     source_normals = False
     source_tangents = False
     material_info = []
+    texture_wrapping = []
     if suffix == '.obj':
         with path.open('r', encoding='utf-8-sig', errors='strict') as f:
             for line in f:
@@ -341,8 +342,15 @@ def read_mesh(path):
             for item in doc.get(collection, []):
                 if 'uri' in item:
                     raise ValueError('GLB URI dependencies unsupported; embed buffers and images')
-        if any(s.get('wrapS', 10497) != 10497 or s.get('wrapT', 10497) != 10497 for s in doc.get('samplers', [])):
-            raise ValueError('Texture transfer currently supports repeat wrapping only')
+        samplers = doc.get('samplers', [])
+        wrapping = [(s.get('wrapS', 10497), s.get('wrapT', 10497)) for s in samplers]
+        if any(mode not in (10497, 33071) for pair in wrapping for mode in pair):
+            raise ValueError('Texture transfer supports REPEAT or CLAMP_TO_EDGE wrapping')
+        for texture in doc.get('textures', []):
+            index = texture.get('sampler')
+            if index is not None and (type(index) is not int or not 0 <= index < len(wrapping)):
+                raise ValueError('Invalid glTF texture sampler index')
+            texture_wrapping.append((10497, 10497) if index is None else wrapping[index])
         if doc.get('skins') or doc.get('animations'):
             raise ValueError('Animated/skinned meshes unsupported in static pilot')
         material_info = doc.get('materials', [])
@@ -378,6 +386,7 @@ def read_mesh(path):
     mesh.metadata['nativeSourceUV'] = source_uv
     mesh.metadata['nativeSourceTangentDeclared'] = source_tangents
     mesh.metadata['nativeMaterials'] = material_info
+    mesh.metadata['nativeTextureWrapping'] = texture_wrapping
     mesh.metadata['nativeNormalSource'] = 'verified loader-retained source NORMAL/vn' if retained_source_normals else 'trimesh geometry-generated vertex normals (source normals absent or not retained)'
     return mesh
 
@@ -977,6 +986,13 @@ def run(request, output):
             if metadata['uv'].get('stretchPolicy'):
                 warnings.append('Experimental UV stretch policy experimental-stretch-review-v1: stretch is warning-only; visual review required. Warning islands: '+str(metadata['uv'].get('stretchWarningIslandCount',0)))
             metadata['uvPlan']={'planSha256':plan['planSha256'],'planJobId':params['planJobId'],'confirmed':True}
+        elif params.get('annularSeamPlan'):
+            from native3d_uv_annular import build_annular_plan
+            from native3d_uv_coherent import coherent_unwrap
+            plan, receipt = build_annular_plan(mesh, params['annularSeamPlan'], metadata['sourceSha256'])
+            mesh, metadata['uv'] = coherent_unwrap(mesh, {**params, 'diagnosticsDirectory': str(out)},
+                                                  _frozen_plan=plan, progress=uv_progress_callback())
+            metadata['uv']['annularSeams'] = receipt
         else:
             mesh, metadata['uv'] = structural_unwrap(mesh, {**params, 'diagnosticsDirectory': str(out)}, reference_mesh=reference, face_labels=labels, high_guided_evidence=high_guided_evidence)
         for name in ('uv-layout.png', 'uv-checker.png', 'ao-view.png', 'seam-view.png'):
@@ -1016,7 +1032,12 @@ def run(request, output):
     # read_mesh has already checked static self-contained GLB restrictions.
     # For bounded analyze imports, keep attributes/materials/node transforms
     # verbatim: Trimesh round-tripping can silently discard standard TANGENT.
-    preserve_glb = operation == 'analyze' and source.suffix.lower() == '.glb' and len(mesh.faces) <= 100000
+    # The proxy simplifier works on split UV vertices and can open seams. Use
+    # the verified original for moderately sized textured imports.
+    see_original = len(mesh.faces) <= 100000 or (
+        len(mesh.faces) <= 300000 and source.stat().st_size <= 32 * 1024**2
+    )
+    preserve_glb = operation == 'analyze' and source.suffix.lower() == '.glb' and see_original
     if operation=='bake' and request.get('bakePaddingReuse'):
         # derive_padding already preserves every original geometry/UV/NORMAL/TANGENT buffer byte.
         # A Trimesh round-trip here would discard the original standard TANGENT.
@@ -1026,7 +1047,7 @@ def run(request, output):
         shutil.copyfile(source, out / 'model.glb')
         metadata['glbPreservation'] = {
             'mode': 'source_bytes', 'bytePreserved': True,
-            'reason': 'validated static self-contained GLB within 100000-triangle browser proxy limit',
+            'reason': 'validated static self-contained GLB within original preview budget',
             'sourceSha256': metadata['sourceSha256'],
             'preserved': ['geometry', 'UV', 'NORMAL', 'TANGENT', 'materials', 'node transforms']}
         metadata['sourceTransform'] = 'analysis/poster use world geometry; output GLB preserves original node transforms for browser application'

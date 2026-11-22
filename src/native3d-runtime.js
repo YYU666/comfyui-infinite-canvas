@@ -59,6 +59,10 @@ export function nativeSourceImportError(file, capabilities) {
   return null;
 }
 
+function usesDirectUV(node, inputs) {
+  return !inputs.plan && ['structural', 'coherent'].includes(node?.data.nativeParameters?.seamStrategy);
+}
+
 export function useNative3D(options) {
   const [notificationSoundEnabled,setNotificationSoundState]=useState(native3DNotifications.enabled);
   const setNotificationSoundEnabled=value=>setNotificationSoundState(native3DNotifications.setEnabled(value));
@@ -172,7 +176,7 @@ export function useNative3D(options) {
       let parameters = node.data.operation === 'analyze' ? {} : nativeParameters(adapter, node.data.nativeParameters);
       if(node.data.operation==='source_lod'&&!parameters.localRepairJobId)for(const key of ['localRepairMaxPatches','localRepairDisplacementFraction','localRepairCorrectionFraction'])delete parameters[key];
       if (['uv_plan','bake'].includes(node.data.operation) && !inputs.high?.data.assetPath) throw Error('请连接高模参考输入。');
-      if (node.data.operation==='uv') {
+      if (node.data.operation==='uv' && !usesDirectUV(node, inputs)) {
         const plan=assertConfirmedPlan(inputs.plan,source,inputs.high);
         assertLivePlan(plan,o);
         parameters={...parameters,...planUVParameters(plan,node.data.nativeParameters || {},nativeAdapterSchema(adapter))};
@@ -411,7 +415,7 @@ export function useNative3D(options) {
       if(geometryError)throw new Error(geometryError);
       if(!capabilities)throw new Error(capabilityError||'3D能力查询尚未完成。');
       if(capabilities.operations?.[target.operation]?.ready===false)throw new Error(capabilities.operations[target.operation].reason||'执行器尚未就绪。');
-      if(target.operation==='uv') {
+      if(target.operation==='uv' && !usesDirectUV(processor, inputs)) {
         const plan=assertConfirmedPlan(inputs.plan,source,inputs.high);assertLivePlan(plan,o);
         planUVParameters(plan,processor.data.nativeParameters||{},nativeAdapterSchema(capabilities.operations?.uv));
       }
@@ -588,6 +592,7 @@ export function useNative3D(options) {
     inputs:id=>inputsFor(latest.current,latest.current.nodesRef.current.find(n=>n.id===id)),
     planStatus:id=>{
       try {const o=latest.current,node=o.nodesRef.current.find(n=>n.id===id),inputs=inputsFor(o,node);
+        if (usesDirectUV(node, inputs) && inputs.model?.data.assetPath) return {ready:true,mode:node.data.nativeParameters.seamStrategy};
         const plan=assertConfirmedPlan(inputs.plan,inputs.model,inputs.high);assertLivePlan(plan,o);
         const adapter=capabilities?.operations?.uv;planUVParameters(plan,node.data.nativeParameters || {},nativeAdapterSchema(adapter));
         return {ready:true};

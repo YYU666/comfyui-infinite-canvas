@@ -51,6 +51,7 @@ SCHEMAS = {
         'retryKeepPercent': {'type':'number','minimum':0.001,'maximum':100,
                              'title':'本次重试保留比例（%）',
                              'description':'仅单档重试可用；省略沿用冻结比例。基准沿用原任务，只覆盖当前档；原硬面数上限仍生效。'},
+        'lodCount': {'type':'integer','minimum':1,'maximum':5,'default':5,'title':'输出 LOD 档数'},
         'lod0KeepPercent': {'type':'number','minimum':0.001,'maximum':100,'default':10},
         'lod0FaceCap': {'type':'integer','minimum':0,'maximum':100000,'default':100000},
         **{'lod'+str(i)+'KeepPercent': {'type':'number','minimum':0.001,'maximum':100,'default':n} for i,n in enumerate((50,25,12.5,6.25),1)},
@@ -65,6 +66,7 @@ SCHEMAS = {
         'structureScaleFraction': {'type':'number','minimum':0.001,'maximum':0.1},
         'structureMinChainLengthFraction': {'type':'number','minimum':0.001,'maximum':0.3},
         'seamStrategy': {'type':'string','enum':['structural','ao_geometry','coherent'],'default':'structural'},
+        'annularSeamPlan': {'type':'string','maxLength':512,'description':'JSON for a closed annular shell: sourceSha256, unit axis, two rimCuts in model coordinates, and slitDirection. Keeps outer wall, inner wall and both rims as four UV islands.'},
         'packingMode': {'type':'string','enum':['efficient','legacy_fixed'],'default':'efficient'},
         'chartMergeCost': {'type':'number','minimum':2,'maximum':20,'default':8,'description':'合岛倾向；值越大越允许合并，不是拉伸上限，实际拉伸需看报告'},
         'alignDirection': {'type':'string','enum':['world_up','none'],'default':'world_up','description':'coherent 模式：每岛平均模型+Y朝向UV上方；水平面显式使用备用轴'},
@@ -170,6 +172,10 @@ def validate_parameters(operation, values):
         fail('Reviewed boundary continuation requires both job and stage')
     if operation == 'uv' and bool(result.get('planJobId')) != bool(result.get('planSha256')):
         fail('UV requires both planJobId and confirmed planSha256')
+    if operation == 'uv' and result.get('annularSeamPlan') and (
+            result['seamStrategy'] != 'coherent' or any(result.get(key) for key in
+                ('planJobId', 'segmentationEvidence', 'highGuidedEvidence'))):
+        fail('Annular seams require direct coherent UV without a second seam plan')
     return result
 
 def fail(message, status=400, code='BAD_REQUEST'):

@@ -52,12 +52,15 @@ def resolve_lod_settings(params=None):
     if reference == 'lod0' and any(a < b for a, b in zip(percentages, percentages[1:])):
         raise ValueError('Cumulative LOD0 percentages must not increase')
     caps = [_cap(c, 'LOD'+str(i)+' face cap') for i, c in enumerate(caps)]
+    count = params.get('lodCount', 5)
+    if type(count) is not int or not 1 <= count <= 5:
+        raise ValueError('lodCount must be an integer within 1..5')
     selected = params.get('selectedLodLevel', 0)
-    if type(selected) is not int or not 0 <= selected <= 4:
-        raise ValueError('selectedLodLevel must be an integer within0..4')
+    if type(selected) is not int or not 0 <= selected < count:
+        raise ValueError('selectedLodLevel must be below lodCount')
     return {'lod0KeepPercent': _percent(params.get('lod0KeepPercent', 10), 'Original to LOD0 keep'),
             'lodPercentReference': reference, 'lodKeepPercents': percentages,
-            'lodFaceCaps': caps, 'selectedLodLevel': selected}
+            'lodFaceCaps': caps, 'selectedLodLevel': selected, **({'lodCount': count} if count != 5 else {})}
 
 
 def logical_target(level, source_faces, lod0_faces, previous_faces, settings):
@@ -600,7 +603,7 @@ def _run_source_lod_core(mesh, output, params=None, progress=None, *, protected_
         parent_stage = 'original_source'
         lod0_count = None
         pass_number = 0
-        for level in range(5):
+        for level in range(settings.get('lodCount', 5)):
             plan = logical_target(level, source_count, lod0_count, len(f), settings)
             target = plan['effectiveTargetTriangles']
             previous_count = len(f)
