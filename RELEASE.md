@@ -5,7 +5,7 @@
 ## 本地 3D
 
 - 右键添加菜单的「3D 资产加工」可导入本机 3D 模型，并连接原高模百分比 LOD、UV 展开或材质烘焙。默认显示入口，运行前需配置独立 Native3D Python，并通过所选操作的依赖检查。AI 低模、UV 切缝方案和 FBX 导入有各自的额外依赖。详见 [Native3D 配置](docs/NATIVE3D.md)。
-- Pixal3D 是面向单件资产的可选本机预览流程。配置支持对应节点的 ComfyUI 和六份独立权重后，在节点库导入 API 工作流，连接单张参考图并运行，完成后从画布结果卡片下载带材质的 GLB。详见 [Pixal3D 配置及验收](docs/REFMUSE_LOCAL_IMAGE_TO_3D.md)。
+- Pixal3D 是面向单件资产的可选本机预览流程。配置支持对应节点的 ComfyUI 和六份独立权重后，在节点库导入 API 工作流，连接单张参考图并运行，生成后可将结果卡片的模型输出直接接到「原高模 · 百分比LOD」，首次运行 LOD 时将已有 ComfyUI GLB 保存到当前项目。也可从结果卡片下载 GLB。「3D 资产加工」菜单分别提供 Native3D LOD 就绪状态与 Pixal3D 依赖检查。详见 [Pixal3D 配置及验收](docs/REFMUSE_LOCAL_IMAGE_TO_3D.md)。
 
 ## 画布与视频
 
@@ -15,7 +15,7 @@
 
 ## 验证范围
 
-Native3D 版本检查覆盖独立运行环境、队列与受控更新边界。实际加工取决于所选操作、本机依赖及模型。Pixal3D 的单图到 GLB 记录来自灯罩样例与本机 RTX 3090 Ti 24 GB，使用 ComfyUI 0.45.0。其他显卡、干净环境的完整 Pixal3D 复跑及参数化部件装配仍待验证。
+本轮回归覆盖生成 GLB 到 LOD 的连线、项目切换保护、Native3D 任务续查及受控更新。既有 Pixal3D 单图到 GLB 实测使用灯罩样例、RTX 3090 Ti 24 GB 和 ComfyUI 0.45.0。新整合的图生 3D 到 Native3D LOD 全链冷启动 GPU 验收、其他显卡和参数化部件装配仍待验证。
 
 ## 更新与全新安装
 

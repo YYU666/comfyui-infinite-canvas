@@ -10,7 +10,11 @@
 python scripts/setup_native3d.py --venv <path>
 ```
 
-脚本安装 `requirements-native3d.txt` 并输出虚拟环境的 Python 路径。将该绝对路径设为 `H3_NATIVE3D_PYTHON`，或写入当前工作台运行目录下 `native3d-config.json` 的 `pythonExecutable`。Windows 默认运行目录是 `%LOCALAPPDATA%\H3Workbench`，设有 `H3_WORKBENCH_RUNTIME_DIR` 时使用指定位置。ComfyUI 的 Python 环境不适用于此配置。重启工作台后，在节点上检查该操作的就绪状态。
+脚本安装 `requirements-native3d.txt` 并输出虚拟环境的 Python 路径。将该绝对路径设为 `H3_NATIVE3D_PYTHON`，或写入当前工作台运行目录下 `native3d-config.json` 的 `pythonExecutable`。Windows 默认运行目录是 `%LOCALAPPDATA%\H3Workbench`，设有 `H3_WORKBENCH_RUNTIME_DIR` 时使用指定位置。ComfyUI 的 Python 环境不适用于此配置。重启工作台后，在节点上检查所选操作的就绪状态。「3D 资产加工」菜单显示「Native3D LOD」状态。Agent 可用 `canvas_native3d_capabilities` 查看 `source_lod` 的就绪状态和参数。
+
+## 处理 Pixal3D 结果
+
+将 Pixal3D 结果卡片的 `model` 输出连到「原高模 · 百分比LOD」。首次运行时，画布读取已有 ComfyUI GLB 并保存到当前项目，再提交 Native3D 加工。保存期间请留在当前项目；项目、写入权限或模型输入变化会阻止此次提交。Agent 可用原 `nodeId` 和提交返回的 `jobId` 调用 `canvas_wait_for_node`；`pending:true` 时续查同一任务。
 
 ## 可选能力与检查
 

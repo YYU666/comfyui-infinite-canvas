@@ -85,7 +85,7 @@ class OwnedComfyShutdownTests(unittest.TestCase):
                 process_info = json.loads(result.stdout.strip().splitlines()[-1])
                 processes = [psutil.Process(process_info[name]) for name in ("comfyPid", "loggerPid")]
                 deadline = time.monotonic() + 10
-                while time.monotonic() < deadline and not marker.exists():
+                while time.monotonic() < deadline and (not marker.exists() or marker.read_text(encoding="utf-8") != "done"):
                     time.sleep(0.05)
                 self.assertEqual(marker.read_text(encoding="utf-8"), "done")
                 while time.monotonic() < deadline and (not log.exists() or "COMFY_SURVIVED_PARENT" not in log.read_text(encoding="utf-8")):

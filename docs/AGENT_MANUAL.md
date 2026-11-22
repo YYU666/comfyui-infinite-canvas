@@ -121,7 +121,7 @@ MCP 等价工具：`canvas_current`、`canvas_call`（等到页面工具返回�
 | `canvas_import_asset` | 复用已保存素材 | 需要素材节点；`assetPath` 必须是 `assets/<64位十六进制>.<扩展名>` |
 | `canvas_download_video` | 把分享链接下载进当前画布 | 必填 `url`（仅 http/https，可含一段分享文字）。可选 `nodeId`（已有视频链接下载节点）、`x`/`y`（新建坐标，须成对）、`wait`（默认 `false`） |
 | `canvas_generate_node` | 提交一次生成 | **`wait` 必须为 `false`**；成功只表示已提交（有新 `promptId`）。`wait:true` 会被拒绝 |
-| `canvas_wait_for_node` | 只读等待已提交的任务 | `timeoutMs` 在当前页通道为 1000–20000，省略则 20000。未结束返回 `pending:true`，不重新提交 |
+| `canvas_wait_for_node` | 只读等待已提交的任务 | `timeoutMs` 在当前页通道为 1000–20000，省略则 20000。未结束返回 `pending:true`。Native3D 续查同时传原 `nodeId` 和 `jobId` |
 | `canvas_cancel_node` | 取消该节点正在进行的生成 | 只有 `nodeId`。与界面取消按钮相同，不删除节点。只读页会拒绝 |
 | `canvas_focus_node` | 把视口对到节点 | 便于用户看见 |
 | `canvas_delete_node` | 删除节点 | 仅清理已确认无用的临时节点；运行中可能取消任务 |
@@ -194,7 +194,11 @@ MCP 等价工具：`canvas_current`、`canvas_call`（等到页面工具返回�
 
 ### 3.2 本地可选工具（需本机注册）
 
-Pixal3D 单图转 3D 走「节点库 → 本地节点／导入工作流」。先检查本机 ComfyUI 的节点和六份权重，再在当前项目可见节点连接参考图、提交、等待终态，核对结果卡片的 GLB 下载。已有模型的 Native3D 加工从默认菜单创建，按操作确认独立 Python、适配器或 FBX 转换器就绪，并核对保存后的结果；几何校验未通过时先查看诊断。 [Pixal3D 工作流](REFMUSE_LOCAL_IMAGE_TO_3D.md) · [Native3D 配置](NATIVE3D.md)
+Pixal3D 单图转 3D 走「节点库 → 本地节点／导入工作流」。在「3D 资产加工」菜单运行「检查 Pixal3D 图生 3D 依赖」，核对本机 ComfyUI 的节点和六份权重。若还要做 LOD，另看同一菜单里的「Native3D LOD」状态；Agent 可用 `canvas_native3d_capabilities` 读取 `source_lod` 就绪状态和缺失项。
+
+在当前项目的可见节点连接参考图，提交并等待 Pixal3D 结果。可下载 GLB，或用 `canvas_connect_nodes` 将结果卡片的 `model` 输出连到 `model_lod` 节点的模型输入。第一次运行 LOD 时，画布将该 ComfyUI GLB 保存到当前项目再提交加工。「保存生成的 GLB」期间应留在当前项目；项目、写入权限或输入发生变化会阻止继续提交。几何校验未通过时先查看诊断。
+
+Native3D 用 `canvas_generate_node`（`wait:false`）提交，保留返回的 `jobId`。用 `canvas_wait_for_node` 传原 `nodeId` 和 `jobId`；`pending:true` 时再查同一任务，页桥每次等待请求使用新的 `opId`。任务更换或中断时重新读取节点状态。完成后用 `canvas_get_state` 核对当前项目的结果节点。 [Pixal3D 工作流](REFMUSE_LOCAL_IMAGE_TO_3D.md) · [Native3D 配置](NATIVE3D.md)
 
 | 预设 | 任务 | 主要模型 |
 | --- | --- | --- |
