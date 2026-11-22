@@ -265,8 +265,32 @@
       "denoise": 1
     }
   },
-  "refine_stage": {
-    "class_type": "Trellis2UpsampleStage",
+  "high_mesh": {
+    "class_type": "VaeDecodeShapeTrellis",
+    "inputs": {
+      "samples": [
+        "sample_coarse_shape",
+        0
+      ],
+      "vae": [
+        "shape_vae",
+        0
+      ]
+    }
+  },
+  "bounded_high_mesh": {
+    "class_type": "DecimateMesh",
+    "inputs": {
+      "mesh": [
+        "high_mesh",
+        0
+      ],
+      "target_face_count": 300000,
+      "placement_mode": "midpoint"
+    }
+  },
+  "texture_stage": {
+    "class_type": "Trellis2TextureStage",
     "inputs": {
       "positive": [
         "shape_stage",
@@ -278,68 +302,6 @@
       ],
       "shape_latent": [
         "sample_coarse_shape",
-        0
-      ],
-      "vae": [
-        "shape_vae",
-        0
-      ],
-      "target_resolution": 1024
-    }
-  },
-  "sample_refined_shape": {
-    "class_type": "KSampler",
-    "inputs": {
-      "model": [
-        "shape_model",
-        0
-      ],
-      "positive": [
-        "refine_stage",
-        0
-      ],
-      "negative": [
-        "refine_stage",
-        1
-      ],
-      "latent_image": [
-        "refine_stage",
-        2
-      ],
-      "seed": 42,
-      "steps": 12,
-      "cfg": 7.5,
-      "sampler_name": "euler",
-      "scheduler": "simple",
-      "denoise": 1
-    }
-  },
-  "high_mesh": {
-    "class_type": "VaeDecodeShapeTrellis",
-    "inputs": {
-      "samples": [
-        "sample_refined_shape",
-        0
-      ],
-      "vae": [
-        "shape_vae",
-        0
-      ]
-    }
-  },
-  "texture_stage": {
-    "class_type": "Trellis2TextureStage",
-    "inputs": {
-      "positive": [
-        "refine_stage",
-        0
-      ],
-      "negative": [
-        "refine_stage",
-        1
-      ],
-      "shape_latent": [
-        "sample_refined_shape",
         0
       ]
     }
@@ -392,11 +354,11 @@
     "class_type": "UnwrapMesh",
     "inputs": {
       "mesh": [
-        "high_mesh",
+        "bounded_high_mesh",
         0
       ],
       "segmenter": "pec",
-      "resolution": 1024,
+      "resolution": 512,
       "padding": 1,
       "weld_distance": 0.0002
     }
@@ -413,10 +375,10 @@
         0
       ],
       "reference_mesh": [
-        "high_mesh",
+        "bounded_high_mesh",
         0
       ],
-      "texture_size": 1024
+      "texture_size": 512
     }
   },
   "materials": {

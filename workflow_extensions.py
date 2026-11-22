@@ -419,6 +419,19 @@ def comfy_input_fields(metadata):
                 target[qualified] = inner
     for section in (required, optional):
         for key, spec in list(section.items()):
+            if isinstance(spec, (list, tuple)) and spec and spec[0] == "COMFY_DYNAMICCOMBO_V3":
+                config = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+                options = config.get("options")
+                require(isinstance(options, list), "ComfyUI 动态选项定义无效。")
+                keys = [
+                    option["key"] for option in options
+                    if isinstance(option, dict) and isinstance(option.get("key"), str)
+                    and isinstance(option.get("inputs"), dict)
+                    and not any(option["inputs"].values())
+                ]
+                require(bool(keys), "动态选项需要额外输入，当前不支持。", "EXTENSION_UNSUPPORTED")
+                section[key] = [keys, config]
+                continue
             if not isinstance(spec, (list, tuple)) or not spec or spec[0] != "COMBO":
                 continue
             config = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
