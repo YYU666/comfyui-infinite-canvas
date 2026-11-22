@@ -87,6 +87,12 @@ class UpdateAPITests(unittest.TestCase):
 
 
 class UpdatePreflightTests(unittest.TestCase):
+    @staticmethod
+    def idle_video_apis():
+        # Explicit idle controllers: unconfigured Mock attributes are truthy.
+        return {f"video_{feature}_api": mock.Mock(jobs=mock.Mock(active_count=mock.Mock(return_value=0)))
+                for feature in ("edit", "rhythm", "chroma", "repair", "plate")}
+
     def server(self, held=None, status="done"):
         store = mock.Mock()
         store.reclaim_dead_locks.return_value = []
@@ -94,6 +100,7 @@ class UpdatePreflightTests(unittest.TestCase):
         return mock.Mock(
             project_store=store,
             sprite_atlas_api=None,
+            **self.idle_video_apis(),
             queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": status}]})),
         )
 
@@ -113,7 +120,7 @@ class UpdatePreflightTests(unittest.TestCase):
             store = ProjectStore(Path(temporary), "owner-update")
             document = store.create("场景甲")
             store.open(document["id"])
-            server = mock.Mock(project_store=store, sprite_atlas_api=None, queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": "done"}]})))
+            server = mock.Mock(project_store=store, sprite_atlas_api=None, **self.idle_video_apis(), queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": "done"}]})))
             lock = store._project_path(document["id"]).parent / ".lock"
             with mock.patch("video_workbench_launcher.shutil.disk_usage", return_value=mock.Mock(free=1024 ** 3)):
                 with self.assertRaises(UpdateError) as caught:

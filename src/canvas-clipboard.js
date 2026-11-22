@@ -113,6 +113,17 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
       delete data.error;
     }
     if (data.sourceArtDirectorId) data.sourceArtDirectorId = idMap.get(data.sourceArtDirectorId) || null;
+    if (['videoSpeed', 'videoTimeRemap'].includes(source.type)) {
+      Object.assign(data, { status: 'idle', stage: '', progress: 0 });
+      ['rhythmJobId', 'rhythmSubmittedSettings', 'rhythmResultAssetPath', 'rhythmResult', 'rhythmResultSettings', 'rhythmResultJobId', 'rhythmInputCache', 'error'].forEach(key => delete data[key]);
+    }
+    if (source.type === 'videoChromaKey') { Object.assign(data, { status: 'idle', stage: '', progress: 0 }); ['chromaJobId', 'chromaSubmittedSettings', 'chromaResultAssetPath', 'chromaResult', 'chromaResultSettings', 'chromaResultJobId', 'chromaInputCache', 'error'].forEach(key => delete data[key]); }
+    if (source.type === 'videoLocalRepair') { Object.assign(data, { status: 'idle', stage: '', progress: 0 }); ['repairJobId', 'repairSubmittedSettings', 'repairSubmittedSource', 'repairInputCache', 'repairPendingResult', 'repairResultAssetPath', 'repairResult', 'repairResultSettings', 'repairResultSource', 'repairResultJobId', 'error'].forEach(key => delete data[key]); }
+    if (source.type === 'videoWhitePlate') { Object.assign(data, { status: 'idle', stage: '', progress: 0 }); ['plateJobId', 'plateSubmittedSettings', 'plateResultAssetPath', 'plateResultNodeId', 'plateResultUrl', 'plateResult', 'plateResultJobId', 'plateInputCache', 'error'].forEach(key => delete data[key]); }
+    if (source.type === 'videoEdit') {
+      Object.assign(data, { status: 'idle', stage: '', progress: 0 });
+      ['videoEditJobId', 'editResultAssetPath', 'editResult', 'editResultDocument', 'editSubmittedDocument', 'editResultJobId', 'editInputCache', 'error'].forEach(key => delete data[key]);
+    }
     if (source.type === 'generator' || source.type === 'imageProcess') {
       Object.assign(data, { status: 'idle', progress: 0, stage: '', runs: [] });
       ['promptId', 'resultUrl', 'error', 'hasMedia', 'inlineImageOutputId'].forEach((field) => { delete data[field]; });
