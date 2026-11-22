@@ -275,9 +275,9 @@ def ensure_workbench(timeout: float = 120, *, native3d_only: bool = False) -> di
     process = None
     instance = read_instance()
     health = probe_health(instance) if instance else None
-    if health and not comfy_autostart_enabled():
+    if health and not native3d_only and not comfy_autostart_enabled():
         return _workbench_ready(instance, health, process)
-    if health:
+    if health and not native3d_only:
         request_comfy_start(instance, health, timeout=min(3, timeout))
     if not health:
         # Import lazily: settings uses lifecycle helpers as well.
@@ -304,15 +304,18 @@ def ensure_workbench(timeout: float = 120, *, native3d_only: bool = False) -> di
     while time.monotonic() < deadline:
         instance = read_instance()
         health = probe_health(instance, timeout=min(0.6, max(0.01, deadline - time.monotonic()))) if instance else None
-        if health and not comfy_autostart_enabled():
+        if health and not native3d_only and not comfy_autostart_enabled():
             return _workbench_ready(instance, health, process)
         if health:
             url = f"http://127.0.0.1:{instance['port']}"
-            if native3d_only:
+            if native3d_only and health.get("native3d", {}).get("service") is True:
                 return {"ok": True, "url": url + "/", "pid": health["pid"],
                         "started": process is not None and process.pid == health["pid"],
                         "workbenchReady": True, "comfyReady": None, "comfyRequired": False,
                         "native3dServiceReady": bool(health.get("native3d", {}).get("service", False))}
+            if native3d_only:
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+                continue
             request = urllib.request.Request(url + "/api/comfy/system_stats", headers={"X-H3-Token": instance.get("token", "")})
             try:
                 with urllib.request.urlopen(request, timeout=min(1, max(0.01, deadline - time.monotonic()))) as response:
@@ -328,7 +331,7 @@ def ensure_workbench(timeout: float = 120, *, native3d_only: bool = False) -> di
         time.sleep(min(0.2, max(0, deadline - time.monotonic())))
     if health:
         if native3d_only:
-            raise RuntimeError("画布健康检查尚未完成，未停止或重启已有服务。")
+            raise RuntimeError("画布已连接，但 Native3D 服务尚未就绪；请检查 3D 配置。")
         raise RuntimeError(f"画布服务已运行，但 ComfyUI 尚未就绪；请检查 {runtime_dir() / 'logs' / 'comfyui.log'}。未停止或重启已有服务。")
     raise RuntimeError(f"等待画布服务启动超时；请检查 {runtime_dir() / 'logs' / 'app.log'}。未停止后台启动过程。")
 

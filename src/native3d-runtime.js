@@ -10,7 +10,7 @@ import {nativeNextStepPlan,nextStepActions,nextStepOrigin} from './native3d-next
 import {nativeRerunTarget,withNativeRerunLock,nativeAutomaticLODStages,layoutNativeResultDelivery,nextNativeLODSeed,nativeLODStageRetryPlan} from './native3d-rerun.js';
 import { findFreePosition } from './canvas-layout.js';
 import { useEffect, useRef, useState } from 'react';
-import { nativeRequest, nativeRunIdentity, nativeParameters, nativeAdapterSchema, nativeGeometryInputError } from './native3d.js';
+import { isGeneratedGLB, nativeRequest, nativeRunIdentity, nativeParameters, nativeAdapterSchema, nativeGeometryInputError } from './native3d.js';
 import {nativeInputs,planRecord,planConfirmationKey,assertPlanCurrent,assertConfirmedPlan,planUVParameters} from './native3d-plan.js';
 import { transferNativeArtifacts, nativeRunIsCurrent, commitNativeDelivery } from './native3d-delivery.js';
 import { nativeStagePlan, applyNativeStagePlan, saveNativeStagePoster } from './native3d-stage.js';
@@ -143,14 +143,45 @@ export function useNative3D(options) {
     if(node.data.nativeSubmissionUncertain)throw Error('提交结果待核实，请先同步任务状态；不会更换种子或重复提交。');
     if(node.data.nativeLocalRepair&&(node.data.nativeRun||node.data.nativeJobId))throw Error('此候选已有局部修复尝试，请查看已有进度或结果。');
 
-    if (['queued', 'running', 'finishing'].includes(node.data.status)) throw new Error('任务已在运行。');
+    if (['uploading', 'queued', 'running', 'finishing'].includes(node.data.status)) throw new Error('任务已在运行。');
     if(node.data.operation==='source_lod'&&node.data.nativeParameters?.retryStage&&node.data.nativeRun) {
       const parameters=node.data.nativeParameters;
       const seed=nextNativeLODSeed(o.nodesRef.current,parameters.retryJobId,parameters.retryStage);
       patch(id,{nativeParameters:{...parameters,seed},nativeLODStageRetry:{...node.data.nativeLODStageRetry,seed}});
       node=o.nodesRef.current.find(n=>n.id===id);
     }
-    const source = sourceFor(o, node);
+    let source = sourceFor(o, node);
+    if (['source_lod','repair_lod'].includes(node.data.operation) && isGeneratedGLB(source) && !source.data.assetPath) {
+      const previous = node.data.status;
+      const { id: sourceId, data: model } = source;
+      const projectId = o.projectId;
+      const sameSource = () => {
+        const next = latest.current;
+        const currentNode = next.nodesRef.current.find(item => item.id === id);
+        const currentSource = sourceFor(next,currentNode);
+        return next.projectId === projectId && !next.readOnly && !next.switchingRef.current
+          && currentNode?.data.status === 'uploading'
+          && currentSource?.id === sourceId && currentSource.data.url === model.url;
+      };
+      patch(id,{status:'uploading',stage:'保存生成的 GLB',error:null});
+      try {
+        const response = await fetch(model.url,{redirect:'error'});
+        if (!response.ok) throw Error('生成的 GLB 无法读取，请检查原生成结果。');
+        const blob = await response.blob();
+        if (blob.size > 512 * 1024**2 || await blob.slice(0,4).text() !== 'glTF') throw Error('生成结果不是受支持的 GLB。');
+        if (!sameSource()) throw Error('模型输入已改变。');
+        const assetPath = await o.saveNativeFile(new File([blob],model.filename || model.name,{type:'model/gltf-binary'}));
+        if (!sameSource()) throw Error('模型输入已改变。');
+        o.updateNode(sourceId,{assetPath,localFile:true});
+        await o.persistProject();
+        if (!sameSource()) throw Error('模型输入已改变。');
+        patch(id,{status:previous});
+        return run(id);
+      } catch (error) {
+        if (sameSource()) patch(id,{status:previous,error:error.message});
+        throw error;
+      }
+    }
     const inputs=inputsFor(o,node);
     // Prerequisite failures must preserve the prior failed task and its provenance.
     const orientationError=node.data.operation==='uv_plan' ? nativeUVOrientationError(node,inputs) : null;
@@ -303,7 +334,19 @@ export function useNative3D(options) {
         if(!o.readOnly&&!o.switchingRef.current)for(const pending of o.nodesRef.current.filter(n=>n.type==='native3d'&&n.data.nativeRun?.opId&&!n.data.nativeJobId&&(n.data.nativeSubmissionUncertain||n.data.status==='queued'))){try{await syncTask(pending.id,false);}catch{/* unresolved submission stays bound; never auto-resubmit */}}
         if (!o.readOnly && !o.switchingRef.current) for (const node of o.nodesRef.current.filter(n => n.type === 'native3d' && n.data.nativeJobId && n.data.nativeDeliveredJobId !== n.data.nativeJobId && n.data.nativeDeliveryErrorJobId !== n.data.nativeJobId && n.data.status!=='stale'&&!['failed','error','cancelled'].includes(n.data.nativeBackendStatus))) {
           const before = { ...node.data.nativeRun, jobId: node.data.nativeJobId };
-          const value = await nativeRequest(`/jobs/${encodeURIComponent(before.jobId)}`); const job = value.job || value;
+          let job;
+          try {
+            const value = await nativeRequest(`/jobs/${encodeURIComponent(before.jobId)}`);
+            job = value.job || value;
+          } catch (error) {
+            if (error.status !== 404) throw error;
+            const live = o.nodesRef.current.find(n => n.id === node.id);
+            if (!stopped && latest.current.projectId === o.projectId && !o.switchingRef.current
+                && live?.data.nativeJobId === before.jobId) {
+              o.updateNode(node.id, { status:'error', nativeBackendStatus:'error', stage:'任务已中断', error:'原生 3D 后台任务已不存在。' });
+            }
+            continue;
+          }
           if (stopped || latest.current.projectId !== o.projectId) return;
           const live = o.nodesRef.current.find(n => n.id === node.id);
           if (!live || live.data.nativeJobId !== before.jobId || live.data.nativeRun?.opId !== before.opId || job.id !== before.jobId) continue;

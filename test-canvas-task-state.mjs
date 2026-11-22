@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { migrateCanvas } from './src/canvas-migration.js';
 import {
   absentPromptPatches, absentQueueJobPatches, canvasHasActiveTask, classifyExportJob, comfyQueuePromptIds,
-  exportJobRequest, exportLookupPatch, patchNodes, promptEventTargets, promptExecutingPatch, promptProgressPatch,
+  exportJobRequest, exportLookupPatch, settleSavedNode, patchNodes, promptEventTargets, promptExecutingPatch, promptProgressPatch,
 } from './src/canvas-task-state.js';
 
 const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data });
@@ -106,3 +106,11 @@ assert.equal(patchNodes([byId.remap], [{ id: 'remap', patch: { status: 'error' }
 assert.equal(patchNodes([byId.remap], [{ id: 'remap', patch: { status: 'error' } }])[0].data.rhythmJobId, jobId('vry'));
 
 console.log('CANVAS_TASK_STATE_OK launcher ignores stamped media promptEvents=generator-only staleExport=error liveExport=running');
+
+for (const status of ['uploading','queued','running','finishing']) {
+  const node = {type:'native3d',data:{status,nativeJobId:'n3d_example'}};
+  assert.equal(canvasHasActiveTask([node]),true);
+  assert.equal(settleSavedNode(node),node);
+}
+const uncertain3d = {type:'native3d',data:{status:'error',nativeRun:{opId:'x'},nativeSubmissionUncertain:true}};
+assert.equal(canvasHasActiveTask([uncertain3d]),true);

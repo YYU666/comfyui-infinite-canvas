@@ -23,6 +23,22 @@ class LifecycleTests(unittest.TestCase):
         self.environment.stop()
         self.temporary.cleanup()
 
+    def test_native3d_start_reuses_ready_service_without_touching_comfy(self):
+        from workbench_lifecycle import ensure_workbench
+        for enabled in (False, True):
+            with self.subTest(comfy_autostart=enabled), \
+                 patch('workbench_lifecycle.read_instance', return_value={'port': 8791}), \
+                 patch('workbench_lifecycle.probe_health', return_value={'pid': 123, 'native3d': {'service': True}}), \
+                 patch('workbench_lifecycle.comfy_autostart_enabled', return_value=enabled), \
+                 patch('workbench_lifecycle.request_comfy_start') as start, \
+                 patch('workbench_lifecycle.urllib.request.urlopen') as probe:
+                answer = ensure_workbench(.5, native3d_only=True)
+                self.assertTrue(answer['native3dServiceReady'])
+                self.assertFalse(answer['comfyRequired'])
+                self.assertIsNone(answer['comfyReady'])
+                start.assert_not_called()
+                probe.assert_not_called()
+
     def test_runtime_uses_isolated_directory(self):
         self.assertEqual(runtime_dir(), Path(self.temporary.name))
 

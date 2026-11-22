@@ -1078,7 +1078,7 @@ def main(argv=None):
                 if health:
                     url = f"http://127.0.0.1:{health['port']}/"
                     LOGGER.info("工作台已在运行：%s", url)
-                    if comfy_autostart_enabled():
+                    if comfy_autostart_enabled() and os.environ.get("H3_WORKBENCH_NATIVE3D_ONLY") != "1":
                         request_comfy_start(instance, health)
                     if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
                         webbrowser.open(url)

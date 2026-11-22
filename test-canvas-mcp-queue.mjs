@@ -113,3 +113,16 @@ for (const paused of [true, false]) {
 }
 
 console.log('CANVAS_MCP_QUEUE_OK paused=true gpuBusy=true promptless=true terminal=true noDuplicate=true');
+
+{
+  const { latest } = fixture();
+  const node = latest.current.nodesRef.current[0];
+  node.type = 'native3d';
+  Object.assign(node.data, {status:'running', nativeJobId:'n3d_original'});
+  const response = await waitForNodeForMcp(latest, {nodeId:node.id,jobId:'n3d_original',timeoutMs:4}, fastWait);
+  assert.equal(response.pending,true);
+  assert.equal(response.jobId,'n3d_original');
+  await assert.rejects(waitForNodeForMcp(latest, {nodeId:node.id,jobId:'n3d_other'}, fastWait), /任务已更换/);
+  node.data.status='completed';
+  assert.equal((await waitForNodeForMcp(latest,{nodeId:node.id,jobId:response.jobId},fastWait)).pending,false);
+}

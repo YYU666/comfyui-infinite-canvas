@@ -112,7 +112,7 @@ import { localConnectionPresentation } from './local-connection';
 import { downloadDoctorLogs } from './doctor-client';
 import { Native3DNode, Native3DContext, Native3DViewer } from './Native3D.jsx';
 import { useNative3D } from './native3d-runtime';
-import { NATIVE3D_PRESETS } from './native3d.js';
+import { NATIVE3D_PRESETS, isGeneratedGLB, nativeRequest } from './native3d.js';
 import { nativeStageEdgeLabel } from './native3d-stage.js';
 import { linkNativeDiagnostic, linkNativeProcess } from './native3d-diagnostic.js';
 const SNAP_KEY = 'h3-canvas-snap-v1';
@@ -304,6 +304,7 @@ function MediaNode({ id, data, selected }) {
     <NodeTitle id={id} data={data} kind="media" /><NodeActions id={id} data={data} selected={selected} />
     <div className="media-empty"><ArrowDownToLine size={24} /><strong>{data.name || 'GLB 模型'}</strong>{data.url && <a className="nodrag" href={data.url} download={data.name}>下载 GLB</a>}</div>
     <Handle type="target" position={Position.Left} id="preview" className="neo-handle target" />
+    {isGeneratedGLB({type:'media',data}) && <Handle type="source" position={Position.Right} id="model" className="neo-handle source" title="连接到 3D LOD" />}
   </div>;
   return <div className={`media-shell media-${kind} ${kind === 'image' ? 'image-node' : ''} ${selected ? 'selected' : ''} ${data.pinned ? 'pinned' : ''}`}>
     <NodeTitle id={id} data={data} kind="media" /><NodeActions id={id} data={data} selected={selected} />
@@ -652,6 +653,17 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const [zoomMenuOpen, setZoomMenuOpen] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(() => localStorage.getItem(SNAP_KEY) !== 'false');
   const [addMenu, setAddMenu] = useState(null);
+  const [pixalReadiness, setPixalReadiness] = useState('');
+  const checkPixalReadiness = async () => {
+    setPixalReadiness('正在检查 Pixal3D…');
+    try {
+      const report = await nativeRequest('/pixal3d-readiness');
+      const missing = Object.entries(report.models || {}).filter(([, value]) => value.status !== 'ready')
+        .map(([name, value]) => name + (value.status === 'ambiguous' ? '（重复）' : ''));
+      setPixalReadiness(report.ready ? 'Pixal3D · 节点和权重就绪' :
+        ['Pixal3D · 未就绪', report.reason, ...(report.missingNodes || []), ...missing].filter(Boolean).join(' · '));
+    } catch (error) { setPixalReadiness('Pixal3D · ' + error.message); }
+  };
   const [nodeMenu, setNodeMenu] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const previewCloseRef = useRef(null);
@@ -2524,6 +2536,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         {addMenu && <div className="add-node-menu" role="menu" aria-label="添加节点" style={{ left: addMenu.x, top: addMenu.y }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}>
           <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>
           <div className="add-menu-title">3D 资产加工</div>
+          <small role="status">{native3d.capabilities?.operations?.source_lod?.ready ? 'Native3D LOD · 就绪' :
+            ['Native3D LOD · 未就绪', native3d.capabilities?.operations?.source_lod?.reason || native3d.capabilityError,
+              '配置入口：H3_NATIVE3D_PYTHON 或运行目录 native3d-config.json'].filter(Boolean).join(' · ')}</small>
+          <button onClick={checkPixalReadiness}><span>检查 Pixal3D 图生 3D 依赖</span></button>
+          {pixalReadiness && <small role="status">{pixalReadiness}</small>}
+          <a href="https://docs.comfy.org/tutorials/3d/pixal3d" target="_blank" rel="noreferrer">Pixal3D 节点与权重配置</a>
           {Object.entries(NATIVE3D_PRESETS).filter(([key]) => key !== "model_lod_legacy").map(([key, [type, settings]]) => <button key={key} onClick={() => addNode(type, settings, addMenu.flow)}><i><Layers3 size={17} /></i><span>{settings.title}</span><Plus size={13} /></button>)}
           <div className="add-menu-title">游戏美术 / 精灵图</div>
           <button onClick={() => addNode(...NODE_PRESETS.sprite_atlas, addMenu.flow)}><i><Grid2X2 size={17} /></i><span>3D 角色转多方向图集<small>Blender CPU · 颜色 + 相机空间法线 + JSON</small></span><Plus size={13} /></button>

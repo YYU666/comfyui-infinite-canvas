@@ -20,6 +20,13 @@ export const NATIVE3D_PRESETS = {
   model_bake: ['native3d', { title: '材质烘焙', operation: 'bake' }],
 };
 export const isNative3D = (node) => node?.type === 'native3d';
+export function isGeneratedGLB(node) {
+  const data = node?.data;
+  if (node?.type !== 'media' || data?.kind !== 'model' || data.output !== true) return false;
+  if (/^assets\/[a-f0-9]{64}\.glb$/i.test(data.assetPath || '')) return true;
+  return typeof data.url === 'string' && data.url.startsWith('/api/comfy/view?')
+    && data.type === 'output' && /\.glb$/i.test(data.filename || data.name || '');
+}
 export const nativeAssetUrl = (projectId, path) => /^assets\/[a-zA-Z0-9_.-]+$/.test(path || '') ? `/api/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(path.slice(7))}` : null;
 export function nativeAdapterSchema(adapter) { return adapter?.parameters || adapter?.parameterSchema || adapter?.schema || { properties: {} }; }
 export function nativeParameterValue(adapter, draft, key, rule) {
@@ -83,6 +90,12 @@ export function nativeModelConnection(connection, source, target, edges) {
     if (!(['uv_plan','uv','bake'].includes(target.data.operation) || (target.data.operation==='source_lod' && /^lod[1-4]$/.test(target.data.nativeParameters?.retryStage || target.data.nativeParameters?.localRepairStage || ''))) || connection.sourceHandle!=='model' || !source.data.assetPath || source.data.nativeUVPlan) return {error:'请将已保存的高模模型连接到高模参考输入。'};
     return {connection:{source:source.id,target:target.id,sourceHandle:'model',targetHandle:'high',data:nativeOutputBinding(source)},source,target,multiple:false};
   }
+  if (isGeneratedGLB(source) && isNative3D(target) && ['source_lod','repair_lod'].includes(target.data.operation)
+      && connection.sourceHandle === 'model' && connection.targetHandle === 'model') {
+    const normalized = { source: source.id, target: target.id, sourceHandle: 'model', targetHandle: 'model' };
+    return { connection: normalized, source, target, multiple: false,
+      existing: edges.find(edge => Object.entries(normalized).every(([key,value]) => edge[key] === value)) };
+  }
   if (source?.data.nativeUVPlan) return {error:'切缝方案不是模型，请连接方案端口。'};
   if (!isNative3D(source) || !isNative3D(target) || !source.data.assetPath || target.data.operation === 'analyze' || connection.targetHandle !== 'model' || connection.sourceHandle !== 'model') return { error: '请将已保存的3D模型输出连接到处理节点的模型输入。' };
   const geometryError=nativeGeometryInputError(source,target.data.operation,target.data.nativeParameters);
@@ -93,7 +106,11 @@ export function nativeModelConnection(connection, source, target, edges) {
 export async function nativeRequest(path, body) {
   const response = await fetch(`/api/native3d${path}`, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const value = await response.json().catch(() => ({}));
-  if (!response.ok || value.ok === false) throw new Error(typeof value.error === 'string' ? value.error : value.error?.message || value.message || `3D服务不可用（HTTP ${response.status}）`);
+  if (!response.ok || value.ok === false) {
+    const error = new Error(typeof value.error === 'string' ? value.error : value.error?.message || value.message || `3D服务不可用（HTTP ${response.status}）`);
+    error.status = response.status;
+    throw error;
+  }
   return value;
 }
 export function nativeDeliveryState(node, source, job, inputs) {

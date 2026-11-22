@@ -401,14 +401,23 @@ async function waitForVideoJob(latest, nodeId, jobKey, jobId, timeoutMs, waitImp
 async function waitForNative3D(latest, nodeId, timeoutMs, waitImpl) {
   const id = mcpNode(latest,nodeId).data.nativeJobId;
   if (!id) throw new Error('此3D节点尚未提交任务。');
-  const node = await waitImpl(() => {
+  let node;
+  try {
+    node = await waitImpl(() => {
+      const current=mcpNode(latest,nodeId);
+      if (current.data.nativeJobId !== id) throw Error('3D任务已更换。');
+      return ['completed','error','failed','cancelled','stale'].includes(current.data.status) ? current : null;
+    },timeoutMs,500);
+  } catch (error) {
+    if (!/超时|timeout/i.test(error.message)) throw error;
     const current=mcpNode(latest,nodeId);
-    return current.data.nativeJobId===id && ['completed','error','failed','cancelled','stale'].includes(current.data.status) ? current : null;
-  },timeoutMs,500);
+    if (current.data.nativeJobId !== id) throw Error('3D任务已更换。');
+    return {pending:true,jobId:id,node:nodeSummary(current),resultNode:null};
+  }
   if(node.data.status!=='completed') throw new Error(node.data.error || `3D任务状态：${node.data.status}`);
   const inline=node.data.nativeOutputRecords?.find(record=>record.jobId===id&&record.recordId===node.data.nativeCurrentOutputId);
   const result=inline?nativeOutputNode(node,inline.recordId):latest.current.nodesRef.current.find(n=>n.data.sourceJobId===id);
-  return {node:nodeSummary(node),resultNode:nodeSummary(result)};
+  return {pending:false,jobId:id,node:nodeSummary(node),resultNode:nodeSummary(result)};
 }
 
 export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
@@ -451,7 +460,8 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
   if (initial.type === 'native3d') {
     await latest.current.actions.generateNode(nodeId);
     if (wait) return waitForNative3D(latest, nodeId, timeoutMs, waitImpl);
-    return { node: nodeSummary(mcpNode(latest, nodeId)) };
+    const node = mcpNode(latest, nodeId);
+    return { node: nodeSummary(node), jobId: node.data.nativeJobId };
   }
   if (isImageProcess(initial)) {
     const result = await latest.current.actions.generateNode(nodeId);
@@ -483,7 +493,7 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
   return { node: nodeSummary(finished), resultNode: nodeSummary(resultNode), ...(finished.data.modelPickNote ? { announcement: finished.data.modelPickNote } : {}) };
 }
 
-export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, waitImpl = waitFor) {
+export async function waitForNodeForMcp(latest, { nodeId, jobId, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
   if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial) || isVideoPlate(initial)) {
     const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : isVideoRepair(initial) ? 'repairJobId' : 'plateJobId';
@@ -508,7 +518,10 @@ export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, 
       return { pending: true, node: nodeSummary(mcpNode(latest, nodeId)), resultNode: null };
     }
   }
-  if (initial.type === 'native3d') return waitForNative3D(latest, nodeId, timeoutMs, waitImpl);
+  if (initial.type === 'native3d') {
+    if (jobId && jobId !== initial.data.nativeJobId) throw Error('3D任务已更换。');
+    return waitForNative3D(latest, nodeId, timeoutMs, waitImpl);
+  }
   const promptId = initial.data.promptId;
   const queueJobId = initial.data.queueJobId;
   if (!promptId && !queueJobId) throw new Error('这个节点还没有提交生成任务。');
@@ -1072,7 +1085,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           const source = getNode(sourceId);
           const target = getNode(targetId);
           const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || (isVideoEdit(target) ? nextVideoEditPort(target, source, latest.current.edgesRef.current) : defaultTargetHandle(target, source, latest.current.edgesRef.current));
-          const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'native3d' ? (isNativePlanSource(source) ? 'plan' : 'model') : source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
+          const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: (source.type === 'native3d' || (source.type === 'media' && source.data.kind === 'model')) ? (isNativePlanSource(source) ? 'plan' : 'model') : source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
           if (connected?.error) throw new Error(connected.error);
           const edge = await waitFor(() => {
             return latest.current.edgesRef.current.find((item) => connected?.edgeId ? item.id === connected.edgeId : item.source === sourceId && item.target === targetId && item.targetHandle === handle) || null;
@@ -1095,10 +1108,11 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         description: '只读等待当前画布上已经提交的任务进入完成、失败或取消状态，并返回自动生成结果节点。不会重复提交任务。',
         inputSchema: schema({
           nodeId: nodeIdProperty,
+          jobId: { type: 'string', description: 'Native3D 续查时传入原任务标识，防止读到新任务。' },
           timeoutMs: { type: 'integer', minimum: 1000, maximum: 1500000, description: '等待上限，默认 300000 毫秒。当前页通道最长 20000 毫秒；到时返回 pending:true，不重新提交。' },
         }, ['nodeId']),
         annotations: { readOnlyHint: true, untrustedContentHint: true },
-        execute: respond(async ({ nodeId, timeoutMs = 300000 }) => waitForNodeForMcp(latest, { nodeId, timeoutMs })),
+        execute: respond(async ({ nodeId, jobId, timeoutMs = 300000 }) => waitForNodeForMcp(latest, { nodeId, jobId, timeoutMs })),
       },
       {
         name: 'canvas_cancel_node',

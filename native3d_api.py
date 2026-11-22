@@ -17,6 +17,17 @@ class Native3DAPI:
         try:
             if path == '/api/native3d/capabilities':
                 handler.send_json(200, self.jobs.capabilities())
+            elif path == '/api/native3d/pixal3d-readiness':
+                from scripts.check_pixal3d import check_readiness
+                server = handler.server
+                if server.native3d_only:
+                    handler.send_json(200, {'ready': False, 'reason': '仅 3D 模式未启用 ComfyUI。'})
+                else:
+                    try:
+                        report = check_readiness(server.extension_api.object_info())
+                    except (StoreError, OSError, ValueError):
+                        report = {'ready': False, 'reason': '当前 ComfyUI 不可用。'}
+                    handler.send_json(200, report)
             elif path == '/api/native3d/jobs':
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
                 handler.send_json(200, {'jobs':self.jobs.list(query.get('projectId', [''])[0])})
