@@ -330,7 +330,7 @@ function GeneratorNode(props) {
 }
 
 function BuiltinGeneratorNode({ id, data, selected }) {
-  const presentation = useResultPresentation(data, data.resultUrl);
+  const presentation = useResultPresentation(data, data.resultUrl, false, data.mode === 'qwenEdit' && selected);
   const {
     updateNode, generateNode, cancelNode, serverOnline, getReferences,
     getMentionItems, attachFilesToGenerator, openImagePreview, viewTier, openNodeShare, changeQwenReferences, addQwenMask, getQwenMask, readOnly,
@@ -415,7 +415,8 @@ function BuiltinGeneratorNode({ id, data, selected }) {
     {!imageFamily && <Handle type="target" position={Position.Left} id="prompt" className="neo-handle target prompt-target" title="连接 H3 提示词优化" />}
     <Handle type="source" position={Position.Right} id={imageFamily ? 'image' : 'video'} className="neo-handle source" title={data.resultUrl ? '连接当前已生成的成品；已有连线不会随重新生成更换素材' : '生成后可从这里连接当前成品'} />
 
-    <NodeToolbar isVisible={selected} position={Position.Bottom} offset={12} className="creator-toolbar nodrag">
+    <NodeToolbar isVisible={selected && (mode !== 'qwenEdit' || !presentation.compact)} position={Position.Bottom} offset={12}
+      className={mode === 'qwenEdit' ? 'creator-toolbar qwen-creator-toolbar nodrag' : 'creator-toolbar nodrag'}>
       <div className="creator-modes">
         {imageFamily ? <button className="active">{mode === 'characterSheet' ? '角色四视图生成' : mode === 'outfitEdit' ? '无抠图换装' : mode === 'qwenEdit' ? '图生图' : mode === 'identityEdit' ? '母图编辑 V2' : mode === 'image' ? '文生图' : '图片高清'}</button> : (mode === 'swap' ? [['swap', '角色替换']] : mode === 'upscale' ? [['upscale', '视频高清二采']] : [['reference', '全能参考'], ['frames', '首尾帧'], ...(mode === 'text' ? [['text', '文生视频']] : [])]).map(([value, label]) => <button key={value} className={mode === value ? 'active' : ''} disabled={running} onClick={() => switchMode(value)}>{label}</button>)}
         <span className="local-model"><i />{mode === 'characterSheet' ? 'Qwen 2.1 标准版 · 无高清' : mode === 'outfitEdit' ? `${models.outfitModelLabel} · ${models.outfitHdLabel}` : mode === 'qwenEdit' ? models.qwenModelLabel : mode === 'identityEdit' ? 'Identity Edit V2' : mode === 'image' ? (h3Image ? 'H3-Image · 6 步' : isFlux3 ? 'FLUX 3 Klein · 16 步' : isMoss ? 'MOSS · Spectrum 加速' : 'Krea2 Turbo') : mode === 'imageUpscale' ? models.upscaleModelLabel : mode === 'upscale' ? '高清二采' : 'MiniMax H3'}</span>
