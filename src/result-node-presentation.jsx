@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-export function useResultPresentation(data, url, blocked = false) {
-  const [expanded, setExpanded] = useState(false);
+export function useResultPresentation(data, url, blocked = false, revealSettings = false) {
+  const [expanded, setExpanded] = useState(revealSettings);
   const complete = Boolean(url) && ['done', 'completed'].includes(data.status) && !data.error && !data.shareError && !blocked;
-  useEffect(() => { if (complete) setExpanded(false); }, [complete, url]);
+  useEffect(() => { if (complete) setExpanded(revealSettings); }, [complete, url, revealSettings]);
   return { compact: complete && !expanded, complete, expanded, toggle: () => setExpanded(value => !value) };
 }
 export function ResultSettingsToggle({ presentation }) {

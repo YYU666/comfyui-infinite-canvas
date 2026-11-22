@@ -174,7 +174,7 @@
 .generator-subline b { font-weight: 450; color: #77777f; }
 .media-video-compact { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; background: #151518; color: #72727b; }
 .media-video-compact span { font-size: 9px; }
-.canvas-view-compact .creator-toolbar, .canvas-view-compact .node-top-toolbar, .canvas-view-placeholder .creator-toolbar, .canvas-view-placeholder .node-top-toolbar { display: none !important; }
+.canvas-view-compact .creator-toolbar:not(.qwen-creator-toolbar), .canvas-view-compact .node-top-toolbar, .canvas-view-placeholder .creator-toolbar:not(.qwen-creator-toolbar), .canvas-view-placeholder .node-top-toolbar { display: none !important; }
 .canvas-view-compact .media-preview { height: 110px; }
 .canvas-view-compact .generator-preview { height: 140px; }
 .canvas-view-compact .media-caption { display: none; }
