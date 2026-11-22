@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { IMAGE_MODEL_BY_ID, modelNodeClasses } from './src/image-model-catalog.js';
 import { chromium } from './test-browser.mjs';
 
 // Synthetic browser fixture: every request is intercepted; no live inference/service.
@@ -8,6 +9,14 @@ const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 const origin = 'http://127.0.0.1:8799';
 const browser = await chromium.launch({ headless: true });
 const failures = [], queued = [];
+const turbo = IMAGE_MODEL_BY_ID.turbo;
+const turboDefinitions = Object.fromEntries(modelNodeClasses(turbo, { editing: true }).map(name => [name, { input: { required: {} } }]));
+for (const { loader, name } of turbo.files) {
+  const node = { unet: 'UNETLoader', clip: 'CLIPLoader', vae: 'VAELoader' }[loader];
+  const options = (turboDefinitions[node].input.required[`${loader}_name`] ||= [[]]);
+  options[0].push(name);
+}
+turboDefinitions.CLIPLoader.input.required.type = [[turbo.clipType]];
 const makeProject = (readOnly = false, completed = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen references fixture', revision: 1, readOnly, shots: [], canvas: {
   viewport: { x: 20, y: 30, zoom: completed ? 0.45 : 0.9 },
   nodes: [
@@ -45,6 +54,10 @@ async function fixture(readOnly = false, completed = false) {
     if (url.pathname === '/api/queue') {
       if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: 'job-fixture', status: 'queued' }); }
       return json({ jobs: [] });
+    }
+    if (url.pathname.startsWith('/api/comfy/object_info/')) {
+      const name = decodeURIComponent(url.pathname.split('/').at(-1));
+      return json(turboDefinitions[name] ? { [name]: turboDefinitions[name] } : {});
     }
     if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
     if (url.pathname.startsWith('/api/')) return json({});
@@ -116,7 +129,8 @@ try {
   assert.equal(updated.ok, true);
   await node.getByLabel('Qwen 模型版本').selectOption('turbo');
   assert.match(await node.innerText(), /8 步 · Turbo/);
-  await call('canvas_generate_node', { nodeId: 'qwen' });
+  const run = await call('canvas_generate_node', { nodeId: 'qwen' });
+  assert.equal(run.ok, true, run.error);
   assert.equal(queued.length, 1);
   assert.equal(queued[0].workflow.encode.inputs.prompt, '保留<image1>的结构，参考<image2>氛围，使用<image3>的笔触。');
   assert.equal(queued[0].workflow.sigmas.inputs.sigmas.split(',').length, 9);
