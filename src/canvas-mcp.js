@@ -6,7 +6,9 @@ import { isVideoRhythm, normalizeSpeedDocument, normalizeRemapDocument, videoRhy
 import { CHROMA_FIELDS, chromaDocumentFromNode, defaultChromaHandle, defaultChromaSettings, isVideoChroma, normalizePreviewTime, videoChromaSummary } from './video-chroma-document.js';
 import { REPAIR_FIELDS, defaultRepairSettings, isVideoRepair, normalizeRepairDocument, normalizeRepairPreviewTime, videoRepairSummary } from './video-repair-document.js';
 import { PLATE_FIELDS, PLATE_PORT, defaultPlateSettings, isVideoPlate, plateDocumentFromNode, videoPlateSummary } from './video-plate-document.js';
-import { isVideoEdit, normalizeVideoEditDocument, nextVideoEditPort, videoEditSummary } from './video-edit-document.js';
+import { isVideoEdit, normalizeVideoEditDocument, nextVideoEditPort, videoEditSummary, videoEditInputView, VIDEO_EDIT_VIDEO_PORTS } from './video-edit-document.js';
+import { submitVideoAnalysis, getVideoEditJob, cancelVideoEditJob } from './video-edit-runtime.js';
+import { MOTION_CANVAS_MAX_CUES, normalizeMotionCanvasPreview } from './motion-canvas-pilot.js';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
 import { validateCharacterSheetAngleSeed, validateQwenCacheDevice, validateQwenSourceCrop } from './workbench-api.js';
@@ -396,6 +398,7 @@ export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readO
 // Registration is shared by the mounted page and isolated protocol tests.
 export function registerCanvasMcp(latest, { context = document.modelContext, startPage = startCurrentCanvasPage } = {}) {
     const controller = new AbortController();
+    const ownedAnalyses = new Map();
     const getNode = (id) => {
       const node = latest.current.nodesRef.current.find((item) => item.id === id);
       if (!node) throw new Error(`找不到节点：${id}`);
@@ -408,6 +411,49 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       } catch (error) {
         return JSON.stringify({ ok: false, error: error?.message || String(error) });
       }
+    };
+    const analysisSource = (nodeId) => {
+      if (!isVideoEdit(getNode(nodeId))) throw new Error('请先选择视频编辑节点。');
+      const { projectId, nodesRef, edgesRef } = latest.current;
+      return { projectId, inputs: videoEditInputView(nodeId, nodesRef.current, edgesRef.current, (path) => path) };
+    };
+    const ownsAnalysis = ({ projectId, nodeId, slot, assetPath }) => {
+      if (controller.signal.aborted || latest.current.readOnly || latest.current.projectId !== projectId) return false;
+      if (!latest.current.nodesRef.current.some((node) => node.id === nodeId && isVideoEdit(node))) return false;
+      return analysisSource(nodeId).inputs[slot]?.assetPath === assetPath;
+    };
+    const releaseAnalysis = (jobId, cancel = false) => {
+      const owner = ownedAnalyses.get(jobId);
+      if (!owner) return;
+      clearTimeout(owner.timer);
+      ownedAnalyses.delete(jobId);
+      if (cancel) cancelVideoEditJob(jobId, owner.projectId, { keepalive: true }).catch(() => {});
+    };
+    const cancelOwnedAnalyses = () => {
+      for (const jobId of ownedAnalyses.keys()) releaseAnalysis(jobId, true);
+    };
+    function watchAnalysis(jobId, owner) {
+      owner.timer = setTimeout(async () => {
+        if (!ownsAnalysis(owner)) { releaseAnalysis(jobId, true); return; }
+        try {
+          const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]);
+          const job = await getVideoEditJob(jobId, { signal });
+          if (!['queued', 'running'].includes(job.status)) { releaseAnalysis(jobId); return; }
+        } catch (error) {
+          if (error.status === 404) { releaseAnalysis(jobId); return; }
+        }
+        if (ownedAnalyses.has(jobId)) watchAnalysis(jobId, owner);
+      }, 2000);
+    }
+    const readAnalysis = async (nodeId, jobId) => {
+      if (typeof jobId !== 'string' || !/^ved_[a-f0-9]{32}$/.test(jobId)) throw new Error('分析任务 ID 无效。');
+      const { projectId } = analysisSource(nodeId);
+      const job = await getVideoEditJob(jobId, { signal: controller.signal });
+      if (!job.mode || job.nodeId !== nodeId || job.projectId !== projectId || latest.current.projectId !== projectId) {
+        throw new Error('分析任务不属于当前画布节点。');
+      }
+      if (!['queued', 'running'].includes(job.status)) releaseAnalysis(jobId);
+      return job;
     };
     const tools = [
       {
@@ -491,6 +537,119 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           const id = latest.current.actions.addNode(type, extra, position, focus);
           const node = await waitFor(() => latest.current.nodesRef.current.find((item) => item.id === id));
           return { node: nodeSummary(node) };
+        }),
+      },
+      {
+        name: 'canvas_start_video_analysis',
+        description: '分析当前视频编辑节点已连线的项目视频。transcript 本地转写旁白并返回源时间码，black 和 silence 提议剪口。先取得 jobId，再调用 canvas_get_video_analysis 获取结果。',
+        inputSchema: schema({ nodeId: nodeIdProperty, slot: { type: 'string', enum: VIDEO_EDIT_VIDEO_PORTS },
+          mode: { type: 'string', enum: ['black', 'silence', 'transcript'] } }, ['nodeId', 'slot', 'mode']),
+        execute: respond(async ({ nodeId, slot, mode }) => {
+          if (!VIDEO_EDIT_VIDEO_PORTS.includes(slot) || !['black', 'silence', 'transcript'].includes(mode)) throw new Error('分析端口或方式无效。');
+          const { projectId, inputs } = analysisSource(nodeId);
+          const assetPath = inputs[slot]?.assetPath;
+          if (!assetPath) throw new Error('请先将该端口的视频导入项目素材。');
+          const owner = { projectId, nodeId, slot, assetPath };
+          const job = await submitVideoAnalysis({ ...owner, mode });
+          if (!ownsAnalysis(owner)) {
+            await cancelVideoEditJob(job.id, projectId, { keepalive: true }).catch(() => {});
+            throw new Error('当前画布或素材已更换，分析已取消。');
+          }
+          ownedAnalyses.set(job.id, owner);
+          watchAnalysis(job.id, owner);
+          return { jobId: job.id, status: job.status, mode, slot };
+        }),
+      },
+      {
+        name: 'canvas_get_video_analysis',
+        description: '查询素材分析。转写分页返回源时间毫秒与讲解原文。includeWords:true 时返回模型实际识别的词或短语时间，用于安排口播动效。缺失时序的词应复核原片。',
+        inputSchema: schema({ nodeId: nodeIdProperty, jobId: { type: 'string' },
+          offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 30 },
+          includeWords: { type: 'boolean' } }, ['nodeId', 'jobId']),
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        execute: respond(async ({ nodeId, jobId, offset = 0, limit = 20, includeWords = false }) => {
+          if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 30 || typeof includeWords !== 'boolean') throw new Error('转写分页参数无效。');
+          const job = await readAnalysis(nodeId, jobId);
+          const { inputs } = analysisSource(nodeId);
+          if (!Object.entries(job.inputs).every(([slot, path]) => inputs[slot]?.assetPath === path)) {
+            throw new Error('分析后输入素材已更换，请重新分析。');
+          }
+          const summary = { jobId, status: job.status, stage: job.stage, mode: job.mode, progress: job.progress, error: job.error };
+          if (!job.result || job.mode !== 'transcript') return { ...summary, result: job.result };
+          const { segments, source, language, durationMs, wordTimingsTruncated } = job.result;
+          const page = [];
+          const encoder = new TextEncoder();
+          let bytes = 0;
+          for (const { startMs, endMs, text, words } of segments.slice(offset, offset + limit)) {
+            const segment = { startMs, endMs, text, ...(includeWords && words?.length ? { words } : {}) };
+            bytes += encoder.encode(JSON.stringify(segment)).length + 1;
+            if (bytes > 64 * 1024 && page.length) break;
+            page.push(segment);
+          }
+          const nextOffset = offset + page.length < segments.length ? offset + page.length : null;
+          return { ...summary, result: { segments: page, source, language, durationMs, segmentCount: segments.length, nextOffset,
+            ...(includeWords && wordTimingsTruncated ? { wordTimingsTruncated: true } : {}) } };
+        }),
+      },
+      {
+        name: 'canvas_cancel_video_analysis',
+        description: '取消当前视频编辑节点指定的素材分析，不影响其他导出作业。',
+        inputSchema: schema({ nodeId: nodeIdProperty, jobId: { type: 'string' } }, ['nodeId', 'jobId']),
+        execute: respond(async ({ nodeId, jobId }) => {
+          const job = await readAnalysis(nodeId, jobId);
+          const cancelled = await cancelVideoEditJob(jobId, job.projectId);
+          releaseAnalysis(jobId);
+          return { jobId, status: cancelled.status, stage: cancelled.stage };
+        }),
+      },
+      {
+        name: 'canvas_set_motion_canvas_preview',
+        description: '通过可见视频编辑节点保存 Motion Canvas 流程动效预览。完整保留所选区间的原声。根据 canvas_get_video_analysis 的词或短语时间选择触发点。时间为源视频绝对毫秒，Agent 只提交内容和时间数据。',
+        inputSchema: schema({ nodeId: nodeIdProperty, slot: { type: 'string', enum: VIDEO_EDIT_VIDEO_PORTS },
+          transcriptJobId: { type: 'string', description: '用于核对转写时间与当前素材的已完成转写任务。' },
+          sourceInMs: { type: 'integer', minimum: 0 }, sourceOutMs: { type: 'integer', minimum: 1 },
+          title: { type: 'string', minLength: 1, maxLength: 42 },
+          cues: { type: 'array', minItems: 1, maxItems: MOTION_CANVAS_MAX_CUES, items: schema({
+            atMs: { type: 'integer', minimum: 0 }, label: { type: 'string', minLength: 1, maxLength: 24 },
+            detail: { type: 'string', minLength: 1, maxLength: 52 },
+          }, ['atMs', 'label', 'detail']) },
+        }, ['nodeId', 'slot', 'transcriptJobId', 'sourceInMs', 'sourceOutMs', 'title', 'cues']),
+        execute: respond(async ({ nodeId, transcriptJobId, ...plan }) => {
+          const preview = normalizeMotionCanvasPreview(plan);
+          const job = await readAnalysis(nodeId, transcriptJobId);
+          if (job.mode !== 'transcript' || job.status !== 'completed') throw new Error('请先完成该素材的语音转写。');
+          const { inputs } = analysisSource(nodeId);
+          const assetPath = inputs[preview.slot]?.assetPath;
+          if (!assetPath) throw new Error('请先将该端口的视频导入项目素材。');
+          if (latest.current.readOnly || job.inputs[preview.slot] !== assetPath) throw new Error('画布或素材已更换，请重新分析。');
+          const { durationMs, source } = job.result;
+          if (source?.audioOffset?.num !== 0) throw new Error('试验仅支持首帧与音轨同时开始的素材，请先导出一份已对齐的片段。');
+          if (!Number.isSafeInteger(durationMs) || preview.sourceOutMs > durationMs) throw new Error('动效预览结束时间超出源视频。');
+          const motionCanvasPreview = { ...preview, assetPath };
+          latest.current.actions.updateNode(nodeId, { motionCanvasPreview });
+          await waitFor(() => getNode(nodeId).data.motionCanvasPreview === motionCanvasPreview);
+          return { nodeId, cueCount: motionCanvasPreview.cues.length };
+        }),
+      },
+      {
+        name: 'canvas_set_video_presentation',
+        description: '为当前视频编辑节点设置可编辑的演示轨，按成片帧落位，保留剪辑和原声。根据转写的讲解分段安排页标题和要点。传空数组可清空演示轨。',
+        inputSchema: schema({ nodeId: nodeIdProperty, pages: { type: 'array', maxItems: 48, items: schema({
+          id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' },
+          startFrame: { type: 'integer', minimum: 0 }, endFrame: { type: 'integer', minimum: 1, description: '结束帧不含。页面按起始帧顺序排列，区间不能重叠。' },
+          title: { type: 'string', minLength: 1, maxLength: 80 },
+          bullets: { type: 'array', maxItems: 4, items: { type: 'string', minLength: 1, maxLength: 96 } },
+          layout: { type: 'string', enum: ['fullscreen', 'side'], description: '全屏演示或右侧要点卡。' },
+          motion: { type: 'string', enum: ['none', 'fade', 'reveal'], description: '直接出现、淡入淡出或逐项显示。' },
+        }, ['id', 'startFrame', 'endFrame', 'title', 'bullets', 'layout', 'motion']) } }, ['nodeId', 'pages']),
+        execute: respond(async ({ nodeId, pages }) => {
+          const node = getNode(nodeId);
+          if (!isVideoEdit(node)) throw new Error('演示轨只用于视频编辑节点。');
+          if (['queued', 'running'].includes(node.data.status)) throw new Error('正在导出，请在结束后修改演示轨。');
+          const editDocument = normalizeVideoEditDocument({ ...node.data.editDocument, presentation: pages });
+          latest.current.actions.updateNode(nodeId, { editDocument, error: null });
+          await waitFor(() => getNode(nodeId).data.editDocument === editDocument);
+          return { nodeId, pageCount: editDocument.presentation?.length || 0 };
         }),
       },
       {
@@ -672,7 +831,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       const original = tool.execute;
       tool.execute = async (args = {}, executionOptions) => {
         const compactPreview = tool.name === 'canvas_image_compact' && args?.dryRun !== false;
-        const mutation = !compactPreview && !['canvas_get_extension_publish_status', 'canvas_get_state', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
+        const mutation = !compactPreview && !['canvas_get_extension_publish_status', 'canvas_get_state', 'canvas_get_video_analysis', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
         const result = JSON.parse(await original(args, executionOptions));
         if (mutation && result.ok && !['canvas_publish_extension', 'canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
@@ -690,5 +849,11 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
     // the user may switch to another app while this same canvas keeps running.
     const stop = startPage({ tools, getPage: () => ({ projectId: latest.current.projectId,
       readOnly: latest.current.readOnly, visible: !latest.current.readOnly }) });
-    return () => { stop(); controller.abort(); };
+    globalThis.addEventListener?.('pagehide', cancelOwnedAnalyses);
+    return () => {
+      stop();
+      controller.abort();
+      cancelOwnedAnalyses();
+      globalThis.removeEventListener?.('pagehide', cancelOwnedAnalyses);
+    };
 }

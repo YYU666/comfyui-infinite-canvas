@@ -9,13 +9,23 @@ import { PROJECT_SESSION_KEY } from './src/project-session.js';
 const origin = 'http://video-editor-fixture.test';
 const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 const sourceAsset = `assets/${'a'.repeat(64)}.mp4`, resultAsset = `assets/${'b'.repeat(64)}.mp4`;
+const motionAsset = `assets/${'c'.repeat(64)}.mp4`;
+const remoteProjectId = 'c0c0c0c0-0000-4000-a000-000000000001';
+const motionExportId = 'd0d0d0d0-0000-4000-a000-000000000002';
+const motionOrigin = 'http://127.0.0.1:49327';
+const motionVersions = ['00000000-0000-4000-a000-100000000001', '00000000-0000-4000-a000-100000000002'];
+const motionRevisions = ['4'.repeat(64), '5'.repeat(64)];
 const browser = await chromium.launch({ headless: true });
 const errors = [];
 async function fixture(readOnly = false, active = false) {
   const context = await browser.newContext({ viewport: { width: 1500, height: 1080 }, serviceWorkers: 'block' });
   const queued = [], commits = [], cancels = [], saves = [];
   let hold = active;
+  let motionRendered = false;
+  let motionVersionIndex = 0;
+  const motionRenderAttempts = [];
   const cutJobId = `ved_${'a'.repeat(32)}`;
+  const speechJobId = `ved_${'b'.repeat(32)}`;
   let project = { id: 'prj_editor_fixture', name: 'Synthetic editor', revision: 1, readOnly, shots: [], canvas: {
     viewport: { x: 10, y: 20, zoom: 0.9 },
     nodes: [
@@ -26,6 +36,8 @@ async function fixture(readOnly = false, active = false) {
   await context.addInitScript(({ key, id, readOnly }) => {
     sessionStorage.setItem(key, JSON.stringify({ version: 1, id, readOnly }));
     window.fixtureTools = new Map();
+    let nonce = 0;
+    if (!crypto.randomUUID) Object.defineProperty(crypto, 'randomUUID', { value: () => `00000000-0000-4000-a000-${String(++nonce).padStart(12, '0')}` });
     Object.defineProperty(document, 'modelContext', { value: { registerTool(tool, options) { window.fixtureTools.set(tool.name, tool); options?.signal?.addEventListener('abort', () => window.fixtureTools.delete(tool.name)); } } });
     window.EventSource = class { addEventListener() {} close() {} };
     window.WebSocket = class { addEventListener() {} close() {} };
@@ -45,10 +57,56 @@ async function fixture(readOnly = false, active = false) {
     if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
     if (url.pathname === '/api/queue') return json({ jobs: [] });
     if (url.pathname === '/api/video-edit/probe') return json({ frameCount: 96, frameTimebase: { num: 1, den: 24 }, fps: { num: 24, den: 1 }, width: 128, height: 72, hasAudio: true });
-    if (url.pathname === '/api/video-edit/auto-cut') {
-      assert.deepEqual(request.postDataJSON(), { projectId: project.id, nodeId: 'edit', slot: 'v1', assetPath: sourceAsset, mode: 'black' });
-      return json({ id: cutJobId, status: 'queued' }, 201);
+    if (url.pathname.startsWith('/api/video-edit/openmotion/')) {
+      const action = url.pathname.split('/').at(-1), body = request.postDataJSON();
+      const node = project.canvas.nodes.find(item => item.id === 'edit');
+      assert.equal(body.projectId, project.id);
+      assert.equal(body.nodeId, node.id);
+      const summary = { remoteProjectId, origin: motionOrigin, studioUrl: `${motionOrigin}/#project/${remoteProjectId}`,
+        versionId: motionVersions[motionVersionIndex], expectedRevision: motionRevisions[motionVersionIndex],
+        exports: motionRendered ? [{ id: motionExportId, current: true }] : [] };
+      if (action === 'create') {
+        assert.equal(body.assetPath, node.data.editResultAssetPath);
+        return json({ ...summary, title: 'Motion synthetic' });
+      }
+      assert.equal(node.data.openMotion.remoteProjectId, remoteProjectId);
+      if (action === 'render') {
+        assert.match(body.requestId, /^[0-9a-f-]{36}$/);
+        assert.equal(body.audio, 'required');
+        motionRenderAttempts.push(body);
+        if (motionRenderAttempts.length === 1) {
+          assert.equal(body.versionId, motionVersions[0]);
+          assert.equal(body.expectedRevision, motionRevisions[0]);
+          motionVersionIndex = 1; // Studio save after the original request is lost
+          return json({ code: 'OPENMOTION_UNAVAILABLE', message: 'Connection lost' }, 503);
+        }
+        if (motionRenderAttempts.length === 2) {
+          assert.deepEqual(body, motionRenderAttempts[0], 'an uncertain retry replays the exact original version and request ID');
+          return json({ code: 'OPENMOTION_VERSION_CONFLICT', message: 'Version changed' }, 409);
+        }
+        assert.notEqual(body.requestId, motionRenderAttempts[0].requestId);
+        assert.equal(body.versionId, motionVersions[1]);
+        assert.equal(body.expectedRevision, motionRevisions[1]);
+        motionRendered = true;
+        return json({ ...summary, renderId: motionExportId, active: { state: 'pending' } });
+      }
+      if (action === 'inspect') return json(summary);
+      assert.equal(action, 'import');
+      assert.equal(body.exportId, motionExportId);
+      assert.equal(body.revision, project.revision);
+      project.revision++;
+      return json({ asset: { path: motionAsset }, revision: project.revision });
     }
+    if (url.pathname === '/api/video-edit/auto-cut') {
+      const payload = request.postDataJSON();
+      assert.ok(['transcript', 'black'].includes(payload.mode));
+      assert.deepEqual(payload, { projectId: project.id, nodeId: 'edit', slot: 'v1', assetPath: sourceAsset, mode: payload.mode });
+      return json({ id: payload.mode === 'transcript' ? speechJobId : cutJobId, status: 'queued' }, 201);
+    }
+    if (url.pathname === `/api/video-edit/jobs/${speechJobId}`) return json({ id: speechJobId, projectId: project.id, nodeId: 'edit', mode: 'transcript',
+      inputs: { v1: sourceAsset }, status: 'completed', result: { language: 'zh', durationMs: 4000,
+        source: { frameCount: 96 }, segments: [{ startMs: 250, endMs: 1250, text: '先检查场景',
+          words: [{ startMs: 400, endMs: 800, text: '检查' }] }, { startMs: 1500, endMs: 2000, text: '预览并导出' }] } });
     if (url.pathname === `/api/video-edit/jobs/${cutJobId}`) return json({
       id: cutJobId, status: 'completed', result: {
         removedFrames: 48, frameCount: 96, cuts: [[8, 32], [64, 88]], document: defaultVideoEditDocument(),
@@ -97,6 +155,26 @@ try {
   await panel.getByRole('button', { name: '撤销 (Ctrl+Z)' }).click();
   edited = (await f.state()).nodes.find(n => n.id === 'edit').editDocument;
   assert.deepEqual(edited, defaultVideoEditDocument());
+  const started = await f.call('canvas_start_video_analysis', { nodeId: 'edit', slot: 'v1', mode: 'transcript' });
+  assert.equal(started.jobId, `ved_${'b'.repeat(32)}`);
+  const transcript = await f.call('canvas_get_video_analysis', { nodeId: 'edit', jobId: started.jobId, limit: 1 });
+  assert.equal(transcript.result.segments[0].text, '先检查场景');
+  assert.equal(transcript.result.nextOffset, 1);
+  assert.equal(transcript.result.segments[0].words, undefined);
+  const wordTimed = await f.call('canvas_get_video_analysis', { nodeId: 'edit', jobId: started.jobId, limit: 1, includeWords: true });
+  assert.deepEqual(wordTimed.result.segments[0].words, [{ startMs: 400, endMs: 800, text: '检查' }]);
+  assert.equal((await f.call('canvas_get_video_analysis', { nodeId: 'source', jobId: started.jobId })).ok, false);
+  await panel.getByRole('button', { name: '演示轨' }).click();
+  await panel.getByRole('button', { name: '添加演示页' }).click();
+  await panel.getByLabel('标题', { exact: true }).fill('检查场景');
+  await panel.getByLabel('要点', { exact: true }).fill('对准视口\n查看灯光');
+  await panel.getByLabel('版式', { exact: true }).selectOption('side');
+  await panel.getByLabel('动画', { exact: true }).selectOption('fade');
+  edited = (await f.state()).nodes.find(n => n.id === 'edit').editDocument;
+  assert.deepEqual(edited.presentation, [{ id: 'page1', startFrame: 0, endFrame: 24, title: '检查场景',
+    bullets: ['对准视口', '查看灯光'], layout: 'side', motion: 'fade' }]);
+  assert.equal((await f.call('canvas_set_video_presentation', { nodeId: 'edit', pages: [] })).pageCount, 0);
+  await panel.getByRole('button', { name: '添加演示页' }).waitFor();
   await panel.getByLabel('关闭', { exact: true }).click();
   const settings = defaultVideoEditDocument(); settings.clips[0].sourceOutPts = 24; settings.clips[0].reverse = true;
   const updated = await f.call('canvas_update_node', { nodeId: 'edit', settings: { editDocument: settings } });
@@ -119,6 +197,27 @@ try {
   await f.until(s => s.nodes.find(n => n.id === 'edit')?.status === 'cancelled');
   assert.deepEqual(f.cancels, [{ projectId: 'prj_editor_fixture' }]);
   assert.equal((await f.state()).nodes.find(n => n.id === 'edit').editResultAssetPath, resultAsset, 'cancel preserves prior output');
+  await editor.getByRole('button', { name: '编辑视频', exact: true }).click();
+  await panel.getByRole('button', { name: 'OpenMotion', exact: true }).click();
+  await panel.getByRole('button', { name: '从画布成片创建工程' }).click();
+  await panel.getByRole('link', { name: '打开 OpenMotion Studio' }).waitFor();
+  assert.equal(await panel.getByRole('link', { name: '打开 OpenMotion Studio' }).getAttribute('href'), `${motionOrigin}/#project/${remoteProjectId}`);
+  await panel.getByRole('combobox', { name: 'OpenMotion 音轨' }).selectOption('required');
+  await panel.getByRole('button', { name: '渲染 OpenMotion MP4' }).click();
+  await panel.getByText('渲染是否已提交待确认。重试会查询同一请求并保留原版本。').waitFor();
+  await panel.getByRole('button', { name: '渲染 OpenMotion MP4' }).click();
+  await panel.getByText('Studio 的工程版本已变化。工程刷新后可再次点击渲染。').waitFor();
+  await panel.getByRole('button', { name: '渲染 OpenMotion MP4' }).click();
+  await panel.getByRole('button', { name: '回传所选成片' }).click();
+  await panel.getByText('成片已存入当前画布项目。').waitFor();
+  const imported = f.saved().canvas.nodes.find(node => node.id === 'edit').data;
+  assert.equal(imported.openMotion.resultAssetPath, motionAsset);
+  assert.equal(imported.editResultAssetPath, resultAsset, 'OpenMotion copy preserves the main TimeLine output');
+  await page.reload(); await editor.waitFor();
+  await editor.getByText('OpenMotion 成片已回传').waitFor();
+  await editor.getByRole('button', { name: '编辑视频', exact: true }).click();
+  await panel.getByRole('button', { name: 'OpenMotion · 已回传' }).click();
+  assert.equal(await panel.getByRole('link', { name: '下载回传成片' }).getAttribute('href'), `/api/projects/prj_editor_fixture/${motionAsset}`);
   await f.context.close();
   const readOnly = await fixture(true, true);
   const cancel = readOnly.page.getByTestId('rf__node-edit').getByRole('button', { name: '取消', exact: true });
@@ -126,5 +225,5 @@ try {
   assert.equal(readOnly.cancels.length, 0); assert.equal(readOnly.queued.length, 0);
   await readOnly.context.close();
   assert.deepEqual(errors, []);
-  console.log('VIDEO_EDIT_UI_MOCK_OK document/submit/commit, immutable source, reload, cancel retention, readonly; no live services');
+  console.log('VIDEO_EDIT_UI_MOCK_OK document, transcript, presentation, export, OpenMotion round trip, reload, cancel and readonly');
 } finally { await browser.close(); }

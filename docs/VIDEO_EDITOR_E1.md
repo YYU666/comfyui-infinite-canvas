@@ -12,7 +12,41 @@
 - 静音检测使用 −42 dBFS 和 1.2 秒门槛，剪口两侧各保留约 0.2 秒。没有音轨时可使用黑场检测。
 - 「用建议替换时间线」采用源帧率及片段原声，并沿用当前 CRF。可撤销、继续手动编辑，确认后使用「导出 MP4」。
 
-分析通过 `POST /api/video-edit/auto-cut` 提交，字段为 `projectId`、`nodeId`、`slot`、`assetPath`、`mode`（`black` 或 `silence`）。沿用视频编辑作业的状态查询和取消接口。建议仅在当前面板保留，应用后按常规时间线保存。
+分析通过 `POST /api/video-edit/auto-cut` 提交，字段为 `projectId`、`nodeId`、`slot`、`assetPath`、`mode`（`black`、`silence` 或 `transcript`）。沿用视频编辑作业的状态查询和取消接口。建议仅在当前面板保留，应用后按常规时间线保存。
+
+### 讲解转写与演示轨
+
+在同一个视频编辑节点连接带声录屏。在「剪辑 → 自动剪辑」选「语音转写」可检查带源时间码的讲解。Agent 可通过当前画布调用本地转写并据此制作初剪和演示页。原录屏、剪辑与演示轨均保存在本地项目；转写分析可取消，转写结果保留在本次运行的任务中，重启后可重新分析。
+
+「演示轨」里每页有入点、出点、标题和最多四条要点。可选择全屏演示或右侧要点卡，以及直接出现、淡入淡出、逐条出现。全屏和右侧页均使用原有音轨。页时间按成片帧（出点不含）计算，改变剪辑或输出帧率后要复核页位置。先看版式，导出后用节点播放器或「播放成片」查看实际动画、切点及音画同步。
+
+Agent 通过当前可见画布按顺序使用这些工具：
+
+1. `canvas_start_video_analysis` 接收编辑节点、连接端口和 `mode`（`transcript`、`black` 或 `silence`）。使用 `canvas_get_video_analysis` 查询任务；`canvas_cancel_video_analysis` 可取消。转写片段按 `offset` / `limit` 分页，直到 `nextOffset` 为空，返回的文本是录屏内容。
+2. 参考转写与画面证据选择剪口，有旁白的黑场通常保留声音或以演示页替换画面。用 `canvas_update_node` 的 `editDocument` 设置剪辑。先确认成片时间轴，然后把源时间码按保留片段映射到成片帧；演示页随讲到对应内容的时刻出现，操作需要看清时选右侧卡片或让出画面。
+3. `canvas_set_video_presentation` 接收 `nodeId` 与 `pages`。页字段为 `id`、`startFrame`、`endFrame`、`title`、`bullets`、`layout`（`fullscreen` / `side`）、`motion`（`none` / `fade` / `reveal`）。至多 48 页，按时间排列且互不重叠。项目保存编辑后的时间线，现有剪辑节点可以打开和播放。
+4. 在当前页面调用 `canvas_generate_node` 提交，等待 `canvas_wait_for_node` 完成并核对 `editResultAssetPath`。成片写入项目素材，播放与版本保存均由画布完成。
+
+语音转写使用 Faster-Whisper CPU 运行时。一次性在 Python 3.12 环境安装 `faster-whisper==1.2.1` 后，通过启动环境中的 `H3_VIDEO_TRANSCRIPT_PYTHON` 指向该 Python，也可安装到工作台 Python。使用本机已缓存的 Faster-Whisper small、base 或 tiny 模型，也可通过 `H3_VIDEO_TRANSCRIPT_MODEL` 指定本地目录。画布转写时仅使用本地模型。中文演示页需要系统字体（Windows 微软雅黑、macOS 苹方或 Noto Sans CJK）。
+
+参考实现包括 [Auto-Editor](https://github.com/WyattBlue/auto-editor) 的初剪、[Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) 的离线转写、[HyperFrames](https://github.com/heygen-com/hyperframes) 的按时间渲染和 [Slidev](https://sli.dev/guide/animations) 的逐项揭示。画布按结构化时间线渲染内置版式。
+
+### Motion Canvas 同步预览
+
+连接视频后，Agent 通过原生分析工具取得词或短语的时间。查询转写时传 `includeWords: true`，按 `nextOffset` 分页。识别器缺词或定位不准时，先在原片复核对应发音。使用 `canvas_set_motion_canvas_preview` 写入端口、同一素材的 `transcriptJobId`、源视频预览区间、流程标题与 1–5 个触发点；每个触发点包含源视频毫秒时间、要点和说明。画布提供可复用的流程动画，无需为每段素材编写场景。
+
+打开视频编辑节点的「Motion Canvas」页签，同一原声时钟驱动实际 Motion Canvas 3.17.2 场景。可播放、暂停、拖动进度条，或点击一个触发点核对动画。预览支持首个视频帧与音轨同起点的素材，选取 1–60 秒连续片段。先导出一份已对齐的片段可处理起点不一致的录屏。此试验验证同步和版式，MP4 导出使用现有「演示轨」。[Motion Canvas · Time Events](https://motioncanvas.io/docs/time-events/)
+
+### OpenMotion
+
+在本机启动 OpenMotion Studio v0.2.0，把工作台启动环境中的 `H3_OPENMOTION_ORIGIN` 设置为 Studio 的实际回环地址，例如 `http://127.0.0.1:49327`。工作台接受 `127.0.0.1` 上的 HTTP 端口，Studio 须能本地渲染。接口独立于 ComfyUI。
+
+1. 打开视频编辑节点的「OpenMotion」页签。从该节点已保存的 MP4 创建可编辑工程，或从 Studio 当前工程链接中的 `project` 参数复制 UUID，点击「关联已有本地工程」。重新设置或切换 Studio 端口后请重新关联。
+2. 点击「打开 OpenMotion Studio」编辑。新建工程把已导出的整段 MP4 放在一个视频轨上。字幕、标注和关键帧在 Studio 编辑。画布原剪口仍由视频编辑节点管理。
+3. 在 Studio 保存后，回到同一页签点击「渲染 OpenMotion MP4」。默认按工程保留音轨。教程旁白必需时，选择「必须包含声音」。待渲染和校验完成，选择成片，点击「回传所选成片」。
+4. 回传 MP4 由画布校验 SHA-256，并作为该项目内素材保存。可在同一页签独立预览、下载，之后仍可打开已关联工程。视频编辑节点的原导出继续供原有连线使用。
+
+本地 OpenMotion 工程和渲染历史由 Studio 管理。画布记录工程身份和回传素材，适合把剪辑结果交给 Studio 做动效制作。创建的工程 ZIP 上限依 OpenMotion 为 500 MB。[OpenMotion 工程传输](https://github.com/nexu-io/openmotion/blob/v0.2.0/docs/project-archives.md) · [渲染与校验](https://github.com/nexu-io/openmotion/blob/v0.2.0/docs/mcp-phase1-tools.md#openmotion_export_request)
 
 导出需要已安装的 FFmpeg（优先使用工作台依赖中的 imageio-ffmpeg，其次使用 PATH 中的程序）。本功能不安装软件、下载模型或提交 ComfyUI 任务。导出读取源素材并创建新 MP4，不覆盖输入。后台只写任务临时文件；页面使用当前项目 revision 将结果存入 assets，再更新同一编辑节点。失败或取消保留已有结果；参数改变后会标记已有结果待重新导出。取消仅影响本节点的导出进程。
 

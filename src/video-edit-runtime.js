@@ -5,10 +5,10 @@ import { normalizeVideoEditDocument, usedVideoEditSlots, videoEditInputs, isVide
 
 const ACTIVE = ['queued', 'running'];
 
-async function request(path, body, { signal } = {}) {
+async function request(path, body, { signal, keepalive = false } = {}) {
   const response = await fetch(`/api/video-edit${path}`, body === undefined
     ? { credentials: 'same-origin', cache: 'no-store', signal }
-    : { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
+    : { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal, keepalive });
   const value = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(value.message || `视频编辑服务不可用（HTTP ${response.status}）。若刚更新代码，需要重启工作台后端。`);
@@ -21,8 +21,9 @@ async function request(path, body, { signal } = {}) {
 export const probeVideoAsset = (projectId, assetPath, options) => request('/probe', { projectId, assetPath }, options);
 export const submitVideoEditJob = (payload) => request('/jobs', payload);
 export const getVideoEditJob = (jobId, options) => request(`/jobs/${encodeURIComponent(jobId)}`, undefined, options);
-export const cancelVideoEditJob = (jobId, projectId) => request(`/jobs/${encodeURIComponent(jobId)}/cancel`, { projectId });
+export const cancelVideoEditJob = (jobId, projectId, options) => request(`/jobs/${encodeURIComponent(jobId)}/cancel`, { projectId }, options);
 export const commitVideoEditJob = (jobId, projectId, revision) => request(`/jobs/${encodeURIComponent(jobId)}/commit`, { projectId, revision });
+const openMotionRequest = (action, payload, options) => request(`/openmotion/${action}`, payload, options);
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
   const abort = () => { clearTimeout(timer); reject(signal.reason || new DOMException('Aborted', 'AbortError')); };
@@ -31,18 +32,20 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
   else signal?.addEventListener('abort', abort, { once: true });
 });
 
-export async function suggestVideoCuts(payload, signal) {
+export const submitVideoAnalysis = (payload) => request('/auto-cut', payload);
+
+export async function analyzeVideoInput(payload, signal) {
   signal.throwIfAborted();
   // Read the submission receipt even if the panel closes during the POST,
   // so cancellation can still target the newly queued job.
-  const submitted = await request('/auto-cut', payload);
+  const submitted = await submitVideoAnalysis(payload);
   try {
     for (;;) {
       await sleep(500, signal);
       const job = await getVideoEditJob(submitted.id, { signal });
       if (ACTIVE.includes(job.status)) continue;
       if (job.status === 'completed') return job.result;
-      throw new Error(job.error || job.stage || '自动剪辑分析失败。');
+      throw new Error(job.error || job.stage || '素材分析失败。');
     }
   } finally {
     if (signal.aborted) await cancelVideoEditJob(submitted.id, payload.projectId).catch(() => {});
@@ -125,6 +128,48 @@ export function createVideoEditRunner(deps) {
 
   return {
     isBusy: (id) => deps.jobs.has(id),
+    async openMotion(id, action, options) {
+      const projectId = deps.getProjectId();
+      const current = node(id);
+      if (!isVideoEdit(current)) throw new Error('找不到视频编辑节点。');
+      if (action === 'inspect') return openMotionRequest(action, { projectId, nodeId: id });
+      if (!canWrite() || deps.jobs.has(id)) throw new Error('当前节点不可编辑或正在处理其他任务。');
+      const controller = new AbortController();
+      const assertCurrent = () => {
+        controller.signal.throwIfAborted();
+        if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。');
+      };
+      register(id, controller);
+      try {
+        await deps.persistProject?.();
+        assertCurrent();
+        const identity = { projectId, nodeId: id };
+        if (action === 'import') {
+          const saved = await deps.saveCanvasMedia((revision) => {
+            assertCurrent();
+            return openMotionRequest('import', { ...identity, exportId: options.exportId, revision });
+          }, (result) => ({ ok: true, assetPath: result.asset.path }), id);
+          if (!saved?.ok) throw new Error(saved?.error?.message || 'OpenMotion 成片未保存。');
+          assertCurrent();
+          deps.updateNode(id, { openMotion: { ...node(id).data.openMotion, exportId: options.exportId, resultAssetPath: saved.assetPath } });
+          await deps.persistProject?.();
+          return saved;
+        }
+        const assetPath = node(id).data.editResultAssetPath;
+        const payload = action === 'create' ? { ...identity, assetPath } : { ...identity, ...options };
+        const result = await openMotionRequest(action, payload);
+        assertCurrent();
+        if (action === 'create' || action === 'link') {
+          if (action === 'create' && assetPath !== node(id).data.editResultAssetPath) throw new Error('节点成片已变化，请重新选择。');
+          const previous = node(id).data.openMotion;
+          const matching = previous?.remoteProjectId === result.remoteProjectId && previous.origin === result.origin;
+          deps.updateNode(id, { openMotion: { ...(matching ? previous : {}), remoteProjectId: result.remoteProjectId, origin: result.origin,
+            title: result.title, sourceAssetPath: action === 'create' ? assetPath : matching ? previous.sourceAssetPath : null } });
+          await deps.persistProject?.();
+        }
+        return result;
+      } finally { unregister(id, controller); }
+    },
     async run(id) {
       if (!canWrite()) return { ok: false, error: '当前画布不可编辑。' };
       const projectId = deps.getProjectId();

@@ -83,6 +83,17 @@ class CanvasPageBridgeTests(unittest.TestCase):
                          "tool": "canvas_generate_node", "args": {"nodeId": "g1", "wait": False}}))
         self.assert_code("BAD_REQUEST", lambda: self.bridge.heartbeat({**page, "sessionId": "bad_page", "projectId": "other"}))
 
+    def test_full_presentation_payload_fits_without_raising_unrelated_tool_limits(self):
+        self.bridge.heartbeat(self.page)
+        pages = [{"id": f"slide{i}", "startFrame": i * 30, "endFrame": (i + 1) * 30,
+                  "title": "演" * 80, "bullets": ["讲" * 96] * 4, "layout": "side", "motion": "reveal"}
+                 for i in range(48)]
+        self.assertEqual(self.submit(tool="canvas_set_video_presentation", args={"nodeId": "edit", "pages": pages})["status"], "queued")
+        self.assertEqual(self.submit("editor", tool="canvas_update_node", args={"nodeId": "edit", "settings": {
+            "editDocument": {"presentation": pages}}})["status"], "queued")
+        self.assert_code("BAD_REQUEST", lambda: self.submit("long_prompt", tool="canvas_update_node",
+                         args={"nodeId": "edit", "prompt": "讲" * 12000}))
+
     def test_open_project_command_stays_bound_to_original_page(self):
         self.bridge.heartbeat(self.page)
         request = {**self.bridge.current(), "opId": "open_project", "tool": "canvas_open_project", "args": {"projectId": "prj_two"}}
