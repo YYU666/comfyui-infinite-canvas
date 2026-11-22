@@ -218,6 +218,7 @@ try {
  await panel.waitFor({state:'hidden'});
  await focusNode('sheet');
  await page.locator('.react-flow__node[data-id="sheet"] .neo-node-title > svg').click();
+ await page.locator('.creator-toolbar .character-sheet-advanced > summary').click();
  await page.locator('.creator-toolbar').getByRole('button',{name:'上传此节点'}).click();
  await share.waitFor();
  assert.match(await share.innerText(),/逐张生成、最后拼接/);
@@ -269,13 +270,14 @@ try {
  assert.equal(project.canvas.nodes.length,savedNodeCount,'save error never reports a delivered node');
  assert.equal(await remote.evaluate(()=>received.some(message=>message.requestId==='save-failure'&&message.ok===true)),false);
  const idsAfterFailedSave=await canvasNodeIds();
- assert.equal(idsAfterFailedSave.filter(id=>!beforeFailedSave.includes(id)).length,1);
+ const retainedIds=idsAfterFailedSave.filter(id=>!beforeFailedSave.includes(id));
+ assert.equal(retainedIds.length,1);
  failSave=false;
  await remote.evaluate(()=>addNode('save-retry-new-request'));
  await remote.waitForFunction(()=>received.some(message=>message.requestId==='save-retry-new-request'&&message.ok===true));
  assert.deepEqual(await canvasNodeIds(),idsAfterFailedSave,'new request retries the exact original nodes without duplication, including culled nodes');
  assert.equal(project.canvas.nodes.length,savedNodeCount+1);
- assert.deepEqual(project.canvas.nodes.map(node=>node.id).sort(),afterFailedSave,'successful retry saves the same retained node identities');
+ assert.deepEqual(project.canvas.nodes.map(node=>node.id).sort(),idsAfterFailedSave,'successful retry saves the same retained node identities');
  await focusNode(retainedIds[0]);
  await page.locator(`.react-flow__node[data-id="${retainedIds[0]}"]`).waitFor({state:'visible'});
  assert.deepEqual(unexpected,[],'no generation or media upload'); assert.deepEqual(errors,[]);

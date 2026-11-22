@@ -1,22 +1,15 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { IMAGE_MODEL_BY_ID, modelNodeClasses } from './src/image-model-catalog.js';
 import { chromium } from './test-browser.mjs';
+import { installedImageModelDefinitions } from './test-image-model-fixture.mjs';
 
 // Synthetic browser fixture: every request is intercepted; no live inference/service.
 const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 const origin = 'http://127.0.0.1:8799';
 const browser = await chromium.launch({ headless: true });
 const failures = [], queued = [];
-const turbo = IMAGE_MODEL_BY_ID.turbo;
-const turboDefinitions = Object.fromEntries(modelNodeClasses(turbo, { editing: true }).map(name => [name, { input: { required: {} } }]));
-for (const { loader, name } of turbo.files) {
-  const node = { unet: 'UNETLoader', clip: 'CLIPLoader', vae: 'VAELoader' }[loader];
-  const options = (turboDefinitions[node].input.required[`${loader}_name`] ||= [[]]);
-  options[0].push(name);
-}
-turboDefinitions.CLIPLoader.input.required.type = [[turbo.clipType]];
+const definitions = installedImageModelDefinitions('turbo', { editing: true });
 const makeProject = (readOnly = false, completed = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen references fixture', revision: 1, readOnly, shots: [], canvas: {
   viewport: { x: 20, y: 30, zoom: completed ? 0.45 : 0.9 },
   nodes: [
@@ -57,7 +50,7 @@ async function fixture(readOnly = false, completed = false) {
     }
     if (url.pathname.startsWith('/api/comfy/object_info/')) {
       const name = decodeURIComponent(url.pathname.split('/').at(-1));
-      return json(turboDefinitions[name] ? { [name]: turboDefinitions[name] } : {});
+      return json(definitions[name] ? { [name]: definitions[name] } : {});
     }
     if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
     if (url.pathname.startsWith('/api/')) return json({});
