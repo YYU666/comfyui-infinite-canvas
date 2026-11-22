@@ -1,6 +1,8 @@
 import { inlineImageView, compactInlineImages, imageCompactArgs } from './image-inline-output.js';
 import CharacterSheetControls from './CharacterSheetControls.jsx';
 import { CHARACTER_SHEET_STAGES } from './character-sheet-settings.js';
+import VideoSuperResolutionNode from './VideoSuperResolutionNode.jsx';
+import { buildVideoSuperResolutionWorkflow, getVideoSuperResolutionDependencyStatus } from './video-super-resolution.js';
 import { isH3Image, resolveH3ImageDimensions, getH3ImageDependencyStatus } from './h3-image.js';
 import {DEFAULT_GENERATOR, initialCanvas, migrateCanvas} from './canvas-migration.js';
 import {createProjectAccessRecovery, retryCurrentProjectSave} from './project-save-recovery.js';
@@ -333,6 +335,7 @@ function CustomWorkflowNode({ id, data, selected }) {
 function GeneratorNode(props) {
   const actions = useContext(NodeContext);
   if (props.data.mode === 'mossPose') return <MossPoseNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} nodeActions={<NodeActions id={props.id} data={props.data} selected={props.selected} generator />} />;
+  if (props.data.mode === 'videoSuperResolution') return <VideoSuperResolutionNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} nodeActions={<NodeActions id={props.id} data={props.data} selected={props.selected} generator />} />;
   return props.data.mode === 'customWorkflow' ? <CustomWorkflowNode {...props} /> : <BuiltinGeneratorNode {...props} />;
 }
 
@@ -916,7 +919,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     return edgesRef.current.filter((edge) => edge.target === id).map((edge) => {
       const source = nodesRef.current.find((item) => item.id === edge.source);
       return source?.type === 'media' ? { ...source, data: { ...source.data, slot: edge.targetHandle } } : null;
-    }).filter(Boolean).filter((source) => mode === 'customWorkflow' ? source.data.kind === 'image' && Boolean(customInput(node.data, source.data.slot)) : mode === 'mossPose' ? source.data.kind === 'image' && ['guide', 'identity'].includes(source.data.slot) : mode === 'reference' ? source.data.slot === 'references' : mode === 'frames' ? ['first', 'last'].includes(source.data.slot) && source.data.kind === 'image' : ['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) ? source.data.kind === 'image' && (source.data.slot === 'guide' || (mode === 'characterSheet' && ['body_reference', 'back_reference'].includes(source.data.slot)) || (['qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && source.data.slot === 'identity')) : ['swap', 'upscale'].includes(mode) ? (source.data.slot === 'guide' && source.data.kind === 'video') || (source.data.slot === 'identity' && source.data.kind === 'image') : false);
+    }).filter(Boolean).filter((source) => mode === 'customWorkflow' ? source.data.kind === 'image' && Boolean(customInput(node.data, source.data.slot)) : mode === 'mossPose' ? source.data.kind === 'image' && ['guide', 'identity'].includes(source.data.slot) : mode === 'reference' ? source.data.slot === 'references' : mode === 'frames' ? ['first', 'last'].includes(source.data.slot) && source.data.kind === 'image' : ['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) ? source.data.kind === 'image' && (source.data.slot === 'guide' || (mode === 'characterSheet' && ['body_reference', 'back_reference'].includes(source.data.slot)) || (['qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && source.data.slot === 'identity')) : mode === 'videoSuperResolution' ? source.data.slot === 'guide' && source.data.kind === 'video' : ['swap', 'upscale'].includes(mode) ? (source.data.slot === 'guide' && source.data.kind === 'video') || (source.data.slot === 'identity' && source.data.kind === 'image') : false);
   }, []);
 
   const getMaskGuide = useCallback((id) => canvasMaskGuide(id, nodesRef.current, edgesRef.current), []);
@@ -1322,7 +1325,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     const assertCurrent = () => generationAttemptsRef.current.assert(id, attempt);
     let node = nodesRef.current.find((item) => item.id === id);
     if (isImageProcess(node)) return runImageProcess(id);
-    if (!['customWorkflow', 'swap', 'upscale', 'imageUpscale'].includes(node?.data.mode) && !node?.data.prompt?.trim()) { updateNode(id, { status: 'error', error: '请先输入画面描述。' }); return; }
+    if (!['customWorkflow', 'swap', 'upscale', 'imageUpscale', 'videoSuperResolution'].includes(node?.data.mode) && !node?.data.prompt?.trim()) { updateNode(id, { status: 'error', error: '请先输入画面描述。' }); return; }
     if (mediaWritesRef.current.size) {
       updateNode(id, { status: 'uploading', stage: '正在等待素材写入磁盘', progress: 0, error: null });
       try {
@@ -1341,6 +1344,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     }
     if (node.data.mode === 'reference' && !refs.length) { updateNode(id, { status: 'error', error: '全能参考至少需要一个素材；仅用文字生成时，可切换到首尾帧并留空图片。' }); return; }
     if (node.data.mode === 'swap' && (!refs.some((ref) => ref.data.slot === 'guide') || !refs.some((ref) => ref.data.slot === 'identity'))) { updateNode(id, { status: 'error', error: '请连接源视频到上方端口、单人身份图到下方端口。' }); return; }
+    if (node.data.mode === 'videoSuperResolution' && !refs.some(ref => ref.data.slot === 'guide' && ref.data.kind === 'video')) { updateNode(id, { status: 'error', error: '请连接源视频后再超分。' }); return; }
     if (node.data.mode === 'upscale' && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: '请把已经生成的一采视频连接到高清二采节点上方端口。' }); return; }
     if (node.data.mode === 'imageUpscale' && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: '请把一张图片连接到图片高清节点左侧端口。' }); return; }
     if (['identityEdit', 'characterSheet', 'localRealism'].includes(node.data.mode) && !refs.some((ref) => ref.data.slot === 'guide')) { updateNode(id, { status: 'error', error: node.data.mode === 'characterSheet' ? '请把一张单人角色参考图连接到角色四视图节点左侧端口。' : '请把一张人物或场景母图连接到图生图节点左侧端口。' }); return; }
@@ -1401,6 +1405,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
               : node.data.mode === 'imageUpscale' ? buildImageHdWorkflow(options)
                 : node.data.mode === 'swap' ? buildCharacterSwapWorkflow(options)
                   : node.data.mode === 'upscale' ? buildHdRefineWorkflow(options)
+                  : node.data.mode === 'videoSuperResolution' ? buildVideoSuperResolutionWorkflow(options)
                     : node.data.mode === 'reference' ? buildReferenceWorkflow(options)
                       : buildWorkflow({ ...options, firstFrame: references.find((ref) => ref.slot === 'first')?.name, lastFrame: references.find((ref) => ref.slot === 'last')?.name });
       if ((node.data.mode === 'image' && node.data.imageModel === 'flux3_klein') || (node.data.mode === 'qwenEdit' && node.data.qwenModel === 'flux3_klein')) {
@@ -1420,6 +1425,11 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         const dependencies = await getMossPoseDependencyStatus(workflow);
         assertCurrent();
         if (!dependencies.ready) throw new Error(`MOSS 姿势还缺少：${dependencies.missing.join('、')}。不会自动下载权重；安装节点后需获准重启 ComfyUI。`);
+      }
+      if (node.data.mode === 'videoSuperResolution') {
+        const dependencies = await getVideoSuperResolutionDependencyStatus(workflow, comfyFetch);
+        assertCurrent();
+        if (!dependencies.ready) throw new Error(`视频超分缺少本机依赖：${dependencies.missing.join('、')}。请补齐后重试；未提交生成。`);
       }
       const job = await enqueueGeneration({ workflow, plan, projectId: project.id, nodeId: id, clientId });
       if (!generationAttemptsRef.current.isCurrent(id, attempt)) {
@@ -1696,18 +1706,25 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     return () => window.removeEventListener('paste', onPaste);
   }, [addNode, chooseMedia, imagePreview, workflowInspection, libraryModalOpen, pasteClipboard, screenToFlowPosition, project.readOnly]);
 
-  const attachFilesToGenerator = useCallback((generatorId, files) => {
+  const attachFilesToGenerator = useCallback((generatorId, files, targetHandle = 'references') => {
     const generator = nodesRef.current.find((node) => node.id === generatorId);
-    if (!generator) return;
-    const positions = planReferencePositions(nodesRef.current, generator, files.length);
-    files.forEach((file, index) => {
+    if (!generator || projectRef.current.readOnly || switchingRef.current || autoSaveRef.current?.conflict || ['uploading', 'queued', 'running', 'finishing'].includes(generator.data.status)) return;
+    const videoGuide = generator.data.mode === 'videoSuperResolution' && targetHandle === 'guide';
+    if (targetHandle !== 'references' && !videoGuide) return;
+    const selected = Array.from(files || []);
+    if (videoGuide && (selected.length !== 1 || !selected[0].type.startsWith('video/'))) {
+      updateNode(generatorId, { status: 'error', error: '请选择一段视频作为超分输入。' });
+      return;
+    }
+    const positions = planReferencePositions(nodesRef.current, generator, selected.length);
+    selected.forEach((file, index) => {
       const kind = file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'image';
       const position = positions[index];
       const id = addNode(kind, { title: file.name.replace(/\.[^.]+$/, '') }, position);
       chooseMedia(id, file);
-      setEdges((items) => addEdge({ id: `edge-${id}-${generatorId}`, source: id, target: generatorId, sourceHandle: 'ref', targetHandle: 'references' }, items));
+      setEdges((items) => addEdge({ id: `edge-${id}-${generatorId}`, source: id, target: generatorId, sourceHandle: 'ref', targetHandle }, videoGuide ? items.filter(edge => edge.target !== generatorId || edge.targetHandle !== 'guide') : items));
     });
-  }, [addNode, chooseMedia, setEdges]);
+  }, [addNode, chooseMedia, setEdges, updateNode]);
 
   const importVideoReference = useCallback(async (url, downloadNodeId = null) => {
     if (switchingRef.current || projectRef.current.readOnly || autoSaveRef.current?.conflict) throw new Error('当前画布不可写，请先处理保存状态后重试。');
@@ -2169,6 +2186,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={() => addNode('video', {}, addMenu.flow)}><i><Video size={17} /></i><span>视频素材<small>动作、运镜或内容参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('audio', {}, addMenu.flow)}><i><Music2 size={17} /></i><span>音频素材<small>音色、配乐或声音参考</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('note', {}, addMenu.flow)}><i><Type size={17} /></i><span>文本备注<small>分镜与创作设定</small></span><Plus size={13} /></button>
+          <div className="add-menu-title">视频增强 · 本地模型</div>
+          <button onClick={() => addNode('generator', { mode: 'videoSuperResolution', title: '视频超分', videoUpscaleModel: 'rtx', videoUpscaleScale: 2, rtxQuality: 'ULTRA', rtxStrength: 1, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>视频超分<small>RTX 超分 / 降噪 / 去模糊 · SeedVR2</small></span><Plus size={13} /></button>
+          <button disabled title="官方 HyperFlow 必需双时间模型与逐步终点条件；本机尚无经过验证的兼容运行时。普通 LoRA 转换不能替代。"><i><Sparkles size={17} /></i><span>2K 精修 · Open-H3 IC<small>兼容适配未完成 · 暂不可运行</small></span></button>
           <div className="add-menu-title">付费 API 节点</div>
           <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>云端视觉 API · 按服务商计费 · 上传作品及参考</small></span><Plus size={13} /></button>
           <div className="add-menu-title">第三方工具</div>

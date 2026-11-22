@@ -79,6 +79,8 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
       // One pose reference and one optional character sheet.
     } else if (mode === 'frames' && ['first', 'last'].includes(targetHandle) && source.data.kind === 'image') {
       // Keyframe inputs replace one existing source.
+    } else if (mode === 'videoSuperResolution' && targetHandle === 'guide' && source.data.kind === 'video') {
+      // Video super-resolution accepts only one source video.
     } else if (['swap', 'upscale'].includes(mode) && ((targetHandle === 'guide' && source.data.kind === 'video') || (targetHandle === 'identity' && source.data.kind === 'image'))) {
       // Video source / optional identity.
     } else if (mode === 'characterSheet' && ['body_reference', 'back_reference'].includes(targetHandle) && source.data.kind === 'image') {
