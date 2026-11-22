@@ -55,11 +55,14 @@ export async function runVideoProcessorFixture(config) {
     const call = (name, args = {}) => page.evaluate(async ({ name, args }) => JSON.parse(await window.fixtureTools.get(name).execute(args)), { name, args });
     const state = () => call('canvas_get_state');
     const until = async predicate => { for (let i = 0; i < 150; i++) { const current = await state(); if (predicate(current)) return current; await page.waitForTimeout(40); } throw new Error('mock processor did not settle'); };
+    const savedProcessor = () => project.canvas.nodes.find(n => n.id === 'processor')?.data;
     const updated = await call('canvas_update_node', { nodeId: 'processor', settings: config.settings }); assert.equal(updated.ok, true, updated.error);
     const start = await call('canvas_generate_node', { nodeId: 'processor', wait: false }); assert.equal(start.ok, true, start.error);
     const done = await until(s => s.nodes.find(n => n.id === 'processor')?.status === 'done');
     assert.equal(done.nodes.find(n => n.id === 'processor')[config.resultKey], output);
     assert.equal(submitted.length, 1); assert.equal(committed.length, 1);
+    await until(() => savedProcessor()?.[config.resultKey] === output &&
+      (!config.repeatExport || project.canvas.nodes.some(n => n.id === savedProcessor().plateResultNodeId)));
     config.check?.({ submitted: submitted[0], done, project, output, input });
     if (config.repeatExport) {
       const oldMedia = project.canvas.nodes.filter(n => n.type === 'media' && n.data.sourcePlateId === 'processor');
@@ -67,12 +70,11 @@ export async function runVideoProcessorFixture(config) {
       const oldId = oldMedia[0].id, oldData = structuredClone(oldMedia[0].data);
       assert.equal((await call('canvas_generate_node', { nodeId: 'processor', wait: false })).ok, true);
       await until(s => s.nodes.find(n => n.id === 'processor')?.status === 'done' && s.nodes.find(n => n.id === 'processor')?.plateResultNodeId !== oldId);
+      await until(() => savedProcessor()?.plateResultNodeId !== oldId && project.canvas.nodes.some(n => n.id === savedProcessor()?.plateResultNodeId));
       assert.deepEqual(project.canvas.nodes.find(n => n.id === oldId).data, oldData);
       assert.equal(project.canvas.nodes.filter(n => n.type === 'media' && n.data.sourcePlateId === 'processor').length, 2);
     }
     assert.equal(project.canvas.nodes.find(n => n.id === 'source').data.assetPath, input);
-    for (let i = 0; i < 100 && project.canvas.nodes.find(n => n.id === 'processor')?.data[config.resultKey] !== output; i++) await page.waitForTimeout(40);
-    assert.equal(project.canvas.nodes.find(n => n.id === 'processor')?.data[config.resultKey], output, 'export completed its project save');
     await page.reload(); await page.getByTestId('rf__node-processor').waitFor();
     assert.equal((await state()).nodes.find(n => n.id === 'processor')[config.resultKey], output);
     hold = true;
