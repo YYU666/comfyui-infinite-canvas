@@ -267,7 +267,7 @@ def _workbench_ready(instance, health, process):
             "workbenchReady": True, "comfyReady": False}
 
 
-def ensure_workbench(timeout: float = 120) -> dict:
+def ensure_workbench(timeout: float = 120, *, native3d_only: bool = False) -> dict:
     """Start the local service if needed and return only after both APIs respond."""
     if not math.isfinite(timeout) or not 0 < timeout <= 600:
         raise ValueError("启动等待时间必须大于 0 且不超过 600 秒。")
@@ -286,12 +286,14 @@ def ensure_workbench(timeout: float = 120) -> dict:
         settings = WorkbenchSettings()
         settings.load()
         root = Path(settings.data["comfyRoot"])
-        python = root / "python_embeded" / "python.exe"
-        if not python.is_file() or (comfy_autostart_enabled() and not (root / "ComfyUI" / "main.py").is_file()):
+        python = Path(sys.executable) if native3d_only else root / "python_embeded" / "python.exe"
+        if not python.is_file() or (not native3d_only and comfy_autostart_enabled() and not (root / "ComfyUI" / "main.py").is_file()):
             raise RuntimeError("未找到配置的 ComfyUI 便携版 Python 或 main.py；请设置 H3_COMFY_ROOT 或修正工作台设置。")
         here = Path(__file__).resolve().parent
         environment = os.environ.copy()
         environment.update(H3_WORKBENCH_NO_BROWSER="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+        if native3d_only:
+            environment["H3_WORKBENCH_NATIVE3D_ONLY"] = "1"
         process = subprocess.Popen(
             [str(python), "-X", "utf8", str(here / "video_workbench_launcher.py")],
             cwd=here, env=environment,
@@ -306,6 +308,11 @@ def ensure_workbench(timeout: float = 120) -> dict:
             return _workbench_ready(instance, health, process)
         if health:
             url = f"http://127.0.0.1:{instance['port']}"
+            if native3d_only:
+                return {"ok": True, "url": url + "/", "pid": health["pid"],
+                        "started": process is not None and process.pid == health["pid"],
+                        "workbenchReady": True, "comfyReady": None, "comfyRequired": False,
+                        "native3dServiceReady": bool(health.get("native3d", {}).get("service", False))}
             request = urllib.request.Request(url + "/api/comfy/system_stats", headers={"X-H3-Token": instance.get("token", "")})
             try:
                 with urllib.request.urlopen(request, timeout=min(1, max(0.01, deadline - time.monotonic()))) as response:
@@ -320,7 +327,9 @@ def ensure_workbench(timeout: float = 120) -> dict:
             raise RuntimeError(f"工作台启动失败；请检查 {runtime_dir() / 'logs' / 'app.log'}。")
         time.sleep(min(0.2, max(0, deadline - time.monotonic())))
     if health:
-        raise RuntimeError(f"画布服务已运行，但 ComfyUI 尚未就绪；请检查 {runtime_dir() / 'logs'}。未停止或重启已有服务。")
+        if native3d_only:
+            raise RuntimeError("画布健康检查尚未完成，未停止或重启已有服务。")
+        raise RuntimeError(f"画布服务已运行，但 ComfyUI 尚未就绪；请检查 {runtime_dir() / 'logs' / 'comfyui.log'}。未停止或重启已有服务。")
     raise RuntimeError(f"等待画布服务启动超时；请检查 {runtime_dir() / 'logs' / 'app.log'}。未停止后台启动过程。")
 
 

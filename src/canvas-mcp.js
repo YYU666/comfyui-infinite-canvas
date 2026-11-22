@@ -1,6 +1,7 @@
 import { CHARACTER_SHEET_SETTING_KEYS, validateCharacterSheetSettings } from './character-sheet-settings.js';
 import { MOSS_POSE_DEFAULTS, validateMossPoseSettings } from './moss-pose.js';
 import { normalizeVideoSuperResolutionSettings } from './video-super-resolution.js';
+import { NATIVE3D_PRESETS } from './native3d.js';
 import { useEffect, useRef } from 'react';
 import { isVideoRhythm, normalizeSpeedDocument, normalizeRemapDocument, videoRhythmSummary } from './video-rhythm-document.js';
 import { CHROMA_FIELDS, chromaDocumentFromNode, defaultChromaHandle, defaultChromaSettings, isVideoChroma, normalizePreviewTime, videoChromaSummary } from './video-chroma-document.js';
@@ -23,8 +24,12 @@ import { availableNodePresets } from './local-node-tools.js';
 import { DEFAULT_SPRITE_OPTIONS, spriteSnapshot } from './sprite-atlas.js';
 import { imageCompactArgs } from './image-inline-output.js';
 import { publicDownloadError, validatePublicVideoUrl, videoDownloadState } from './video-download.js';
+import {validPlanPreviews} from './native3d-runtime.js';
+import {nativeOutputNode} from './native3d-output.js';
 
 export const NODE_PRESETS = {
+  ...NATIVE3D_PRESETS,
+
   moss_pose: ['generator', { ...MOSS_POSE_DEFAULTS, mode: 'mossPose', title: 'MOSS 姿势控制' }],
   sprite_atlas: ['spriteAtlas', { title: '3D 角色转多方向图集', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS } }],
   art_director: ['artDirector', { title: '电子主美 · 图解分析', brief: '', preserve: '', referencePurposes: {} }],
@@ -72,6 +77,7 @@ export const NODE_PRESETS = {
 };
 
 const EDITABLE_SETTINGS = new Set([
+  'adapterId', 'nativeParameters',
   ...CHARACTER_SHEET_SETTING_KEYS,
   'poseInput', 'poseResolution', 'poseSteps', 'poseCfg', 'poseLoraStrength',
   'videoUpscaleModel', 'videoUpscaleScale', 'rtxQuality', 'rtxStrength',
@@ -167,6 +173,100 @@ export function validateModelSettings(settings, mode) {
   if ('museSteps' in settings && (!Number.isInteger(settings.museSteps) || settings.museSteps < 8 || settings.museSteps > 20)) throw new Error('museSteps 必须是 8–20 之间的整数。');
 }
 
+const nativeSummaryText = (value, limit = 192) => typeof value === 'string' ? value.slice(0, limit) : undefined;
+function nativeSummaryScalars(value, keys, textLimit = 96) {
+  const summary = {};
+  for (const key of keys) {
+    const item = value?.[key];
+    if (typeof item === 'string') summary[key] = item.slice(0, textLimit);
+    else if (item === null) summary[key] = null;
+    else if (typeof item === 'boolean' || (typeof item === 'number' && Number.isFinite(item))) summary[key] = item;
+  }
+  return summary;
+}
+const nativeReceiptFields = ['status','triangles','vertices','mesh_hash','automatic_hole_caps','accepted_moves','passes','ambiguous_components','requested_triangles','actual_triangles','stopped_above_target','fixed_boundary_vertices','boundary_edges','duplicate_faces','inconsistent_winding_edges','signed_normal_dot_minimum'];
+function nativeReceiptCounts(receipt) {
+  const summary = nativeSummaryScalars(receipt, nativeReceiptFields);
+  for (const key of ['operations','records','collapses','nonmanifold_edges','nonmanifold_vertices','degenerate_faces','intersection_pairs','boundary_components','unresolved_openings']) {
+    if (Array.isArray(receipt?.[key])) summary[`${key}_count`] = receipt[key].length;
+  }
+  return summary;
+}
+function nativeReceiptSummary(receipt) {
+  const summary = nativeReceiptCounts(receipt);
+  for (const key of ['before','after','receipt']) {
+    if (receipt?.[key] && typeof receipt[key] === 'object') summary[key] = nativeReceiptCounts(receipt[key]);
+  }
+  if (Array.isArray(receipt?.components)) {
+    summary.component_count = receipt.components.length;
+    summary.flipped_component_count = receipt.components.reduce((n, component) => n + (component?.flipped === true ? 1 : 0), 0);
+  }
+  return summary;
+}
+
+export function native3dNodeSummary(node) {
+  const data = node.data || {}, metadata = data.metadata || {}, geometry = metadata.geometry;
+  const diagnostic=data.nativeUVDiagnosticPreviews;
+  const hasDiagnostic=Boolean(data.operation==='uv'&&['failed','error'].includes(data.status)&&diagnostic?.jobId===data.nativeJobId&&diagnostic.nodeId===node.id&&diagnostic.diagnosticOnly===true&&diagnostic.acceptedUV===false&&diagnostic.bakeAllowed===false&&/^assets\/[a-f0-9]{64}\.png$/i.test(diagnostic.layout||''));
+  const stages = Array.isArray(geometry?.stages) ? geometry.stages : [];
+  const artifacts = Array.isArray(data.nativeArtifacts) ? data.nativeArtifacts : [];
+  const safeArtifacts = artifacts.slice(0, 256).filter(item => typeof item?.assetPath === 'string'
+    && /^assets\/[a-f0-9]{64}\.(glb|obj|fbx|png|jpg|jpeg|webp|json|bin|npz)$/i.test(item.assetPath)
+    && ['model','proxy','poster','texture','export','report','plan','evidence'].includes(item.role)
+    && (item.role !== 'report' || item.assetPath.toLowerCase().endsWith('.json')));
+  // Copies only: never sort or trim the project's live artifact/stage arrays.
+  safeArtifacts.sort((a, b) => Number(b.role === 'report') - Number(a.role === 'report'));
+  const result = {
+    id: nativeSummaryText(node.id, 128), type: 'native3d', title: nativeSummaryText(data.title, 128) || '',
+    nativeStageProvenance: data.nativeStageProvenance ? nativeSummaryScalars(data.nativeStageProvenance,['processorNodeId','referenceNodeId','parentStage','parentMeshHash','parentTriangles','stageIndex']) : undefined,
+    nativeUVPreviews: data.nativeUVPreviews ? nativeSummaryScalars(data.nativeUVPreviews,['jobId','modelAssetPath','seamsAssetPath','checkerAssetPath','layoutAssetPath','aoAssetPath','aoSeamsAssetPath','aoUnavailable']) : undefined,
+    nativeUVPreviewMode: nativeSummaryText(data.nativeUVPreviewMode, 24),
+    ...(data.nativeUVPlan ? {nativeUVPlan:{...nativeSummaryScalars(data.nativeUVPlan,['jobId','planSha256','lowAssetPath','highAssetPath','overlayAssetPath','producerNodeId']),statistics:nativeSummaryScalars(data.nativeUVPlan.statistics,['lowFaces','highFaces','regionCount','candidateEdgeCount','unsupportedAreaFraction','unwrapExecuted']),reviewed:Boolean(data.nativeUVPlanViewed),confirmed:Boolean(data.nativeUVPlanConfirmation)}} : {}),
+    ...nativeSummaryScalars(data,['nativeLODLevel','nativeNaniteCandidate']),
+    ...nativeSummaryScalars(data, ['operation','adapterId','nativeJobId','sourceJobId','sourceNodeId','nativeStage','status','stage','progress','kind','name'], 128),
+    error: nativeSummaryText(data.error, 384) || null,
+    assetPath: nativeSummaryText(data.assetPath, 192),
+    resultAssetPath: nativeSummaryText(data.resultAssetPath, 192),
+    ...(data.nativeOutputRecords?.length?{nativeOutputRecordCount:data.nativeOutputRecords.length,nativeCurrentOutputId:nativeSummaryText(data.nativeCurrentOutputId,128)}:{}),
+    nativeParameters: nativeSummaryScalars(data.nativeParameters, Object.keys(data.nativeParameters || {}).slice(0, 16)),
+    metadata: {
+      ...nativeSummaryScalars(metadata, ['operation','sourceSha256','highSourceSha256','sourceHash','highHash','source_mesh_hash','wallSeconds','sourceUV','sourceMaterials','sourceTransform']),
+      source: nativeSummaryScalars(metadata.source, ['status','vertices','triangles','finite','degenerateTriangles','boundaryEdges','nonManifoldEdges','watertight','selfIntersection']),
+      ...(geometry && typeof geometry === 'object' ? {geometry: {
+        ...nativeSummaryScalars(geometry, ['status','source_mesh_hash','selectedLod']),
+        blocker: nativeSummaryText(geometry.blocker, 384), stageCount: stages.length,
+        stages: stages.slice(0, 16).map(stage => ({
+          ...nativeSummaryScalars(stage, ['stage','name','parent_mesh_hash','mesh_hash','filename','lodLevel','visible','aliasOfStage']),
+          receipt: nativeReceiptSummary(stage?.receipt),
+        })),
+        stagesTruncated: stages.length > 16,
+      }} : {}),
+      detailsOmitted: true,
+    },
+    quality: nativeSummaryScalars(data.quality, ['status','vertices','triangles','finite','degenerateTriangles','boundaryEdges','nonManifoldEdges','watertight','selfIntersection']),
+    nativeArtifacts: safeArtifacts.slice(0, 16).map(item => ({role: item.role, name: nativeSummaryText(item.name, 96), assetPath: item.assetPath})),
+    nativeArtifactCount: artifacts.length, nativeArtifactsTruncated: safeArtifacts.length > 16 || artifacts.length > 256,
+    position: nativeSummaryScalars(node.position, ['x','y']), selected: Boolean(node.selected), pinned: Boolean(data.pinned),
+    hasMedia: Boolean(data.assetPath),hasPlan:Boolean(data.nativeUVPlan),hasPreview:Boolean(data.posterAssetPath || data.nativeUVPreviews || hasDiagnostic || validPlanPreviews(data.nativeUVPlanPreviews,data.nativeUVPlan)), summaryVersion: 1,
+    ...(hasDiagnostic?{nativeUVDiagnosticPreviews:nativeSummaryScalars(diagnostic,['jobId','projectId','nodeId','sourceSha256','diagnosticOnly','acceptedUV','bakeAllowed','layout','checker'],96)}:{}),
+    ...(validPlanPreviews(data.nativeUVPlanPreviews,data.nativeUVPlan)?{nativeUVPlanPreviews:nativeSummaryScalars(data.nativeUVPlanPreviews,['schemaVersion','planSha256','overlaySha256','regions','convex','details','ao'],96),nativePlanPreviewMode:['regions','convex','details','ao'].includes(data.nativePlanPreviewMode)?data.nativePlanPreviewMode:'regions'}:{}),
+  };
+  const size = () => new TextEncoder().encode(JSON.stringify(result)).length;
+  // An explicit transport budget also covers unusually long Unicode labels.
+  if (size() > 12 * 1024) {
+    delete result.nativeParameters;
+    while (size() > 12 * 1024 && result.metadata.geometry?.stages.length) {
+      result.metadata.geometry.stages.pop();
+      result.metadata.geometry.stagesTruncated = true;
+    }
+    while (size() > 12 * 1024 && result.nativeArtifacts.length) {
+      result.nativeArtifacts.pop();
+      result.nativeArtifactsTruncated = true;
+    }
+  }
+  return result;
+}
+
 function mediaLocation(data = {}) {
   const media = {};
   const text = (value, max = 500) => (typeof value === 'string' && value ? value.slice(0, max) : undefined);
@@ -187,6 +287,7 @@ function mediaLocation(data = {}) {
 
 export function nodeSummary(node, includeContent = true, graph = {}) {
   if (!node) return null;
+  if (node.type === 'native3d') return native3dNodeSummary(node);
   const media = mediaLocation(node.data);
   return {
     id: node.id,
@@ -244,7 +345,9 @@ function edgeSummary(edge) {
   };
 }
 
+const isNativePlanSource = (source) => source?.type === 'native3d' && (Boolean(source.data.nativeUVPlan) || source.data.operation === 'uv_plan');
 function defaultTargetHandle(target, source, edges = []) {
+  if (target?.type === 'native3d') return isNativePlanSource(source) ? 'plan' : 'model';
   if (isVideoChroma(target)) return defaultChromaHandle(target, source, edges);
   if (isVideoRepair(target)) return 'video';
   if (isVideoPlate(target)) return PLATE_PORT;
@@ -295,6 +398,19 @@ async function waitForVideoJob(latest, nodeId, jobKey, jobId, timeoutMs, waitImp
   return { node: nodeSummary(node), resultNode: null };
 }
 
+async function waitForNative3D(latest, nodeId, timeoutMs, waitImpl) {
+  const id = mcpNode(latest,nodeId).data.nativeJobId;
+  if (!id) throw new Error('此3D节点尚未提交任务。');
+  const node = await waitImpl(() => {
+    const current=mcpNode(latest,nodeId);
+    return current.data.nativeJobId===id && ['completed','error','failed','cancelled','stale'].includes(current.data.status) ? current : null;
+  },timeoutMs,500);
+  if(node.data.status!=='completed') throw new Error(node.data.error || `3D任务状态：${node.data.status}`);
+  const inline=node.data.nativeOutputRecords?.find(record=>record.jobId===id&&record.recordId===node.data.nativeCurrentOutputId);
+  const result=inline?nativeOutputNode(node,inline.recordId):latest.current.nodesRef.current.find(n=>n.data.sourceJobId===id);
+  return {node:nodeSummary(node),resultNode:nodeSummary(result)};
+}
+
 export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
   if (['uploading', 'queued', 'running', 'finishing'].includes(initial.data.status)) throw new Error('节点已经在生成，请使用 canvas_wait_for_node 等待，避免重复提交。');
@@ -322,6 +438,20 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     const finished = await waitForVideoJob(latest, nodeId, jobKey, result.jobId, timeoutMs, waitImpl);
     if (finished.node.status !== 'done') throw new Error(finished.node.error || '视频编辑未交付。');
     return finished;
+  }
+  if (isImageProcess(initial)) {
+    const result = await latest.current.actions.generateNode(nodeId);
+    if (!result?.ok) throw new Error(result?.error || '图片输出失败。');
+    const finished = await waitImpl(() => {
+      const node = mcpNode(latest, nodeId);
+      return node.data.status === 'done' && node.data.processedResultId === result.resultId ? node : null;
+    });
+    return { node: nodeSummary(finished), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
+  }
+  if (initial.type === 'native3d') {
+    await latest.current.actions.generateNode(nodeId);
+    if (wait) return waitForNative3D(latest, nodeId, timeoutMs, waitImpl);
+    return { node: nodeSummary(mcpNode(latest, nodeId)) };
   }
   if (isImageProcess(initial)) {
     const result = await latest.current.actions.generateNode(nodeId);
@@ -378,6 +508,7 @@ export async function waitForNodeForMcp(latest, { nodeId, timeoutMs = 300000 }, 
       return { pending: true, node: nodeSummary(mcpNode(latest, nodeId)), resultNode: null };
     }
   }
+  if (initial.type === 'native3d') return waitForNative3D(latest, nodeId, timeoutMs, waitImpl);
   const promptId = initial.data.promptId;
   const queueJobId = initial.data.queueJobId;
   if (!promptId && !queueJobId) throw new Error('这个节点还没有提交生成任务。');
@@ -555,6 +686,72 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       history: latest.current.actions.getImageModelHistory?.() || [],
     });
     const tools = [
+      {
+        name:'canvas_move_nodes',description:'仅移动指定的1至30个当前节点，保留其余节点位置。',
+        inputSchema:schema({nodes:{type:'array',minItems:1,maxItems:30,items:schema({nodeId:nodeIdProperty,x:{type:'number'},y:{type:'number'}},['nodeId','x','y'])}},['nodes']),
+        execute:respond(async ({nodes})=>({nodes:(await latest.current.actions.moveNodes(nodes)).map(nodeSummary)})),
+      },
+      {
+        name:'canvas_native3d_diagnostic_preview',description:'将同一失败UV任务的真实临时图集/棋盘诊断保存到原卡片供检查；不清除失败、不创建合格模型、不允许烘焙。',
+        inputSchema:schema({nodeId:nodeIdProperty},['nodeId']),execute:respond(async({nodeId})=>latest.current.actions.native3dDiagnosticPreview(nodeId)),
+      },
+      {
+        name:'canvas_native3d_viewer_close',description:'关闭当前共享3D审阅面板，回到画布卡片，不修改模型或执行生成。',
+        inputSchema:schema(),execute:respond(async()=>latest.current.actions.native3dViewerClose()),
+      },
+      {
+        name:'canvas_link_native3d_process',description:'仅为已保存诊断图和模型记录非执行流程证据，固定虚线图例，不改变真实模型输入、不运行生成。',
+        inputSchema:schema({edges:{type:'array',minItems:1,maxItems:24,items:schema({sourceId:nodeIdProperty,targetId:nodeIdProperty,kind:{type:'string',enum:['source','partition','ao_review','mapping','uv_evidence']}},['sourceId','targetId','kind'])}},['edges']),
+        execute:respond(async request=>latest.current.actions.linkNativeProcess(request)),
+      },
+      {
+        name:'canvas_link_native3d_diagnostic',description:'将当前页已上传诊断图关联到1至4个已保存模型素材，添加标明诊断参考的来源线；不是生成或UV验收。',
+        inputSchema:schema({imageId:nodeIdProperty,sourceIds:{type:'array',minItems:1,maxItems:4,items:nodeIdProperty}},['imageId','sourceIds']),
+        execute:respond(async request=>latest.current.actions.linkNativeDiagnostic(request)),
+      },
+      {
+        name:'canvas_native3d_plan_review',description:'在当前画布共享3D面板打开真实低模、切缝候选、分区与AO；不展开UV。',
+        inputSchema:schema({nodeId:nodeIdProperty},['nodeId']),
+        execute:respond(async({nodeId})=>latest.current.actions.native3dPlanReview(nodeId)),
+      },
+      {
+        name:'canvas_native3d_plan_confirm',description:'确认已在当前页3D面板成功加载且身份未变化的切缝方案。绑定planSha256，不运行UV。',
+        inputSchema:schema({nodeId:nodeIdProperty,planSha256:{type:'string',pattern:'^[a-f0-9]{64}$'}},['nodeId','planSha256']),
+        execute:respond(async({nodeId,planSha256})=>latest.current.actions.native3dPlanConfirm(nodeId,planSha256)),
+      },
+      {
+        name: 'canvas_native3d_uv_preview', description: '为已完成UV节点及其对应结果保存真实切缝、表面棋盘预览；AO任务另读取原始AO依据和候选缝。不改模型、不重跑UV，通过当前页面保存。',
+        inputSchema: schema({nodeId:nodeIdProperty},['nodeId']),
+        execute: respond(async ({nodeId}) => latest.current.actions.native3dUVPreview(nodeId)),
+      },
+      {
+        name: 'canvas_recover_native3d', description: '从同一项目备份恢复缺失3D节点及连线，保留当前所有已有节点与编辑，不执行生成，通过当前页面正常保存。',
+        inputSchema: schema({projectId:{type:'string'},backupRevision:{type:'integer',minimum:1,maximum:999999999}},['projectId','backupRevision']),
+        execute: respond(async fragment => latest.current.actions.recoverNative3D(fragment)),
+      },
+      {
+        name: 'canvas_native3d_capabilities', description: '读取本机3D操作与执行器的就绪状态和精确参数schema。',
+        inputSchema: schema(), annotations: { readOnlyHint: true },
+        execute: respond(async () => latest.current.actions.native3dCapabilities()),
+      },
+      {
+        name:'canvas_native3d_retry_stage',description:'仅从当前LOD结果节点重试该单档LOD，保留旧结果；运行时验证原任务与已通过父档并自动选新seed，不接受路径或seed覆盖。',
+        inputSchema:schema({nodeId:nodeIdProperty},['nodeId']),
+        execute:respond(async request=>{
+          if(!request||Object.keys(request).some(key=>key!=='nodeId')||typeof request.nodeId!=='string')throw new Error('仅允许指定LOD结果nodeId。');
+          const node=nativeOutputNode(latest.current.nodesRef.current.find(n=>n.id===request.nodeId));
+          if(node?.type!=='native3d'||node.data?.operation!=='analyze'||node.data.metadata?.operation!=='source_lod')throw new Error('必须选择真实LOD结果节点。');
+          return latest.current.actions.native3dRetryStage(request.nodeId);
+        }),
+      },
+      {
+        name:'canvas_native3d_stage',description:'从已接受修复减面结果创建fit或lod_N的真实阶段模型节点；同任务同阶段幂等更新标题、处理来源和真实阶段缩略图；实线为阶段输出、虚线为高模参考，不重新分析模型。diagnostic=true仅展示已登记失败阶段，保留blocked状态且禁止下游。',
+        inputSchema:schema({diagnostic:{type:'boolean'},sourceId:nodeIdProperty,stage:{type:'string',pattern:'^(fit|lod_[1-9][0-9]{0,5}|lod[0-4])$'},title:{type:'string',maxLength:160},x:{type:'number'},y:{type:'number'}},['sourceId','stage']),
+        execute:respond(async request=>{
+          const result=await latest.current.actions.native3dStage(request);
+          return {node:nodeSummary(result.node),existing:result.existing};
+        }),
+      },
       {
         name:'canvas_move_nodes',description:'仅移动指定的1至30个当前节点，保留其余节点位置。',
         inputSchema:schema({nodes:{type:'array',minItems:1,maxItems:30,items:schema({nodeId:nodeIdProperty,x:{type:'number'},y:{type:'number'}},['nodeId','x','y'])}},['nodes']),
@@ -766,6 +963,8 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           if (current.data.noteRole === 'videoDownload') {
             if (latest.current.actions.isVideoDownloadBusy?.() && ['queued', 'downloading'].includes(current.data.downloadStatus)) throw new Error('节点正在下载，请完成后再修改。');
           } else if (['uploading', 'queued', 'running', 'finishing'].includes(current.data.status)) throw new Error('节点正在生成，请先完成或取消后再修改。');
+          if (current.type !== 'native3d' && ('adapterId' in settings || 'nativeParameters' in settings)) throw new Error('3D参数仅支持3D节点。');
+          if ('nativeParameters' in settings && (!settings.nativeParameters || typeof settings.nativeParameters !== 'object' || Array.isArray(settings.nativeParameters))) throw new Error('nativeParameters 必须为参数对象。');
           const unknown = Object.keys(settings).filter((key) => !EDITABLE_SETTINGS.has(key));
           if (unknown.length) throw new Error(`不支持的参数：${unknown.join(', ')}`);
           if ('spriteInputPath' in settings || 'spriteOptions' in settings) {
@@ -873,7 +1072,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           const source = getNode(sourceId);
           const target = getNode(targetId);
           const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || (isVideoEdit(target) ? nextVideoEditPort(target, source, latest.current.edgesRef.current) : defaultTargetHandle(target, source, latest.current.edgesRef.current));
-          const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
+          const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: source.type === 'native3d' ? (isNativePlanSource(source) ? 'plan' : 'model') : source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
           if (connected?.error) throw new Error(connected.error);
           const edge = await waitFor(() => {
             return latest.current.edgesRef.current.find((item) => connected?.edgeId ? item.id === connected.edgeId : item.source === sourceId && item.target === targetId && item.targetHandle === handle) || null;
@@ -936,9 +1135,11 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       },
       {
         name: 'canvas_tidy',
-        description: '使用当前画布的自动整理功能重排全部节点并保留连线，然后适应视口。会移动节点位置，不会修改提示词或生成内容。',
-        inputSchema: schema(),
-        execute: respond(async () => {
+        description: '默认自动重排全部节点。仅显式 mode=native3d_compact 时整理本地3D重复结果到处理卡片；默认 dryRun=true，只预览，不移动其他节点，不删除文件。使用此模式前应读取 capabilities.uiFeatures.inlineResultsVersion。',
+        inputSchema: schema({mode:{type:'string',enum:['native3d_compact']},dryRun:{type:'boolean',default:true},cleanupFailedIds:{type:'array',items:nodeIdProperty,maxItems:100}}),
+        execute: respond(async ({mode,dryRun=true,cleanupFailedIds=[]}) => {
+          if(mode==='native3d_compact')return latest.current.actions.native3dCompact({dryRun,cleanupFailed:cleanupFailedIds.length>0,cleanupIds:cleanupFailedIds});
+          if(mode!==undefined||cleanupFailedIds.length||dryRun===false)throw Error('3D整理必须显式指定 mode=native3d_compact。');
           latest.current.actions.tidyCanvas();
           return { message: '已整理当前画布。' };
         }),
@@ -961,6 +1162,26 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         catch (error) { return JSON.stringify({ ok: false, error: error.message, code: error.code, status: error.status, localChangesRetained: true }); }
       },
     });
+    tools.push({name:'canvas_native3d_compact',description:'显式整理本地3D重复结果；默认只预览，清理仅限指定且无依赖的失败节点，不删除素材文件。',inputSchema:schema({dryRun:{type:'boolean',default:true},cleanupFailed:{type:'boolean',default:false},cleanupIds:{type:'array',items:nodeIdProperty,maxItems:100}}),execute:respond(async({dryRun=true,cleanupFailed=false,cleanupIds=[]})=>latest.current.actions.native3dCompact({dryRun,cleanupFailed,cleanupIds}))});
+    tools.push({name:'canvas_native3d_sync_task',description:'核对当前节点已提交任务并重试保存或交付，不重新计算。',inputSchema:schema({nodeId:nodeIdProperty},['nodeId']),execute:respond(async({nodeId})=>latest.current.actions.native3dSyncTask(nodeId))});
+    tools.push({name:'canvas_native3d_retry_lod',description:'从确切已验收父LOD单档重试，保留原失败档比例并换新种子；局部修复追溯原失败任务。',inputSchema:schema({nodeId:nodeIdProperty},['nodeId']),execute:respond(async({nodeId})=>latest.current.actions.native3dRetryLOD(nodeId))});
+    tools.push({name:'canvas_native3d_repair_lod',description:'保存并提交当前未通过LOD候选的局部修复；保留原结果，重复调用查看同一修复。',inputSchema:schema({nodeId:nodeIdProperty,settings:{type:'object',properties:{localRepairMaxPatches:{type:'integer',minimum:1,maximum:4},localRepairDisplacementFraction:{type:'number',minimum:.0001,maximum:.01},localRepairCorrectionFraction:{type:'number',minimum:.1,maximum:1}},additionalProperties:false}},['nodeId']),execute:respond(async ({nodeId,settings})=>settings===undefined?latest.current.actions.native3dRepairLOD(nodeId):latest.current.actions.native3dRepairLOD(nodeId,settings))});
+    tools.push({name:'canvas_native3d_create_resolution',description:'为外轮廓未通过的LOD创建保留更多面的同档草稿，不启动生成；沿用确切父模型和质量门。',inputSchema:schema({nodeId:nodeIdProperty,keepPercent:{type:'number',exclusiveMinimum:0,maximum:100}},['nodeId','keepPercent']),execute:respond(async ({nodeId,keepPercent})=>latest.current.actions.native3dCreateResolution(nodeId,keepPercent))});
+    tools.push({
+      name:'canvas_native3d_next_step',
+      description:'在当前结果旁创建并连接下一步可编辑节点，不运行生成；重复点击复用未修改草稿。',
+      inputSchema:schema({nodeId:nodeIdProperty,action:{type:'string',enum:['next_lod','uv_plan','uv_plan_reviewed','unwrap','bake']}},['nodeId','action']),
+      execute:respond(async ({nodeId,action})=>latest.current.actions.native3dNextStep(nodeId,action)),
+    });
+    tools.push({
+      name: 'canvas_retry_save',
+      description: '显式重试当前页面保存，保留未保存修改及版本冲突保护；不会重新生成或刷新页面。',
+      inputSchema: schema(),
+      execute: async () => {
+        try { return JSON.stringify({ ok: true, ...await latest.current.actions.retryProjectSave() }); }
+        catch (error) { return JSON.stringify({ ok: false, error: error.message, code: error.code, status: error.status, localChangesRetained: true }); }
+      },
+    });
     tools.push(...createProjectPageTools({
       prepare: (id, name) => latest.current.actions.prepareProjectSwitch(id, name),
       commit: (target) => latest.current.actions.commitProjectSwitch(target),
@@ -972,7 +1193,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       inputSchema: schema({ nodeId: nodeIdProperty, assetPath: { type: 'string' }, name: { type: 'string' }, sourceProjectId: { type: 'string' } }, ['nodeId', 'assetPath']),
       execute: respond(async ({ nodeId, assetPath, name, sourceProjectId }) => {
         const node = getNode(nodeId);
-        if (node.type !== 'media' || !/^assets\/[a-f0-9]{64}\.[a-z0-9]+$/i.test(assetPath)) throw new Error('需要当前项目的有效素材路径和素材节点。');
+        if (!['media','native3d'].includes(node.type) || !/^assets\/[a-f0-9]{64}\.[a-z0-9]+$/i.test(assetPath)) throw new Error('需要当前项目的有效素材路径和素材节点。');
         if (sourceProjectId && !/^prj_[a-zA-Z0-9_-]+$/.test(sourceProjectId)) throw new Error('来源项目 ID 无效。');
         await latest.current.actions.importAsset(nodeId, assetPath, name, sourceProjectId);
         return { node: nodeSummary(getNode(nodeId)) };
@@ -994,7 +1215,8 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       const original = tool.execute;
       tool.execute = async (args = {}, executionOptions) => {
         const compactPreview = tool.name === 'canvas_image_compact' && args?.dryRun !== false;
-        const mutation = !compactPreview && !['canvas_get_extension_publish_status', 'canvas_get_state', 'canvas_get_video_analysis', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
+        const nativePreview = ['canvas_native3d_compact', 'canvas_tidy'].includes(tool.name) && (tool.name !== 'canvas_tidy' || args?.mode === 'native3d_compact') && args?.dryRun !== false;
+        const mutation = !nativePreview && !compactPreview && !['canvas_get_extension_publish_status', 'canvas_get_state', 'canvas_native3d_viewer_close', 'canvas_native3d_capabilities', 'canvas_get_video_analysis', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
         const result = JSON.parse(await original(args, executionOptions));
         if (mutation && result.ok && !['canvas_download_video', 'canvas_publish_extension', 'canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {

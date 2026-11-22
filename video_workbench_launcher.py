@@ -45,6 +45,8 @@ from video_edit_jobs import VideoEditJobs
 from art_director import ArtDirectorAPI
 from pureref_sessions import PureRefSessions
 from sprite_atlas import SpriteAtlasAPI
+from native3d_api import Native3DAPI
+from native3d_jobs import Native3DJobs
 from project_store import ProjectStore
 from queue_api import QueueAPI
 from workbench_doctor import WorkbenchDoctor
@@ -240,6 +242,11 @@ def shutdown_workbench(server, *, preserve_comfy=False):
             server.queue_manager.stop()
         except Exception:
             LOGGER.exception("停止任务队列失败。")
+    if server is not None and hasattr(server, "native3d_jobs"):
+        try:
+            server.native3d_jobs.close()
+        except Exception:
+            LOGGER.exception("关闭本地 3D 任务失败。")
     if server is not None and hasattr(server, "pureref_sessions"):
         try:
             server.pureref_sessions.close()
@@ -673,6 +680,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 "startedAt": self.server.started_at,
                 "uiReady": bool(getattr(self.server, "ui_ready", False)),
                 "uiReadyAt": getattr(self.server, "ui_ready_at", None),
+                "native3dOnly": bool(getattr(self.server, "native3d_only", False)),
+                "native3d": {"service": bool(getattr(self.server, "native3d_jobs", None))},
                 "comfy": comfy,
                 "queue": {
                     "running": sum(job["status"] in {"running", "finishing"} for job in queue_state["jobs"]),
@@ -708,6 +717,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         art_director_api = getattr(self.server, "art_director_api", None)
         if art_director_api and art_director_api.handle_get(self, path):
+            return
+        native3d_api = getattr(self.server, "native3d_api", None)
+        if native3d_api and native3d_api.handle_get(self, path):
             return
         if self.server.project_api.handle_get(self, path):
             return
@@ -811,6 +823,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 self.send_json(500, {"code": "INTERNAL", "message": "诊断暂时无法完成，请查看运行日志。", "details": {}})
             return
         if path == "/api/shutdown":
+            if native3d_busy(self.server):
+                self.send_json(409, {"code":"NATIVE3D_BUSY", "message":"Cancel or finish native3D jobs before shutdown."})
+                return
             self.send_json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
@@ -844,6 +859,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         art_director_api = getattr(self.server, "art_director_api", None)
         if art_director_api and art_director_api.handle_post(self, path):
+            return
+        native3d_api = getattr(self.server, "native3d_api", None)
+        if native3d_api and native3d_api.handle_post(self, path):
             return
         if self.server.project_api.handle_post(self, path):
             return
@@ -917,7 +935,17 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
 
 
+def native3d_busy(server):
+    jobs = getattr(server, "native3d_jobs", None)
+    if not jobs:
+        return False
+    with jobs.lock:
+        return bool(jobs.active) or any(job["status"] in {"queued", "running"} for job in jobs.jobs.values())
+
+
 def validate_update_ready(server):
+    if native3d_busy(server):
+        raise UpdateError("Native3D queue has active jobs.", status=409, code="NATIVE3D_BUSY")
     if getattr(server, "video_plate_api", None) and server.video_plate_api.jobs.active_count():
         raise UpdateError("视频处理仍在导出，请完成或取消后重试。", status=409, code="QUEUE_BUSY")
     if getattr(server, "video_repair_api", None) and server.video_repair_api.jobs.active_count():
@@ -963,6 +991,8 @@ def validate_settings_change(server, candidate):
         raise SettingsError("视频处理仍在导出，请完成或取消后重试。", status=409, code="QUEUE_BUSY")
     if getattr(server, "video_repair_api", None) and server.video_repair_api.jobs.active_count():
         raise SettingsError("视频处理仍在导出，请完成或取消后重试。", status=409, code="QUEUE_BUSY")
+    if native3d_busy(server):
+        raise SettingsError("Native3D queue has active jobs.", status=409, code="NATIVE3D_BUSY")
     if Path(candidate["projectsRoot"]).resolve() == server.project_store.root:
         return
     if getattr(server, "video_chroma_api", None) and server.video_chroma_api.jobs.active_count():
@@ -1002,6 +1032,8 @@ def apply_server_settings(server):
         if getattr(server, "video_rhythm_api", None): server.video_rhythm_api.jobs.replace_store(replacement)
         if getattr(server, "art_director_api", None):
             server.art_director_api.store = replacement
+        if hasattr(server, "native3d_jobs"):
+            server.native3d_jobs.store = replacement
         server.project_api.domain.store = replacement
         if getattr(server, "agent_api", None):
             server.agent_api.protocol.store = replacement
@@ -1067,6 +1099,7 @@ def main(argv=None):
             atomic_write_json(runtime_dir() / "workbench-port.json", {"port": server.server_port})
             server.token = secrets.token_urlsafe(32)
             server.started_at = utc_now()
+            server.native3d_only = os.environ.get("H3_WORKBENCH_NATIVE3D_ONLY") == "1"
             server.comfy_owned = False
             server.comfy_process = None
             server.comfy_url = COMFY_URL
@@ -1085,6 +1118,8 @@ def main(argv=None):
             server.pureref_sessions = PureRefSessions(server.project_store)
             server.sprite_atlas_api = SpriteAtlasAPI(server.project_store, runtime_dir() / "sprite-atlas")
             server.art_director_api = ArtDirectorAPI(server.project_store)
+            server.native3d_jobs = Native3DJobs(runtime_dir() / "native3d-jobs", server.project_store)
+            server.native3d_api = Native3DAPI(server.native3d_jobs)
             server.thumbnail_cache = ThumbnailCache(runtime_dir() / "thumbnails", server.project_store, COMFY_URL)
             server.doctor = WorkbenchDoctor(
                 HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
@@ -1098,7 +1133,8 @@ def main(argv=None):
             server.agent_api = AgentAPI(server.project_store, server.queue_manager)
             server.extension_api = ExtensionAPI(ExtensionStore(runtime_dir() / "extensions"), COMFY_URL, comfy_root=ROOT)
             server.update_manager = WorkbenchUpdateManager(HERE, lambda: validate_update_ready(server))
-            server.queue_manager.start()
+            if not server.native3d_only:
+                server.queue_manager.start()
 
             command = [
                 str(ROOT / "python_embeded" / "python.exe"), "-s", str(ROOT / "ComfyUI" / "main.py"),
@@ -1121,7 +1157,7 @@ def main(argv=None):
             server.ui_ready = False
             server.ui_ready_at = None
             server.comfy_lifecycle = ComfyLifecycle(url=COMFY_URL, root=ROOT, log_dir=log_dir,
-                command=command, spawn=spawn_comfy, enabled=enabled, allow_start=allow_start)
+                command=command, spawn=spawn_comfy, enabled=enabled and not server.native3d_only, allow_start=allow_start and not server.native3d_only)
             atomic_write_json(instance_path(), {
                 "port": server.server_port,
                 "token": server.token,

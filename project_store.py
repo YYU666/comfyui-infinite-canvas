@@ -18,7 +18,7 @@ from workbench_lifecycle import APP_VERSION, atomic_write_json, utc_now
 
 MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PROJECT_MEMBERS = 10000
-ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".tga", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac"}
+ASSET_EXTENSIONS = {".glb", ".obj", ".fbx", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".tga", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac"}
 INVALID_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
@@ -284,6 +284,24 @@ class ProjectStore:
         if external and external.is_file():
             return external
         raise StoreError("NOT_FOUND", "项目不存在或尚未打开。", 404)
+
+    def native3d_backup_fragment(self, project_id, revision):
+        """Read-only recovery source. The current page remains the only writer."""
+        if type(revision) is not int or revision < 1:
+            raise StoreError('BAD_REQUEST', '备份版本无效。')
+        project = self._project_path(project_id).resolve()
+        path = project.parent / 'backups' / f'project-r{revision}.json'
+        if not path.is_file() or path.resolve().parent != project.parent / 'backups':
+            raise StoreError('NOT_FOUND', '项目备份不存在或路径无效。', 404)
+        if path.stat().st_size > 32 * 1024 * 1024:
+            raise StoreError('BAD_REQUEST', '项目备份过大。')
+        document = _read_project_json(path)
+        if document.get('id') != project_id or document.get('revision') != revision:
+            raise StoreError('BAD_REQUEST', '备份项目或版本不匹配。')
+        nodes = [n for n in document.get('canvas', {}).get('nodes', []) if n.get('type') == 'native3d']
+        ids = {n['id'] for n in nodes}
+        edges = [e for e in document.get('canvas', {}).get('edges', []) if e.get('source') in ids or e.get('target') in ids]
+        return {'projectId': project_id, 'nodes': nodes, 'edges': edges, 'backupRevision': revision}
 
     def _read(self, path, migrate=True):
         # Schema/handle repair can write: serialize the entire read-modify-write,
@@ -621,7 +639,13 @@ class ProjectStore:
         self._require_writable(path)
         self.acquire_lock(path)
         extension = Path(filename).suffix.lower()
-        if extension not in ASSET_EXTENSIONS:
+        report_upload = extension == ".json" and Path(filename).name == "report.json"
+        from native3d_plan_assets import LIMITS as plan_limits, validate as validate_plan_asset
+        plan_name=Path(filename).name
+        plan_upload=plan_name in plan_limits
+        if extension == '.fbx':
+            content_type = 'application/octet-stream'
+        if extension not in ASSET_EXTENSIONS and not report_upload and not plan_upload:
             raise StoreError("UNSUPPORTED_MEDIA", "素材类型不在白名单内。", 415)
         assets = path.parent / "assets"
         temporary = assets / f".upload-{uuid.uuid4().hex}.tmp"
@@ -635,12 +659,32 @@ class ProjectStore:
                     if not chunk:
                         break
                     size += len(chunk)
+                    if extension == '.fbx' and size > 512 * 1024 * 1024:
+                        raise StoreError("BAD_REQUEST", "FBX素材不能超过512 MiB。")
+                    if report_upload and size > 4 * 1024 * 1024:
+                        raise StoreError("BAD_REQUEST", "3D report exceeds 4 MiB.")
+                    if plan_upload and size>plan_limits[plan_name]:
+                        raise StoreError('BAD_REQUEST','UV plan artifact exceeds bounded limit.')
                     if size > MAX_ASSET_BYTES:
                         raise StoreError("BAD_REQUEST", "单个素材不能超过 2 GB。")
                     digest.update(chunk)
                     target.write(chunk)
                 target.flush()
                 os.fsync(target.fileno())
+            if plan_upload:
+                try:
+                    validate_plan_asset(temporary,plan_name)
+                except (ValueError,UnicodeError,RecursionError,zipfile.BadZipFile) as exc:
+                    raise StoreError('BAD_REQUEST','Invalid UV plan artifact: '+str(exc)[:160]) from exc
+                content_type='application/octet-stream'
+            if report_upload:
+                try:
+                    report = json.loads(temporary.read_text(encoding="utf-8"), parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+                except (ValueError, UnicodeError, RecursionError) as exc:
+                    raise StoreError("BAD_REQUEST", "3D report must be valid finite JSON.") from exc
+                if not isinstance(report, dict) or set(report) != {"metadata", "quality", "warnings"} or not isinstance(report.get("metadata"), dict) or not isinstance(report.get("quality"), dict) or not isinstance(report.get("warnings"), list):
+                    raise StoreError("BAD_REQUEST", "Unsupported 3D report structure.")
+                content_type = "application/json"
             sha256 = digest.hexdigest()
             relative = f"assets/{sha256}{extension}"
             with self._guard(path):
@@ -773,6 +817,12 @@ class ProjectStore:
             status = 206
         length = max(0, end - start + 1)
         headers = {"Accept-Ranges": "bytes", "Content-Length": str(length), "Content-Type": mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"}
+        if file_path.suffix.lower() == ".json":
+            headers["Content-Type"] = "application/octet-stream"
+            headers["Content-Disposition"] = 'attachment; filename="report.json"'
+        if file_path.suffix.lower() == '.fbx':
+            headers['Content-Type'] = 'application/octet-stream'
+            headers['Content-Disposition'] = f'attachment; filename="{file_path.name}"'
         if status == 206:
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         return status, headers, start, length

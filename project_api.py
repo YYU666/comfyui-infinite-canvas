@@ -155,6 +155,10 @@ class ProjectAPI:
         if match:
             handler.send_json(200, self.store.get(match.group(1)))
             return True
+        match = re.fullmatch(r'/api/projects/(prj_[A-Za-z0-9_-]+)/native3d-backup/([1-9][0-9]{0,8})', path)
+        if match:
+            handler.send_json(200, self.store.native3d_backup_fragment(match.group(1), int(match.group(2))))
+            return True
         match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/assets/(.+)", path)
         if match:
             relative = urllib.parse.unquote(match.group(2))

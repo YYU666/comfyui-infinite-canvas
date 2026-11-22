@@ -23,6 +23,7 @@
     "lucide-react": "^0.577.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
+    "three": "0.187.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.1"
   },
