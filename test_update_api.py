@@ -100,9 +100,19 @@ class UpdatePreflightTests(unittest.TestCase):
         return mock.Mock(
             project_store=store,
             sprite_atlas_api=None,
+            native3d_jobs=None,
             **self.idle_video_apis(),
             queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": status}]})),
         )
+
+    def test_active_native3d_job_blocks_update(self):
+        from threading import Lock
+        from video_workbench_launcher import validate_update_ready
+        server = self.server()
+        server.native3d_jobs = mock.Mock(lock=Lock(), active=set(), jobs={"mesh": {"status": "queued"}})
+        with self.assertRaises(UpdateError) as caught:
+            validate_update_ready(server)
+        self.assertEqual(caught.exception.code, "NATIVE3D_BUSY")
 
     def test_open_project_and_active_queue_block_update(self):
         from video_workbench_launcher import validate_update_ready
@@ -120,7 +130,7 @@ class UpdatePreflightTests(unittest.TestCase):
             store = ProjectStore(Path(temporary), "owner-update")
             document = store.create("场景甲")
             store.open(document["id"])
-            server = mock.Mock(project_store=store, sprite_atlas_api=None, **self.idle_video_apis(), queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": "done"}]})))
+            server = mock.Mock(project_store=store, sprite_atlas_api=None, native3d_jobs=None, **self.idle_video_apis(), queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": "done"}]})))
             lock = store._project_path(document["id"]).parent / ".lock"
             with mock.patch("video_workbench_launcher.shutil.disk_usage", return_value=mock.Mock(free=1024 ** 3)):
                 with self.assertRaises(UpdateError) as caught:

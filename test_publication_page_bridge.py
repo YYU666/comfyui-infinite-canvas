@@ -27,7 +27,8 @@ class PublicationPageBridgeTests(unittest.TestCase):
         self.assertEqual(self.bridge.heartbeat(self.page)["command"]["args"], {"requestId": "publish_one"})
         self.assertIn("canvas_wait_for_node", TOOLS)
         self.assertIn("canvas_cancel_node", TOOLS)
-        self.assertFalse(any("native3d" in tool for tool in TOOLS))
+        self.assertIn("canvas_native3d_capabilities", TOOLS)
+        self.assertFalse(any("pcg" in tool for tool in TOOLS))
 
     def test_invalid_fields_types_and_identities_never_queue(self):
         invalid = [{**self.args, "path": "archive.zip"}, {**self.args, "digest": "bad"},

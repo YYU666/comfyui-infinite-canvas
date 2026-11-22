@@ -188,6 +188,7 @@ try {
   assert.equal(state.nodes.find(n => n.id === 'edit').editResultAssetPath, resultAsset);
   assert.equal(state.edges.find(e => e.id === 'input').source, 'source');
   assert.equal(f.saved().canvas.nodes.find(n => n.id === 'source').data.assetPath, sourceAsset);
+  await f.until(() => f.saved().canvas.nodes.find(n => n.id === 'edit')?.data.editResultAssetPath === resultAsset);
   await page.reload(); await editor.waitFor();
   state = await f.state(); assert.equal(state.nodes.find(n => n.id === 'edit').editResultAssetPath, resultAsset, 'asset identity survives reload');
   f.hold(true);
