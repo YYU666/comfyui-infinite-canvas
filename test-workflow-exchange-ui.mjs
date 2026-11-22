@@ -268,12 +268,8 @@ try {
  await remote.waitForFunction(()=>received.some(message=>message.requestId==='save-failure'&&message.ok===false));
  assert.equal(project.canvas.nodes.length,savedNodeCount,'save error never reports a delivered node');
  assert.equal(await remote.evaluate(()=>received.some(message=>message.requestId==='save-failure'&&message.ok===true)),false);
- const canvasNodeIds=()=>page.evaluate(async()=>{
-  const state=JSON.parse(await window.fixtureTools.get('canvas_get_state').execute({}));
-  if(!state.ok)throw new Error(state.error);
-  return state.nodes.map(node=>node.id).sort();
- });
  const idsAfterFailedSave=await canvasNodeIds();
+ assert.equal(idsAfterFailedSave.filter(id=>!beforeFailedSave.includes(id)).length,1);
  failSave=false;
  await remote.evaluate(()=>addNode('save-retry-new-request'));
  await remote.waitForFunction(()=>received.some(message=>message.requestId==='save-retry-new-request'&&message.ok===true));
