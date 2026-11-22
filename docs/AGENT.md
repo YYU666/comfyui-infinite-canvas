@@ -127,6 +127,11 @@ GET  /api/agent/resources/<protocol|context|schema>
 
 `status` 仅支持 `active` 和 `paused`。暂停是供其他 Agent 遵循的协调信号，不是硬锁：不会取消生成、不阻止浏览器保存，也不替代 revision/CAS。`handoff` 保存在项目 `settings` 中，旧项目缺省时返回空接力，无需迁移；增量状态会用 `changed: ["handoff"]` 报告变化。画布顶栏“接力”也可填写相同内容。
 
+## 图片自动选模
+
+文生图和图生图在生成前会按任务、已安装模型和收下/否掉历史选择现有下拉里的模型。手动改下拉或点名模型会锁定该节点。用法、评分和 `settings.imageModelHistory` 见 `docs/image-model-picker.md`。当前侧面页的工具是 `canvas_pick_image_model`、`canvas_review_image`；`canvas_generate_node` 会在提交前自动选一次。
+
+
 ## CLI
 
 下面的命令调用后端协议。用户要在画布上看到的图片或视频不要用 `generate --wait` 或 `shot-create` 代替手册中的可见节点回路。
