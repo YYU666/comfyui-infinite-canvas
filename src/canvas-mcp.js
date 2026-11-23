@@ -642,7 +642,9 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         const result = await callback(args);
         return JSON.stringify({ ok: true, ...result });
       } catch (error) {
-        return JSON.stringify({ ok: false, error: error?.message || String(error) });
+        const glbError = ['NATIVE3D_GLB_LAYOUT_UNSUPPORTED','NATIVE3D_GLB_INVALID'].includes(error?.code);
+        return JSON.stringify({ ok: false, error: error?.message || String(error),
+          ...(glbError ? {code:error.code,details:error.details} : {}) });
       }
     };
     const analysisSource = (nodeId) => {

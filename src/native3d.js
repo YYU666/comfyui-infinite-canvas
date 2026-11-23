@@ -109,6 +109,8 @@ export async function nativeRequest(path, body) {
   if (!response.ok || value.ok === false) {
     const error = new Error(typeof value.error === 'string' ? value.error : value.error?.message || value.message || `3D服务不可用（HTTP ${response.status}）`);
     error.status = response.status;
+    error.code = value.code;
+    error.details = value.details;
     throw error;
   }
   return value;
