@@ -330,14 +330,9 @@ def read_mesh(path):
                 source_uv |= head[0] == 'vt'
                 source_normals |= head[0] == 'vn'
     else:
-        with path.open('rb') as f:
-            header = f.read(12)
-            if len(header) != 12 or header[:4] != b'glTF' or struct.unpack('<I', header[4:8])[0] != 2:
-                raise ValueError('Invalid GLB2 header')
-            size, kind = struct.unpack('<II', f.read(8))
-            if kind != 0x4e4f534a or size > 32 * 1024**2:
-                raise ValueError('Invalid GLB JSON chunk')
-            doc = json.loads(f.read(size))
+        from native3d_glb_layout import read_glb_document, validate_glb_layout
+        doc = read_glb_document(path)
+        validate_glb_layout(doc)
         for collection in ('buffers', 'images'):
             for item in doc.get(collection, []):
                 if 'uri' in item:
@@ -354,8 +349,6 @@ def read_mesh(path):
         if doc.get('skins') or doc.get('animations'):
             raise ValueError('Animated/skinned meshes unsupported in static pilot')
         material_info = doc.get('materials', [])
-        if len(material_info) > 1 or any(len(m.get('primitives', [])) != 1 for m in doc.get('meshes', [])):
-            raise ValueError('Multiple materials/primitives unsupported in pilot')
         if any(m.get('extensions') or m.get('alphaMode', 'OPAQUE') != 'OPAQUE' or m.get('emissiveTexture') for m in material_info):
             raise ValueError('Material extensions, transparency and emissive textures unsupported')
         for mesh in doc.get('meshes', []):

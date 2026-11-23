@@ -1,3 +1,4 @@
+import { assetUrl } from './project-store-http.js';
 import {compactNative3DGraph} from './native3d-inline-migration.js';
 import {nativeOutputNode,nativeAppendOutput,nativePatchOutputData,nativeBindOutputEdges,nativeOutputForEdge,nativeOutputCandidates} from './native3d-output.js';
 import {native3DNotifications} from './native3d-notifications.js';
@@ -10,6 +11,7 @@ import {nativeNextStepPlan,nextStepActions,nextStepOrigin} from './native3d-next
 import {nativeRerunTarget,withNativeRerunLock,nativeAutomaticLODStages,layoutNativeResultDelivery,nextNativeLODSeed,nativeLODStageRetryPlan} from './native3d-rerun.js';
 import { findFreePosition } from './canvas-layout.js';
 import { useEffect, useRef, useState } from 'react';
+import { checkGLBLayout, checkSavedGLBLayout } from "./native3d-glb-layout.js";
 import { isGeneratedGLB, nativeRequest, nativeRunIdentity, nativeParameters, nativeAdapterSchema, nativeGeometryInputError } from './native3d.js';
 import {nativeInputs,planRecord,planConfirmationKey,assertPlanCurrent,assertConfirmedPlan,planUVParameters} from './native3d-plan.js';
 import { transferNativeArtifacts, nativeRunIsCurrent, commitNativeDelivery } from './native3d-delivery.js';
@@ -174,6 +176,7 @@ export function useNative3D(options) {
         if (!response.ok) throw Error('生成的 GLB 无法读取，请检查原生成结果。');
         const blob = await response.blob();
         if (blob.size > 512 * 1024**2 || await blob.slice(0,4).text() !== 'glTF') throw Error('生成结果不是受支持的 GLB。');
+        await checkGLBLayout(blob);
         if (!sameSource()) throw Error('模型输入已改变。');
         const assetPath = await o.saveNativeFile(new File([blob],model.filename || model.name,{type:'model/gltf-binary'}));
         if (!sameSource()) throw Error('模型输入已改变。');
@@ -202,6 +205,14 @@ export function useNative3D(options) {
     };
     try {
       if (!source?.data.assetPath) throw new Error('请先导入并连接已保存的3D模型。');
+      const paths = [[source.data.assetPath,'model'],[inputs.high?.data.assetPath || source.data.originalAssetPath,'high']];
+      for (const [path,role] of paths) {
+        if (role === 'high' && (!['bake','repair_lod','uv','uv_plan','source_lod'].includes(node.data.operation) || path === paths[0][0])) continue;
+        if (/^assets\/[a-f0-9]{64}\.glb$/i.test(path || '')) {
+          await checkSavedGLBLayout(assetUrl(o.projectId,path),role);
+          if (!ownsDraft()) throw Error('模型输入或当前任务已改变，请重新确认。');
+        }
+      }
       if (!capabilities) throw new Error(capabilityError || '3D能力查询尚未完成。');
       const adapter = (capabilities.adapters || []).find(a => (a.id || a.adapterId) === node.data.adapterId)
         || (capabilities.adapters || []).find(a => a.operation === node.data.operation || a.operations?.includes(node.data.operation))
@@ -237,7 +248,10 @@ export function useNative3D(options) {
       await o.persistProject();
       assertRun(o.projectId, id, snapshot);
     } catch (error) {
-      if (ownsDraft()) patch(id, { nativeSubmissionUncertain:submissionStarted&&!submittedJobId,...((!submissionStarted)?{nativeRun:null,nativeLocalRepairSaveFailed:Boolean(node.data.nativeLocalRepair),nativeRetrySaveFailed:Boolean(node.data.nativeRetryFailureJobId)}:{}), status: submittedJobId ? 'queued' : 'error', error: submittedJobId ? `任务已提交，状态保存失败：${error.message}` : error.message });
+      if (ownsDraft() && [422].includes(error.status) && error.code?.startsWith('NATIVE3D_GLB_')) {
+        const {status,progress,stage,nativeRun,nativeJobId,nativeDeliveryErrorJobId,nativeBackendStatus,nativeSubmissionUncertain} = node.data;
+        patch(id,{status,progress,stage,nativeRun,nativeJobId,nativeDeliveryErrorJobId,nativeBackendStatus,nativeSubmissionUncertain,error:error.message});
+      } else if (ownsDraft()) patch(id, { nativeSubmissionUncertain:submissionStarted&&!submittedJobId,...((!submissionStarted)?{nativeRun:null,nativeLocalRepairSaveFailed:Boolean(node.data.nativeLocalRepair),nativeRetrySaveFailed:Boolean(node.data.nativeRetryFailureJobId)}:{}), status: submittedJobId ? 'queued' : 'error', error: submittedJobId ? `任务已提交，状态保存失败：${error.message}` : error.message });
       throw error;
     }
   }
@@ -250,6 +264,8 @@ export function useNative3D(options) {
     try {
       const importError = nativeSourceImportError(file, capabilities);
       if (importError) throw new Error(importError);
+      if (/\.glb$/i.test(file.name)) await checkGLBLayout(file);
+      if (!ownsImport()) throw Error('导入目标已改变。');
       const upload = /\.fbx$/i.test(file.name) ? new File([file], file.name, { type: 'application/octet-stream' }) : file;
       const path = await o.saveNativeFile(upload);
       if (!ownsImport()) throw new Error('导入目标已改变，旧素材未绑定。');

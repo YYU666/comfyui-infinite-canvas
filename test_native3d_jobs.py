@@ -51,6 +51,29 @@ class Native3DJobsTests(unittest.TestCase):
         self.jobs.close()
         self.store.close()
         self.temp.cleanup()
+    def test_glb_layout_preflight_checks_registered_model_and_high(self):
+        import struct
+        def asset(materials, counts):
+            document = json.dumps({'materials': [{}]*materials, 'meshes': [
+                {'primitives': [{}]*count} for count in counts]}).encode()
+            glb = struct.pack('<4sIIII', b'glTF', 2, 20+len(document), len(document), 0x4e4f534a) + document
+            return self.store.put_asset(self.doc['id'], 'layout.glb', io.BytesIO(glb))['asset']['path']
+
+        for materials, counts in [(3,[3]), (1,[2]), (3,[1,2])]:
+            path = asset(materials, counts)
+            for field, role in [('assetPath','model'),('highAssetPath','high')]:
+                with self.subTest(materials=materials, counts=counts, role=role):
+                    source = {**self.payload['source'], field:path}
+                    with self.assertRaises(StoreError) as error:
+                        self.jobs.submit({**self.payload, 'source':source})
+                    self.assertEqual(error.exception.code, 'NATIVE3D_GLB_LAYOUT_UNSUPPORTED')
+                    self.assertEqual(error.exception.details['materialCount'], materials)
+                    self.assertEqual(error.exception.details['meshPrimitiveCounts'], counts)
+                    self.assertEqual(error.exception.details['inputRole'], role)
+        path = asset(1, [1])
+        job = self.jobs.submit({**self.payload, 'source':{'assetPath':path}})
+        self.assertEqual(job['status'], 'queued')
+
     def test_snapshot_idempotence_and_project_unchanged(self):
         before = self.store.get(self.doc['id'])
         job = self.jobs.submit(self.payload)

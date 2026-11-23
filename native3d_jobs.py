@@ -178,6 +178,18 @@ def validate_parameters(operation, values):
         fail('Annular seams require direct coherent UV without a second seam plan')
     return result
 
+def preflight_glb_layout(path, role):
+    if path.suffix.lower() != '.glb':
+        return
+    from native3d_glb_layout import GLBLayoutError, read_glb_document, validate_glb_layout
+    try:
+        validate_glb_layout(read_glb_document(path))
+    except GLBLayoutError as exc:
+        raise StoreError(exc.code, str(exc), 422, {**exc.details, 'inputRole': role}) from exc
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise StoreError('NATIVE3D_GLB_INVALID', str(exc), 422, {'inputRole': role}) from exc
+
+
 def fail(message, status=400, code='BAD_REQUEST'):
     raise StoreError(code, message, status)
 
@@ -489,6 +501,7 @@ class Native3DJobs:
                 fail('Only GLB, OBJ and bounded static FBX sources are supported')
             if path.stat().st_size > MAX_SOURCE:
                 fail('Source exceeds 512 MiB')
+            preflight_glb_layout(path, "model")
             readiness = self.capabilities()
             if path.suffix.lower() == '.fbx' and '.fbx' not in readiness.get('sourceFormats', []):
                 fail('Pinned local FBX converter is unavailable', 503, 'NATIVE3D_FBX_NOT_READY')
@@ -533,6 +546,8 @@ class Native3DJobs:
                     high_path = self.store.asset_file(payload['projectId'], high)
                     if high_path.suffix.lower() not in set(readiness.get('sourceFormats', ['.glb','.obj'])) or high_path.stat().st_size > MAX_SOURCE:
                         fail('Invalid high source format or size')
+                    if high_path != path:
+                        preflight_glb_layout(high_path, 'high')
                     high_snapshot = directory / ('high-source' + high_path.suffix.lower())
                     high_digest = hashlib.sha256()
                     high_total = 0

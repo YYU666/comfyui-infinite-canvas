@@ -48,6 +48,7 @@ const suites = {
     'test-canvas-connections.mjs',
     'test-canvas-mcp-queue.mjs',
     'test-native3d-generated-glb.mjs',
+    'test-native3d-glb-layout.mjs',
     'test-canvas-download-video.mjs',
     'test-canvas-current-page.mjs',
     'test-versioned-canvas-models.mjs',
