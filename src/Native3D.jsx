@@ -1,3 +1,4 @@
+import Native3DTakeover from './Native3DTakeover.jsx';
 import CanvasImage from './CanvasImage.jsx';
 import {nativeBakePreview} from './native3d-bake-preview.js';
 import {nativeOutputNode} from './native3d-output.js';
@@ -143,6 +144,11 @@ export function Native3DNode({ id, data, selected }) {
   useEffect(()=>{if (!enlarged) return; const close=e=>{if(e.key==='Escape'){e.stopPropagation();setEnlarged(false);}}; window.addEventListener('keydown',close,true); return ()=>window.removeEventListener('keydown',close,true);},[enlarged]);
   return <div className={`native3d-node ${selected ? 'selected' : ''} ${busy?'native3d-busy':''}`} onPointerDownCapture={()=>api.unlockNotificationSound?.()}>
     <header><strong title={displayedTitle}>{displayedTitle}</strong><span>3D</span></header>
+    {api.takeover && (outputData.proxyAssetPath || outputData.assetPath || outputData.resultAssetPath || inputLowPreview) &&
+      <button className="native3d-takeover-button nodrag" type="button" onClick={() => {
+        if (api.takeover(id)?.preview) api.view({takeoverNodeId:id});
+        else setUVError('当前步骤没有已保存的可预览模型。');
+      }}>接手模型</button>}
     {api.setNotificationSoundEnabled&&<button className="native3d-sound-toggle nodrag" aria-pressed={api.notificationSoundEnabled} onClick={()=>api.setNotificationSoundEnabled(!api.notificationSoundEnabled)}>完成提示音：{api.notificationSoundEnabled?'开':'关'}</button>}
     {busyFeedback&&<section className="native3d-progress-panel" role="status" aria-live="polite"><strong>{busyFeedback.title}{busyFeedback.progress!==null?` · ${busyFeedback.progress}%`:''}</strong>{busyFeedback.stage&&<span>{busyFeedback.stage}</span>}<progress aria-label={busyFeedback.title} max="100" value={busyFeedback.progress??undefined}/>{busyFeedback.historical&&<small>下方为上一次结果，本次任务尚未完成。</small>}</section>}
     {source && data.sourceJobId && <Handle type="target" position={Position.Left} id="provenance" />}
@@ -211,9 +217,10 @@ export function Native3DNode({ id, data, selected }) {
     </div>
   </div>;
 }
-function Native3DAssetViewer({ asset, projectId, close }) {
+function Native3DAssetViewer({ asset, projectId, close, takeover }) {
   const host = useRef(null);
   const [error, setError] = useState('');
+  const [objects, setObjects] = useState([]);
   const [previewMode, setPreviewMode] = useState(asset.materialPreview ? 'material' : 'structure');
   const previewModeRef = useRef(previewMode); previewModeRef.current = previewMode;
   const materialControl = useRef(null);
@@ -225,6 +232,7 @@ function Native3DAssetViewer({ asset, projectId, close }) {
     const originals = new Map(), overrides = new Map();
     const ownedMaterials = new Set();
     setError('');
+    setObjects([]);
     const release = () => {
       demand?.dispose();resize?.disconnect(); controls?.dispose();
       if (materialControl.current === applyMode) materialControl.current = null;
@@ -264,8 +272,11 @@ function Native3DAssetViewer({ asset, projectId, close }) {
       if (disposed) { release(); return; }
       // Overrides belong only to this viewer. Imported source materials remain
       // untouched and can be restored without reparsing or exporting the model.
+      const loadedObjects = [];
       model.traverse(object => {
         if (!object.isMesh || !object.material) return;
+        const triangles = Math.floor((object.geometry.index?.count ?? object.geometry.attributes.position.count) / 3);
+        loadedObjects.push({ name: object.name || '网格 ' + (loadedObjects.length + 1), triangles });
         originals.set(object, object.material);
         const makeMatte = () => {
           const material = new THREE.MeshStandardMaterial({ color: '#b7bec9', roughness: 0.82, metalness: 0, side: THREE.DoubleSide });
@@ -274,7 +285,11 @@ function Native3DAssetViewer({ asset, projectId, close }) {
         overrides.set(object, Array.isArray(object.material) ? object.material.map(makeMatte) : makeMatte());
       });
       applyMode = mode => {
-        for (const [object, original] of originals) object.material = mode === 'structure' ? overrides.get(object) : original;
+        for (const [object, original] of originals) {
+          const matte = overrides.get(object);
+          for (const material of Array.isArray(matte) ? matte : [matte]) material.wireframe = mode === 'wireframe';
+          object.material = mode === 'material' ? original : matte;
+        }
         invalidate?.();
       };
       materialControl.current = applyMode;
@@ -299,9 +314,33 @@ function Native3DAssetViewer({ asset, projectId, close }) {
       controls.addEventListener('change',invalidate);
       resize=new ResizeObserver(()=>{if(disposed)return;const width=Math.min(host.current.clientWidth || 760,1066),height=Math.round(width*.75);renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();invalidate();});resize.observe(host.current);
       invalidate();
+      setObjects(loadedObjects);
     })().catch(error => { if (!disposed) setError(error.message); });
     return () => { disposed = true; abort.abort(); release(); };
   }, [asset.path, projectId]);
+  useEffect(() => {
+    if (!takeover) return;
+    const escape = event => { if (event.key === 'Escape') { event.stopPropagation(); close(); } };
+    window.addEventListener('keydown', escape, true);
+    return () => window.removeEventListener('keydown', escape, true);
+  }, [Boolean(takeover), close]);
+  if (takeover) return <div className="native3d-overlay nodrag" role="dialog" aria-modal="true" aria-label="模型接手">
+    <div className="native3d-takeover">
+      <header><strong><small>模型接手</small>{takeover.state.title}</strong><div>
+        {['material','structure','wireframe'].map(mode => <button key={mode} type="button" aria-pressed={previewMode===mode} onClick={()=>setPreviewMode(mode)}>
+          {({material:'材质',structure:'结构',wireframe:'线框'})[mode]}
+        </button>)}
+        <button type="button" onClick={close}>关闭</button>
+      </div></header>
+      <div className="native3d-takeover-body">
+        <div className="native3d-takeover-model">
+          <div ref={host} className="native3d-takeover-viewport" aria-label="实时 3D 视口" data-model-ready={objects.length > 0} />
+          {error ? <p role="alert">{error}</p> : !objects.length ? <p role="status">正在加载已保存模型</p> : null}
+        </div>
+        <Native3DTakeover {...takeover} objects={objects} />
+      </div>
+    </div>
+  </div>;
   return <div className="native3d-overlay nodrag" role="dialog" aria-label="3D代理查看器"><div>
     <header>{asset.title} · 分析代理<div>
       <button aria-pressed={previewMode === 'structure'} onClick={() => setPreviewMode('structure')}>结构</button>
@@ -312,4 +351,10 @@ function Native3DAssetViewer({ asset, projectId, close }) {
   </div></div>;
 }
 
-export function Native3DViewer(props) {return props.asset.issueTarget ? <Native3DIssueViewer {...props}/> : props.asset.plan ? <Native3DPlanViewer {...props}/> : <Native3DAssetViewer {...props}/>;}
+export function Native3DViewer(props) {
+  const api = useContext(Native3DContext);
+  if (props.asset.takeoverNodeId) {
+    const state = api.takeover?.(props.asset.takeoverNodeId);
+    return state?.preview ? <Native3DAssetViewer {...props} asset={state.preview} takeover={{api,state}} /> : null;
+  }
+  return props.asset.issueTarget ? <Native3DIssueViewer {...props}/> : props.asset.plan ? <Native3DPlanViewer {...props}/> : <Native3DAssetViewer {...props}/>;}

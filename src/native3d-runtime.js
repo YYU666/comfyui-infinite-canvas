@@ -1,3 +1,4 @@
+import { nativeTakeover } from './native3d-takeover.js';
 import { assetUrl } from './project-store-http.js';
 import {compactNative3DGraph} from './native3d-inline-migration.js';
 import {nativeOutputNode,nativeAppendOutput,nativePatchOutputData,nativeBindOutputEdges,nativeOutputForEdge,nativeOutputCandidates} from './native3d-output.js';
@@ -650,7 +651,11 @@ export function useNative3D(options) {
       }
     });
   }
-  return { compactResults,output:id=>nativeOutputNode(latest.current.nodesRef.current.find(n=>n.id===id)),notificationSoundEnabled,setNotificationSoundEnabled,unlockNotificationSound:()=>native3DNotifications.unlock(),syncTask,retryLOD, repairLOD, createResolution, nextStep, nextActions: id=>{const node=nextSource(id);return nextStepActions(node).map(action=>{if(action.action!=='unwrap')return action;try{assertLivePlan(node.data.nativeUVPlan,current());return action;}catch{return {...action,disabled:true};}});}, projectId: options.projectId, readOnly: options.readOnly, capabilities, capabilityError, patch, run, rerunStatus, rerunResult, importModel, retryDelivery, refreshUVPreview,refreshDiagnosticPreview,
+  const takeover = id => {
+    const o = latest.current;
+    return nativeTakeover(id, o.nodesRef.current, o.edgesRef.current, capabilities);
+  };
+  return { takeover, compactResults,output:id=>nativeOutputNode(latest.current.nodesRef.current.find(n=>n.id===id)),notificationSoundEnabled,setNotificationSoundEnabled,unlockNotificationSound:()=>native3DNotifications.unlock(),syncTask,retryLOD, repairLOD, createResolution, nextStep, nextActions: id=>{const node=nextSource(id);return nextStepActions(node).map(action=>{if(action.action!=='unwrap')return action;try{assertLivePlan(node.data.nativeUVPlan,current());return action;}catch{return {...action,disabled:true};}});}, projectId: options.projectId, readOnly: options.readOnly, capabilities, capabilityError, patch, run, rerunStatus, rerunResult, importModel, retryDelivery, refreshUVPreview,refreshDiagnosticPreview,
     diagnosticPreview:id=>{const o=latest.current,n=o.nodesRef.current.find(n=>n.id===id),p=n?.data.nativeUVDiagnosticPreviews;return p?.diagnosticOnly===true&&p.acceptedUV===false&&p.bakeAllowed===false&&p.projectId===o.projectId&&p.nodeId===id&&p.jobId===n.data.nativeJobId&&n.data.operation==='uv'&&['error','failed'].includes(n.data.status)&&p.inputIdentity===identityFor(n,sourceFor(o,n))?p:null;},
     persist:()=>current().persistProject(),
     inputs:id=>inputsFor(latest.current,latest.current.nodesRef.current.find(n=>n.id===id)),

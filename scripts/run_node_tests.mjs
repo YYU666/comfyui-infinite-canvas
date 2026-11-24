@@ -7,6 +7,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const suites = {
   node: [
     'test-native3d-state.mjs',
+    'test-native3d-takeover.mjs',
     'test-native3d-mcp-connect.mjs',
     'test-image-inline-output.mjs',
     'browser_video_validation.test.mjs',
