@@ -98,6 +98,7 @@ class UpdatePreflightTests(unittest.TestCase):
         store.reclaim_dead_locks.return_value = []
         store.held_project_details.return_value = ([{"id": "prj_open", "name": "打开中", "stale": False, "thisProcess": True, "pid": 1}] if held else [])
         return mock.Mock(
+            video_requests=0,
             project_store=store,
             sprite_atlas_api=None,
             native3d_jobs=None,
@@ -130,7 +131,7 @@ class UpdatePreflightTests(unittest.TestCase):
             store = ProjectStore(Path(temporary), "owner-update")
             document = store.create("场景甲")
             store.open(document["id"])
-            server = mock.Mock(project_store=store, sprite_atlas_api=None, native3d_jobs=None, **self.idle_video_apis(), queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": "done"}]})))
+            server = mock.Mock(project_store=store, sprite_atlas_api=None, native3d_jobs=None, video_requests=0, **self.idle_video_apis(), queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": "done"}]})))
             lock = store._project_path(document["id"]).parent / ".lock"
             with mock.patch("video_workbench_launcher.shutil.disk_usage", return_value=mock.Mock(free=1024 ** 3)):
                 with self.assertRaises(UpdateError) as caught:

@@ -579,9 +579,19 @@ def open_file_location(payload):
     return {"opened": True, "path": str(file_path)}
 
 
+VIDEO_JOB_KINDS = ("edit", "rhythm", "chroma", "plate", "repair")
+VIDEO_POST_PREFIXES = tuple(f"/api/video-{kind}/" for kind in VIDEO_JOB_KINDS)
+
+
 class WorkbenchServer(ThreadingHTTPServer):
     # Windows SO_REUSEADDR can let two backends bind the same port. Never share.
     allow_reuse_address = False
+
+    def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
+        self.video_lifecycle_lock = threading.Lock()
+        self.video_requests = 0
+        self.video_stopping = False
+        super().__init__(server_address, RequestHandlerClass, bind_and_activate)
 
 
 class WorkbenchHandler(SimpleHTTPRequestHandler):
@@ -766,6 +776,21 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
+        if not (path.startswith(VIDEO_POST_PREFIXES) or path == "/api/import-video"):
+            return self.handle_post(path)
+
+        with self.server.video_lifecycle_lock:
+            if self.server.video_stopping:
+                self.send_json(409, {"code": "WORKBENCH_STOPPING", "message": "工作台正在关闭，暂不能开始视频任务。"})
+                return
+            self.server.video_requests += 1
+        try:
+            return self.handle_post(path)
+        finally:
+            with self.server.video_lifecycle_lock:
+                self.server.video_requests -= 1
+
+    def handle_post(self, path):
         if getattr(self.server, "video_rhythm_api", None) and self.server.video_rhythm_api.handle_post(self, path): return
         if getattr(self.server, "video_chroma_api", None) and self.server.video_chroma_api.handle_post(self, path): return
         if getattr(self.server, "video_repair_api", None) and self.server.video_repair_api.handle_post(self, path): return
@@ -823,12 +848,25 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 self.send_json(500, {"code": "INTERNAL", "message": "诊断暂时无法完成，请查看运行日志。", "details": {}})
             return
         if path == "/api/shutdown":
-            if native3d_busy(self.server):
-                self.send_json(409, {"code":"NATIVE3D_BUSY", "message":"Cancel or finish native3D jobs before shutdown."})
+            lock = self.server.video_lifecycle_lock
+            if not lock.acquire(blocking=False):
+                self.send_json(409, {"code": "WORKBENCH_BUSY", "message": "工作台正在处理设置或升级请求，请稍后再关闭。"})
                 return
-            self.send_json(200, {"ok": True})
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
-            return
+            try:
+                if native3d_busy(self.server):
+                    self.send_json(409, {"code":"NATIVE3D_BUSY", "message":"Cancel or finish native3D jobs before shutdown."})
+                    return
+                if video_busy(self.server):
+                    self.send_json(409, {"code": "QUEUE_BUSY", "message": "仍有活动视频任务，请完成或取消后再关闭工作台。"})
+                    return
+                self.server.video_stopping = True
+                try:
+                    self.send_json(200, {"ok": True})
+                finally:
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
+            finally:
+                lock.release()
         if path == "/api/updates/apply":
             manager = getattr(self.server, "update_manager", None)
             try:
@@ -838,9 +876,15 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 if length <= 0 or length > 1024:
                     raise UpdateError("升级请求内容无效。", code="BAD_REQUEST")
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                result = manager.apply(validate_update_request(payload))
-                self.send_json(200, result)
-                begin_update_restart(self.server)
+                with self.server.video_lifecycle_lock:
+                    if self.server.video_stopping:
+                        raise UpdateError("工作台正在关闭。", status=409, code="WORKBENCH_STOPPING")
+                    result = manager.apply(validate_update_request(payload))
+                    self.server.video_stopping = True
+                    try:
+                        self.send_json(200, result)
+                    finally:
+                        begin_update_restart(self.server)
             except UpdateError as exc:
                 self.send_json(exc.status, {"code": exc.code, "message": exc.message, "details": exc.details})
             except (ValueError, TypeError, json.JSONDecodeError):
@@ -903,11 +947,14 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 if length <= 0 or length > 65536:
                     raise ValueError("设置请求内容无效。")
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                result = self.server.settings.update(
-                    payload,
-                    before_save=lambda candidate: validate_settings_change(self.server, candidate),
-                )
-                apply_server_settings(self.server)
+                with self.server.video_lifecycle_lock:
+                    if self.server.video_stopping:
+                        raise SettingsError("工作台正在关闭。", status=409, code="WORKBENCH_STOPPING")
+                    result = self.server.settings.update(
+                        payload,
+                        before_save=lambda candidate: validate_settings_change(self.server, candidate),
+                    )
+                    apply_server_settings(self.server)
                 self.send_json(200, result)
             except SettingsError as exc:
                 self.send_json(exc.status, {"code": exc.code, "message": exc.message, "details": {}})
@@ -943,9 +990,21 @@ def native3d_busy(server):
         return bool(jobs.active) or any(job["status"] in {"queued", "running"} for job in jobs.jobs.values())
 
 
+def video_busy(server):
+    if getattr(server, "video_requests", 0):
+        return True
+    for kind in VIDEO_JOB_KINDS:
+        api = getattr(server, f"video_{kind}_api", None)
+        if api is not None and api.jobs.active_count():
+            return True
+    return False
+
+
 def validate_update_ready(server):
     if native3d_busy(server):
         raise UpdateError("Native3D queue has active jobs.", status=409, code="NATIVE3D_BUSY")
+    if getattr(server, "video_requests", 0):
+        raise UpdateError("仍有活动视频任务，请完成或取消后再升级。", status=409, code="QUEUE_BUSY")
     if getattr(server, "video_plate_api", None) and server.video_plate_api.jobs.active_count():
         raise UpdateError("视频处理仍在导出，请完成或取消后重试。", status=409, code="QUEUE_BUSY")
     if getattr(server, "video_repair_api", None) and server.video_repair_api.jobs.active_count():
@@ -995,6 +1054,8 @@ def validate_settings_change(server, candidate):
         raise SettingsError("Native3D queue has active jobs.", status=409, code="NATIVE3D_BUSY")
     if Path(candidate["projectsRoot"]).resolve() == server.project_store.root:
         return
+    if getattr(server, "video_requests", 0):
+        raise SettingsError("仍有活动视频任务，请完成或取消后再切换项目根目录。", status=409, code="QUEUE_BUSY")
     if getattr(server, "video_chroma_api", None) and server.video_chroma_api.jobs.active_count():
         raise SettingsError("视频处理仍在导出，请完成或取消后重试。", status=409, code="QUEUE_BUSY")
     if getattr(server, "video_rhythm_api", None) and server.video_rhythm_api.jobs.active_count():
@@ -1020,6 +1081,8 @@ def apply_server_settings(server):
         replacement = ProjectStore(projects_root, previous.owner_id, defaults)
         server.project_store = replacement
         server.project_api.store = replacement
+        if getattr(server, "thumbnail_cache", None):
+            server.thumbnail_cache.store = replacement
         if getattr(server, 'pureref_sessions', None):
             server.pureref_sessions.store = replacement
         if getattr(server, 'sprite_atlas_api', None):
