@@ -322,7 +322,7 @@ class ProjectAPI:
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)", path)
             if match:
                 document = self._json(handler)
-                handler.send_json(200, self.store.save(match.group(1), document, self._revision(handler, document)))
+                handler.send_json(200, self.store.save(match.group(1), document, self._revision(handler, document), skip_unchanged=True))
                 return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/metadata", path)
             if match:

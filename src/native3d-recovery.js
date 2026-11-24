@@ -1,7 +1,7 @@
 // Restore missing 3D records from a saved project snapshot through its active page.
 // Existing records always win; this is not a whole-project rollback.
 export function recoverNative3DFragment(nodes, edges, fragment) {
-  if (!Array.isArray(fragment.nodes) || fragment.nodes.length > 30 || !Array.isArray(fragment.edges) || fragment.edges.length > 200) throw new Error('恢复片段超出范围。');
+  if (!Array.isArray(fragment.nodes) || fragment.nodes.length > 256 || !Array.isArray(fragment.edges) || fragment.edges.length > 2048) throw new Error('恢复片段超出范围。');
   const ids = new Set(nodes.map(n => n.id)); const seen = new Set(); const added = [];
   for (const node of fragment.nodes) {
     if (!node || node.type !== 'native3d' || typeof node.id !== 'string' || !node.id.startsWith('native3d-') || seen.has(node.id)

@@ -136,10 +136,11 @@ def restrict_private_file(path: Path) -> None:
         raise RuntimeError("无法限制实例令牌文件权限。")
 
 
-def atomic_write_json(path: Path, payload: dict) -> None:
+def atomic_write_json(path: Path, payload: dict, *, compact=False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    layout = {"separators": (",", ":")} if compact else {"indent": 2}
+    data = json.dumps(payload, ensure_ascii=False, **layout).encode("utf-8")
     try:
         with temporary.open("xb") as handle:
             handle.write(data)
