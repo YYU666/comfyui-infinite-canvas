@@ -644,6 +644,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const nameRef = useRef(projectName);
   nameRef.current = projectName;
   const viewportRef = useRef(saved.viewport);
+  const addNodeFocusTimerRef = useRef(null);
+  useEffect(() => () => clearTimeout(addNodeFocusTimerRef.current), []);
   const interactionRef = useRef(false);
   const productionZoneDragRef = useRef(false);
   const [saveState, setSaveState] = useState(project.readOnly ? '只读' : '已保存');
@@ -1847,7 +1849,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     const position = findFreePosition(nodesRef.current, desired, { type, data });
     setNodes((items) => items.concat({ id, type, position, data }));
     setAddMenu(null);
-    if (shouldFocus) setTimeout(() => fitView({ nodes: [{ id }], duration: 300, maxZoom: 1, padding: 0.6 }), 60);
+    if (shouldFocus) {
+      clearTimeout(addNodeFocusTimerRef.current);
+      addNodeFocusTimerRef.current = setTimeout(() => {
+        addNodeFocusTimerRef.current = null;
+        fitView({ nodes: [{ id }], duration: 300, maxZoom: 1, padding: 0.6 });
+      }, 60);
+    }
     return id;
   }, [screenToFlowPosition, setNodes, fitView, project.readOnly]);
 
@@ -2304,10 +2312,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       setNodeMenu((menu) => ({ ...menu, status: 'error', error: error.message || '无法打开文件位置。' }));
     }
   };
-  const focusNode = (id) => {
+  const focusNode = (id, { duration = 400 } = {}) => {
     const node = nodesRef.current.find((item) => item.id === id);
     if (!node) return false;
-    const centered = setCenter(node.position.x + 180, node.position.y + 100, { zoom: 1, duration: 400 });
+    clearTimeout(addNodeFocusTimerRef.current);
+    addNodeFocusTimerRef.current = null;
+    const centered = setCenter(node.position.x + 180, node.position.y + 100, { zoom: 1, duration });
     setPinOpen(false);
     return centered;
   };
@@ -2461,7 +2471,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const bundle = await getExtension(digest);
       if (switchingRef.current || project.readOnly) throw new Error('当前画布不可写。');
       return addNode('generator', extensionNodeData(bundle, nodeDefinitionId), position, focus);
-    }, updateNode, removeNode, reviewImageNode, onConnect, generateNode, cancelNode, tidyCanvas, focusNode, inspectNode, openReferenceLibrary, persistProject, retryProjectSave,
+    }, updateNode, removeNode, reviewImageNode, onConnect, generateNode, cancelNode, tidyCanvas, focusNode: id => focusNode(id, { duration: 0 }), inspectNode, openReferenceLibrary, persistProject, retryProjectSave,
       getImageModelHistory: () => imageHistoryRef.current,
       prepareProjectSwitch, commitProjectSwitch, abandonProjectSwitch,
       importAsset: async (nodeId, assetPath, name, sourceProjectId) => {

@@ -141,8 +141,21 @@ try {
  await page.waitForFunction(()=>!document.querySelector('.neo-canvas-wrap').inert);
  // Existing unresolved nodes expose a later dependency check without importing another copy.
  const focusNode=async(nodeId)=>{
-  const result=await page.evaluate(async(id)=>JSON.parse(await window.fixtureTools.get('canvas_focus_node').execute({nodeId:id})),nodeId);
-  assert.equal(result.ok,true,'fixture must focus the existing node through the current canvas bridge');
+  const result = await page.evaluate(async (id) => {
+    let timeout;
+    try {
+      const receipt = await Promise.race([
+        window.fixtureTools.get('canvas_focus_node').execute({ nodeId: id }),
+        new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Canvas focus did not settle')), 2500); }),
+      ]);
+      return JSON.parse(receipt);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }, nodeId);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.focusedNodeId, nodeId);
+  assert.equal(result.view.viewport.zoom, 1);
  };
  const customId=project.canvas.nodes.find(node=>node.data.mode==='customWorkflow').id;
  await focusNode(customId);
