@@ -113,17 +113,17 @@ MCP 等价工具：`canvas_current`、`canvas_call`（等到页面工具返回�
 
 | 工具 | 用途 | 要点 |
 | --- | --- | --- |
-| `canvas_get_state` | 读项目、真实节点、连线、状态 | 先读再改；完整 ID 只来自状态或创建回执 |
+| `canvas_get_state` | 读项目、节点、连线和状态 | 已知节点 ID 时传 `{nodeId, compact: true}`，可一次读取该节点摘要、页面已知的保存修订和本地视口 |
 | `canvas_create_project` / `canvas_open_project` | 在当前页创建或打开项目 | 不要用 `/api/projects/open` 抢锁 |
 | `canvas_create_node` | 按 `preset` 创建可见节点 | 未指定坐标时由画布放置；指定坐标也要避让，间距约 70、网格 22 |
-| `canvas_update_node` | 改标题、提示词、白名单参数 | 只传要改的字段，改后回读核验 |
+| `canvas_update_node` | 改标题、提示词、白名单参数 | 可传上次读取的 `save.revision` 作为 `expectedRevision`。确认保存后返回 `changedFields`、保存修订和 `execution: "not_requested"`。收到 `REVISION_CONFLICT` 或 `SAVE_PENDING` 时重新读取 |
 | `canvas_connect_nodes` | 连接两个真实节点 | 省略 `targetHandle` 时按规则自动判断；必须回读边数据，不能靠外观 |
 | `canvas_import_asset` | 复用已保存素材 | 需要素材节点；`assetPath` 必须是 `assets/<64位十六进制>.<扩展名>` |
 | `canvas_download_video` | 把分享链接下载进当前画布 | 必填 `url`（仅 http/https，可含一段分享文字）。可选 `nodeId`（已有视频链接下载节点）、`x`/`y`（新建坐标，须成对）、`wait`（默认 `false`） |
 | `canvas_generate_node` | 提交一次生成 | **`wait` 必须为 `false`**；成功只表示已提交（有新 `promptId`）。`wait:true` 会被拒绝 |
 | `canvas_wait_for_node` | 只读等待已提交的任务 | `timeoutMs` 在当前页通道为 1000–20000，省略则 20000。未结束返回 `pending:true`。Native3D 续查同时传原 `nodeId` 和 `jobId` |
 | `canvas_cancel_node` | 取消该节点正在进行的生成 | 只有 `nodeId`。与界面取消按钮相同，不删除节点。只读页会拒绝 |
-| `canvas_focus_node` | 把视口对到节点 | 便于用户看见 |
+| `canvas_focus_node` | 把当前页视口对到节点 | 聚焦后回传本地视口。项目内容修订用于跟踪已保存的编辑 |
 | `canvas_delete_node` | 删除节点 | 仅清理已确认无用的临时节点；运行中可能取消任务 |
 | `canvas_move_nodes` / `canvas_tidy` | 移动或整理 | `tidy` 会移动全部节点，须用户明确许可 |
 | `canvas_retry_save` | 保存失败后重试 | 版本冲突时停止，不覆盖 |
