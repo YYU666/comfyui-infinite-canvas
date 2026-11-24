@@ -324,6 +324,13 @@ class ProjectAPI:
                 document = self._json(handler)
                 handler.send_json(200, self.store.save(match.group(1), document, self._revision(handler, document), skip_unchanged=True))
                 return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/name", path)
+            if match:
+                payload = self._json(handler, maximum=16384)
+                if not isinstance(payload.get("name"), str) or set(payload) - {"name", "revision"}:
+                    raise StoreError("BAD_REQUEST", "项目重命名请求字段无效。")
+                handler.send_json(200, self.store.rename(match.group(1), payload["name"], self._revision(handler, payload)))
+                return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/metadata", path)
             if match:
                 payload = self._json(handler, maximum=16384)
