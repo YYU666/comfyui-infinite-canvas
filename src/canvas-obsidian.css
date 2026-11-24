@@ -208,6 +208,13 @@
 }
 
 @media (max-width: 900px) {
+  .neo-canvas-wrap {
+    --compact-dock-inset: 8px;
+    --compact-dock-height: 48px;
+    --compact-dock-gap: 5px;
+    --compact-hardware-height: 34px;
+    --compact-controls-gap: 8px;
+  }
   .neo-header { inset: 8px 8px auto; gap: 5px; }
   .neo-header .canvas-project-control { min-width: 0; margin-right: auto; }
   .neo-header .neo-project-pill { gap: 4px; padding-inline: 6px; }
@@ -219,9 +226,21 @@
   .neo-header-actions { gap: 2px; }
   .neo-header-actions button { min-width: 28px; padding-inline: 5px; }
   .neo-header-actions .server-status { font-size: 10px; white-space: nowrap; }
-  .canvas-bottom-right { right: 8px; bottom: 8px; gap: 5px; max-width: calc(100% - 16px); }
-  .canvas-bottom-left { left: 8px; bottom: 54px; }
-  .hardware-monitor { height: 34px; gap: 7px; padding: 3px 5px; border-radius: 999px; }
+  .canvas-bottom-right {
+    right: var(--compact-dock-inset);
+    bottom: var(--compact-dock-inset);
+    gap: var(--compact-dock-gap);
+    max-width: calc(100% - 2 * var(--compact-dock-inset));
+  }
+  .canvas-bottom-left {
+    left: var(--compact-dock-inset);
+    bottom: calc(var(--compact-dock-inset) + var(--compact-dock-height) + var(--compact-controls-gap));
+    max-width: calc(100% - 2 * var(--compact-dock-inset));
+    flex-wrap: wrap;
+  }
+  .canvas-bottom-left .zoom-menu { bottom: calc(100% + var(--compact-controls-gap)); }
+  .canvas-dock { height: var(--compact-dock-height); }
+  .hardware-monitor { height: var(--compact-hardware-height); gap: 7px; padding: 3px 5px; border-radius: 999px; }
   .hardware-monitor .memory-cleanup { height: 25px; width: 25px; padding: 0; justify-content: center; }
   .hardware-monitor .memory-cleanup > span,
   .hardware-monitor .hardware-bar { display: none; }
@@ -229,11 +248,14 @@
 }
 
 @media (max-width: 540px) {
+  .neo-canvas-wrap { --compact-dock-height: 40px; }
   .neo-header { flex-wrap: wrap; justify-content: flex-start; }
   .neo-header-right { flex: 0 0 100%; margin-top: 0; }
   .neo-header .canvas-project-panel { width: min(340px, calc(100vw - 52px)); }
   .canvas-bottom-right { align-items: flex-end; flex-direction: column-reverse; overflow: visible; }
-  .canvas-bottom-left { bottom: 89px; }
+  .canvas-bottom-left {
+    bottom: calc(var(--compact-dock-inset) + var(--compact-dock-height) + var(--compact-dock-gap) + var(--compact-hardware-height) + var(--compact-controls-gap));
+  }
   .canvas-dock { gap: 2px; padding: 3px; }
   .canvas-dock > button { width: 30px; height: 32px; }
   .neo-canvas-wrap .react-flow__minimap { bottom: 121px; }
