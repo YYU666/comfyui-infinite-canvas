@@ -6,7 +6,7 @@ const GRID = 22;
 const TEXT_FIELDS = ['prompt', 'idea', 'optimizedPrompt'];
 
 function cloneData(data = {}) {
-  const { file, ...serializable } = data;
+  const { file, productionZone, ...serializable } = data;
   return structuredClone(serializable);
 }
 

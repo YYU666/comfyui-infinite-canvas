@@ -1,3 +1,5 @@
+import { frameCanvasNodes, ObsidianEdge, ObsidianStatus } from './CanvasObsidian.jsx';
+import { canvasNodeModality } from './canvas-obsidian.js';
 import { inlineImageView, compactInlineImages, imageCompactArgs } from './image-inline-output.js';
 import CharacterSheetControls from './CharacterSheetControls.jsx';
 import { CHARACTER_SHEET_STAGES } from './character-sheet-settings.js';
@@ -12,7 +14,7 @@ import { recoverNative3DFragment } from './native3d-recovery.js';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Background, BackgroundVariant, MiniMap, NodeToolbar,
-  Handle, Position, BaseEdge, EdgeLabelRenderer, getBezierPath, ConnectionLineType, SelectionMode, addEdge, useNodesState, useEdgesState, useReactFlow, useUpdateNodeInternals, useStoreApi,
+  Handle, Position, EdgeLabelRenderer, getBezierPath, ConnectionLineType, SelectionMode, addEdge, useNodesState, useEdgesState, useReactFlow, useUpdateNodeInternals, useStoreApi,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
@@ -36,6 +38,7 @@ import { CanvasPreviewTier, CanvasVideo } from './CanvasMediaPreview';
 import { useResultPresentation, ResultSettingsToggle } from './result-node-presentation';
 import './result-node-presentation.css';
 import './canvas-media-preview.css';
+import './canvas-obsidian.css';
 import PromptEditor from './PromptEditor';
 import QwenReferenceEditor from './QwenReferenceEditor';
 import { qwenCanvasReferences, bindQwenPrompt, validateQwenReferences, compileQwenPrompt } from './qwen-references';
@@ -71,6 +74,8 @@ import { readViewport, saveViewport } from './canvas-viewport';
 import { selectCompletedVideo } from './canvas-output-selection';
 import { nodeFileLocation, revealProjectAsset } from './canvas-file-location.js';
 import { CanvasHistory, restoreHistoryNodes } from './canvas-history';
+import ProductionZones from './ProductionZones.jsx';
+import { createProductionZone, editProductionZone, moveProductionZone, productionZoneFrames, selectedProductionZoneMembers } from './canvas-production-zones.js';
 import { comfyExternalAsset, queueJobAction, queueOwnsCompletion, queueOwnsStage, resolveCanvasCompletion, shouldReconcileCompletion, takeOutputIdentity } from './generation-queue';
 import { absentPromptPatches, absentQueueJobPatches, canvasHasActiveTask, classifyExportJob, comfyQueuePromptIds, exportJobRequest, exportLookupPatch, isActiveTaskStatus, patchNodes, promptEventTargets, promptExecutingPatch, promptProgressPatch } from './canvas-task-state';
 import { ensureReferenceTags, nextReferenceTag, referenceDescriptors } from './reference-tags';
@@ -147,7 +152,7 @@ function CanvasEdge(props) {
   const point = hoverPoint || { x: labelX, y: labelY };
   return <>
     <g onMouseEnter={(event) => { keepVisible(); setHoverPoint(screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false })); }} onMouseLeave={leave}>
-      <BaseEdge id={props.id} path={path} style={props.style} markerStart={props.markerStart} markerEnd={props.markerEnd} interactionWidth={26} />
+      <ObsidianEdge edge={props} path={path} />
     </g>
     {stageLabel && <EdgeLabelRenderer>
       <span className="native3d-edge-label" style={{position:'absolute',pointerEvents:'none',transform:`translate(-50%, 0) translate(${labelX}px, ${labelY + 8}px)`,fontSize:11,lineHeight:'18px',padding:'0 5px',borderRadius:4,color:'#d6e3f2',background:'#202630e8'}}>{stageLabel}</span>
@@ -166,12 +171,13 @@ function CanvasEdge(props) {
 }
 const edgeTypes = { default: CanvasEdge };
 
-function NodeTitle({ id, data, kind }) {
+function NodeTitle({ id, data, kind, engine }) {
   const { updateNode, togglePin } = useContext(NodeContext);
   const Icon = kind === 'generator' ? WandSparkles : kind === 'prompt' ? Sparkles : kind === 'note' ? Type : KIND_ICON[data.kind] || Film;
   return <div className="neo-node-title">
     <Icon size={14} />
     <input className="nodrag" value={data.title || ''} aria-label="节点名称" onChange={(e) => updateNode(id, { title: e.target.value })} />
+    {engine && <span className="obsidian-model-label" title={engine}>{engine.split(" · ")[0]}</span>}
     {data.pinned && <button className="title-pin nodrag" onClick={() => togglePin(id)} title="取消 Pin"><Pin size={12} fill="currentColor" /></button>}
   </div>;
 }
@@ -235,9 +241,9 @@ function PromptOptimizerNode({ id, data, selected }) {
   const canOptimize = target && !running && (data.idea?.trim() || target.data.prompt?.trim());
   const mentionItems = target ? getMentionItems(target.id) : [];
   return <div className={`prompt-optimizer-shell ${selected ? 'selected' : ''} ${data.pinned ? 'pinned' : ''}`}>
-    <NodeTitle id={id} data={data} kind="prompt" /><NodeActions id={id} data={data} selected={selected} />
+    <NodeTitle id={id} data={data} kind="prompt" engine="DeepSeek · 官方 H3 规范" /><NodeActions id={id} data={data} selected={selected} />
     <div className="prompt-optimizer-body">
-      <div className="optimizer-label"><span>自然语言创意</span><b>DeepSeek · 官方 H3 规范</b></div>
+      <div className="optimizer-label"><span>自然语言创意</span></div>
       <PromptEditor
         className="optimizer-idea"
         ariaLabel="自然语言创意"
@@ -328,7 +334,7 @@ function MediaNode({ id, data, selected }) {
         ? <button className="media-download nodrag" title="导出图片" aria-label="导出图片" onClick={() => openImagePreview({ url: data.url, title: data.title, name: data.name })}><ArrowDownToLine size={13} /></button>
         : <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>)}
     </div>
-    <div className="media-caption"><span>{data.artDirectorStale ? `旧版解析 · ${data.artDirectorStaleReason || '待重新输出'}` : maskNode || maskGuide ? '局部遮罩' : data.nativeProcessEvidenceImageAssetPath && data.nativeProcessEvidenceImageAssetPath === data.assetPath ? '过程展示' : data.nativeDiagnosticSources?.length ? '诊断参考' : data.output ? '生成结果' : KIND_LABEL[kind]}</span><b title={showResolution ? '原始图片分辨率（像素）' : data.name}>{showResolution ? resolutionLabel : data.name || (data.url ? data.title : maskGuide ? '尚未绘制' : '未上传')}</b></div>
+    <div className="media-caption"><span>{data.artDirectorStale ? `旧版解析 · ${data.artDirectorStaleReason || '待重新输出'}` : maskNode || maskGuide ? '局部遮罩' : data.nativeProcessEvidenceImageAssetPath && data.nativeProcessEvidenceImageAssetPath === data.assetPath ? '过程展示' : data.nativeDiagnosticSources?.length ? '诊断参考' : data.output ? '生成结果' : KIND_LABEL[kind]}</span><b title={showResolution ? '原始图片分辨率（像素）' : data.name}>{showResolution ? resolutionLabel : data.name || (data.url ? data.title : maskGuide ? '尚未绘制' : '未上传')}</b><ObsidianStatus type="media" data={data} /></div>
     {kind === 'image' && data.url && !maskNode && <button className="nodrag art-image-shortcut" disabled={readOnly} onClick={() => createArtDirector(id)}>电子主美 · 图解分析</button>}
     {mediaError && <div className="generator-error">{mediaError}</div>}
     <input ref={input} hidden type="file" accept={accept} onChange={(e) => { if (e.target.files?.[0]) void chooseFile(e.target.files[0]).catch((error) => setMediaError(error.message)); e.target.value = ''; }} />
@@ -348,7 +354,7 @@ function CustomWorkflowNode({ id, data, selected }) {
   const running = ['uploading', 'queued', 'running', 'finishing'].includes(data.status);
   const refs = getReferences(id);
   return <div className={`generator-shell h3-node custom-workflow-node ${presentation.compact ? 'result-compact' : ''} ${selected ? 'selected' : ''}`}>
-    <NodeTitle id={id} data={data} kind="generator" /><NodeActions id={id} data={data} selected={selected} generator />
+    <NodeTitle id={id} data={data} kind="generator" engine={data.extensionPackageId} /><NodeActions id={id} data={data} selected={selected} generator />
     <ResultSettingsToggle presentation={presentation} />
     <div className="custom-workflow-identity" title={data.extensionDigest}>{data.extensionPackageId} · {data.extensionVersion} · {data.extensionDigest?.slice(0, 12)}</div>
     {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'model' ? <a className="nodrag" href={data.resultUrl} download>下载 GLB</a> : data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
@@ -422,7 +428,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
   });
 
   return <div className={`generator-shell h3-node ${presentation.compact ? 'result-compact' : ''} ${mode === 'characterSheet' ? `character-sheet-native ${sheetAdvanced ? 'advanced-open' : ''}` : ''} ${mode === 'swap' ? 'swap-node' : ''} ${imageFamily ? 'image-generator-node' : ''} ${selected ? 'selected' : ''} ${running ? 'running' : ''} ${data.pinned ? 'pinned' : ''}`}>
-    <NodeTitle id={id} data={data} kind="generator" /><NodeActions id={id} data={data} selected={selected} generator />
+    <NodeTitle id={id} data={data} kind="generator" engine={modelLabel} /><NodeActions id={id} data={data} selected={selected} generator />
     <ResultSettingsToggle presentation={presentation} />
     <div className="generator-preview" title={imageFamily && data.resultUrl ? '双击预览大图' : undefined} onDoubleClick={(event) => {
       if (!imageFamily || !data.resultUrl) return;
@@ -439,7 +445,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
       </div>}
       {running && <div className="generation-overlay"><div><i style={{ width: `${data.progress || 3}%` }} /></div><span>{data.stage} · {data.progress || 0}%</span></div>}
     </div>
-    <div className="generator-subline"><span>{mode === 'characterSheet' ? `${(data.characterSheetStage || 'all') === 'all' ? '单格 1152 × 2048 · 整图 2304 × 4096' : `${CHARACTER_SHEET_STAGES[data.characterSheetStage]} · 1152 × 2048`} · ${data.qwenSteps || 40} 步` : mode === 'localRealism' ? `原图尺寸 · 局部 ${data.localRealismSize || 768} · 保护未选区域` : mode === 'outfitEdit' ? `${data.outfitPanel ? '单视图' : '四张单图'} · ${models.outfitHdLabel} · ${(data.outfitLayout || 'legacy') === 'legacy' ? '旧版拼接' : '原版面合成'}` : mode === 'qwenEdit' ? h3Image ? `保持图1比例 · ${data.h3ImageResolution || '4MP'} · 6 步` : isFlux3 ? `保持图1比例 · ${data.flux3Resolution || '1MP'} · 16 步` : `继承原图比例 · 参考精度 ${data.qwenRefResolution || 1024} · ${models.qwenSteps} 步` : ['image', 'identityEdit'].includes(mode) ? `${data.ratio} · ${outputWidth} × ${outputHeight} · ${imageSteps} 步` : mode === 'imageUpscale' ? `${data.imageScale || 1.5} 倍 · 独立图片高清` : `${data.ratio} · ${resolution}${mode === 'upscale' ? ' · 独立二采' : ` · ${data.duration} 秒`}`}</span><b>{data.status === 'done' ? '已完成' : mode === 'characterSheet' ? 'Qwen 2.1 · 无高清' : mode === 'outfitEdit' ? models.outfitModelLabel : mode === 'qwenEdit' ? models.qwenModelLabel : mode === 'identityEdit' ? 'Identity V2' : mode === 'image' ? `${imageModelLabel} 生图` : mode === 'imageUpscale' ? 'SeedVR2 高清' : mode === 'swap' ? 'H3 换人 v1.5' : mode === 'upscale' ? 'H3 高清二采' : 'H3 INT8'}</b></div>
+    <div className="generator-subline"><span>{mode === 'characterSheet' ? `${(data.characterSheetStage || 'all') === 'all' ? '单格 1152 × 2048 · 整图 2304 × 4096' : `${CHARACTER_SHEET_STAGES[data.characterSheetStage]} · 1152 × 2048`} · ${data.qwenSteps || 40} 步` : mode === 'localRealism' ? `原图尺寸 · 局部 ${data.localRealismSize || 768} · 保护未选区域` : mode === 'outfitEdit' ? `${data.outfitPanel ? '单视图' : '四张单图'} · ${models.outfitHdLabel} · ${(data.outfitLayout || 'legacy') === 'legacy' ? '旧版拼接' : '原版面合成'}` : mode === 'qwenEdit' ? h3Image ? `保持图1比例 · ${data.h3ImageResolution || '4MP'} · 6 步` : isFlux3 ? `保持图1比例 · ${data.flux3Resolution || '1MP'} · 16 步` : `继承原图比例 · 参考精度 ${data.qwenRefResolution || 1024} · ${models.qwenSteps} 步` : ['image', 'identityEdit'].includes(mode) ? `${data.ratio} · ${outputWidth} × ${outputHeight} · ${imageSteps} 步` : mode === 'imageUpscale' ? `${data.imageScale || 1.5} 倍 · 独立图片高清` : `${data.ratio} · ${resolution}${mode === 'upscale' ? ' · 独立二采' : ` · ${data.duration} 秒`}`}</span><ObsidianStatus type="generator" data={data} /></div>
     <ModelLicenseNotice data={data} />
     {mode === 'qwenEdit' && !h3Image && <div className="qwen-mask-row nodrag">
       <span title="白色区域修改，黑色区域保留；遮罩不占参考图编号">局部遮罩：{mask ? (mask.data.url ? '已连接' : '待绘制') : '未连接'}</span>
@@ -576,7 +582,7 @@ function SpriteAtlasCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <SpriteAtlasNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
-const nodeTypes = { native3d: React.memo(Native3DNode), videoWhitePlate: React.memo(VideoPlateCanvasNode), videoLocalRepair: React.memo(VideoRepairCanvasNode), videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) };
+const nodeTypes = frameCanvasNodes({ native3d: React.memo(Native3DNode), videoWhitePlate: React.memo(VideoPlateCanvasNode), videoLocalRepair: React.memo(VideoRepairCanvasNode), videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) });
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
   const saved = useMemo(() => {
@@ -635,6 +641,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   nameRef.current = projectName;
   const viewportRef = useRef(saved.viewport);
   const interactionRef = useRef(false);
+  const productionZoneDragRef = useRef(false);
   const [saveState, setSaveState] = useState(project.readOnly ? '只读' : '已保存');
   const accessRecoveryRef = useRef(null);
   if (!accessRecoveryRef.current) accessRecoveryRef.current = createProjectAccessRecovery({
@@ -701,11 +708,39 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }, [imagePreview]);
   nodesRef.current = nodes;
   edgesRef.current = edges;
+  const zoneFrames = useMemo(() => productionZoneFrames(nodes), [nodes]);
+  const canGroupProductionZone = useMemo(() => selectedProductionZoneMembers(nodes).length >= 2, [nodes]);
+  const canEditProductionZones = () => !projectRef.current.readOnly && !switchingRef.current && !autoSaveRef.current?.failure;
+  const groupProductionZone = () => {
+    if (!canEditProductionZones() || interactionRef.current) return;
+    const id = uid('zone');
+    setNodes((items) => createProductionZone(items, id));
+  };
+  const changeProductionZone = (id, title) => {
+    if (!canEditProductionZones() || interactionRef.current) return;
+    setNodes((items) => editProductionZone(items, id, title));
+  };
+  const dragProductionZone = (id, delta) => {
+    if (!canEditProductionZones() || (interactionRef.current && !productionZoneDragRef.current)) return false;
+    if (!productionZoneDragRef.current) {
+      productionZoneDragRef.current = true;
+      interactionRef.current = true;
+      autoSaveRef.current?.suspend();
+    }
+    setNodes((items) => moveProductionZone(items, id, delta));
+    return true;
+  };
+  const endProductionZoneDrag = () => {
+    productionZoneDragRef.current = false;
+    interactionRef.current = false;
+    // Trigger the usual undo and autosave observers once the pointer is released.
+    setNodes((items) => items.slice());
+  };
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
   const historyRef = useRef(null);
   if (!historyRef.current) historyRef.current = new CanvasHistory(nodes, edges, { onChange: setHistoryState });
   useEffect(() => {
-    if (!nodes.some((node) => node.dragging || node.resizing)) historyRef.current.observe(nodes, edges);
+    if (!productionZoneDragRef.current && !nodes.some((node) => node.dragging || node.resizing)) historyRef.current.observe(nodes, edges);
   }, [nodes, edges]);
   useEffect(() => {
     if (project.readOnly) return undefined;
@@ -2222,11 +2257,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     setAddMenu({ ...point, flow: screenToFlowPosition(screenPoint) });
   };
   const openAddMenu = (event) => {
+    if (event.target.closest('.production-zone-header')) { event.preventDefault(); return; }
     if (event.target.closest('.native3d-overlay')) return;
     if (event.target.closest('.react-flow__node,button,input,textarea,.react-flow__controls,.react-flow__minimap,.node-top-toolbar,.creator-toolbar')) return;
     placeAddMenu({ x: event.clientX, y: event.clientY });
   };
   const openContextMenu = (event) => {
+    if (event.target.closest('.production-zone-header')) { event.preventDefault(); return; }
     if (event.target.closest('.native3d-overlay')) return;
     if (event.target.closest('input,textarea,select,button,a,[contenteditable="true"],.node-top-toolbar,.creator-toolbar,.add-node-menu,.node-context-menu')) return;
     event.preventDefault();
@@ -2425,14 +2462,14 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           onRefresh={refreshProjects} onOpen={(id) => changeProject(id)} onCreate={(name) => changeProject(null, name)} />
         <div className="neo-header-right">
           <div className="neo-header-actions">
-            <button onClick={() => openReferenceLibrary(referenceLibraryTab || 'refmuse')}><Library size={15} /><span>Refmuse参考库</span></button>
-            <button onClick={() => {
+            <button aria-label="Refmuse参考库" title="Refmuse参考库" onClick={() => openReferenceLibrary(referenceLibraryTab || 'refmuse')}><Library size={15} /><span>Refmuse参考库</span></button>
+            <button aria-label="节点库" title="节点库" onClick={() => {
               if (referenceImportBusyRef.current || catalogBusyRef.current || switchingRef.current) return;
               setReferenceLibrary(null); setNodeLibraryMounted(true); setNodeLibraryOpen((value) => !value);
               setCreativeOpen(false); setHandoffOpen(false); setWorkflowInspection(null); setImagePreview(null); setLibraryOpen(false); setPinOpen(false); setAddMenu(null); setNodeMenu(null);
             }}><Layers3 size={15} /><span>节点库</span></button>
-            <button className={creativeOpen ? 'active' : ''} onClick={() => setCreativeOpen(!creativeOpen)} title="角色、镜头与审片"><Film size={15} /><span>创作</span></button>
-            <button className={handoffOpen ? 'active' : ''} disabled={project.readOnly} onClick={() => setHandoffOpen(true)} title="保存目标、验收结论并切换 Agent"><Link2 size={15} /><span>接力{project.settings?.handoff?.status === 'paused' ? ' · 已暂停' : ''}</span></button>
+            <button className={creativeOpen ? 'active' : ''} onClick={() => setCreativeOpen(!creativeOpen)} aria-label="创作" title="角色、镜头与审片"><Film size={15} /><span>创作</span></button>
+            <button className={handoffOpen ? 'active' : ''} disabled={project.readOnly} onClick={() => setHandoffOpen(true)} aria-label={project.settings?.handoff?.status === "paused" ? "接力 · 已暂停" : "接力"} title="保存目标、验收结论并切换 Agent"><Link2 size={15} /><span>接力{project.settings?.handoff?.status === 'paused' ? ' · 已暂停' : ''}</span></button>
             <button className={`server-status ${connectionPresentation.connected ? 'online' : ''}`} onClick={onStatusClick} title={server.label} aria-busy={starting}><i />{connectionPresentation.text}</button>
             <button onClick={async () => { if (!switchingRef.current && !hasActiveTask()) { try { await persistProject(); onSimpleMode(); } catch { /* Keep the unsaved canvas open. */ } } }} title="切换简易模式"><MousePointer2 size={15} /></button>
             <button onClick={() => window.open('http://127.0.0.1:8188','_blank')} title="打开 ComfyUI 高级节点"><MoreHorizontal size={17} /></button>
@@ -2474,13 +2511,18 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           snapToGrid={snapEnabled} snapGrid={[22, 22]}
           onMove={(_, viewport) => setZoom(Math.round(viewport.zoom * 100))}
           onMoveEnd={(_, viewport) => { viewportRef.current = viewport; saveViewport(project.id, viewport); }}
-          defaultEdgeOptions={{ style: { stroke: '#77777e', strokeWidth: 1.6 }, type: 'default' }}
+          defaultEdgeOptions={{ type: 'default' }}
           connectionLineType={ConnectionLineType.Bezier}
-          connectionLineStyle={{ stroke: '#eeeeee', strokeWidth: 1.8 }}
+          connectionLineStyle={{ stroke: '#e6ddc7', strokeWidth: 1.8 }}
           proOptions={{ hideAttribution: true }}
         >
-          {gridVisible && <Background variant={BackgroundVariant.Dots} gap={22} size={1.15} color="#3a3a3e" />}
-          {miniMapVisible && <MiniMap pannable zoomable nodeColor={(node) => node.type === 'generator' ? '#9999a5' : node.data?.kind === 'audio' ? '#9c83a8' : '#65656d'} maskColor="#111113dc" />}
+          {gridVisible && <>
+            <Background id="obsidian-minor-grid" variant={BackgroundVariant.Dots} gap={22} size={1} color="#ffffff1f" />
+            <Background id="obsidian-major-grid" variant={BackgroundVariant.Dots} gap={110} size={2} color="#e5b86945" />
+          </>}
+          {miniMapVisible && <MiniMap pannable zoomable nodeColor={(node) => node.type === 'group' ? '#34413a' : 'var(--obsidian-' + canvasNodeModality(node.type, node.data) + ')'} maskColor="#080a09dc" />}
+          <ProductionZones frames={zoneFrames} editable={!project.readOnly}
+            onEdit={changeProductionZone} onMove={dragProductionZone} onMoveEnd={endProductionZoneDrag} />
         </ReactFlow>
         {connectionNotice && <div className="canvas-connection-notice" role="status">{connectionNotice}</div>}
         {!nodes.length && !project.readOnly && <button className="empty-canvas" onClick={(e) => setAddMenu({ x: e.clientX, y: e.clientY, flow: screenToFlowPosition({ x: e.clientX, y: e.clientY }) })}><Plus size={28} /><strong>双击画布开始创作</strong><span>或点击右下角添加节点</span></button>}
@@ -2493,6 +2535,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
             <button onClick={() => { fitView({ duration: 350, padding: 0.15 }); setZoomMenuOpen(false); }} title="适应全部节点"><Maximize2 size={14} /></button>
           </div>}
           <div className="canvas-control-pill">
+            {canGroupProductionZone && !project.readOnly && <button className="production-zone-create"
+              onClick={groupProductionZone} title="将选中的节点归入生产分区">创建生产分区</button>}
             <button onClick={() => applyHistory('undo')} disabled={project.readOnly || !historyState.canUndo} title="撤销 · Ctrl+Z" aria-label="撤销"><Undo2 size={15} /></button>
             <button onClick={() => applyHistory('redo')} disabled={project.readOnly || !historyState.canRedo} title="重做 · Ctrl+Shift+Z" aria-label="重做"><Redo2 size={15} /></button>
             <button className={gridVisible ? 'active' : ''} onClick={() => setGridVisible(!gridVisible)} title="显示或隐藏网格"><Grid2X2 size={15} /></button>
@@ -2515,7 +2559,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button className={pinOpen ? 'active' : ''} onClick={() => { setPinOpen(!pinOpen); setLibraryOpen(false); }} title={`Pin 节点 ${pinnedNodes.length}`}><Pin size={16} /></button>
         </div>
           <div className="hardware-monitor" aria-label="硬件状态" title={`${server.label} · 系统内存 ${formatGb(metrics.ramUsed)} / ${formatGb(metrics.ramTotal)} GB · 每 3 秒刷新`}>
-            <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={clearMemory} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
+            <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={clearMemory} aria-label={memoryCleanup === "busy" ? "清理显存中" : memoryCleanup === "done" ? "已释放显存" : "清理显存"} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
             <div className="hardware-metric" title={`${metrics.gpuName || 'GPU'}${metrics.gpuIndex != null ? `（设备 ${metrics.gpuIndex}）` : ''} · 整卡显存占用与计算利用率，包含其他程序`}>
               <span><MemoryStick size={12} />GPU{Number.isFinite(metrics.gpuPercent) ? ` ${Math.round(metrics.gpuPercent)}%` : ' 显存'}</span>
               <strong>{formatGb(metrics.vramUsed)} <small>/ {formatGb(metrics.vramTotal)} GB</small></strong>
