@@ -86,6 +86,7 @@ const suites = {
     'test-native3d-release-ui.mjs',
     'test-image-inline-compact-ui.mjs',
     'test-image-export-ui.mjs',
+    'test-image-comparison-ui.mjs',
     'test-moss-pose-ui.mjs',
     'test-video-plate-ui.mjs',
     'test-video-repair-ui.mjs',

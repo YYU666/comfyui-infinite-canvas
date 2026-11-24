@@ -46,6 +46,7 @@ import MaskEditor from './MaskEditor';
 import { isMaskNode, maskSourceKey, canvasMaskGuide, qwenCanvasMask, validateCanvasMask } from './canvas-mask';
 import { planCanvasConnection } from './canvas-connections';
 import ImageLightbox from './ImageLightbox';
+import { comparisonImage } from './image-comparison.js';
 import ModelLicenseNotice from './ModelLicenseNotice.jsx';
 import MossPoseNode from './MossPoseNode.jsx';
 import { buildMossPoseWorkflow, getMossPoseDependencyStatus } from './moss-pose.js';
@@ -317,7 +318,7 @@ function MediaNode({ id, data, selected }) {
     <div className={`media-preview ${!data.url ? 'empty' : ''}`} title={maskGuide ? '单击在母图上绘制遮罩' : kind === 'image' && data.url ? '双击预览大图' : undefined} onDoubleClick={(event) => {
       event.stopPropagation();
       if (maskNode || maskGuide) openMaskEditor();
-      else if (kind === 'image' && data.url) openImagePreview({ url: data.url, title: data.title, name: data.name });
+      else if (kind === 'image' && data.url) openImagePreview({ nodeId: id, url: data.url, title: data.title, name: data.name });
       else input.current?.click();
     }}
       onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -331,7 +332,7 @@ function MediaNode({ id, data, selected }) {
       {maskGuide && <button className="media-mask-edit nodrag" onClick={openMaskEditor}>绘制遮罩</button>}
       <button className="media-replace nodrag" disabled={readOnly || (maskNode && !maskGuide)} onClick={() => input.current?.click()} title={maskGuide ? '从文件导入黑白遮罩' : '替换素材'}><RefreshCw size={12} /><span>{maskGuide ? '导入' : '替换'}</span></button>
       {data.output && (kind === 'image'
-        ? <button className="media-download nodrag" title="导出图片" aria-label="导出图片" onClick={() => openImagePreview({ url: data.url, title: data.title, name: data.name })}><ArrowDownToLine size={13} /></button>
+        ? <button className="media-download nodrag" title="导出图片" aria-label="导出图片" onClick={() => openImagePreview({ nodeId: id, url: data.url, title: data.title, name: data.name })}><ArrowDownToLine size={13} /></button>
         : <a className="media-download nodrag" href={data.url} target="_blank" rel="noreferrer" title="打开并下载"><ArrowDownToLine size={13} /></a>)}
     </div>
     <div className="media-caption"><span>{data.artDirectorStale ? `旧版解析 · ${data.artDirectorStaleReason || '待重新输出'}` : maskNode || maskGuide ? '局部遮罩' : data.nativeProcessEvidenceImageAssetPath && data.nativeProcessEvidenceImageAssetPath === data.assetPath ? '过程展示' : data.nativeDiagnosticSources?.length ? '诊断参考' : data.output ? '生成结果' : KIND_LABEL[kind]}</span><b title={showResolution ? '原始图片分辨率（像素）' : data.name}>{showResolution ? resolutionLabel : data.name || (data.url ? data.title : maskGuide ? '尚未绘制' : '未上传')}</b><ObsidianStatus type="media" data={data} /></div>
@@ -433,7 +434,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
     <div className="generator-preview" title={imageFamily && data.resultUrl ? '双击预览大图' : undefined} onDoubleClick={(event) => {
       if (!imageFamily || !data.resultUrl) return;
       event.stopPropagation();
-      openImagePreview({ url: data.resultUrl, title: data.title });
+      openImagePreview({ nodeId: id, url: data.resultUrl, title: data.title });
     }}>
       {data.resultUrl ? <>
         {imageFamily ? <CanvasImage source={data.resultUrl} alt={data.title} draggable={false} /> : viewTier !== 'full' ? <div className="media-video-compact"><Film size={24} /><span>视频结果 · 放大恢复播放</span></div> : <CanvasVideo ref={resultVideoRef} className="nodrag" src={data.resultUrl} controls preload="metadata" playsInline />}
@@ -2349,7 +2350,17 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const spriteAtlas = useSpriteAtlas({ project, projectRef, revisionRef, switchingRef, nodes, nodesRef, updateNode, persistProject, localImageJobsRef, setLocalImageJobsVersion });
   spriteRunRef.current = spriteAtlas;
   artRunRef.current = (id) => { const state = artDirector.getArtDirectorState(id); return state.node?.data.analysis?.sourceVersion === state.signature ? artDirector.exportArtBoard(id) : artDirector.runArtAnalysis(id); };
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const openImagePreview = useCallback((preview) => {
+    const graph = nodesRef.current;
+    const result = comparisonImage(project.id, graph.find((node) => node.id === preview.nodeId), edgesRef.current);
+    if (!result || result.url !== preview.url) { setImagePreview(preview); return; }
+    const candidates = graph.filter((node) => node.type === 'media')
+      .map((node) => comparisonImage(project.id, node, edgesRef.current))
+      .filter((image) => image && image.url !== result.url);
+    setImagePreview({ ...preview, comparison: { result, candidates } });
+  }, [project.id]);
+
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
