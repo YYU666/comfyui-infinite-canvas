@@ -13,11 +13,15 @@ import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from project_uv_storage import decode_project_json, pack_uv_plans, json_bytes
 from scripts.validate_project import validate_project
 from workbench_lifecycle import APP_VERSION, atomic_write_json, utc_now
 
 MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PROJECT_MEMBERS = 10000
+MAX_RECOVERY_BYTES = 128 * 1024 * 1024
+MAX_RECOVERY_NODES = 256
+MAX_RECOVERY_EDGES = 2048
 ASSET_EXTENSIONS = {".glb", ".obj", ".fbx", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".tga", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac"}
 INVALID_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
@@ -224,7 +228,7 @@ def _read_project_json(path):
     # project.json. Retry only that transient sharing violation, never bad JSON.
     for attempt in range(50):
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return decode_project_json(path.read_text(encoding="utf-8"))
         except PermissionError:
             if attempt == 49:
                 raise
@@ -243,7 +247,7 @@ def _safe_project_file(path):
         raise StoreError("NOT_FOUND", "项目不存在或尚未打开。", 404)
     try:
         document = _read_project_json(path)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
         raise StoreError("BAD_REQUEST", f"project.json 无法读取：{exc}") from exc
     return path, document
 
@@ -276,7 +280,7 @@ class ProjectStore:
                     continue
                 try:
                     document = _read_project_json(path)
-                except (OSError, UnicodeError, json.JSONDecodeError):
+                except (OSError, UnicodeError, ValueError, RecursionError):
                     continue
                 if document.get("id") == project_id:
                     return path
@@ -290,18 +294,38 @@ class ProjectStore:
         if type(revision) is not int or revision < 1:
             raise StoreError('BAD_REQUEST', '备份版本无效。')
         project = self._project_path(project_id).resolve()
-        path = project.parent / 'backups' / f'project-r{revision}.json'
-        if not path.is_file() or path.resolve().parent != project.parent / 'backups':
+        folder = project.parent / 'backups'
+        path = folder / f'project-r{revision}.json'
+        if not path.is_file() or path.resolve() != path or folder.resolve() != folder:
             raise StoreError('NOT_FOUND', '项目备份不存在或路径无效。', 404)
-        if path.stat().st_size > 32 * 1024 * 1024:
-            raise StoreError('BAD_REQUEST', '项目备份过大。')
-        document = _read_project_json(path)
-        if document.get('id') != project_id or document.get('revision') != revision:
+        try:
+            # Bound the actual read even if the file changes after the stat.
+            if path.stat().st_size > MAX_RECOVERY_BYTES:
+                raise StoreError('BACKUP_TOO_LARGE', '项目备份超过 128 MiB 恢复上限。', 413)
+            with path.open('rb') as stream:
+                data = stream.read(MAX_RECOVERY_BYTES + 1)
+            if len(data) > MAX_RECOVERY_BYTES:
+                raise StoreError('BACKUP_TOO_LARGE', '项目备份超过 128 MiB 恢复上限。', 413)
+            document = decode_project_json(data)
+        except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+            raise StoreError('BACKUP_UNREADABLE', '项目备份无法读取或 JSON 无效。') from exc
+        if (not isinstance(document, dict) or document.get('id') != project_id
+                or type(document.get('revision')) is not int or document['revision'] != revision):
             raise StoreError('BAD_REQUEST', '备份项目或版本不匹配。')
-        nodes = [n for n in document.get('canvas', {}).get('nodes', []) if n.get('type') == 'native3d']
-        ids = {n['id'] for n in nodes}
-        edges = [e for e in document.get('canvas', {}).get('edges', []) if e.get('source') in ids or e.get('target') in ids]
-        return {'projectId': project_id, 'nodes': nodes, 'edges': edges, 'backupRevision': revision}
+        canvas = document.get('canvas')
+        if not isinstance(canvas, dict):
+            raise StoreError('BAD_REQUEST', '备份画布结构无效。')
+        nodes, edges = canvas.get('nodes'), canvas.get('edges')
+        if (not isinstance(nodes, list) or not isinstance(edges, list)
+                or any(not isinstance(node, dict) or not isinstance(node.get('id'), str) for node in nodes)
+                or any(not isinstance(edge, dict) or any(not isinstance(edge.get(key), str) for key in ('id', 'source', 'target')) for edge in edges)):
+            raise StoreError('BAD_REQUEST', '备份节点或连线结构无效。')
+        native = [node for node in nodes if node.get('type') == 'native3d']
+        ids = {node['id'] for node in native}
+        links = [edge for edge in edges if edge['source'] in ids or edge['target'] in ids]
+        if len(native) > MAX_RECOVERY_NODES or len(links) > MAX_RECOVERY_EDGES:
+            raise StoreError('BACKUP_FRAGMENT_TOO_LARGE', '备份的 3D 节点或连线超过可恢复数量。', 413)
+        return {'projectId': project_id, 'nodes': native, 'edges': links, 'backupRevision': revision}
 
     def _read(self, path, migrate=True):
         # Schema/handle repair can write: serialize the entire read-modify-write,
@@ -314,10 +338,10 @@ class ProjectStore:
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 if not backup.exists():
                     shutil.copy2(path, backup)
-                atomic_write_json(path, document)
+                atomic_write_json(path, pack_uv_plans(document), compact=True)
             return document
 
-    def _write(self, path, document, expected_revision=None, backup=True):
+    def _write(self, path, document, expected_revision=None, backup=True, skip_unchanged=False):
         with self._guard(path):
             _, current = _safe_project_file(path)
             current_revision = int(current.get("revision", 0))
@@ -325,6 +349,8 @@ class ProjectStore:
                 conflict = path.parent / f".conflict-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.json"
                 atomic_write_json(conflict, document)
                 raise RevisionConflict(current_revision, conflict.name)
+            if skip_unchanged and document == current and json_bytes(document, sort_keys=True) == json_bytes(current, sort_keys=True):
+                return current
             document = dict(document)
             document["revision"] = current_revision + 1
             document["updatedAt"] = utc_now()
@@ -333,8 +359,8 @@ class ProjectStore:
             if backup:
                 backup_path = path.parent / "backups" / f"project-r{current_revision}.json"
                 backup_path.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_json(backup_path, current)
-            atomic_write_json(path, document)
+                atomic_write_json(backup_path, pack_uv_plans(current), compact=True)
+            atomic_write_json(path, pack_uv_plans(document), compact=True)
             backups = sorted(path.parent.glob("backups/project-r*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
             for old in backups[20:]:
                 old.unlink(missing_ok=True)
@@ -416,13 +442,13 @@ class ProjectStore:
         self._opened_paths[document["id"]] = path
         return document
 
-    def save(self, project_id, document, expected_revision):
+    def save(self, project_id, document, expected_revision, *, skip_unchanged=False):
         path = self._project_path(project_id)
         self._require_writable(path)
         self.acquire_lock(path)
         if str(document.get("id")) != project_id or document.get("schemaVersion") != 3:
             raise StoreError("BAD_REQUEST", "项目 ID 或 schema 版本不一致。")
-        return self._write(path, document, int(expected_revision))
+        return self._write(path, document, int(expected_revision), skip_unchanged=skip_unchanged)
 
     def held_project_details(self):
         """Projects this process still holds. `stale` is true only for a confirmed-dead owner pid."""
@@ -743,8 +769,8 @@ class ProjectStore:
             history = list((path.parent / "backups").glob("*.json")) + list(path.parent.glob(".conflict-*.json"))
             for historical in history:
                 try:
-                    protected.update(self._asset_references(json.loads(historical.read_text(encoding="utf-8"))))
-                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    protected.update(self._asset_references(_read_project_json(historical)))
+                except (OSError, UnicodeError, ValueError, RecursionError) as exc:
                     raise StoreError("BAD_REQUEST", f"历史副本 {historical.name} 无法读取，已中止素材清理。") from exc
             cutoff = time.time() - age * 86400
             candidates = []
@@ -834,7 +860,7 @@ class ProjectStore:
         exports.mkdir(exist_ok=True)
         target = exports / f"{document['name']}-r{document['revision']}.zip"
         with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.write(path, "project.json")
+            archive.writestr("project.json", json_bytes(document))
             for folder in ("assets", "outputs"):
                 base = path.parent / folder
                 if base.is_dir():
@@ -878,7 +904,7 @@ class ProjectStore:
                 total += member.file_size
                 if total > MAX_ASSET_BYTES * 4:
                     raise StoreError("BAD_REQUEST", "项目包超过导入大小限制。")
-            document = json.loads(archive.read("project.json").decode("utf-8"))
+            document = decode_project_json(archive.read("project.json"))
             document, _ = _migrate(document)
             target = (self.root / document["name"]).resolve()
             if self.root not in target.parents or target.exists():
