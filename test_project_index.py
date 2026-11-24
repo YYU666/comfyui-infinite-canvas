@@ -76,7 +76,7 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(err.exception.code, "DUPLICATE_PROJECT_ID")
         mod.atomic_write_json(external / "project.json", {**a, "id": "prj_external"})
         self.assertEqual(self.store.open_path(external, read_only=True)["id"], "prj_external")
-        self.assertEqual(self.store._project_path("prj_external"), external / "project.json")
+        self.assertEqual(self.store._project_path("prj_external"), (external / "project.json").resolve())
         mod.atomic_write_json(external / "project.json", {**a, "id": "prj_replacement"})
         for project_id in ("prj_external", "prj_replacement"):
             with self.assertRaises(StoreError):
