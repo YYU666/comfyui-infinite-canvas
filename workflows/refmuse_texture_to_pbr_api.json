@@ -1,0 +1,79 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "material.png"
+    }
+  },
+  "2": {
+    "class_type": "RefmuseTextureToPBR",
+    "inputs": {
+      "image": [
+        "1",
+        0
+      ],
+      "normal_strength": 2.0,
+      "roughness": 0.65
+    }
+  },
+  "3": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "2",
+        0
+      ],
+      "filename_prefix": "refmuse-pbr/base-color"
+    }
+  },
+  "4": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "2",
+        1
+      ],
+      "filename_prefix": "refmuse-pbr/height"
+    }
+  },
+  "5": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "2",
+        2
+      ],
+      "filename_prefix": "refmuse-pbr/normal"
+    }
+  },
+  "6": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "2",
+        3
+      ],
+      "filename_prefix": "refmuse-pbr/roughness"
+    }
+  },
+  "7": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "2",
+        4
+      ],
+      "filename_prefix": "refmuse-pbr/metallic"
+    }
+  },
+  "8": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "2",
+        5
+      ],
+      "filename_prefix": "refmuse-pbr/ao"
+    }
+  }
+}
