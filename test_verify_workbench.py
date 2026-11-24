@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib.util import find_spec
 import hashlib
 import contextlib
 import io
@@ -43,6 +44,7 @@ class ModelManifestTests(unittest.TestCase):
                 else:
                     self.assertIn("optional.bin", output.getvalue())
 
+    @unittest.skipUnless(find_spec("yaml"), "PyYAML is supplied by the ComfyUI runtime")
     def test_cli_reads_category_paths_from_comfy_yaml(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
