@@ -484,11 +484,11 @@ class ProjectStore:
             "thumbnail": f"/api/projects/{document['id']}/{cover}" if cover else None,
         }
 
-    def get(self, project_id):
+    def get(self, project_id, *, migrate=True):
         path = self._project_path(project_id)
         with self._guard(path):
             self._require_project_id(path, project_id)
-            document = self._read(path)
+            document = self._read(path, migrate=migrate)
             if document["id"] != project_id:
                 raise StoreError("PROJECT_CHANGED", "项目目录或 ID 已变更，请重试。", 409)
             return document

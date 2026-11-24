@@ -1,15 +1,18 @@
 """Read-only provenance and presentation timestamps for an H3 refine result."""
 
 import functools
+import hashlib
 import json
 import re
 from fractions import Fraction
 from pathlib import Path
 
+from project_store import StoreError
 from video_edit_ffmpeg import FFmpegError, Runner, _parse_framecrc
 
 MAX_COMPARE_FRAMES = 4096
 H3_REFINE_PREFIX = "video/H3_HD_Refine"
+PROJECT_VIDEO_ASSET = re.compile(r"assets/([a-f0-9]{64})\.(mp4|mov|mkv|webm)")
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
 
 
@@ -47,7 +50,7 @@ def _identity(path):
 @functools.lru_cache(maxsize=32)
 def _embedded_graph(path, identity):
     # ffmetadata escapes literal backslashes, =, ; and # in a tag value.
-    metadata = Runner().run(["-i", str(path), "-map_metadata", "0", "-f", "ffmetadata", "-"], timeout=12)
+    metadata = Runner().run(["-protocol_whitelist", "file,pipe", "-i", str(path), "-map_metadata", "0", "-f", "ffmetadata", "-"], timeout=12)
     for line in metadata.decode("utf-8", "replace").splitlines():
         key, sep, value = line.partition("=")
         if key != "prompt" or not sep or len(value) > 262144:
@@ -85,7 +88,7 @@ def _decode_timeline(path, identity):
     # Preserve the demuxer's timebase and absolute PTS. Audio and container
     # duration can be longer than the video and are not used for seeks.
     out = Runner().run([
-        "-copyts", "-i", str(path), "-map", "0:v:0", "-an", "-fps_mode", "passthrough",
+        "-protocol_whitelist", "file,pipe", "-copyts", "-i", str(path), "-map", "0:v:0", "-an", "-fps_mode", "passthrough",
         "-enc_time_base", "demux", "-frames:v", str(MAX_COMPARE_FRAMES + 1),
         "-c:v", "wrapped_avframe", "-f", "framecrc", "-",
     ], timeout=20)
@@ -137,24 +140,61 @@ def synchronize(source, refined):
     return {"clock": clock}
 
 
-def inspect_h3_result(data, input_root, output_root):
+def _verified_project_asset(store, project, relative):
+    match = PROJECT_VIDEO_ASSET.fullmatch(relative) if isinstance(relative, str) else None
+    if match is None:
+        raise ValueError("invalid content-addressed video path")
+    expected = match[1]
+    entry = next((item for item in project.get("assets", [])
+                  if isinstance(item, dict) and item.get("path") == relative), None)
+    if entry is None or entry.get("sha256") != expected:
+        raise ValueError("unregistered asset identity")
+    path = store.asset_file(project["id"], relative)
+    identity = _identity(path)
+    if identity[0] != entry.get("bytes"):
+        raise ValueError("asset size mismatch")
+    # Match ProjectStore's streaming SHA-256 at upload, with Python 3.10 support.
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != expected or _identity(path) != identity:
+        raise ValueError("asset hash mismatch")
+    return path, identity
+
+
+def inspect_h3_result(data, input_root, output_root, *, store=None, project=None):
     """Use only the saved result and its own embedded graph as provenance."""
     result = {"refined": None, "source": None, "provenance": None}
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or data.get("kind") != "video":
         return {**result, "reason": "result-kind"}
-    filename = data.get("filename")
-    subfolder = data.get("subfolder", "")
-    if (data.get("kind") != "video" or data.get("type") != "output"
-            or not isinstance(subfolder, str) or not isinstance(filename, str) or "/" in filename or "\\" in filename
-            or not filename.startswith("H3_HD_Refine_")):
-        return {**result, "reason": "result-kind"}
-    relative = "/".join(filter(None, (subfolder, filename)))
-    output = _media_path(output_root, relative)
-    if output is None:
-        return {**result, "reason": "result-missing"}
-    result["refined"] = _media_ref(output_root, output, "output")
+    if data.get("assetPath"):
+        # hydrateProjectMedia uses the project asset even when this older node
+        # still has a Comfy filename/type from its upstream input.
+        if store is None or project is None:
+            return {**result, "reason": "asset-identity"}
+        try:
+            output, output_key = _verified_project_asset(store, project, data["assetPath"])
+        except (ValueError, OSError, StoreError):
+            return {**result, "reason": "asset-identity"}
+        result["refined"] = {"type": "project", "projectId": project["id"], "assetPath": data["assetPath"]}
+    else:
+        filename = data.get("filename")
+        subfolder = data.get("subfolder", "")
+        if (data.get("type") != "output" or not isinstance(subfolder, str)
+                or not isinstance(filename, str) or "/" in filename or "\\" in filename
+                or not filename.startswith("H3_HD_Refine_")):
+            return {**result, "reason": "result-kind"}
+        relative = "/".join(filter(None, (subfolder, filename)))
+        output = _media_path(output_root, relative)
+        if output is None:
+            return {**result, "reason": "result-missing"}
+        result["refined"] = _media_ref(output_root, output, "output")
+        try:
+            output_key = _identity(output)
+        except OSError:
+            return {**result, "reason": "result-missing"}
     try:
-        output_key = _identity(output)
         graph = _embedded_graph(output, output_key)
     except (FFmpegError, OSError):
         return {**result, "reason": "receipt-unreadable"}
@@ -189,7 +229,6 @@ def serve_h3_compare(handler, path, store, input_root, output_root):
     if path != "/api/h3-compare":
         return False
     from urllib.parse import parse_qs, urlsplit
-    from project_store import StoreError
 
     query = parse_qs(urlsplit(handler.path).query)
     if set(query) != {"projectId", "nodeId"} or any(
@@ -198,7 +237,7 @@ def serve_h3_compare(handler, path, store, input_root, output_root):
         handler.send_json(400, {"message": "请指定一个已保存的二采结果节点。"})
         return True
     try:
-        project = store.get(query["projectId"][0])
+        project = store.get(query["projectId"][0], migrate=False)
     except StoreError as error:
         handler.send_json(error.status, {"code": error.code, "message": str(error)})
         return True
@@ -206,5 +245,8 @@ def serve_h3_compare(handler, path, store, input_root, output_root):
     if node is None:
         handler.send_json(404, {"message": "此结果节点尚未保存或已经移除。"})
         return True
-    handler.send_json(200, inspect_h3_result(node.get("data") or {}, input_root, output_root))
+    if node.get("type") != "media":
+        handler.send_json(200, {"refined": None, "source": None, "provenance": None, "reason": "result-kind"})
+    else:
+        handler.send_json(200, inspect_h3_result(node.get("data") or {}, input_root, output_root, store=store, project=project))
     return True

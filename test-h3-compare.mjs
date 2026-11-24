@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { h3FrameTarget, isH3RefineResult, presentH3Frame } from './src/h3-compare.js';
+import { h3CompareCandidate, h3FrameTarget, h3MediaUrl, presentH3Frame } from './src/h3-compare.js';
 
 const clock = { count: 3, step: { num: 1, den: 24 }, end: { num: 1, den: 8 } };
 
@@ -15,9 +15,24 @@ test('last-frame seek lands within the last decoded frame; no synthetic frame be
 
 test('ordinary videos and input assets do not offer the H3 compare action', () => {
   const item = { type: 'media', data: { kind: 'video', type: 'output', filename: 'H3_HD_Refine_1.mp4' } };
-  assert.ok(isH3RefineResult(item));
-  assert.ok(!isH3RefineResult({ ...item, data: { ...item.data, type: 'input' } }));
-  assert.ok(!isH3RefineResult({ ...item, data: { ...item.data, filename: 'generic.mp4' } }));
+  assert.ok(h3CompareCandidate(item, 'prj_test'));
+  assert.ok(!h3CompareCandidate({ ...item, data: { ...item.data, type: 'input' } }));
+  assert.ok(!h3CompareCandidate({ ...item, data: { ...item.data, filename: 'generic.mp4' } }));
+});
+
+test('a legacy refine candidate always plays the hashed project asset instead of stale Comfy fields', () => {
+  const filename = 'a'.repeat(64) + '.mp4';
+  const assetPath = 'assets/' + filename;
+  const projectId = 'prj_test';
+  const kind = 'video';
+  const name = 'H3_HD_Refine_00002_.mp4';
+  for (const stale of [{}, { filename: 'upstream.mp4', type: 'input', subfolder: 'workbench' }]) {
+    const node = { type: 'media', data: { kind, name, assetPath, ...stale } };
+    const media = h3CompareCandidate(node, projectId);
+    assert.deepEqual(media, { type: 'project', projectId, assetPath });
+    assert.equal(h3MediaUrl(media), '/api/projects/prj_test/assets/' + filename);
+    assert.equal(h3CompareCandidate({ ...node, data: { ...node.data, assetPath: '../bad.mp4' } }, projectId), null);
+  }
 });
 
 class TestVideo extends EventTarget {

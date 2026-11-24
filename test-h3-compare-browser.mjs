@@ -23,8 +23,9 @@ const server = await createServer({
         "import H3CompareDialog from '/src/H3CompareDialog.jsx';",
         "function Test() {",
         "  const [open, setOpen] = useState(true);",
-        "  return open ? React.createElement(H3CompareDialog, { projectId: 'test', nodeId: location.hash.slice(1),",
-        "    fallbackMedia: { filename: location.search.slice(1), subfolder: 'video', type: 'output' },",
+        "  const query = new URLSearchParams(location.search);",
+        "  return open ? React.createElement(H3CompareDialog, { projectId: 'test', nodeId: query.get('scenario'),",
+        "    fallbackMedia: JSON.parse(query.get('fallback')),",
         "    onClose: () => setOpen(false) }) : null;",
         "}",
         "createRoot(document.getElementById('root')).render(React.createElement(Test));",
@@ -45,13 +46,16 @@ try {
   browser = await chromium.launch(process.env.H3_COMPARE_CHROMIUM ? { executablePath: process.env.H3_COMPARE_CHROMIUM } : {});
   const page = await browser.newPage({ viewport: { width: 1360, height: 840 } });
   page.on('pageerror', (error) => console.error(error.message));
+  let inspectRequests = 0;
   await page.route('**/api/h3-compare?*', (route) => {
+    inspectRequests += 1;
     const id = new URL(route.request().url()).searchParams.get('nodeId');
     return id === 'old-backend' ? route.fulfill({ status: 404, json: { code: 'NOT_FOUND' } })
       : route.fulfill({ json: fixture[id] });
   });
-  await page.route('**/api/comfy/view?*', (route) => {
-    const name = basename(new URL(route.request().url()).searchParams.get('filename'));
+  await page.route(/\/api\/(?:comfy\/view\?|projects\/[^/]+\/assets\/)/, (route) => {
+    const url = new URL(route.request().url());
+    const name = url.searchParams.get('filename') || decodeURIComponent(basename(url.pathname));
     const raw = files.get(name);
     if (!raw) return route.fulfill({ status: 404 });
     const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers()['range'] || '');
@@ -65,7 +69,9 @@ try {
       body: raw.subarray(start, end + 1),
     });
   });
-  const navigate = (id) => page.goto(origin + 'h3-review-test?' + fixture.matched.refined.filename + '#' + id);
+  const navigate = (scenario) => page.goto(origin + 'h3-review-test?' + new URLSearchParams({
+    scenario, fallback: JSON.stringify(fixture.matched.refined),
+  }));
   const ready = page.locator('[role=status][data-ready=true]');
   await navigate('matched');
   await ready.waitFor({ timeout: 8000 });
@@ -79,21 +85,31 @@ try {
   await page.keyboard.press('End');
   await page.locator('.h3-review-index').filter({ hasText: fixture.matched.clock.count + ' / ' }).waitFor();
   await ready.waitFor();
+  assert.equal(inspectRequests, 1);
   await page.keyboard.press('Escape');
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
 
-  await page.reload();
   await navigate('mismatch');
-  await page.reload();
   await page.getByText('原片和二采片的解码帧数不同。').waitFor();
   assert.equal(await page.getByRole('slider').count(), 0);
   assert.equal(await page.locator('video[controls]').count(), 2);
 
+  if (fixture['no-receipt']) {
+    await navigate('no-receipt');
+    await page.getByText('二采文件没有可识别的执行记录，无法确定原片。').waitFor();
+    assert.equal(await page.getByRole('slider').count(), 0);
+    assert.equal(await page.locator('video[controls]').count(), 1);
+    const src = await page.locator('video').getAttribute('src');
+    assert.match(src, /^\/api\/projects\//);
+  }
+
   await page.setViewportSize({ width: 465, height: 700 });
   await navigate('old-backend');
-  await page.reload();
   await page.getByText('当前工作台后端尚未提供同帧核验，二采片可单独播放。').waitFor();
   assert.equal(await page.locator('video[controls]').count(), 1);
+  if (fixture.matched.refined.type === 'project') {
+    assert.match(await page.locator('video').getAttribute('src'), /^\/api\/projects\//);
+  }
   assert.equal(await page.locator('.h3-review-media').evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(' ').length), 1);
   console.log('Real-media test passed: first / next / last confirmed by the browser; mismatched and old-backend paths stay independent.');
 } catch (error) {

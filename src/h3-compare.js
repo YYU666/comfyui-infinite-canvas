@@ -1,6 +1,14 @@
-export function isH3RefineResult(node) {
-  return node?.type === 'media' && node.data?.kind === 'video'
-    && node.data.type === 'output' && /^H3_HD_Refine_/.test(node.data.filename || '');
+const PROJECT_VIDEO_ASSET = /^assets\/[a-f0-9]{64}\.(mp4|mov|mkv|webm)$/;
+const refineName = (value) => typeof value === 'string' && /^H3_HD_Refine_/i.test(value);
+
+export function h3CompareCandidate(node, projectId) {
+  if (node?.type !== 'media' || node.data?.kind !== 'video') return null;
+  const { assetPath, type, filename, name, title, subfolder = '' } = node.data;
+  if (assetPath) {
+    if (typeof assetPath !== 'string' || !PROJECT_VIDEO_ASSET.test(assetPath) || ![name, title, filename].some(refineName)) return null;
+    return { type: 'project', projectId, assetPath };
+  }
+  return type === 'output' && refineName(filename) ? { type, filename, subfolder } : null;
 }
 
 export async function loadH3Comparison(projectId, nodeId, signal) {
@@ -16,6 +24,10 @@ export async function loadH3Comparison(projectId, nodeId, signal) {
 }
 
 export function h3MediaUrl(media) {
+  if (media.type === 'project') {
+    const filename = media.assetPath.slice('assets/'.length);
+    return '/api/projects/' + encodeURIComponent(media.projectId) + '/assets/' + encodeURIComponent(filename);
+  }
   return '/api/comfy/view?' + new URLSearchParams({
     filename: media.filename, subfolder: media.subfolder, type: media.type,
   });

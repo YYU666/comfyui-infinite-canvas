@@ -57,7 +57,7 @@ import { appendImageReview, createImageReview, imageModelLabel as imageChoiceLab
 import { LOCAL_NODE_TOOLS } from './local-node-tools';
 import WorkflowInspector from './WorkflowInspector';
 import H3CompareDialog from './H3CompareDialog.jsx';
-import { isH3RefineResult } from './h3-compare.js';
+import { h3CompareCandidate } from './h3-compare.js';
 import ReferenceLibrary, { REFERENCE_LIBRARIES } from './ReferenceLibrary';
 import NodeLibrary from './NodeLibrary';
 import { createPublishLedger } from './node-library-publish.js';
@@ -2282,9 +2282,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (node) {
       setAddMenu(null);
       const inspectable = canInspectNode(node);
-      const h3Media = isH3RefineResult(node) ? {
-        filename: node.data.filename, subfolder: node.data.subfolder || '', type: 'output',
-      } : null;
+      const h3Media = h3CompareCandidate(node, project.id);
       setNodeMenu({
         h3Media,
         x: Math.max(8, Math.min(event.clientX, window.innerWidth - 238)),

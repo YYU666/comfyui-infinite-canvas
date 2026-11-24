@@ -7,6 +7,7 @@ const REASONS = {
   'route-unavailable': '当前工作台后端尚未提供同帧核验，二采片可单独播放。',
   'preview-only': '同帧核验数据暂不可用。',
   'result-kind': '此节点没有可读取的 H3 二采文件记录。',
+  'asset-identity': '项目里保存的视频丢失或未通过资产身份校验。',
   'result-missing': '二采文件已移除或无法读取。',
   'receipt-unreadable': '无法读取二采文件的内嵌工作流。',
   'receipt-missing': '二采文件没有可识别的执行记录，无法确定原片。',
@@ -133,7 +134,7 @@ export default function H3CompareDialog({ projectId, nodeId, fallbackMedia, onCl
     return () => controller.abort();
   }, [projectId, nodeId]);
   const current = loaded?.projectId === projectId && loaded?.nodeId === nodeId ? loaded : null;
-  const preview = current?.error && fallbackMedia?.filename ? {
+  const preview = current?.error && fallbackMedia ? {
     refined: fallbackMedia, reason: current.routeUnavailable ? 'route-unavailable' : 'preview-only',
   } : null;
   const comparison = current?.result || preview;
