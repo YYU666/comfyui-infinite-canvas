@@ -1,10 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-
-// Isolate the HTTP boundary; URL normalization is unrelated to upload CAS.
-const source = (await readFile(new URL('./src/project-store-http.js', import.meta.url), 'utf8'))
-  .replace("import { normalizeMediaUrl } from './workbench-api.js';", 'const normalizeMediaUrl = (url) => url;');
-const { saveProjectFile, openProjectPath, restoreProjectAccess } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+import { saveProjectFile, openProjectPath, restoreProjectAccess } from './src/project-store-http.js';
 const originalFetch = globalThis.fetch;
 const calls = [];
 const file = new File(['synthetic'], 'sample.png', { type: 'image/png' });
