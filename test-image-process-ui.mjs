@@ -134,6 +134,7 @@ try {
   const submitted = await call('qa-output-as-input', 'canvas_generate_node', { nodeId: generator.node.id, wait: false });
   assert.equal(submitted.ok, false); assert.match(submitted.error, /Synthetic queue stop/); assert.equal(uploads, 1, 'new output passes media cache identity before upload');
   await call('qa-remove-upscale', 'canvas_delete_node', { nodeId: generator.node.id });
+  await focusVisible('adjust');
   await expandSettings('adjust');
   await node('adjust').getByLabel('亮度数值').fill('20');
   await until(async () => !(await node('blend').getByRole('button', { name: '输出 PNG' }).isEnabled()));

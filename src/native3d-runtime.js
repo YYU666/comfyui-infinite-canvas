@@ -94,6 +94,7 @@ export function useNative3D(options) {
   const delivering = useRef(new Set());
   const pollNow=useRef(null);
   const imports = useRef(new Map());
+  const generatedImports = useRef(new Set());
   const viewedPlans=useRef(new Map());
   const previewSaves=useRef(new Map());
   useEffect(()=>{viewedPlans.current.clear();setViewer(null);},[options.projectId]);
@@ -196,8 +197,9 @@ export function useNative3D(options) {
         return ownsImport() && next.projectId === projectId && currentNode?.data.status === 'uploading'
           && currentSource?.id === sourceId && currentSource.data.url === model.url;
       };
-      patch(id,{status:'uploading',stage:'保存生成的 GLB',error:null,nativeSourceImport:{id:importId,previous}});
+      generatedImports.current.add(importId);
       try {
+        patch(id,{status:'uploading',stage:'保存生成的 GLB',error:null,nativeSourceImport:{id:importId,previous}});
         const response = await fetch(model.url,{redirect:'error'});
         if (!response.ok) throw Error('生成的 GLB 无法读取，请检查原生成结果。');
         const blob = await response.blob();
@@ -214,6 +216,8 @@ export function useNative3D(options) {
       } catch (error) {
         if (ownsImport()) patch(id,{...previous,nativeSourceImport:null,error:error.message});
         throw error;
+      } finally {
+        generatedImports.current.delete(importId);
       }
     }
     const inputs=inputsFor(o,node);
@@ -438,6 +442,15 @@ export function useNative3D(options) {
       const o = latest.current;
       if(typeof native3DNotifications!=='undefined'&&!o.readOnly&&!o.switchingRef.current)native3DNotifications.observe(o.nodesRef.current);
       try {
+        if (!o.readOnly && !o.switchingRef.current) {
+          for (const node of o.nodesRef.current) {
+            const pending = node.data.nativeSourceImport;
+            if (node.type !== 'native3d' || node.data.status !== 'uploading' || !pending || generatedImports.current.has(pending.id)) continue;
+            const status = ['idle','completed','error','failed','cancelled','stale'].includes(pending.previous?.status)
+              ? pending.previous.status : 'idle';
+            o.updateNode(node.id, { status, stage:pending.previous?.stage || '', nativeSourceImport:null });
+          }
+        }
         if(!o.readOnly&&!o.switchingRef.current)for(const pending of o.nodesRef.current.filter(n=>n.type==='native3d'&&n.data.nativeRun?.opId&&!n.data.nativeJobId&&(n.data.nativeSubmissionUncertain||['submitting','queued'].includes(n.data.status)))){try{await syncTask(pending.id,false);}catch{/* unresolved submission stays bound; never auto-resubmit */}}
         if (!o.readOnly && !o.switchingRef.current) for (const node of o.nodesRef.current.filter(n => n.type === 'native3d' && n.data.nativeJobId && n.data.nativeDeliveredJobId !== n.data.nativeJobId && n.data.nativeDeliveryErrorJobId !== n.data.nativeJobId && n.data.status!=='stale'&&!['failed','error','cancelled'].includes(n.data.nativeBackendStatus))) {
           const before = { ...node.data.nativeRun, jobId: node.data.nativeJobId };

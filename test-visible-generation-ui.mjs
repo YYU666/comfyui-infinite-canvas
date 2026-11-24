@@ -20,7 +20,11 @@ const stub = createServer(async (request, response) => {
   let body = {};
   if (url.pathname === '/system_stats') body = { system: {}, devices: [] };
   if (url.pathname === '/queue') body = { queue_pending: [], queue_running: [] };
-  if (url.pathname === '/object_info') body = { Fixture: { input: { required: {} } } };
+  if (url.pathname === '/object_info') body = {
+    LoadImage: { input: { required: { image: [['fixture-old.png']] } }, output: ['IMAGE', 'MASK'] },
+    Fixture: { input: { required: { first: ['IMAGE'], second: ['IMAGE'], value: ['FLOAT'], normalize: ['BOOLEAN'] } }, output: ['IMAGE'] },
+    SaveImage: { input: { required: { images: ['IMAGE'], filename_prefix: ['STRING'] } }, output: [] },
+  };
   if (url.pathname === '/prompt' && request.method === 'POST') {
     const parts = [];
     for await (const part of request) parts.push(part);
@@ -33,7 +37,7 @@ const stub = createServer(async (request, response) => {
     body = Object.fromEntries([...prompts].map(([id, submission]) => [id, {
       prompt: [0, id, submission.prompt, { client_id: submission.client_id }, []],
       status: { completed: true, status_str: 'success' },
-      outputs: { 1: { images: [{ filename: id + '.png', subfolder: '', type: 'output' }] } },
+      outputs: { 4: { images: [{ filename: id + '.png', subfolder: '', type: 'output' }] } },
     }]));
   }
   if (url.pathname === '/view') {
@@ -78,26 +82,35 @@ try {
   assert.equal(health.pid, instance.pid);
   assert.ok(samePath(health.projectsRoot, projects));
   await api('/api/queue', { action: 'pause' });
-  const output = { id: 'result', nodeId: '1', type: 'image', label: '合成图' };
-  const definition = { nodeDefinitionId: 'synthetic', name: '合成 customWorkflow',
-    inputs: [{ id: 'image', type: 'image', label: '参考图', required: true }], outputs: [output],
-    parameters: { properties: { intensity: { type: 'number', default: 0.75 } } } };
-  const digest = 'a'.repeat(64);
+  const workload = {
+    '1': { class_type: 'LoadImage', inputs: { image: 'fixture-old.png' } },
+    '2': { class_type: 'LoadImage', inputs: { image: 'fixture-old.png' } },
+    '3': { class_type: 'Fixture', inputs: { first: ['1', 0], second: ['2', 0], value: 0.5, normalize: true } },
+    '4': { class_type: 'SaveImage', inputs: { images: ['3', 0], filename_prefix: 'workspace-fixture' } },
+  };
+  const imported = await fetch(base + '/api/extensions/import', {
+    method: 'POST', headers: { 'X-H3-Token': token, 'Content-Type': 'application/json', 'X-Filename': 'synthetic-workflow.json' },
+    body: JSON.stringify(workload),
+  });
+  assert.equal(imported.status, 200, await imported.clone().text());
+  const { digest, nodes: [{ definition }] } = await imported.json();
+  const workflowParameters = { node_3__value: 0.75 };
   const source = { id: 'reference', type: 'media', position: { x: 20, y: 80 },
     data: { kind: 'image', title: '合成参考图', remoteName: 'synthetic-input.png', url: 'data:image/png;base64,' + png.toString('base64') } };
+  const secondSource = { ...source, id: 'reference_two', position: { x: 20, y: 360 },
+    data: { ...source.data, title: '第二张参考图', remoteName: 'synthetic-second.png' } };
   const target = { id: 'custom_target', type: 'generator', position: { x: 430, y: 80 },
     data: { mode: 'customWorkflow', title: definition.name, extensionDigest: digest, nodeDefinitionId: definition.nodeDefinitionId,
-      workflowDefinition: definition, workflowParameters: { intensity: 0.75 } } };
+      workflowDefinition: definition, workflowParameters } };
   const humanTarget = { ...target, id: 'human_target', position: { x: 430, y: 410 },
     data: { ...target.data, title: '人工提交样本' } };
-  const project = await api('/api/projects', { name: 'Visible generation isolation', canvas: { nodes: [source, target, humanTarget],
-    edges: [target, humanTarget].map((item) => ({ id: 'reference-to-' + item.id, source: source.id,
-      sourceHandle: 'ref', target: item.id, targetHandle: 'image' })),
+  const project = await api('/api/projects', { name: 'Visible generation isolation', canvas: { nodes: [source, secondSource, target, humanTarget],
+    edges: [target, humanTarget].flatMap((item) => [source, secondSource].map((input, index) =>
+      ({ id: input.id + '-to-' + item.id, source: input.id, sourceHandle: 'ref', target: item.id, targetHandle: 'image_' + (index + 1) }))),
     viewport: { x: 0, y: 0, zoom: 0.8 } } });
   const projectPath = '/api/projects/' + project.id;
   const bridge = '/api/agent/canvas';
   const apply = '/api/agent/projects/' + project.id + '/apply';
-  const workload = { '1': { class_type: 'Fixture', inputs: { value: 0.75, image: 'synthetic-input.png' } } };
   await assert.rejects(api(bridge + '/current?projectId=' + project.id), { code: 'NO_VISIBLE_CANVAS' });
   await assert.rejects(api('/api/queue', { projectId: project.id, nodeId: target.id, workflow: workload }), { code: 'VISIBLE_CANVAS_REQUIRED' });
   await assert.rejects(api(apply, { opId: 'mixed', revision: project.revision, ops: [
@@ -116,8 +129,9 @@ try {
   async function openPage() {
     page = await context.newPage();
     await page.route('**/api/extensions/' + digest + '/prepare', async (route) => {
-      assert.deepEqual(route.request().postDataJSON(), { nodeDefinitionId: 'synthetic', inputs: { image: 'synthetic-input.png' }, parameters: { intensity: 0.75 } });
-      await route.fulfill({ json: { digest, workflow: workload, outputs: [output] } });
+      assert.deepEqual(route.request().postDataJSON(), { nodeDefinitionId: 'workflow',
+        inputs: { image_1: 'synthetic-input.png', image_2: 'synthetic-second.png' }, parameters: workflowParameters });
+      await route.continue();
     });
     await page.goto(base);
     await page.locator('.project-open').click();
@@ -184,11 +198,16 @@ try {
   assert.equal(accepted.requestId, 'custom-fixture-run');
   assert.match(accepted.jobId, /^job_[a-f0-9]+$/);
   const actual = JSON.parse(queuedBody.executionJson);
-  assert.equal(actual.workflow['1'].inputs.value, 0.75);
+  assert.equal(actual.workflow['3'].inputs.value, 0.75);
+  assert.equal(actual.workflow['3'].inputs.normalize, true);
+  assert.equal(actual.workflow['1'].inputs.image, 'synthetic-input.png');
+  assert.equal(actual.workflow['2'].inputs.image, 'synthetic-second.png');
+  assert.match(actual.workflow['4'].inputs.filename_prefix, /^H3\/extensions\//);
   assert.equal('snapshot' in prepared.execution, false, 'project retains digest, not raw execution config');
   assert.equal(prepared.execution.digest, createHash('sha256').update(queuedBody.executionJson).digest('hex'));
-  assert.equal(prepared.inputs[0].nodeId, source.id);
-  assert.equal(prepared.inputs[0].resolvedName, 'synthetic-input.png');
+  assert.deepEqual(prepared.inputs.map(({ nodeId, slot, resolvedName }) => [nodeId, slot, resolvedName]), [
+    [source.id, 'image_1', 'synthetic-input.png'], [secondSource.id, 'image_2', 'synthetic-second.png'],
+  ]);
   assert.equal((await api('/api/queue')).jobs.length, 1);
   await page.close();
   await api('/api/queue', { action: 'resume' });
@@ -199,6 +218,7 @@ try {
   });
   assert.equal(terminal.requestId, accepted.requestId);
   assert.equal(prompts.size, 1);
+  assert.deepEqual(prompts.values().next().value.prompt, actual.workflow);
   await until('accepted page release', async () => {
     try { await api(bridge + '/current?projectId=' + project.id); return false; }
     catch (error) { if (error.code === 'NO_VISIBLE_CANVAS') return true; throw error; }
@@ -259,7 +279,7 @@ try {
   assert.match(prompts.get(legacyResult.prompt_id).client_id, /^legacy:/);
   assert.equal((await api('/api/queue')).jobs.length, 2, 'simple mode is not part of the canvas queue');
   await legacyContext.close();
-  console.log(JSON.stringify({ legacyManualIdentified: true, humanSameGate: true, directProxyRejected: true, retryAttempt: retry.attempt, customWorkflow: true, staleRevisionRejected: true, saveFailureNoJob: true,
+  console.log(JSON.stringify({ legacyManualIdentified: true, humanSameGate: true, directProxyRejected: true, retryAttempt: retry.attempt, customWorkflow: true, realExtensionCompile: true, staleRevisionRejected: true, saveFailureNoJob: true,
     noVisiblePageNoJob: true, persistedBeforeEnqueue: true, accepted: accepted.jobId, closedPageTerminal: terminal.status,
     reopenedReceipt: true, fakeCanvasComfySubmissions: 1, fakeLegacyComfySubmissions: prompts.size - 1 }));
 } finally {
