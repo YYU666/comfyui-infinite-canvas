@@ -41,6 +41,7 @@ from video_repair_jobs import VideoRepairJobs
 from video_plate_api import VideoPlateAPI
 from video_plate_jobs import VideoPlateJobs
 from video_edit_api import VideoEditAPI
+from h3_compare import serve_h3_compare
 from video_edit_jobs import VideoEditJobs
 from art_director import ArtDirectorAPI
 from pureref_sessions import PureRefSessions
@@ -648,6 +649,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request():
             return
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/h3-compare" and serve_h3_compare(self, path, self.server.project_store, INPUT_DIR, OUTPUT_DIR):
+            return
         if getattr(self.server, "video_rhythm_api", None) and self.server.video_rhythm_api.handle_get(self, path): return
         if getattr(self.server, "video_chroma_api", None) and self.server.video_chroma_api.handle_get(self, path): return
         if getattr(self.server, "video_repair_api", None) and self.server.video_repair_api.handle_get(self, path): return

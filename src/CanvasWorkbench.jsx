@@ -56,6 +56,8 @@ import { readImageModelInstall } from './image-model-install.js';
 import { appendImageReview, createImageReview, imageModelLabel as imageChoiceLabel, imageResultKey, normalizeImageHistory, planImageModelPick } from './image-model-picker.js';
 import { LOCAL_NODE_TOOLS } from './local-node-tools';
 import WorkflowInspector from './WorkflowInspector';
+import H3CompareDialog from './H3CompareDialog.jsx';
+import { isH3RefineResult } from './h3-compare.js';
 import ReferenceLibrary, { REFERENCE_LIBRARIES } from './ReferenceLibrary';
 import NodeLibrary from './NodeLibrary';
 import { createPublishLedger } from './node-library-publish.js';
@@ -674,6 +676,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     } catch (error) { setPixalReadiness('Pixal3D · ' + error.message); }
   };
   const [nodeMenu, setNodeMenu] = useState(null);
+  const [h3Comparison, setH3Comparison] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const previewCloseRef = useRef(null);
   const completedJobsRef = useRef(new Set());
@@ -2279,9 +2282,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (node) {
       setAddMenu(null);
       const inspectable = canInspectNode(node);
+      const h3Media = isH3RefineResult(node) ? {
+        filename: node.data.filename, subfolder: node.data.subfolder || '', type: 'output',
+      } : null;
       setNodeMenu({
+        h3Media,
         x: Math.max(8, Math.min(event.clientX, window.innerWidth - 238)),
-        y: Math.max(8, Math.min(event.clientY, window.innerHeight - (inspectable ? 200 : 135))),
+        y: Math.max(8, Math.min(event.clientY, window.innerHeight - (h3Media ? 255 : inspectable ? 200 : 135))),
         nodeId: node.id, title: node.data.title || '节点', file: nodeFileLocation(node, project.id, window.location.origin), inspectable, status: 'idle', error: null,
       });
       return;
@@ -2683,6 +2690,10 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
             <i><WandSparkles size={17} /></i>
             <span>进入 ComfyUI<small>查看这个节点的内部工作流</small></span>
           </button>}
+          {nodeMenu.h3Media && <button onClick={() => {
+            setH3Comparison({ projectId: project.id, nodeId: nodeMenu.nodeId, fallbackMedia: nodeMenu.h3Media });
+            setNodeMenu(null);
+          }}><i><Video size={17} /></i><span>原片与二采对照<small>逐帧定位两路视频</small></span></button>}
           <button disabled={!nodeMenu.file || nodeMenu.status === 'opening'} onClick={openNodeLocation}>
             <i><FolderOpen size={17} /></i>
             <span>{nodeMenu.status === 'opening' ? '正在打开……' : '打开文件位置'}
@@ -2728,6 +2739,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         }} persist={persistProject}
         onClose={() => { pureRefBusyRef.current = false; setPureRefSelection(null); }} />}
       {imagePreview && <ImageLightbox preview={imagePreview} onClose={() => setImagePreview(null)} closeRef={previewCloseRef} />}
+      {h3Comparison?.projectId === project.id && (
+        <H3CompareDialog {...h3Comparison} onClose={() => setH3Comparison(null)} />
+      )}
       {workflowInspection && <WorkflowInspector key={workflowInspection.nonce} request={workflowInspection} onClose={() => setWorkflowInspection(null)} />}
       {workflowLibraryOpen && <WorkflowLibrary onClose={() => setWorkflowLibraryOpen(false)} onAdd={async (bundle, definitionId) => { if (project.readOnly || switchingRef.current) throw new Error('当前画布不可写。'); flushSync(() => addNode('generator', extensionNodeData(bundle, definitionId))); await persistProject(); }} />}
       {nodeLibraryMounted && <NodeLibrary open={nodeLibraryOpen} onClose={() => { if (!catalogBusyRef.current) setNodeLibraryOpen(false); }} onOpenLocal={() => { if (!catalogBusyRef.current) { setNodeLibraryOpen(false); setWorkflowLibraryOpen(true); } }} onImport={importCatalogNode} sharePacket={sharePacket} onShareResult={data=>getPublishLedger().result(data)} onShareSent={async (requestId) => { await getPublishLedger().sent(requestId); setSharePacket((value) => value?.requestId === requestId ? null : value); }} />}
