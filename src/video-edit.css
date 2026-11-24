@@ -91,3 +91,21 @@
 .video-edit-clip .trim { position: absolute; top: 0; bottom: 0; width: 7px; background: #a9b8ef66; cursor: ew-resize; touch-action: none; }
 .video-edit-clip .trim.in { left: 0; } .video-edit-clip .trim.out { right: 0; }
 .video-edit-total { font-size: 11px; color: var(--neo-muted, #969ba9); }
+
+.video-edit-node, .video-edit-panel { --video-edit-accent: var(--v2-accent-coral, #e88b5a); }
+.video-edit-node { background: linear-gradient(180deg, var(--neo-panel, #202126), #141318); }
+.video-edit-node [data-video-edit-open] { color: var(--video-edit-accent); border-color: var(--video-edit-accent); }
+.video-edit-preview { grid-template-rows: minmax(200px, 1fr) auto auto auto; }
+.video-edit-playhead { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.video-edit-playhead label { display: flex; flex: 1 1 150px; min-width: 0; gap: 8px; }
+.video-edit-playhead input { flex: 1; min-width: 0; accent-color: var(--video-edit-accent); }
+.video-edit-playhead output { font-variant-numeric: tabular-nums; color: var(--video-edit-accent); }
+.video-edit-playhead-marker { position: absolute; z-index: 1; top: 0; bottom: 0; width: 2px; background: var(--video-edit-accent); pointer-events: none; }
+.video-edit-total { font-variant-numeric: tabular-nums; }
+.video-edit-node button:focus-visible, .video-edit-panel button:focus-visible, .video-edit-panel input:focus-visible { outline: 2px solid var(--video-edit-accent); outline-offset: 2px; }
+@media (max-width: 800px) {
+  .video-edit-panel > header { flex-wrap: wrap; }
+  .video-edit-columns:has(> .video-edit-clip-settings) { grid-template-columns: minmax(0, 1fr); overflow: auto; }
+  .video-edit-columns:has(> .video-edit-clip-settings) > * { overflow: visible; }
+  .video-edit-columns > .video-edit-preview { grid-row: 1; }
+}

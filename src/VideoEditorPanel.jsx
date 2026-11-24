@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Plus, Trash2, ArrowUp, ArrowDown, Scissors, Undo2, Redo2, ArrowDownToLine, Square } from 'lucide-react';
-import { normalizeVideoEditDocument, defaultVideoEditDocument, VIDEO_EDIT_VIDEO_PORTS, VIDEO_EDIT_PORTS, framesOf, timecode, ptsToSeconds } from './video-edit-document';
+import { normalizeVideoEditDocument, defaultVideoEditDocument, VIDEO_EDIT_VIDEO_PORTS, VIDEO_EDIT_PORTS, VIDEO_EDIT_MAX_CLIPS, framesOf, timecode, ptsToSeconds } from './video-edit-document';
 import { probeVideoAsset, analyzeVideoInput } from './video-edit-runtime';
 import VideoPresentationEditor from './VideoPresentationEditor';
 import OpenMotionPanel from './OpenMotionPanel';
@@ -23,6 +23,8 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
   const [draft, setDraft] = useState(() => clone(data.editDocument || defaultVideoEditDocument()));
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(0);
+  const [playhead, setPlayhead] = useState(0);
+  const [editFeedback, setEditFeedback] = useState('');
   const [view, setView] = useState('timeline');
   const [probes, setProbes] = useState({});
   const [splitAt, setSplitAt] = useState('');
@@ -44,6 +46,7 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
     setDraft(clone(data.editDocument || defaultVideoEditDocument()));
     setSelected((index) => Math.min(index, (data.editDocument?.clips?.length || 1) - 1));
     setError('');
+    setEditFeedback('');
   }, [data.editDocument]);
 
   // Probe every connected input that already is a project asset (frame-exact info).
@@ -66,10 +69,13 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
       setError('');
       if (record) { history.current.past.push(clone(data.editDocument || defaultVideoEditDocument())); history.current.future = []; }
       localCommit.current = normalized;
+      setSelected((index) => Math.min(index, normalized.clips.length - 1));
+      setEditFeedback('时间线已修改');
       actions.updateNode(id, { editDocument: normalized, error: null });
+      return true;
     } catch (reason) { setError(reason.message); }
   }, [actions, id, data.editDocument, locked]);
-  const change = (mutate) => { if (locked) return; const next = clone(draft); mutate(next); commit(next); };
+  const change = (mutate) => { if (locked) return; const next = clone(draft); mutate(next); return commit(next); };
   const undo = () => { if (locked) return; const previous = history.current.past.pop(); if (!previous) return; history.current.future.push(clone(draft)); commit(previous, { record: false }); };
   const redo = () => { if (locked) return; const next = history.current.future.pop(); if (!next) return; history.current.past.push(clone(draft)); commit(next, { record: false }); };
 
@@ -78,6 +84,24 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
   const fps = draft.outputProfile?.fps || { num: 24, den: 1 };
   const frames = clips.map((item) => framesOf(item, fps));
   const total = frames.reduce((sum, value) => sum + (value ?? 0), 0);
+  const timelineReady = total > 0 && frames.every((count) => Number.isSafeInteger(count) && count > 0);
+  const clipStart = frames.slice(0, selected).reduce((sum, count) => sum + (count ?? 0), 0);
+  const localFrame = Math.max(0, Math.min(playhead - clipStart, (frames[selected] ?? 1) - 1));
+  const currentFrame = clipStart + localFrame;
+  const selectClip = (index) => {
+    videoRef.current?.pause();
+    setSelected(index);
+    setPlayhead(frames.slice(0, index).reduce((sum, count) => sum + (count ?? 0), 0));
+  };
+  const scrubTo = (frame) => {
+    if (!timelineReady) return;
+    let end = 0;
+    const index = frames.findIndex((count) => (end += count) > frame);
+    if (index < 0) return;
+    videoRef.current?.pause();
+    setSelected(index);
+    setPlayhead(frame);
+  };
   const presentation = draft.presentation || [];
   const motionPreview = useMemo(() => {
     if (!data.motionCanvasPreview) return null;
@@ -100,12 +124,17 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
   const setClip = (patch) => change((doc) => { Object.assign(doc.clips[selected], patch); });
   const move = (delta) => change((doc) => { const [item] = doc.clips.splice(selected, 1); doc.clips.splice(selected + delta, 0, item); setSelected(selected + delta); });
   const remove = () => change((doc) => { if (doc.clips.length > 1) { doc.clips.splice(selected, 1); setSelected(Math.max(0, selected - 1)); } });
-  const split = () => change((doc) => {
-    const at = Number(splitAt), item = doc.clips[selected];
+  const split = (at) => change((doc) => {
+    const item = doc.clips[selected];
     if (!Number.isSafeInteger(at) || at <= item.sourceInPts || at >= item.sourceOutPts) throw new Error('分割点必须在入点与出点之间（源时基整数）。');
     const ids = new Set(doc.clips.map((value) => value.id));
-    let n = 2; while (ids.has(`${item.id}_${n}`)) n += 1;
-    doc.clips.splice(selected + 1, 0, { ...clone(item), id: `${item.id}_${n}`.slice(0, 64), sourceInPts: at });
+    const fragmentId = (n) => {
+      const suffix = `_${n}`;
+      return `${item.id.slice(0, 64 - suffix.length)}${suffix}`;
+    };
+    let n = 2;
+    while (ids.has(fragmentId(n))) n += 1;
+    doc.clips.splice(selected + 1, 0, { ...clone(item), id: fragmentId(n), sourceInPts: at });
     item.sourceOutPts = at;
   });
   const safe = (fn) => (...args) => { try { fn(...args); } catch (reason) { setError(reason.message); } };
@@ -187,8 +216,43 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
   };
 
   const source = clip ? state.inputs[clip.inputSlot] : null;
-  const seek = (pts) => { const video = videoRef.current; if (video && clip?.timebase) video.currentTime = ptsToSeconds(pts, clip.timebase) + 1e-3; };
-  useEffect(() => { if (clip) seek(clip.sourceInPts); }, [selected, source?.url]);
+  const probe = clip ? probes[clip.inputSlot] : null;
+  const timebase = clip?.timebase;
+  const exactFrameGrid = Boolean(timebase && probe?.frameTimebase && source?.assetPath === probe.assetPath &&
+    timebase.num === probe.frameTimebase.num && timebase.den === probe.frameTimebase.den &&
+    timebase.num === fps.den && timebase.den === fps.num && !clip.reverse && !clip.pad?.count);
+  const splitPts = exactFrameGrid ? clip.sourceInPts + localFrame : null;
+  const canSplitAtPlayhead = timelineReady && !locked && clips.length < VIDEO_EDIT_MAX_CLIPS && splitPts > clip?.sourceInPts &&
+    splitPts < clip?.sourceOutPts && clip.sourceOutPts <= probe?.frameCount;
+  const splitAtPlayhead = () => {
+    if (!canSplitAtPlayhead || !split(splitPts)) return;
+    setSelected(selected + 1);
+    setPlayhead(currentFrame);
+    setEditFeedback(`已在第 ${currentFrame} 帧分割，镜头增加到 ${clips.length + 1} 个`);
+  };
+  const sourceStart = timebase ? ptsToSeconds(clip.sourceInPts, timebase) : 0;
+  const sourceEnd = timebase ? ptsToSeconds(clip.sourceOutPts, timebase) : 0;
+  const frameSeconds = fps.den / fps.num;
+  const previewOffset = (clip?.reverse ? (sourceEnd - sourceStart) / frameSeconds - 1 - localFrame : localFrame) * frameSeconds;
+  const previewTime = exactFrameGrid ? ptsToSeconds(splitPts, timebase) : Math.max(sourceStart,
+    Math.min(sourceEnd - frameSeconds, sourceStart + previewOffset));
+  const seekPreview = useCallback((video) => {
+    if (video?.paused && video.readyState >= 1 && Math.abs(video.currentTime - previewTime) >= frameSeconds / 2) {
+      video.currentTime = previewTime + 0.001;
+    }
+  }, [previewTime, frameSeconds]);
+  useEffect(() => { seekPreview(videoRef.current); }, [seekPreview, source?.url]);
+  const updatePreviewTime = (video) => {
+    if (video.paused || !timebase) return;
+    if (video.currentTime >= sourceEnd) {
+      video.pause();
+      video.currentTime = sourceStart + 0.001;
+      setPlayhead(clipStart);
+    } else if (exactFrameGrid && timelineReady) {
+      const offset = Math.max(0, Math.min(Math.floor((video.currentTime - sourceStart) / frameSeconds), frames[selected] - 1));
+      setPlayhead(clipStart + offset);
+    }
+  };
   const label = (pts) => clip?.timebase ? `${pts} · ${timecode(Math.round(ptsToSeconds(pts, clip.timebase) * fps.num / fps.den), fps)}` : String(pts);
   const external = draft.outputProfile?.audio === 'external';
 
@@ -272,17 +336,24 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
           </>}
         </aside>
         <main className="video-edit-preview">
-          {source?.url ? <video ref={videoRef} src={source.url} controls preload="metadata" playsInline onTimeUpdate={(event) => {
-            if (clip?.timebase && event.currentTarget.currentTime >= ptsToSeconds(clip.sourceOutPts, clip.timebase)) { event.currentTarget.pause(); seek(clip.sourceInPts); }
-          }} /> : <span>选择镜头后在这里预览源片段</span>}
+          {source?.url ? <video ref={videoRef} src={source.url} controls preload="metadata" playsInline aria-label="源片段预览"
+            onLoadedMetadata={(event) => seekPreview(event.currentTarget)} onTimeUpdate={(event) => updatePreviewTime(event.currentTarget)} /> : <span>选择镜头后在这里预览源片段</span>}
           <div className="video-edit-timeline" onPointerMove={moveTrim}>
-            {clips.map((item, index) => <div key={item.id} className={`video-edit-clip ${index === selected ? 'selected' : ''}`} style={{ flexGrow: Math.max(frames[index] ?? 1, 1) }} onClick={() => setSelected(index)}>
+            {clips.map((item, index) => <div key={item.id} className={`video-edit-clip ${index === selected ? 'selected' : ''}`} style={{ flexGrow: Math.max(frames[index] ?? 1, 1) }} onClick={() => selectClip(index)}>
               <i className="trim in" onPointerDown={(event) => startTrim(event, index, 'in')} onPointerUp={endTrim} onPointerCancel={endTrim} onLostPointerCapture={endTrim} />
+              {timelineReady && index === selected && <i className="video-edit-playhead-marker" aria-hidden="true" style={{ left: `${100 * localFrame / frames[index]}%` }} />}
               <span>{index + 1}. {item.inputSlot}{item.reverse ? ' ⟲' : ''}{item.pad?.count ? ` +${item.pad.count}` : ''}<small>{frames[index] ?? '?'} 帧</small></span>
               <i className="trim out" onPointerDown={(event) => startTrim(event, index, 'out')} onPointerUp={endTrim} onPointerCancel={endTrim} onLostPointerCapture={endTrim} />
             </div>)}
           </div>
-          <div className="video-edit-total">成片 {total} 帧 · {timecode(total, fps)} · 镜头按顺序无缝拼接</div>
+          <div className="video-edit-playhead">
+            <label><span>播放头</span><input type="range" aria-label="播放头" min={0} max={Math.max(0, total - 1)} value={timelineReady ? currentFrame : 0}
+              aria-valuetext={`${currentFrame} 帧 · ${timecode(currentFrame, fps)}`} disabled={!timelineReady} onChange={(event) => scrubTo(Number(event.target.value))} /></label>
+            <output>{timecode(currentFrame, fps)} · {currentFrame} / {total} 帧</output>
+            <button type="button" disabled={!canSplitAtPlayhead} title={exactFrameGrid ? undefined : '播放头分割需要同帧率的正向源片段'}
+              onClick={safe(splitAtPlayhead)}><Scissors size={12} />在播放头分割</button>
+          </div>
+          <div className="video-edit-total" role="status">成片 {total} 帧 · {clips.length} 个镜头{editFeedback && ` · ${editFeedback}`}</div>
         </main>
         <aside className="video-edit-clip-settings">
           <h4>镜头 {clip ? selected + 1 : ''}</h4>
@@ -295,7 +366,7 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
             <label>末帧补帧<input type="number" min={0} max={2000} step={1} value={clip.pad?.count || 0} disabled={locked} onChange={(event) => { const count = Number(event.target.value); setClip({ pad: count > 0 ? { mode: 'last_frame', count } : { mode: 'none', count: 0 } }); }} /><small>补帧段静音</small></label>
             <label className="check"><input type="checkbox" checked={clip.muted} disabled={locked} onChange={(event) => setClip({ muted: event.target.checked })} />静音</label>
             <label>音量<input type="range" min={0} max={1} step={0.05} value={clip.gain} disabled={locked || clip.muted} onChange={(event) => setClip({ gain: Number(event.target.value) })} /><small>{Math.round(clip.gain * 100)}%</small></label>
-            <div className="video-edit-row"><input type="number" placeholder="分割点" value={splitAt} onChange={(event) => setSplitAt(event.target.value)} /><button disabled={locked} onClick={safe(split)}><Scissors size={12} />分割</button></div>
+            <div className="video-edit-row"><input type="number" placeholder="分割点" value={splitAt} onChange={(event) => setSplitAt(event.target.value)} /><button disabled={locked} onClick={safe(() => split(Number(splitAt)))}><Scissors size={12} />分割</button></div>
             <div className="video-edit-row"><button disabled={locked || selected === 0} onClick={safe(() => move(-1))}><ArrowUp size={12} />前移</button><button disabled={locked || selected >= clips.length - 1} onClick={safe(() => move(1))}><ArrowDown size={12} />后移</button><button disabled={locked || clips.length <= 1} onClick={safe(remove)}><Trash2 size={12} />删除</button></div>
           </>}
           <h4>输出</h4>

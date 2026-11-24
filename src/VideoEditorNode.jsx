@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { Clapperboard, ArrowDownToLine, LoaderCircle, Square, SlidersHorizontal } from 'lucide-react';
 import VideoEditorPanel from './VideoEditorPanel';
@@ -9,6 +9,7 @@ const PORT_TOP = 70, PORT_GAP = 22;
 
 export default function VideoEditorNode({ id, data, actions, title, toolbar }) {
   const [open, setOpen] = useState(false);
+  const openButton = useRef(null);
   const state = actions.getVideoEditState(id);
   const running = ['running', 'queued'].includes(data.status) || state.busy;
   const disabled = running || actions.readOnly;
@@ -17,7 +18,7 @@ export default function VideoEditorNode({ id, data, actions, title, toolbar }) {
   const fps = document?.outputProfile?.fps || { num: 24, den: 1 };
   const totalFrames = (document?.clips || []).reduce((sum, clip) => sum + (framesOf(clip, fps) ?? NaN), 0);
   const stale = Boolean(data.editResultAssetPath && data.editResultDocument !== JSON.stringify(document ?? null));
-  return <div className="video-edit-node" data-status={data.status || 'idle'} onDoubleClick={(event) => { if (!event.target.closest('video, button, input, select')) setOpen(true); }}>
+  return <div className="video-edit-node" data-modality="video" data-status={data.status || 'idle'} onDoubleClick={(event) => { if (!event.target.closest('video, button, input, select')) setOpen(true); }}>
     {title}{toolbar}
     {VIDEO_EDIT_PORTS.map((port, index) => <React.Fragment key={port}>
       <Handle type="target" id={port} position={Position.Left} style={{ top: PORT_TOP + index * PORT_GAP }} isConnectable={!disabled} />
@@ -27,7 +28,9 @@ export default function VideoEditorNode({ id, data, actions, title, toolbar }) {
     <div className="video-edit-heading"><span><Clapperboard size={12} /> 帧精确剪辑 · 后端 FFmpeg</span><b>CPU</b></div>
     <div className="video-edit-body">
       <div className="video-edit-result nodrag nopan">
-        {state.resultUrl ? <video src={state.resultUrl} controls preload="metadata" playsInline /> : <span>{state.error || '连接视频后双击或点「编辑视频」，导出结果显示在这里'}</span>}
+        {state.resultUrl ? (actions.viewTier && actions.viewTier !== 'full'
+          ? <span>已导出 · 打开时间线</span>
+          : <video src={state.resultUrl} controls preload="metadata" playsInline />) : <span>{state.error || '连接视频后双击或点「编辑视频」，导出结果显示在这里'}</span>}
       </div>
       <div className="video-edit-meta">
         <span>{(document?.clips || []).length} 个镜头</span>
@@ -39,13 +42,13 @@ export default function VideoEditorNode({ id, data, actions, title, toolbar }) {
       {data.error && <p className="video-edit-error" role="alert">{data.error}</p>}
     </div>
     <footer className="video-edit-footer nodrag">
-      <button disabled={actions.readOnly} onClick={() => setOpen(true)}><SlidersHorizontal size={13} />编辑视频</button>
+      <button ref={openButton} type="button" data-video-edit-open aria-haspopup="dialog" aria-expanded={open} title="打开时间线" disabled={actions.readOnly} onClick={() => setOpen(true)}><SlidersHorizontal size={13} />编辑视频</button>
       <span>{running ? `${data.stage || '导出中'} ${Math.round((data.progress || 0) * 100)}%` : stale ? '参数已更新 · 待导出' : data.editResultAssetPath ? '结果已导出' : '未导出'}</span>
       {running
         ? <button className="video-edit-cancel" disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoEdit(id); }}><Square size={12} />取消</button>
         : <button className="video-edit-export" disabled={disabled} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />导出</button>}
       {running && <LoaderCircle className="video-edit-spin" size={14} />}
     </footer>
-    {open && <VideoEditorPanel id={id} data={data} state={state} actions={actions} onClose={() => setOpen(false)} />}
+    {open && <VideoEditorPanel id={id} data={data} state={state} actions={actions} onClose={() => { setOpen(false); openButton.current?.focus(); }} />}
   </div>;
 }
