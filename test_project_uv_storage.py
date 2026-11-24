@@ -35,6 +35,18 @@ class ProjectUVStorageTest(unittest.TestCase):
         data['metadata']['uvPlan']['revision'] = 3
         self.assertNotIn(STORAGE_KEY, pack_uv_plans(self.document))
 
+    def test_unwrap_report_is_interned_with_exact_history(self):
+        data = self.document['canvas']['nodes'][0]['data']
+        unwrap = {'bounds': [42] * 200, 'metadata': {'quality': 'accepted'}}
+        data['metadata']['uv'] = copy.deepcopy(unwrap)
+        historic = data['nativeOutputRecords'][0]['data']
+        historic['metadata'] = {'uv': copy.deepcopy(unwrap)}
+        packed = pack_uv_plans(self.document)
+        self.assertEqual(len(packed[STORAGE_KEY]['plans']), 2)
+        stored = packed['canvas']['nodes'][0]['data']
+        self.assertEqual(stored['metadata']['uv'], stored['nativeOutputRecords'][0]['data']['metadata']['uv'])
+        self.assertEqual(decode_project_json(json_bytes(packed)), self.document)
+
     def test_invalid_and_oversized_expansion_rejected(self):
         compact = pack_uv_plans(self.document)
         data = compact['canvas']['nodes'][0]['data']

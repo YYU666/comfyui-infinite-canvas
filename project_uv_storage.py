@@ -1,4 +1,4 @@
-"""Lossless, self-contained on-disk interning of duplicate Native3D UV plans."""
+"""Lossless, self-contained on-disk interning of duplicate Native3D UV plans and unwrap reports."""
 
 import copy
 import hashlib
@@ -37,8 +37,10 @@ def plan_slots(document):
             if isinstance(value.get('nativeUVPlan'), dict):
                 yield value, 'nativeUVPlan'
             metadata = value.get('metadata')
-            if isinstance(metadata, dict) and isinstance(metadata.get('uvPlan'), dict):
-                yield metadata, 'uvPlan'
+            if isinstance(metadata, dict):
+                for field in ('uvPlan', 'uv'):
+                    if isinstance(metadata.get(field), dict):
+                        yield metadata, field
 
 
 def pack_uv_plans(document):
