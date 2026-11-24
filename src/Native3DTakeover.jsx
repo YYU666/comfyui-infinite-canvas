@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { nativeAssetUrl } from './native3d.js';
+import { nativeReceiptError } from './native3d-takeover.js';
 import './Native3DTakeover.css';
 
 function Parameter({ field, disabled, change }) {
@@ -31,6 +32,9 @@ const visibleParameters = {
 export default function Native3DTakeover({ api, state, objects }) {
   const [action, setAction] = useState('');
   const [error, setError] = useState('');
+  const status = state.busy ? '任务进行中' : state.pending ? '待重算' : ({
+    verified: '已对齐最近成功', missing: '缺少可核对的参数基准', 'no-parameters': '无可比较参数', none: '未运行',
+  })[state.basis];
   const disabled = api.readOnly || state.busy || Boolean(action);
   const primaryKeys = new Set(visibleParameters[state.operation] || state.fields.slice(0, 3).map(field => field.key));
   const primary = state.fields.filter(field => primaryKeys.has(field.key));
@@ -40,12 +44,12 @@ export default function Native3DTakeover({ api, state, objects }) {
     setAction(name);
     setError('');
     try { await callback(); }
-    catch (error) { setError(error.message); }
+    catch (error) { setError(nativeReceiptError(error) || '操作失败。'); }
     finally { setAction(''); }
   }
   const setParameter = (key, value) => {
     try { api.parameter(state.processorId, key, value); setError(''); }
-    catch (error) { setError(error.message); }
+    catch (error) { setError(nativeReceiptError(error) || '操作失败。'); }
   };
   return <aside className="native3d-takeover-sidebar" aria-label="模型接手详情">
     <section>
@@ -63,10 +67,11 @@ export default function Native3DTakeover({ api, state, objects }) {
     </section>
     <section>
       <h3>参数 <span className="takeover-status" data-state={state.pending ? 'pending' : undefined}>
-        {state.busy ? '任务进行中' : state.pending ? '待重算' : state.lastSuccess ? '已对齐最近成功' : '未运行'}
+        {status}
       </span></h3>
       {state.fields.length ? primary.map(fieldRow) : <p>本步骤暂无可调参数。</p>}
       {advanced.length > 0 && <details className="takeover-advanced"><summary>更多参数</summary>{advanced.map(fieldRow)}</details>}
+      {state.basis === 'missing' && <p>最近成功结果仍可查看。本次只能核对有记录的参数。</p>}
       {state.changed.length > 0 && <ul aria-label="参数改动">
         {state.changed.map(field => <li key={field.key}>{field.label} {String(field.baseline)} → {String(field.value)}</li>)}
       </ul>}
@@ -80,6 +85,21 @@ export default function Native3DTakeover({ api, state, objects }) {
       </div>}
       {state.fields.length > 0 && state.runBlock && <p role="status">{state.runBlock}</p>}
       {error && <p role="alert">{error}</p>}
+    </section>
+    <section aria-label="下游依赖">
+      <h3>下游依赖</h3>
+      {state.downstream.length ? <>
+        {state.downstream.some(step => step.needsReview) && <p>待复核代表依赖需要检查。下方任务状态仍来自下游节点。</p>}
+        <ul className="takeover-downstream">
+          {state.downstream.map(step => <li key={step.nodeId}>
+            <strong>{step.title}</strong>
+            <small>{step.direct ? '直接依赖' : '间接依赖'} · {step.input}{step.pinned ? ' · 已固定输入版本' : ''}</small>
+            {step.needsReview && <span className="takeover-status" data-state="pending">待复核</span>}
+            <small>节点任务 · {step.taskStatus}{step.jobId && <> <code>{step.jobId}</code></>}</small>
+            {step.lastSavedJobId && step.lastSavedJobId !== step.jobId && <small>最近保存结果 <code>{step.lastSavedJobId}</code></small>}
+          </li>)}
+        </ul>
+      </> : <p>当前步骤没有已连接的下游处理节点。</p>}
     </section>
     <section aria-label="运行回执">
       <h3>运行回执</h3>

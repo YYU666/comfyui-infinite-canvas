@@ -41,3 +41,8 @@
   background: #1a3229; border: 1px solid #446d5d; border-radius: 6px; cursor: pointer;
 }
 .takeover-advanced > summary { cursor: pointer; font-size: 13px; color: #a8bdb4; }
+
+.native3d-takeover-sidebar .takeover-downstream { padding: 0; list-style: none; }
+.takeover-downstream li { padding: 6px 0; overflow-wrap: anywhere; }
+.takeover-downstream li + li { border-top: 1px solid #323f38; }
+.takeover-downstream code { font-size: 10px; }
