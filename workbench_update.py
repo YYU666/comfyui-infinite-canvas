@@ -477,6 +477,14 @@ class WorkbenchUpdateManager:
             self._prepare_frontend(source)
             self.preflight()
             self._git_clean()
+            from workbench_update_helper import ProgramPathConflict, check_program_path_conflicts, manifest_paths
+            old_paths = (manifest_paths(self.installed_manifest_path, self.root)
+                         if self.installed_manifest_path.exists() else [])
+            try:
+                check_program_path_conflicts(self.root, manifest_paths(manifest), old_paths, self.runner)
+            except ProgramPathConflict as exc:
+                _, details = self._local_change_details("package-path-conflicts", exc.paths)
+                raise UpdateError(str(exc), status=409, code="LOCAL_CHANGES", details=details) from exc
             helper = workspace / "workbench_update_helper.py"
             shutil.copy2(Path(__file__).with_name("workbench_update_helper.py"), helper)
             backup = workspace / "backup"
