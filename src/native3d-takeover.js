@@ -33,7 +33,7 @@ export function nativeTakeover(nodeId, nodes, edges, capabilities) {
   const completed = Boolean(result && jobPattern.test(data.nativeDeliveredJobId || ''));
   const submitted = completed && (delivered?.producerRun?.parameters
     || (data.nativeJobId === data.nativeDeliveredJobId ? data.nativeRun?.parameters : null));
-  const names = { padding:'岛间距（像素）', chartMergeCost:'合岛倾向', packingMode:'排布方式',
+  const names = { resolution:'贴图分辨率', padding:'岛间距（像素）', chartMergeCost:'合岛倾向', packingMode:'排布方式',
     alignDirection:'岛方向', aoRaySamples:'AO 采样数', aoRadiusFraction:'AO 半径比例', seamPlanningMode:'切缝顺序',
     partitionCount:'高模分区数', regionMinAreaFraction:'最小分区面积', regionMergeAngleDegrees:'分区合并角（度）' };
   const fields = Object.entries(nativeAdapterSchema(adapter).properties || {}).flatMap(([key, rule]) => {
@@ -51,6 +51,8 @@ export function nativeTakeover(nodeId, nodes, edges, capabilities) {
     sources: [['低模', sources.model], ['高模', sources.high], ['切缝方案', sources.plan]].flatMap(([label, node]) =>
       node ? [{label, title:node.data.title || node.id}] : []),
     fields, changed, busy: busy.has(data.status), ready: adapter?.ready === true && !data.nativeSubmissionUncertain,
+    runBlock: data.nativeSubmissionUncertain ? '上次提交状态待确认，请先同步任务。'
+      : adapter?.ready !== true ? adapter?.reason || '当前步骤的原生执行器未就绪。' : null,
     pending: changed.length > 0 || data.status === 'stale', receipt: {
       jobId: data.nativeJobId || null, stage: data.stage || null, backendStatus: data.nativeBackendStatus || null,
       progress: Number.isFinite(data.progress) ? data.progress : null, error: data.error || null,

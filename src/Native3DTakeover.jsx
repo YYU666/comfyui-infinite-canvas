@@ -78,14 +78,15 @@ export default function Native3DTakeover({ api, state, objects }) {
         <button type="button" disabled={disabled} onClick={() => void perform('save', api.persist)}>保存参数</button>
         <button type="button" disabled={disabled || !state.ready} onClick={() => void perform('run', () => api.run(state.processorId))}>运行此步骤</button>
       </div>}
+      {state.fields.length > 0 && state.runBlock && <p role="status">{state.runBlock}</p>}
       {error && <p role="alert">{error}</p>}
     </section>
     <section aria-label="运行回执">
       <h3>运行回执</h3>
       <dl>
         <dt>最近成功</dt><dd>{state.lastSuccess ? <><code>{state.lastSuccess.jobId}</code><small>{state.lastSuccess.stage || '结果已保存'}</small></> : '尚无已交付结果'}</dd>
-        <dt>当前任务</dt><dd>{state.receipt.jobId ? <><code>{state.receipt.jobId}</code>
-          <small>{[state.receipt.stage, state.receipt.backendStatus, state.receipt.progress !== null ? state.receipt.progress + '%' : null].filter(Boolean).join(' · ')}</small></> : '尚未提交'}</dd>
+        <dt>当前任务</dt><dd>{state.receipt.jobId && (state.receipt.jobId !== state.lastSuccess?.jobId || state.busy) ? <><code>{state.receipt.jobId}</code>
+          <small>{[state.receipt.stage, state.receipt.backendStatus, state.receipt.progress !== null ? state.receipt.progress + '%' : null].filter(Boolean).join(' · ')}</small></> : state.pending ? '这次改动尚未提交' : '无进行中的任务'}</dd>
         {state.receipt.error && <><dt>任务错误</dt><dd>{state.receipt.error}</dd></>}
       </dl>
     </section>
