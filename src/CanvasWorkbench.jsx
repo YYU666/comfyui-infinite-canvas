@@ -633,6 +633,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     onProjectChange(next);
   }, [onProjectChange]);
   const autoSaveRef = useRef(null);
+  const agentSaveRef = useRef(null);
   const switchingRef = useRef(false);
   const mediaWritesRef = useRef(new Map());
   const mediaAttemptsRef = useRef(new Map());
@@ -688,7 +689,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   useEffect(() => () => { localImageJobsRef.current.forEach((controller) => controller.abort()); }, []);
   const clipboardRef = useRef(null);
   const clientId = useMemo(createClientId, []);
-  const { screenToFlowPosition, fitView, setCenter, zoomIn, zoomOut, zoomTo } = useReactFlow();
+  const { screenToFlowPosition, fitView, setCenter, zoomIn, zoomOut, zoomTo, getViewport } = useReactFlow();
 
   useEffect(() => {
     if (!imagePreview) return undefined;
@@ -751,6 +752,11 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       write: async ({ name, canvas }) => {
         const next = await saveProject(project.id, revisionRef.current, name, canvas, { imageModelHistory: imageHistoryRef.current });
         revisionRef.current = next.revision;
+        // Use the server response, since the visible node may still have unsaved changes.
+        const observed = agentSaveRef.current;
+        if (observed?.projectId === next.id) {
+          observed.receipt = { revision: next.revision, node: next.canvas?.nodes?.find(({ id }) => id === observed.nodeId) };
+        }
         setProjects((rows) => rows.map((row) => row.id === next.id ? projectSummary(next) : row));
         setProjectError('');
       },
@@ -2294,9 +2300,10 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   const focusNode = (id) => {
     const node = nodesRef.current.find((item) => item.id === id);
-    if (!node) return;
-    setCenter(node.position.x + 180, node.position.y + 100, { zoom: 1, duration: 400 });
+    if (!node) return false;
+    const centered = setCenter(node.position.x + 180, node.position.y + 100, { zoom: 1, duration: 400 });
     setPinOpen(false);
+    return centered;
   };
   const locateContent = () => {
     const selected = nodesRef.current.filter((node) => node.selected);
@@ -2358,8 +2365,34 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     nodesRef.current=next;setNodes(next);historyRef.current.observe(next,edgesRef.current);
     return moves.map(({nodeId})=>next.find(n=>n.id===nodeId));
   };
+  const getAgentState = () => {
+    const controller = autoSaveRef.current;
+    let state = 'saved';
+    if (project.readOnly) state = 'read_only';
+    else if (!controller || switchingRef.current) state = 'unavailable';
+    else if (controller.failure) state = 'error';
+    else if (controller.inflight) state = 'saving';
+    else if (controller.hasUnsaved() || interactionRef.current || mediaWritesRef.current.size) state = 'pending';
+    return { save: { revision: revisionRef.current, state },
+      view: { scope: 'local', tier: viewTier, viewport: getViewport() } };
+  };
+  const commitAgentEdit = async (nodeId, patch) => {
+    if (agentSaveRef.current || getAgentState().save.state !== 'saved') {
+      throw Object.assign(new Error('请等待当前编辑保存。'), { code: 'SAVE_PENDING' });
+    }
+    const observed = { projectId: project.id, nodeId, receipt: null };
+    agentSaveRef.current = observed;
+    try {
+      flushSync(() => updateNode(nodeId, patch));
+      await persistProject();
+      return observed.receipt;
+    } finally {
+      agentSaveRef.current = null;
+    }
+  };
+
   useCanvasMcp({
-    nodesRef, edgesRef, projectName, projectId: project.id, readOnly: project.readOnly, server,
+    nodesRef, edgesRef, projectName, projectId: project.id, readOnly: project.readOnly, server, getAgentState, commitAgentEdit,
     actions: { native3dSyncTask: id=>native3d.syncTask(id), native3dRetryLOD: id=>native3d.retryLOD(id), native3dRepairLOD: (id,settings)=>native3d.repairLOD(id,settings), native3dCreateResolution: (id,percent)=>native3d.createResolution(id,percent), native3dNextStep: (id,action)=>native3d.nextStep(id,action), native3dRetryStage: id => native3d.rerunResult(id), native3dStage: request => native3d.createStage(request), native3dUVPreview: id => native3d.refreshUVPreview(id), native3dDiagnosticPreview:id=>native3d.refreshDiagnosticPreview(id), native3dPlanReview:id=>native3d.openPlan(id), native3dViewerClose:()=>{native3d.closeViewer();return {closed:true};}, native3dPlanConfirm:(id,hash)=>native3d.confirmPlan(id,hash),
       linkNativeDiagnostic: request => {
         if (project.readOnly || switchingRef.current) throw new Error('当前画布不可编辑。');

@@ -39,7 +39,8 @@ try {
   token = instance.token;
   base = `http://127.0.0.1:${instance.port}`;
   const health = await request('/api/health');
-  assert.equal(health.pid, backend.pid);
+  assert.ok(instance.pid > 0);
+  assert.equal(health.pid, instance.pid);
   assert.ok(samePath(health.projectsRoot, projects), 'verify isolated project root before writing');
   await assert.rejects(request('/api/agent/canvas/current'), (error) => error.code === 'NO_VISIBLE_CANVAS');
   const project = await request('/api/projects', { name: 'Current page fixture', canvas: {
@@ -59,20 +60,83 @@ try {
   });
   assert.equal(active.projectId, project.id);
   assert.equal(await page.evaluate(() => Boolean(document.modelContext?.registerTool)), false, 'bridge works without native WebMCP');
-  const command = { ...active, opId: 'edit_current_page', tool: 'canvas_update_node', args: { nodeId: 'note', text: 'Saved through the visible page' } };
-  await request('/api/agent/canvas/commands', command);
-  const done = await until(async () => {
-    const status = await request('/api/agent/canvas/commands/edit_current_page');
-    return status.status === 'done' ? status : null;
-  });
-  assert.equal(done.result.ok, true, JSON.stringify(done.result));
-  assert.equal(await page.locator('.react-flow__node[data-id="note"] textarea').inputValue(), command.args.text);
-  const saved = await request(`/api/projects/${project.id}`);
-  assert.equal(saved.canvas.nodes.find((node) => node.id === 'note').data.text, command.args.text, 'completion means persisted, not only displayed');
+  const submit = (opId, tool, args) => ({ ...active, opId, tool, args });
+  const call = async (command) => {
+    await request('/api/agent/canvas/commands', command);
+    return (await until(async () => {
+      const result = await request('/api/agent/canvas/commands/' + command.opId);
+      return result.status === 'done' ? result : null;
+    })).result;
+  };
+  const nodeId = 'note';
+  const read = await call(submit('read_current_page', 'canvas_get_state', { nodeId, compact: true }));
+  assert.equal(read.ok, true, JSON.stringify(read));
+  assert.equal(read.projectId, project.id);
+  assert.deepEqual(read.node, { id: nodeId, type: 'note', title: 'Reference note', status: null });
+  assert.deepEqual(read.save, { state: 'saved', revision: project.revision });
+  assert.equal(read.view.scope, 'local');
+  assert.equal('nodes' in read || 'edges' in read, false);
+  const text = 'Saved through the visible page';
+  const command = submit('edit_current_page', 'canvas_update_node', { nodeId, text, expectedRevision: read.save.revision });
+  const done = await call(command);
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.deepEqual(done.changedFields, ['text']);
+  assert.equal(done.execution, 'not_requested');
+  assert.equal(done.save.state, 'saved');
+  assert.equal('node' in done || 'text' in done, false, 'compact edit does not echo content');
+  const note = page.locator('.react-flow__node[data-id="note"] textarea');
+  assert.equal(await note.inputValue(), text);
+  const projectRoute = '/api/projects/' + project.id;
+  const saved = await request(projectRoute);
+  assert.equal(saved.canvas.nodes.find((node) => node.id === nodeId).data.text, text);
   const revision = saved.revision;
-  await request('/api/agent/canvas/commands', command);
-  await sleep(1800);
-  assert.equal((await request(`/api/projects/${project.id}`)).revision, revision, 'duplicate command does not save again');
+  assert.equal(done.save.revision, revision);
+  assert.ok(revision > read.save.revision);
+  assert.deepEqual(await call(command), done, 'same opId returns the original receipt');
+  const noop = await call(submit('edit_noop', 'canvas_update_node', { nodeId, text, expectedRevision: revision }));
+  assert.equal(noop.ok, true, JSON.stringify(noop));
+  assert.deepEqual(noop.changedFields, []);
+  assert.deepEqual(noop.save, { state: 'unchanged', revision });
+  const stale = await call(submit('edit_stale', 'canvas_update_node', { nodeId, text: 'stale edit', expectedRevision: read.save.revision }));
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'REVISION_CONFLICT');
+  assert.equal(stale.save.revision, revision);
+  assert.equal(await note.inputValue(), text);
+  const focused = await call(submit('focus_note', 'canvas_focus_node', { nodeId }));
+  assert.equal(focused.ok, true, JSON.stringify(focused));
+  assert.equal(focused.focusedNodeId, nodeId);
+  assert.equal(focused.view.scope, 'local');
+  assert.equal(focused.view.viewport.zoom, 1);
+  assert.equal(focused.execution, 'not_requested');
+  const afterFocus = await request(projectRoute);
+  assert.equal(afterFocus.revision, revision, 'view-only operation does not advance the saved project revision');
+  assert.deepEqual(afterFocus.canvas.viewport, saved.canvas.viewport);
+
+  const legacy = await call(submit('legacy_edit', 'canvas_update_node', { nodeId, text: 'Legacy edit' }));
+  assert.equal(legacy.ok, true, JSON.stringify(legacy));
+  assert.equal(legacy.node.id, nodeId);
+  const legacyRevision = (await request(projectRoute)).revision;
+
+  await page.route('**' + projectRoute, (route) => route.request().method() === 'PUT'
+    ? route.fulfill({ status: 503, json: { code: 'FIXTURE_SAVE_FAILED', message: 'Injected save failure' } })
+    : route.continue());
+  const failed = await call(submit('failed_save', 'canvas_update_node', { nodeId, text: 'Kept in the page', expectedRevision: legacyRevision }));
+  assert.equal(failed.ok, false);
+  assert.equal(failed.code, 'FIXTURE_SAVE_FAILED');
+  assert.equal(failed.save.state, 'error');
+  assert.equal(failed.save.revision, legacyRevision);
+  assert.equal(failed.localChangesRetained, true);
+  assert.equal(await note.inputValue(), 'Kept in the page');
+  const failedFollowup = await call(submit('edit_unsaved_page', 'canvas_update_node', { nodeId, text: 'Forbidden replacement', expectedRevision: legacyRevision }));
+  assert.equal(failedFollowup.ok, false);
+  assert.equal(failedFollowup.code, 'SAVE_PENDING');
+  assert.equal(await note.inputValue(), 'Kept in the page');
+  const stillSaved = await request(projectRoute);
+  assert.equal(stillSaved.revision, legacyRevision);
+  assert.equal(stillSaved.canvas.nodes.find((node) => node.id === nodeId).data.text, 'Legacy edit');
+  const bytes = (value) => Buffer.byteLength(JSON.stringify(value));
+  assert.ok(bytes(read) < 512 && bytes(done) < 512, 'both compact fixture receipts fit in 512 UTF-8 bytes');
+  console.log(JSON.stringify({ compactReadBytes: bytes(read), compactEditBytes: bytes(done) }));
   assert.equal(context.pages().length, 1, 'the same page handles all commands');
   assert.deepEqual((await request('/api/queue')).jobs, [], 'no real GPU work');
   assert.deepEqual(errors, []);

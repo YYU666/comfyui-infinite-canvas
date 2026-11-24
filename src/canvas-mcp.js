@@ -621,9 +621,22 @@ export async function downloadVideoForMcp(latest, args = {}, waitImpl = waitFor)
   return { nodeId, jobId, status: 'done', videoNodeId, message: '下载完成' };
 }
 
-export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readOnly = false, server, actions }) {
+function agentReceiptError(code, message, fields = {}) {
+  return Object.assign(new Error(message), { agentReceipt: { code, ...fields } });
+}
+
+function sameAgentValue(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object'
+      || Array.isArray(left) !== Array.isArray(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every((key) => Object.hasOwn(right, key) && sameAgentValue(left[key], right[key]));
+}
+
+export function useCanvasMcp({ nodesRef, edgesRef, projectName, projectId, readOnly = false, server, actions, getAgentState, commitAgentEdit }) {
   const latest = useRef(null);
-  latest.current = { nodesRef, edgesRef, projectName, projectId, readOnly, server, actions };
+  latest.current = { nodesRef, edgesRef, projectName, projectId, readOnly, server, actions, getAgentState, commitAgentEdit };
 
   useEffect(() => registerCanvasMcp(latest), [projectId, readOnly]);
 }
@@ -637,6 +650,20 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       if (!node) throw new Error(`找不到节点：${id}`);
       return node;
     };
+    const getAgentState = () => {
+      const state = latest.current.getAgentState?.();
+      if (!state) throw agentReceiptError('STATE_UNAVAILABLE', '当前页面尚未提供保存与视口状态。');
+      return state;
+    };
+    const requireSavedRevision = (expectedRevision) => {
+      const { save } = getAgentState();
+      if (save.revision !== expectedRevision) {
+        throw agentReceiptError('REVISION_CONFLICT', '保存修订已变化，请重新读取当前页。', { save });
+      }
+      if (save.state !== 'saved') {
+        throw agentReceiptError('SAVE_PENDING', '当前页尚未保存或暂不可编辑。', { save });
+      }
+    };
     const respond = (callback) => async (args = {}) => {
       try {
         const result = await callback(args);
@@ -644,7 +671,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       } catch (error) {
         const glbError = ['NATIVE3D_GLB_LAYOUT_UNSUPPORTED','NATIVE3D_GLB_INVALID'].includes(error?.code);
         return JSON.stringify({ ok: false, error: error?.message || String(error),
-          ...(glbError ? {code:error.code,details:error.details} : {}) });
+          ...(glbError ? {code:error.code,details:error.details} : {}), ...error?.agentReceipt });
       }
     };
     const analysisSource = (nodeId) => {
@@ -774,13 +801,21 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       },
       {
         name: 'canvas_get_state',
-        description: '读取当前 H3 画布的真实节点 ID、连线和生成状态。默认省略长提示词以避免大画布占用过多上下文；需要提示词时设 includePrompt 为 true，也可用 nodeId 只读取一个节点。',
+        description: '读取当前 H3 画布的真实节点 ID、连线和生成状态。默认省略长提示词以避免大画布占用过多上下文；需要提示词时设 includePrompt 为 true，也可用 nodeId 只读取一个节点。compact:true 只读保存修订、本地视口、节点数及可选目标节点摘要。',
         inputSchema: schema({
           nodeId: { type: 'string', description: '可选，只返回这个节点及其相关连线。' },
           includePrompt: { type: 'boolean', description: '是否包含完整提示词和备注，默认 false。' },
+          compact: { type: 'boolean', description: '回传简明状态，省略拓扑和正文。' },
         }),
         annotations: { readOnlyHint: true, untrustedContentHint: true },
-        execute: respond(async ({ nodeId, includePrompt = false }) => {
+        execute: respond(async ({ nodeId, includePrompt = false, compact = false }) => {
+          if (compact) {
+            const node = nodeId ? getNode(nodeId) : null;
+            const { projectId, nodesRef } = latest.current;
+            return { projectId, ...getAgentState(), nodeCount: nodesRef.current.length,
+              ...(node ? { node: { id: node.id, type: node.type, title: String(node.data.title ?? '').slice(0, 120),
+                status: typeof node.data.status === 'string' ? node.data.status.slice(0, 64) : null } } : {}) };
+          }
           const nodes = nodeId ? [getNode(nodeId)] : latest.current.nodesRef.current;
           const ids = new Set(nodes.map((node) => node.id));
           return {
@@ -968,12 +1003,20 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         description: '修改当前画布节点的标题、提示词、备注或受支持的生成参数。只允许白名单参数，不会绕过节点校验。',
         inputSchema: schema({
           nodeId: nodeIdProperty,
+          expectedRevision: { type: 'integer', minimum: 1, description: '从 compact 状态读取的保存修订。提供时仅在修订一致且页面已保存时修改，并回传简明保存结果。' },
           title: { type: 'string' },
           prompt: { type: 'string' },
           text: { type: 'string' },
           settings: { type: 'object', description: '自定义工作流使用 workflowParameters 对象，键来自 workflowDefinition.parameters.properties；仅支持声明的标量参数。内置节点可选参数包含 qwenModel（standard/turbo/flux3_klein/h3_image）、h3ImageResolution（4MP/16MP，仅H3-Image）、flux3Resolution（1MP/2K/4K，仅 FLUX 3）、qwenCacheDevice（auto/cpu，仅 Qwen 图生图和角色四视图，默认 auto；cpu 使用 default 精度参考缓存）、outfitModel（qwen21/qwen21_turbo/muse_v4）、outfitUpscale（auto/off/seedvr2_7b）、upscaleModel（seedvr2_3b/seedvr2_7b）、outfitHdScale、museSteps，以及 ratio、resolution、duration、turbo、seed、characterSheetAngleSeed（45° 头像独立种子，默认 2096285145，非负安全整数）、randomSeed、refImageSize、qwenSteps、qwenRefResolution、imageLora、loraStrength、imageScale、outfitPreset、outfitPanel、outfitLayout、outfitPanels、outfitDenoise、targetQuery、targetDescription、targetSelection、targetIndex。outfitLayout 支持 legacy、mixedGrid、equalGrid、horizontal、custom；custom 时 outfitPanels 为 4 个含 id、role、view、x、y、width、height 的面板，坐标使用 0–1 比例。' },
         }, ['nodeId']),
-        execute: respond(async ({ nodeId, title, prompt, text, settings = {} }) => {
+        execute: respond(async ({ nodeId, title, prompt, text, settings = {}, expectedRevision }) => {
+          const projectId = latest.current.projectId;
+          if (expectedRevision !== undefined) {
+            if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+              throw agentReceiptError('BAD_REQUEST', 'expectedRevision 必须为正整数。');
+            }
+            requireSavedRevision(expectedRevision);
+          }
           const current = getNode(nodeId);
           if (current.data.noteRole === 'videoDownload') {
             if (latest.current.actions.isVideoDownloadBusy?.() && ['queued', 'downloading'].includes(current.data.downloadStatus)) throw new Error('节点正在下载，请完成后再修改。');
@@ -1022,6 +1065,38 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
             const decision = planImageModelPick({ ...imagePickInput(current, prompt ?? current.data.prompt), requestedModel: settings[activeField], install: await readImageModelInstall(), data: { ...current.data, modelLockedByUser: false } });
             if (!decision.ok) throw new Error(decision.error);
             Object.assign(patch, decision.patch);
+          }
+          if (expectedRevision !== undefined) {
+            if (controller.signal.aborted || latest.current.projectId !== projectId) {
+              throw agentReceiptError('PROJECT_CHANGED', '页面已切换，修改未提交。');
+            }
+            requireSavedRevision(expectedRevision);
+            if (getNode(nodeId) !== current) {
+              throw agentReceiptError('NODE_CHANGED', '节点状态已变化，请重新读取当前页。');
+            }
+            const fields = Object.keys(patch);
+            const changedFields = fields.filter((key) => !sameAgentValue(current.data[key], patch[key]));
+            const receipt = { projectId, nodeId, changedFields, execution: 'not_requested' };
+            if (!changedFields.length) return { ...receipt, save: { state: 'unchanged', revision: expectedRevision } };
+            let saved;
+            try {
+              saved = await latest.current.commitAgentEdit(nodeId, patch);
+            } catch (error) {
+              const currentPage = !controller.signal.aborted && latest.current.projectId === projectId;
+              const data = currentPage && latest.current.nodesRef.current.find((node) => node.id === nodeId)?.data;
+              throw agentReceiptError(error.code || 'SAVE_FAILED', error.message, {
+                ...(currentPage ? { save: getAgentState().save } : {}),
+                localChangesRetained: Boolean(data && fields.every((key) => sameAgentValue(data[key], patch[key]))),
+              });
+            }
+            if (controller.signal.aborted || latest.current.projectId !== projectId) {
+              throw agentReceiptError('PROJECT_CHANGED', '页面已切换，请核对原项目的保存结果。');
+            }
+            if (!saved?.node?.data || !Number.isSafeInteger(saved.revision) || saved.revision <= expectedRevision
+                || !fields.every((key) => sameAgentValue(saved.node.data[key], patch[key]))) {
+              throw agentReceiptError('SAVE_UNVERIFIED', '保存响应未确认这些目标字段。', { save: getAgentState().save });
+            }
+            return { ...receipt, save: { state: 'saved', revision: saved.revision } };
           }
           latest.current.actions.updateNode(nodeId, patch);
           const node = await waitFor(() => {
@@ -1145,8 +1220,12 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         inputSchema: schema({ nodeId: nodeIdProperty }, ['nodeId']),
         execute: respond(async ({ nodeId }) => {
           const node = getNode(nodeId);
-          latest.current.actions.focusNode(nodeId);
-          return { focusedNodeId: nodeId, title: node.data.title };
+          const projectId = latest.current.projectId;
+          const focused = await latest.current.actions.focusNode(nodeId);
+          if (controller.signal.aborted || latest.current.projectId !== projectId || focused !== true) {
+            throw agentReceiptError('VIEW_NOT_APPLIED', '当前页面未确认视口聚焦。');
+          }
+          return { focusedNodeId: nodeId, title: node.data.title, view: getAgentState().view, execution: 'not_requested' };
         }),
       },
       {
@@ -1233,9 +1312,11 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         const compactPreview = tool.name === 'canvas_image_compact' && args?.dryRun !== false;
         const nativePreview = ['canvas_native3d_compact', 'canvas_tidy'].includes(tool.name) && (tool.name !== 'canvas_tidy' || args?.mode === 'native3d_compact') && args?.dryRun !== false;
         const mutation = !nativePreview && !compactPreview && !['canvas_get_extension_publish_status', 'canvas_get_state', 'canvas_native3d_viewer_close', 'canvas_native3d_capabilities', 'canvas_get_video_analysis', 'canvas_wait_for_node', 'canvas_focus_node', 'canvas_inspect_node', 'canvas_open_reference_library'].includes(tool.name);
-        if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。' });
+        const conditionalEdit = tool.name === 'canvas_update_node' && args.expectedRevision !== undefined;
+        if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。',
+          ...(conditionalEdit ? { code: 'READ_ONLY' } : {}) });
         const result = JSON.parse(await original(args, executionOptions));
-        if (mutation && result.ok && !['canvas_download_video', 'canvas_publish_extension', 'canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
+        if (mutation && result.ok && !conditionalEdit && !['canvas_download_video', 'canvas_publish_extension', 'canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
           try { await latest.current.actions.persistProject?.(); }
           catch (error) { return JSON.stringify({ ...result, ok: false, error: error.message, localChangesRetained: true }); }
         }
