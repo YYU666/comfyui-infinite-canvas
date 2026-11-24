@@ -1,6 +1,6 @@
 # Native3D 作业空间盘点
 
-在工作台目录用 Python 3.11 或更新版本执行。此命令只读文件和元数据，输出到终端。
+在工作台目录用 Python 3.10 或更新版本执行。此命令只读文件和元数据，输出到终端。
 
 ```powershell
 $runtime = $env:H3_WORKBENCH_RUNTIME_DIR

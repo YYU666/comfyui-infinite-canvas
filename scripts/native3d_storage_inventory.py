@@ -131,7 +131,10 @@ def verified_previews(job, files):
             if stream.read(4) != b"glTF":
                 return set()
             stream.seek(0)
-            if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
+            source_hash = hashlib.sha256()
+            while chunk := stream.read(1024 * 1024):
+                source_hash.update(chunk)
+            if source_hash.hexdigest() != digest:
                 return set()
         verified = set()
         for candidate in candidates:
