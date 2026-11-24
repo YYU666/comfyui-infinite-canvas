@@ -74,7 +74,7 @@ async function fixture(readOnly = false, active = false) {
     if (url.pathname === '/api/queue') {
       if (request.method() === 'POST') {
         queued.push(request.postDataJSON());
-        return json({ id: `job-${queued.length}`, status: 'queued' });
+        return json({ id: `job-${queued.length}`, status: 'queued', attempts: 1 });
       }
       return json({ jobs: active ? [{ id: 'job-readonly-active', projectId: project.id, nodeId: 'upscale', status: 'running', comfyPromptId: 'prompt-readonly-active', progress: 30 }] : [] });
     }
@@ -87,7 +87,11 @@ async function fixture(readOnly = false, active = false) {
     if (url.pathname === '/api/comfy/upload/image') { uploads.push(request.postDataBuffer()); return json({ name: 'upscale-source.mp4', subfolder: 'workbench' }); }
     if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
     if (url.pathname === '/api/comfy/view') return route.fulfill({ contentType: 'video/mp4', body: Buffer.from('synthetic output fixture') });
-    if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'native fixture only' }, 503);
+    if (url.pathname === '/api/agent/canvas/heartbeat') {
+      return json({ epoch: 'synthetic-current-page', command: null });
+    }
+    if (url.pathname === '/api/agent/canvas/release') return json({ released: true });
+    if (url.pathname.startsWith('/api/agent/canvas/')) return json({ error: 'unsupported fixture command' }, 400);
     if (url.pathname.startsWith('/api/')) return json({});
     const file = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
     return route.fulfill({ contentType: file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html', body: await readFile(file) });
@@ -161,7 +165,12 @@ try {
   await f.waitState(s => s.nodes.find(n => n.id === 'upscale')?.queueJobId === 'job-1');
   assert.equal(f.queued.length, 1);
   assert.equal(f.uploads.length, 1, 'active guide alone uploaded to local Comfy input');
-  const workflow = f.queued[0].workflow;
+  const submission = f.queued[0];
+  const { workflow } = JSON.parse(submission.executionJson);
+  const saved = f.saved().canvas.nodes.find(n => n.id === 'upscale').data.visibleRun;
+  assert.equal(saved.requestId, submission.requestId);
+  assert.equal(saved.inputs[0].resolvedName, 'workbench/upscale-source.mp4');
+  assert.equal(submission.page.epoch, 'synthetic-current-page');
   assert.equal(workflow.source.inputs.file, 'workbench/upscale-source.mp4');
   assert.equal(workflow.rtx.inputs['resize_type.scale'], 3);
   assert.equal(workflow.rtx.inputs.quality, 'HIGH');
@@ -198,8 +207,8 @@ try {
   await call('canvas_update_node', { nodeId: 'upscale', settings: { rtxQuality: 'DEBLUR_HIGH', videoUpscaleScale: 4 } });
   await node.getByRole('button', { name: '开始去模糊' }).click();
   await f.waitState(s => s.nodes.find(n => n.id === 'upscale')?.queueJobId === 'job-3');
-  assert.equal(f.queued[2].workflow.rtx.inputs.quality, 'DEBLUR_HIGH');
-  assert.equal(f.queued[2].workflow.rtx.inputs['resize_type.scale'], 1, 'submission overrides stale saved or bridge cleanup scale');
+  assert.equal(JSON.parse(f.queued[2].executionJson).workflow.rtx.inputs.quality, 'DEBLUR_HIGH');
+  assert.equal(JSON.parse(f.queued[2].executionJson).workflow.rtx.inputs['resize_type.scale'], 1, 'submission overrides stale saved or bridge cleanup scale');
   await f.emit('job.done', { job: { ...job, id: 'job-3', comfyPromptId: 'prompt-3' } });
   await f.waitState(s => s.nodes.find(n => n.id === 'upscale')?.status === 'done');
   await call('canvas_update_node', { nodeId: 'upscale', title: '视频超分' });

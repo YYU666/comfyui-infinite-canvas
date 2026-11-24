@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { chromium } from './test-browser.mjs';
+import { spriteRequestJobId } from './src/sprite-atlas.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(root, '.cache', 'sprite-component-test');
@@ -47,7 +48,10 @@ try {
     if (url.pathname.endsWith('/cancel')) { cancellations++; return route.fulfill({ json: { status: 'cancelled' } }); }
     if (request.method() === 'POST') {
       submitted = request.postDataJSON(); jobs++;
-      return route.fulfill({ status: 202, json: { id: 'spa_' + String(jobs).padStart(32, '0'), status: 'queued' } });
+      const { projectId, nodeId, requestId } = submitted;
+      assert.match(requestId, /^[a-f0-9-]{36}$/);
+      const id = await spriteRequestJobId(projectId, nodeId, requestId);
+      return route.fulfill({ status: 202, json: { id, projectId, nodeId, requestId, status: 'queued' } });
     }
     if (url.pathname.includes('/files/')) return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64') });
     const id = url.pathname.split('/').at(-1);
