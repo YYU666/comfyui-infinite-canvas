@@ -103,8 +103,10 @@ export function nativeModelConnection(connection, source, target, edges) {
   const normalized = { source: source.id, target: target.id, sourceHandle: 'model', targetHandle: 'model',...(source.nativeOutputRecordId?{data:nativeOutputBinding(source)}:{}) };
   return { connection: normalized, source, target, multiple: false, existing: edges.find(e => Object.entries(normalized).every(([k,v]) => k==='data'?e.data?.outputRecordId===v.outputRecordId:e[k] === v)) };
 }
-export async function nativeRequest(path, body) {
-  const response = await fetch(`/api/native3d${path}`, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+export async function nativeRequest(path, body, headers = {}) {
+  const response = await fetch(`/api/native3d${path}`, body === undefined ? {} : {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+  });
   const value = await response.json().catch(() => ({}));
   if (!response.ok || value.ok === false) {
     const error = new Error(typeof value.error === 'string' ? value.error : value.error?.message || value.message || `3D服务不可用（HTTP ${response.status}）`);

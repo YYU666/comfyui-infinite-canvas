@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from project_store import StoreError
+from video_job_submission import prepared_video_submission, video_submission_fields
 from video_edit_document import EditDocumentError
 from video_edit_ffmpeg import Cancelled, FFmpegError, Runner
 from video_repair_document import RepairDocumentError, normalize_preview_request, normalize_repair_document
@@ -50,7 +51,7 @@ class VideoRepairJobs:
             return len(self.previews) + sum(job["status"] not in TERMINAL for job in self.jobs.values())
 
     def _request(self, payload, preview=False):
-        allowed = {"projectId", "nodeId", "source", "settings"} | ({"time", "mode"} if preview else set())
+        allowed = {"projectId", "nodeId", "source", "settings"} | ({"time", "mode"} if preview else {"requestId"})
         if not isinstance(payload, dict) or set(payload) - allowed:
             raise bad("局部修复请求字段无效。")
         for key, pattern in (("projectId", r"prj_[A-Za-z0-9_-]{1,96}"), ("nodeId", r"[A-Za-z0-9_-]{1,100}"),
@@ -113,13 +114,16 @@ class VideoRepairJobs:
         with self.lock:
             document, source, _ = self._request(payload)
             with self.lock:
+                job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vrp', ('videoLocalRepair',))
+                if existing:
+                    return self.get(job_id)
                 if self.closed: raise StoreError("VIDEO_REPAIR_CLOSED", "视频修补服务正在关闭。", 503)
                 if any(j["projectId"] == payload["projectId"] and j["nodeId"] == payload["nodeId"]
                        and j["status"] not in TERMINAL for j in self.jobs.values()):
                     raise StoreError("VIDEO_REPAIR_BUSY", "此节点已有修复作业。", 409)
                 self._capacity()
-                job_id = "vrp_" + uuid.uuid4().hex
-                self.jobs[job_id] = {"id": job_id, "projectId": payload["projectId"], "nodeId": payload["nodeId"],
+                job_id = job_id or "vrp_" + uuid.uuid4().hex
+                self.jobs[job_id] = {**video_submission_fields(payload), "id": job_id, "projectId": payload["projectId"], "nodeId": payload["nodeId"],
                                      "source": payload["source"], "status": "queued", "stage": "排队中", "progress": 0,
                                      "error": None, "result": None, "createdAt": time.time(),
                                      "_document": document, "_source": source}

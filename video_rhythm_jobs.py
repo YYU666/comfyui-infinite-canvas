@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from project_store import StoreError
+from video_job_submission import prepared_video_submission, video_submission_fields
 from video_edit_ffmpeg import Cancelled, FFmpegError, Runner, probe, public_probe
 from video_rhythm_document import RhythmDocumentError, normalize_remap_document, normalize_speed_document
 from video_rhythm_ffmpeg import render
@@ -92,7 +93,7 @@ class VideoRhythmJobs:
     def submit(self, payload):
         # Bind source resolution and admission to one project-store epoch.
         with self.lock:
-            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "input", "operation", "settings"}:
+            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "input", "operation", "settings", "requestId"}:
                 raise _bad("视频节奏作业字段无效。")
             project_id, node_id = self._identity(payload)
             document = self._document(payload)
@@ -100,7 +101,10 @@ class VideoRhythmJobs:
             self.root.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
                 raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-            job_id = f"vry_{uuid.uuid4().hex}"
+            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vry', ('videoSpeed', 'videoTimeRemap'))
+            if existing:
+                return self.get(job_id)
+            job_id = job_id or f"vry_{uuid.uuid4().hex}"
             job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
                    "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
                    "operation": document["operation"], "input": payload.get("input")}
@@ -111,7 +115,7 @@ class VideoRhythmJobs:
                 if active:
                     raise StoreError("VIDEO_RHYTHM_BUSY", "此视频节奏节点已有导出作业，请等待或取消。", 409, {"jobId": active[0]["id"]})
                 self._trim()
-                self.jobs[job_id] = {**job, "_document": document, "_source": source}
+                self.jobs[job_id] = {**job, **video_submission_fields(payload), "_document": document, "_source": source}
                 self.wake.notify_all()
                 if not self.worker or not self.worker.is_alive():
                     self.worker = threading.Thread(target=self._loop, name="video-rhythm-jobs", daemon=True)

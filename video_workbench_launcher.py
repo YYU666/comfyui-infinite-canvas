@@ -806,6 +806,10 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "POST", path):
             return
         if is_comfy_path(path):
+            comfy_path = urllib.parse.unquote(path).rstrip("/")
+            if comfy_path in ("/api/comfy/prompt", "/api/comfy/api/prompt"):
+                self.send_json(409, {"code": "VISIBLE_CANVAS_REQUIRED", "message": "画布生成使用当前页，简易模式使用人工入口。"})
+                return
             if self.reject_disabled_comfy():
                 return
             proxy_http(self)
@@ -1195,8 +1199,8 @@ def main(argv=None):
             queue_adapter = ComfyQueueAdapter(COMFY_URL) if enabled else _ComfyDisabled()
             server.queue_manager = QueueManager(adapter=queue_adapter, concurrency=server.settings.data["queue"]["concurrency"])
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
-            server.queue_api = QueueAPI(server.queue_manager)
             server.agent_api = AgentAPI(server.project_store, server.queue_manager)
+            server.queue_api = QueueAPI(server.queue_manager, lambda: (server.project_store, server.agent_api.canvas))
             server.extension_api = ExtensionAPI(ExtensionStore(runtime_dir() / "extensions"), COMFY_URL, comfy_root=ROOT)
             server.update_manager = WorkbenchUpdateManager(HERE, lambda: validate_update_ready(server))
             if not server.native3d_only:

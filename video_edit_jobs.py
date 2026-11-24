@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 
 from project_store import StoreError
+from video_job_submission import prepared_video_submission, video_submission_fields
 from video_auto_cut import MAX_SOURCE_SECONDS, suggest_cuts
 from video_edit_document import EditDocumentError, INPUT_SLOTS, VIDEO_SLOTS, normalize_document, plan, used_slots
 from video_edit_ffmpeg import Cancelled, FFmpegError, Runner, probe, public_probe, render
@@ -104,7 +105,7 @@ class VideoEditJobs:
     def submit(self, payload):
         # Bind source resolution and admission to one project-store epoch.
         with self.lock:
-            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "inputs", "document", "signature"}:
+            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "inputs", "document", "signature", "requestId"}:
                 raise _bad("视频编辑作业字段无效。")
             project_id, node_id = self._identity(payload)
             try:
@@ -124,7 +125,10 @@ class VideoEditJobs:
             self.root.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
                 raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-            return self._submit(project_id, node_id, inputs={slot: inputs[slot] for slot in files},
+            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'ved', ('videoEdit',))
+            if existing:
+                return self.get(job_id)
+            return self._submit(project_id, node_id, job_id=job_id, **video_submission_fields(payload), inputs={slot: inputs[slot] for slot in files},
                                 signature=signature, _document=document, _files=files)
 
     def submit_auto_cut(self, payload):
@@ -139,7 +143,7 @@ class VideoEditJobs:
             return self._submit(project_id, node_id, mode=mode, inputs={slot: payload["assetPath"]},
                                 _files={slot: file})
 
-    def _submit(self, project_id, node_id, **fields):
+    def _submit(self, project_id, node_id, job_id=None, **fields):
         # Callers hold the store/admission lock through source lookup and enqueue.
         if self.closed:
             raise StoreError("VIDEO_EDIT_CLOSED", "视频编辑服务正在关闭。", 503)
@@ -147,7 +151,7 @@ class VideoEditJobs:
             if item["nodeId"] == node_id and item["projectId"] == project_id and item["status"] not in TERMINAL:
                 raise StoreError("VIDEO_EDIT_BUSY", "此视频编辑节点已有作业，请等待或取消。", 409, {"jobId": item["id"]})
         self._trim()
-        job_id = f"ved_{uuid.uuid4().hex}"
+        job_id = job_id or f"ved_{uuid.uuid4().hex}"
         self.jobs[job_id] = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued",
                              "progress": 0.0, "stage": "排队中", "error": None, "result": None,
                              "createdAt": time.time(), **fields}

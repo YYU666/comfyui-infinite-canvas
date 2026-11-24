@@ -5,8 +5,6 @@ import json
 import time
 from pathlib import Path
 
-from native3d_geometry import mesh_hash
-
 
 def freeze_repair_context(manager, job, directory):
     from native3d_jobs import fail
@@ -61,6 +59,7 @@ def freeze_repair_context(manager, job, directory):
 
 
 def run_local_repair(candidate, high, output, params, context, progress=None):
+    from native3d_geometry import mesh_hash
     from native3d_geometry_audit import audit_geometry
     from native3d_lod_boundary import OriginalBoundaryReference
     from native3d_lod_boundary_retopo import repair_boundary_measured, locate_boundary_issue

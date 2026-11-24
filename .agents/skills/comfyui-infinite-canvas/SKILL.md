@@ -5,7 +5,7 @@ description: 操作、测试和维护本机 ComfyUI 无限画布。用户要在�
 
 # ComfyUI 无限画布操作规范
 
-用户要在画布上看到的图片或视频，标准路径是可见节点：**创建 → 连接 → 提交 → 等待终态**。逐步操作只按仓库 `docs/AGENT_MANUAL.md` 第 4 节；生成回路以配方 B、E 为准（创建节点、连接、`canvas_generate_node` 且 `wait:false`、用完成事件或 `canvas_wait_for_node` 等待，再以 `canvas_get_state` 核对）。本文不另写一套步骤。
+用户要在画布上看到的图片或视频，标准路径是可见节点：**创建 → 连接 → 当前页保存准备记录 → 提交 → 等待终态**。逐步操作只按仓库 `docs/AGENT_MANUAL.md` 第 4 节；生成回路以配方 B、E 为准（创建节点、连接、`canvas_generate_node` 且 `wait:false`、用完成事件或 `canvas_wait_for_node` 等待，再以 `canvas_get_state` 核对）。本文不另写一套步骤。
 
 协议 v2 的 `apply`／`wait`，以及向 `http://127.0.0.1:8188/prompt` 直接提交，都不能代替这条回路。画布不是生成完成后用来贴图的显示区。
 
@@ -26,7 +26,7 @@ description: 操作、测试和维护本机 ComfyUI 无限画布。用户要在�
 
 - 完成通知是 `GET /api/agent/canvas/events`（令牌长轮询，最长 25 秒），或当前页的 `canvas_wait_for_node`（最长 20 秒，未结束为 `pending:true`）。不要为此紧循环 `canvas_get_state`。命令回执 `done` 只表示页面工具已返回。终态仍要用一次 `canvas_get_state` 看可见节点。
 - 有结果的节点摘要含 `media`（`url` / `filename` / `subfolder` / `type` 或 `assetPath`）。`hasMedia` 仍只是布尔值。
-- `canvas_generate_node` 的 `wait` 必须是 `false`。`canvas_wait_for_node` 的 `timeoutMs` 不要超过 20000。`pending` 不是失败，不要重新提交。
+- `canvas_generate_node` 使用 `wait:false`。没有当前可写画布时停止。旧 `apply` 的 `generate` 仅可显式 `dryRun:true` 预检。`canvas_wait_for_node` 的 `timeoutMs` 不要超过 20000。`pending` 不是失败，不要重新提交。
 - 取消用 `canvas_cancel_node`。不要调用 `canvas_cancel`。
 - `canvas_import_asset` 仍要求素材节点，且 `assetPath` 匹配 `assets/<64位十六进制>.<扩展名>`。它不能上传任意本地文件。
 - `canvas://protocol` 仍把批量 `apply` 写成默认写路径。做用户要看见的生图或生视频时，不以该资源为准。

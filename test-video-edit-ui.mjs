@@ -21,6 +21,7 @@ async function fixture(readOnly = false, active = false) {
   const context = await browser.newContext({ viewport: { width: 1500, height: 1080 }, serviceWorkers: 'block' });
   const queued = [], commits = [], cancels = [], saves = [];
   let hold = active;
+  let loseReceipt = false;
   let motionRendered = false;
   let motionVersionIndex = 0;
   const motionRenderAttempts = [];
@@ -113,15 +114,23 @@ async function fixture(readOnly = false, active = false) {
       },
     });
     if (url.pathname === '/api/video-edit/jobs') {
-      queued.push(request.postDataJSON());
-      return json({ id: `ved_${String(queued.length).repeat(32)}`, status: 'queued', stage: '排队中', progress: 0 }, 201);
+      const payload = request.postDataJSON();
+      const { requestId, ...intent } = payload;
+      const record = project.canvas.nodes.find((node) => node.id === intent.nodeId)?.data.videoSubmission;
+      assert.deepEqual(record, { id: `ved_${requestId}`, requestId, intent, phase: 'prepared' });
+      queued.push(payload);
+      if (loseReceipt) return route.abort('failed');
+      return json({ id: record.id, projectId: intent.projectId, nodeId: intent.nodeId, status: 'queued', stage: '排队中', progress: 0 }, 201);
     }
     if (/\/api\/video-edit\/jobs\/ved_[a-f0-9]{32}\/cancel$/.test(url.pathname)) { cancels.push(request.postDataJSON()); hold = false; return json({ status: 'cancelled' }); }
     if (/\/api\/video-edit\/jobs\/ved_[a-f0-9]{32}\/commit$/.test(url.pathname)) {
       commits.push(request.postDataJSON()); project.revision++;
       return json({ asset: { path: resultAsset }, revision: project.revision }, 201);
     }
-    if (/\/api\/video-edit\/jobs\/ved_[a-f0-9]{32}$/.test(url.pathname)) return json({ id: url.pathname.split('/').at(-1), status: hold ? 'running' : 'completed', stage: hold ? '模拟导出' : '已导出', progress: hold ? 0.4 : 1, result: { frames: 24, width: 128, height: 72, audio: 'clips' } });
+    if (/\/api\/video-edit\/jobs\/ved_[a-f0-9]{32}$/.test(url.pathname)) {
+      if (loseReceipt) return json({ message: 'fixture lookup unavailable' }, 404);
+      return json({ id: url.pathname.split('/').at(-1), projectId: project.id, nodeId: 'edit', status: hold ? 'running' : 'completed', stage: hold ? '模拟导出' : '已导出', progress: hold ? 0.4 : 1, result: { frames: 24, width: 128, height: 72, audio: 'clips' } });
+    }
     if (url.pathname.startsWith('/api/projects/') && url.pathname.includes('/assets/')) return route.fulfill({ contentType: 'video/mp4', body: Buffer.from('synthetic encoded video') });
     if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'native mocks only' }, 503);
     if (url.pathname.startsWith('/api/')) return json({});
@@ -137,7 +146,7 @@ async function fixture(readOnly = false, active = false) {
     for (let i = 0; i < 100; i++) { const current = await state(); if (predicate(current)) return current; await page.waitForTimeout(40); }
     throw new Error('Synthetic edit state did not settle');
   }
-  return { context, page, call, state, until, queued, commits, cancels, saves, saved: () => project, hold: value => { hold = value; } };
+  return { context, page, call, state, until, queued, commits, cancels, saves, saved: () => project, hold: value => { hold = value; }, loseReceipt: value => { loseReceipt = value; } };
 }
 try {
   const f = await fixture(); const { page } = f;
@@ -193,7 +202,7 @@ try {
   state = await f.state(); assert.equal(state.nodes.find(n => n.id === 'edit').editResultAssetPath, resultAsset, 'asset identity survives reload');
   f.hold(true);
   await editor.getByRole('button', { name: '导出', exact: true }).click();
-  await f.until(s => s.nodes.find(n => n.id === 'edit')?.videoEditJobId === `ved_${'2'.repeat(32)}`);
+  await f.until(s => f.queued.length === 2 && s.nodes.find(n => n.id === 'edit')?.videoEditJobId === `ved_${f.queued[1].requestId}`);
   await editor.getByRole('button', { name: '取消', exact: true }).click();
   await f.until(s => s.nodes.find(n => n.id === 'edit')?.status === 'cancelled');
   assert.deepEqual(f.cancels, [{ projectId: 'prj_editor_fixture' }]);
@@ -219,6 +228,19 @@ try {
   await editor.getByRole('button', { name: '编辑视频', exact: true }).click();
   await panel.getByRole('button', { name: 'OpenMotion · 已回传' }).click();
   assert.equal(await panel.getByRole('link', { name: '下载回传成片' }).getAttribute('href'), `/api/projects/prj_editor_fixture/${motionAsset}`);
+  await panel.getByLabel('关闭', { exact: true }).click();
+  f.loseReceipt(true);
+  const unknown = await f.call('canvas_generate_node', { nodeId: 'edit', wait: false });
+  assert.equal(unknown.ok, false);
+  const jobId = `ved_${f.queued.at(-1).requestId}`;
+  await f.until(() => f.saved().canvas.nodes.find(n => n.id === 'edit')?.data.videoSubmission.phase === 'unconfirmed');
+  assert.equal(f.queued.length, 3);
+  f.loseReceipt(false);
+  await page.reload();
+  await editor.waitFor();
+  await f.until(() => f.saved().canvas.nodes.find(n => n.id === 'edit')?.data.editResultJobId === jobId);
+  assert.equal(f.queued.length, 3, 'reopen must never submit a duplicate export');
+  assert.equal(f.commits.length, 2);
   await f.context.close();
   const readOnly = await fixture(true, true);
   const cancel = readOnly.page.getByTestId('rf__node-edit').getByRole('button', { name: '取消', exact: true });

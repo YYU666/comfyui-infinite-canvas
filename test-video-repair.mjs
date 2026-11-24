@@ -10,6 +10,7 @@ const cases = [settings, { ...settings, path: '../forbidden' }, { ...settings, s
 const js = cases.map(value => { try { return normalizeRepairDocument(value); } catch { return { error: true }; } });
 const python = process.env.H3_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 const result = spawnSync(python, ['-X', 'utf8', '-c', `import json,sys
+sys.path.insert(0, '.')
 from video_repair_document import normalize_repair_document
 out=[]
 for value in json.load(sys.stdin):
@@ -33,9 +34,9 @@ const dispose = registerCanvasMcp(latest, { context: { registerTool: tool => too
 try { const response = JSON.parse(await tools.get('canvas_update_node').execute({ nodeId: 'repair', settings: { repairSettings: settings, previewTime: .5 } })); assert.equal(response.ok, true, response.error); } finally { dispose(); }
 // Late submit cancellation and readonly guards: no backend/global interrupt.
 let release, sent = false; const cancelled = []; const fetchBefore = globalThis.fetch;
-globalThis.fetch = async (url, options) => { if (url.endsWith('/jobs')) { sent = true; await new Promise(resolve => { release = resolve; }); return { ok: true, json: async () => ({ id: `vrp_${'d'.repeat(32)}` }) }; } if (url.endsWith('/cancel')) { cancelled.push(JSON.parse(options.body)); return { ok: true, json: async () => ({}) }; } throw new Error('Unexpected request'); };
+globalThis.fetch = async (url, options) => { if (url.endsWith('/jobs')) { const { projectId, nodeId, requestId } = JSON.parse(options.body); sent = true; await new Promise(resolve => { release = resolve; }); return { ok: true, json: async () => ({ id: `vrp_${requestId}`, projectId, nodeId }) }; } if (url.endsWith('/cancel')) { cancelled.push(JSON.parse(options.body)); return { ok: true, json: async () => ({}) }; } throw new Error('Unexpected request'); };
 const jobs = new Map(); let writable = true;
-const runner = createVideoRepairRunner({ getProjectId: () => 'prj_test', getNodes: () => nodes, getEdges: () => edges, canWrite: () => writable, jobs, updateNode: (_id, patch) => Object.assign(repair.data, patch) });
+const runner = createVideoRepairRunner({ getProjectId: () => 'prj_test', getNodes: () => nodes, getEdges: () => edges, canWrite: () => writable, jobs, persistProject: async () => {}, updateNode: (_id, patch) => Object.assign(repair.data, patch) });
 const pending = runner.run('repair'); while (!sent) await new Promise(resolve => setTimeout(resolve, 1)); await runner.cancel('repair'); release();
 assert.equal((await pending).ok, false); assert.deepEqual(cancelled, [{ projectId: 'prj_test' }]); assert.equal(jobs.size, 0);
 writable = false; assert.equal((await runner.run('repair')).ok, false); assert.equal((await runner.preview('repair')).ok, false); assert.equal(runner.resume('repair'), false); globalThis.fetch = fetchBefore;

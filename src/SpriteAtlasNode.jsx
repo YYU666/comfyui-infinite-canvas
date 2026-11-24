@@ -44,7 +44,7 @@ export default function SpriteAtlasNode({ id, data, actions, title, toolbar }) {
       </section>}
       {data.error && <p className="sprite-atlas-error" role="alert">{data.error}</p>}
       {validation && <p className="sprite-atlas-hint">{validation}</p>}
-      <footer><span>{running ? data.stage || '渲染中…' : data.status === 'done' ? '已导出 2 张图集 + JSON' : '游戏美术 / 精灵图'}</span>{running ? <button disabled={actions.readOnly} onClick={() => actions.cancelSpriteAtlas(id)}>取消渲染</button> : <button disabled={disabled || !backend?.available || Boolean(validation)} onClick={() => actions.runSpriteAtlas(id)}>渲染精灵图集</button>}</footer>
+      <footer><span>{running ? data.stage || '渲染中…' : data.status === 'done' ? '已导出 2 张图集 + JSON' : '游戏美术 / 精灵图'}</span>{running ? <button disabled={actions.readOnly} onClick={() => actions.cancelSpriteAtlas(id)}>取消渲染</button> : <button disabled={disabled || !backend?.available || Boolean(validation)} onClick={() => actions.runSpriteAtlas(id)}>{data.spriteRun?.phase === 'lookup-missing' ? '提交原请求' : data.spriteRun?.phase === 'unconfirmed' ? '核对原请求' : '渲染精灵图集'}</button>}</footer>
     </div>
   </div>;
 }

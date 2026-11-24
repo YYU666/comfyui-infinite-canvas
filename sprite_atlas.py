@@ -1,6 +1,7 @@
 """Local, serialized Blender CPU jobs. This module never calls ComfyUI."""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import mimetypes
@@ -21,6 +22,7 @@ from project_store import StoreError
 from workbench_lifecycle import atomic_write_json
 
 JOB_ID = re.compile(r"spa_[0-9a-f]{32}")
+REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 FILES = {"albedo": "albedo.png", "normal": "normal.png", "metadata": "atlas.json"}
 MAX_PIXELS = 64_000_000
 MAX_SIDE = 8192
@@ -101,7 +103,8 @@ def _linked(path):
 
 
 class SpriteAtlasAPI:
-    def __init__(self, store, directory, *, popen=None, blender=None, timeout=TIMEOUT):
+    def __init__(self, store, directory, *, popen=None, blender=None, timeout=TIMEOUT, allow_legacy=False):
+        self.allow_legacy = allow_legacy
         self.store = store
         self.root = Path(directory).absolute()
         self.popen = popen or subprocess.Popen
@@ -169,6 +172,8 @@ class SpriteAtlasAPI:
     @staticmethod
     def _snapshot(job):
         result = {k: job[k] for k in ("id", "projectId", "nodeId", "status", "createdAt")}
+        if job.get("requestId"):
+            result["requestId"] = job["requestId"]
         if job.get("error"):
             result["error"] = job["error"]
         if job["status"] == "done":
@@ -179,26 +184,50 @@ class SpriteAtlasAPI:
         atomic_write_json(self._directory(job) / "job.json", self._snapshot(job))
 
     def create(self, payload):
-        if not isinstance(payload, dict) or set(payload) != {"projectId", "revision", "nodeId", "inputPath", "options"}:
-            raise StoreError("BAD_REQUEST", "精灵图任务字段无效。")
+        required = {"projectId", "revision", "nodeId", "inputPath", "options"}
+        if not isinstance(payload, dict) or (set(payload) != required | {"requestId"} and
+                                             not (self.allow_legacy and set(payload) == required)):
+            raise StoreError("BAD_REQUEST", "必须提供已准备的精灵图请求 ID。")
         if type(payload["revision"]) is not int or payload["revision"] < 1:
             raise StoreError("BAD_REQUEST", "必须提供已保存项目的有效 revision。")
-        self._authorize(payload["projectId"], payload["nodeId"], payload["revision"])
+        request_id = payload.get("requestId")
+        if "requestId" in payload and (not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id)):
+            raise StoreError("BAD_REQUEST", "精灵图请求 ID 无效。")
+        document = self._authorize(payload["projectId"], payload["nodeId"], payload["revision"])
         options = validate_options(payload["options"])
         source = validate_input(payload["inputPath"])
+        if request_id:
+            node = next(node for node in document["canvas"]["nodes"] if node["id"] == payload["nodeId"])
+            data = node["data"]
+            run = data.get("spriteRun")
+            if not isinstance(run, dict) or run.get("requestId") != request_id or run.get("phase") != "prepared":
+                raise StoreError("VISIBLE_CANVAS_REQUIRED", "请先在当前画布保存精灵图准备记录。", 409)
+            if (validate_input(data.get("spriteInputPath")) != source
+                    or validate_options(data.get("spriteOptions") or {}) != options
+                    or run.get("inputPath") != payload["inputPath"] or run.get("options") != options):
+                raise StoreError("REVISION_CONFLICT", "精灵图输入或参数与已保存记录不同。", 409)
+        job_id = ("spa_" + hashlib.sha256("\\0".join([payload["projectId"], payload["nodeId"], request_id]).encode()).hexdigest()[:32]
+                  if request_id else "spa_" + uuid.uuid4().hex)
         blender = self.blender or find_blender()
         if blender is None:
             raise StoreError("BLENDER_MISSING", "未找到 Blender；未安装或下载任何软件。", 503)
         with self.lock:
             if self.closed.is_set():
                 raise StoreError("SPRITE_CLOSED", "精灵图服务正在关闭。", 503)
+            if request_id and (job_id in self.jobs or (self.root / job_id / "job.json").is_file()):
+                existing = self._get(job_id)
+                saved_request = json.loads(self._file(existing, "request.json").read_text(encoding="utf-8"))
+                if Path(saved_request.get("inputPath", "")) != source or any(saved_request.get(key) != value for key, value in options.items()):
+                    raise StoreError("REVISION_CONFLICT", "该请求已用于不同的模型或参数。", 409)
+                return self._snapshot(existing)
             if sum(j["status"] not in TERMINAL for j in self.jobs.values()) >= MAX_QUEUE:
                 raise StoreError("SPRITE_QUEUE_FULL", "本机精灵图队列已满，请等待已有任务完成。", 429)
             self._safe_root()
-            job_id = "spa_" + uuid.uuid4().hex
             directory = self.root / job_id
             directory.mkdir()
             job = {"id": job_id, "projectId": payload["projectId"], "nodeId": payload["nodeId"], "status": "queued", "createdAt": time.time(), "cancel": threading.Event(), "blender": str(blender)}
+            if request_id:
+                job["requestId"] = request_id
             atomic_write_json(directory / "request.json", {"inputPath": str(source), "outputDir": str(directory), **options})
             self.jobs[job_id] = job
             self._persist(job)

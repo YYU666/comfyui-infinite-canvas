@@ -262,6 +262,8 @@ class QueueManager:
             "id": f"job_{uuid.uuid4().hex}",
             "projectId": payload.get("projectId"),
             "nodeId": payload.get("nodeId"),
+            **({"requestId": payload["requestId"]} if payload.get("requestId") else {}),
+            **({"canvasAdmission": payload["canvasAdmission"]} if payload.get("canvasAdmission") else {}),
             "shotId": payload.get("shotId"),
             "kind": plan["kind"] if plan else "workflow",
             "status": "queued",
@@ -279,19 +281,25 @@ class QueueManager:
             "error": None,
             "outputs": None,
             "history": None,
-            "attempts": 0,
+            "attempts": 1 if payload.get("canvasAdmission") else 0,
             "workflow": copy.deepcopy(workflow),
             "plan": plan,
             "planState": initial_state() if plan else None,
             "clientId": str(payload.get("clientId") or uuid.uuid4()),
         }
         with self._lock:
-            if job["clientId"].startswith("agent:"):
+            if job["clientId"].startswith(("agent:", "canvas:")):
                 existing = next((item for item in self.jobs if item.get("clientId") == job["clientId"] and item.get("projectId") == job["projectId"]), None)
                 if existing:
+                    if job["clientId"].startswith("canvas:") and any(existing.get(key) != job.get(key) for key in ("nodeId", "workflow", "plan")):
+                        raise ValueError("该请求已用于不同的节点或执行内容。")
                     return _public(existing)
             self.jobs.append(job)
-            self._changed_locked("job.queued", job)
+            try:
+                self._changed_locked("job.queued", job)
+            except OSError:
+                self.jobs.pop()
+                raise
             return _public(job)
 
     def inspect_workflow(self, project_id, node_id=None, job_id=None, prompt_id=None):
@@ -419,16 +427,32 @@ class QueueManager:
             self._changed_locked("job.cancelled", job)
             return _public(job)
 
-    def retry(self, job_id):
+    def retry(self, job_id, *, request_id=None, expected_attempt=None, admission=None):
         with self._lock:
             job = self._find_locked(job_id)
+            previous = job.get("retryAdmission") or {}
+            if request_id and previous.get("requestId") == request_id:
+                if previous.get("previousAttempt") != expected_attempt:
+                    raise ValueError("请求 ID 已用于另一轮尝试。")
+                return _public(job)
+            if expected_attempt is not None and job.get("attempts") != expected_attempt:
+                raise ValueError("任务尝试轮次已变化，请按原身份查询。")
             if job["status"] not in TERMINAL:
                 raise ValueError("任务尚未结束，不能重试。")
+            prior = copy.deepcopy(job)
             job.update({"status": "queued", "stage": "后台队列等待中", "progress": 0, "eta": None, "startedAt": None, "finishedAt": None,
                         "comfyPromptId": None, "submissionPending": False, "cancelRequested": False, "error": None, "outputs": None, "history": None,
                         "attempts": job.get("attempts", 0) + 1,
                         "planState": initial_state() if job.get("plan") else None})
-            self._changed_locked("job.retry", job)
+            if request_id:
+                job["retryAdmission"] = {**admission, "requestId": request_id,
+                                         "previousAttempt": expected_attempt, "attempt": job["attempts"]}
+            try:
+                self._changed_locked("job.retry", job)
+            except OSError:
+                job.clear()
+                job.update(prior)
+                raise
             return _public(job)
 
     def clear_completed(self):

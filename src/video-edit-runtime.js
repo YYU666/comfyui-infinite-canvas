@@ -1,3 +1,4 @@
+import { hasUnconfirmedVideoSubmission, makeVideoSubmission, postVideoSubmission, videoSubmissionError, videoSubmissionPhase } from './video-submission.js';
 // Page-side runtime for the video edit node: talks to /api/video-edit, uploads
 // non-project inputs through the page's normal asset channel, and writes the
 // result back onto the same node. The backend never edits project.json.
@@ -95,9 +96,15 @@ export function createVideoEditRunner(deps) {
         await sleep(700, controller.signal);
         const job = await getVideoEditJob(jobId, { signal: controller.signal });
         if (!currentProject(projectId) || node(id)?.data.videoEditJobId !== jobId) return; // superseded or deleted
+        const receipt = videoSubmissionPhase(node(id), jobId, 'accepted');
+        if (receipt.videoSubmission) {
+          deps.updateNode(id, receipt);
+          await deps.persistProject?.().catch(() => {});
+        }
         if (ACTIVE.includes(job.status)) { deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress }); continue; }
         if (job.status !== 'completed') {
-          deps.updateNode(id, { status: job.status === 'cancelled' ? 'cancelled' : 'error', stage: job.stage, error: job.status === 'cancelled' ? null : job.error || '导出失败。' });
+          deps.updateNode(id, { status: job.status === 'cancelled' ? 'cancelled' : 'error', stage: job.stage, error: job.status === 'cancelled' ? null : job.error || '导出失败。', ...videoSubmissionPhase(node(id), jobId, job.status === 'cancelled' ? 'cancelled' : 'failed') });
+          await deps.persistProject?.().catch(() => {});
           return;
         }
         deps.updateNode(id, { status: 'running', stage: '正在保存到项目素材', progress: 0.99 });
@@ -113,7 +120,7 @@ export function createVideoEditRunner(deps) {
         if (currentProject(projectId) && node(id)?.data.videoEditJobId === jobId) deps.updateNode(id, { status: 'cancelled', stage: '已取消', error: null });
         return;
       }
-      if (currentProject(projectId) && node(id)?.data.videoEditJobId === jobId) deps.updateNode(id, { status: 'error', stage: '导出失败', error: error.status === 404 ? '后台导出任务已不存在（工作台可能已重启），请重新导出。' : error.message });
+      if (currentProject(projectId) && node(id)?.data.videoEditJobId === jobId) deps.updateNode(id, { status: 'error', stage: '导出失败', error: error.status === 404 ? '后台导出任务已不存在（工作台可能已重启），请重新导出。' : error.message, ...videoSubmissionError(node(id), jobId, error) });
     } finally { unregister(id, controller); }
   }
 
@@ -175,28 +182,36 @@ export function createVideoEditRunner(deps) {
       const projectId = deps.getProjectId();
       const current = node(id);
       if (!isVideoEdit(current)) return { ok: false, error: '找不到视频编辑节点。' };
+      if (!deps.jobs.has(id) && current.data.videoEditJobId && hasUnconfirmedVideoSubmission(current)) {
+        attach(id, current.data.videoEditJobId);
+        return { ok: false, code: 'VIDEO_SUBMISSION_UNKNOWN', jobId: current.data.videoEditJobId, error: '正在核对原作业。' };
+      }
       if (deps.jobs.has(id) || ACTIVE.includes(current.data.status)) return { ok: false, error: '此节点正在导出，请等待或取消。' };
       let document;
       try { document = normalizeVideoEditDocument(current.data.editDocument); }
       catch (error) { deps.updateNode(id, { status: 'error', error: error.message }); return { ok: false, error: error.message }; }
       const preparing = new AbortController();
       register(id, preparing);
+      let preparation;
       let submittedJobId = null;
       try {
         deps.updateNode(id, { status: 'running', stage: '正在准备素材', progress: 0, error: null });
         const inputs = await resolveInputs(id, usedVideoEditSlots(document), preparing.signal);
         preparing.signal.throwIfAborted();
         if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。');
-        const job = await submitVideoEditJob({ projectId, nodeId: id, inputs, document });
+        preparation = makeVideoSubmission('ved', { projectId, nodeId: id, inputs, document });
+        deps.updateNode(id, { stage: '待提交 · 正在保存作业准备记录', videoSubmission: preparation,
+          videoEditJobId: preparation.id, editSubmittedDocument: JSON.stringify(document) });
+        const job = await postVideoSubmission(preparation, { persistProject: deps.persistProject,
+          current: () => deps.getProjectId() === projectId && canWrite() && node(id)?.data.videoSubmission?.id === preparation.id,
+          signal: preparing.signal, submit: submitVideoEditJob, lookup: getVideoEditJob });
         submittedJobId = job.id;
         if (preparing.signal.aborted || !currentProject(projectId) || !node(id)) {
           preparing.signal.throwIfAborted();
           throw new Error('当前画布已改变，已取消本次导出。');
         }
-        deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress, videoEditJobId: job.id, editSubmittedDocument: JSON.stringify(document) });
-        // Save the job identity before polling can commit another asset revision.
-        // Reload can then resume it, and a fast export cannot race this save.
-        await deps.persistProject?.();
+        deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress, ...videoSubmissionPhase(node(id), job.id, 'accepted') });
+        await deps.persistProject?.().catch(() => {});
         preparing.signal.throwIfAborted();
         if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变，已取消本次导出。');
         unregister(id, preparing);
@@ -205,9 +220,15 @@ export function createVideoEditRunner(deps) {
       } catch (error) {
         if (submittedJobId) await cancelVideoEditJob(submittedJobId, projectId).catch(() => {});
         unregister(id, preparing);
-        const cancelled = preparing.signal.aborted;
-        if (currentProject(projectId) && node(id)) deps.updateNode(id, { status: cancelled ? 'cancelled' : 'error', stage: cancelled ? '已取消' : '提交失败', error: cancelled ? null : error.message });
-        return { ok: false, error: cancelled ? '已取消。' : error.message };
+        const pending = error.code === 'VIDEO_SUBMISSION_UNKNOWN';
+        const cancelled = preparing.signal.aborted && !pending;
+        if (deps.getProjectId() === projectId && canWrite() && node(id)) {
+          const phase = pending ? 'unconfirmed' : cancelled ? 'cancelled' : 'rejected';
+          deps.updateNode(id, { status: cancelled ? 'cancelled' : 'error', stage: pending ? '原作业未确认' : cancelled ? '已取消' : '提交失败',
+            error: cancelled ? null : error.message, ...videoSubmissionPhase(node(id), preparation?.id, phase) });
+          if (preparation) await deps.persistProject?.().catch(() => {});
+        }
+        return { ok: false, ...(pending && { code: error.code, jobId: preparation.id }), error: cancelled ? '已取消。' : error.message };
       }
     },
     cancel(id) { deps.jobs.get(id)?.abort(); },
@@ -228,7 +249,7 @@ export function createVideoEditRunner(deps) {
     resume(id) {
       if (!canWrite()) return false;
       const current = node(id);
-      if (!isVideoEdit(current) || deps.jobs.has(id) || !current.data.videoEditJobId || !ACTIVE.includes(current.data.status)) return false;
+      if (!isVideoEdit(current) || deps.jobs.has(id) || !current.data.videoEditJobId || (!ACTIVE.includes(current.data.status) && !hasUnconfirmedVideoSubmission(current))) return false;
       attach(id, current.data.videoEditJobId);
       return true;
     },

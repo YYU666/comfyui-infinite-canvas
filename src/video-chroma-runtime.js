@@ -1,3 +1,4 @@
+import { hasUnconfirmedVideoSubmission, makeVideoSubmission, postVideoSubmission, videoSubmissionError, videoSubmissionPhase } from './video-submission.js';
 // Page-side runtime for the green-screen node.
 // Jobs stay on /api/video-chroma inside the workbench process. The page commits
 // the file through the normal versioned asset channel; the backend does not edit project.json.
@@ -106,9 +107,15 @@ export function createVideoChromaRunner(deps) {
         await sleep(700, controller.signal);
         const job = await getVideoChromaJob(jobId, { signal: controller.signal });
         if (controller.signal.aborted || !currentProject(projectId) || node(id)?.data.chromaJobId !== jobId) return;
+        const receipt = videoSubmissionPhase(node(id), jobId, 'accepted');
+        if (receipt.videoSubmission) {
+          deps.updateNode(id, receipt);
+          await deps.persistProject?.().catch(() => {});
+        }
         if (ACTIVE.includes(job.status)) { deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress }); continue; }
         if (job.status !== 'completed') {
-          deps.updateNode(id, { status: job.status === 'cancelled' ? 'cancelled' : 'error', stage: job.stage, error: job.status === 'cancelled' ? null : job.error || '导出失败。' });
+          deps.updateNode(id, { status: job.status === 'cancelled' ? 'cancelled' : 'error', stage: job.stage, error: job.status === 'cancelled' ? null : job.error || '导出失败。', ...videoSubmissionPhase(node(id), jobId, job.status === 'cancelled' ? 'cancelled' : 'failed') });
+          await deps.persistProject?.().catch(() => {});
           return;
         }
         deps.updateNode(id, { status: 'running', stage: '正在保存到项目素材', progress: 0.99 });
@@ -128,7 +135,7 @@ export function createVideoChromaRunner(deps) {
         if (currentProject(projectId) && node(id)?.data.chromaJobId === jobId) deps.updateNode(id, { status: 'cancelled', stage: '已取消', error: null });
         return;
       }
-      if (currentProject(projectId) && node(id)?.data.chromaJobId === jobId) deps.updateNode(id, { status: 'error', stage: '导出失败', error: error.status === 404 ? '后台导出任务已不存在（工作台可能已重启），请重新导出。' : error.message });
+      if (currentProject(projectId) && node(id)?.data.chromaJobId === jobId) deps.updateNode(id, { status: 'error', stage: '导出失败', error: error.status === 404 ? '后台导出任务已不存在（工作台可能已重启），请重新导出。' : error.message, ...videoSubmissionError(node(id), jobId, error) });
     } finally { unregister(id, controller); }
   }
 
@@ -148,26 +155,36 @@ export function createVideoChromaRunner(deps) {
       if (!canWrite()) return { ok: false, error: '当前画布不可编辑。' };
       const current = node(id);
       if (!isVideoChroma(current)) return { ok: false, error: '找不到绿幕扣像节点。' };
+      if (!deps.jobs.has(id) && current.data.chromaJobId && hasUnconfirmedVideoSubmission(current)) {
+        attach(id, current.data.chromaJobId);
+        return { ok: false, code: 'VIDEO_SUBMISSION_UNKNOWN', jobId: current.data.chromaJobId, error: '正在核对原作业。' };
+      }
       if (deps.jobs.has(id) || ACTIVE.includes(current.data.status)) return { ok: false, error: '此节点正在导出，请等待或取消。' };
       let document;
       try { document = chromaDocumentFromNode(current.data); }
       catch (error) { deps.updateNode(id, { status: 'error', error: error.message }); return { ok: false, error: error.message }; }
       const preparing = new AbortController();
       register(id, preparing);
+      let preparation;
       let submittedJobId = null;
       try {
         deps.updateNode(id, { status: 'running', stage: '正在准备素材', progress: 0, error: null });
         const foreground = await resolvePort(id, CHROMA_FG, preparing.signal);
         const background = await resolvePort(id, CHROMA_BG, preparing.signal);
         preparing.signal.throwIfAborted();
-        const job = await submitVideoChromaJob({
+        preparation = makeVideoSubmission('vck', {
           projectId, nodeId: id, foreground, background, settings: settingsPayload(document),
         });
+        deps.updateNode(id, { stage: '待提交 · 正在保存作业准备记录', videoSubmission: preparation,
+          chromaJobId: preparation.id, chromaSubmittedSettings: JSON.stringify(document) });
+        const job = await postVideoSubmission(preparation, { persistProject: deps.persistProject,
+          current: () => deps.getProjectId() === projectId && canWrite() && node(id)?.data.videoSubmission?.id === preparation.id,
+          signal: preparing.signal, submit: submitVideoChromaJob, lookup: getVideoChromaJob });
         submittedJobId = job.id;
         preparing.signal.throwIfAborted();
         if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。');
-        deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress, chromaJobId: job.id, chromaSubmittedSettings: JSON.stringify(document) });
-        await deps.persistProject?.();
+        deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress, ...videoSubmissionPhase(node(id), job.id, 'accepted') });
+        await deps.persistProject?.().catch(() => {});
         preparing.signal.throwIfAborted();
         if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。');
         unregister(id, preparing);
@@ -176,9 +193,15 @@ export function createVideoChromaRunner(deps) {
       } catch (error) {
         if (submittedJobId) await cancelVideoChromaJob(submittedJobId, projectId).catch(() => {});
         unregister(id, preparing);
-        const cancelled = preparing.signal.aborted;
-        if (currentProject(projectId) && node(id)) deps.updateNode(id, { status: cancelled ? 'cancelled' : 'error', stage: cancelled ? '已取消' : '提交失败', error: cancelled ? null : error.message });
-        return { ok: false, error: cancelled ? '已取消。' : error.message };
+        const pending = error.code === 'VIDEO_SUBMISSION_UNKNOWN';
+        const cancelled = preparing.signal.aborted && !pending;
+        if (deps.getProjectId() === projectId && canWrite() && node(id)) {
+          const phase = pending ? 'unconfirmed' : cancelled ? 'cancelled' : 'rejected';
+          deps.updateNode(id, { status: cancelled ? 'cancelled' : 'error', stage: pending ? '原作业未确认' : cancelled ? '已取消' : '提交失败',
+            error: cancelled ? null : error.message, ...videoSubmissionPhase(node(id), preparation?.id, phase) });
+          if (preparation) await deps.persistProject?.().catch(() => {});
+        }
+        return { ok: false, ...(pending && { code: error.code, jobId: preparation.id }), error: cancelled ? '已取消。' : error.message };
       }
     },
     async preview(id, { mode = 'composite', time } = {}) {
@@ -217,7 +240,7 @@ export function createVideoChromaRunner(deps) {
     resume(id) {
       if (!canWrite()) return false;
       const current = node(id);
-      if (!isVideoChroma(current) || deps.jobs.has(id) || !current.data.chromaJobId || !ACTIVE.includes(current.data.status)) return false;
+      if (!isVideoChroma(current) || deps.jobs.has(id) || !current.data.chromaJobId || (!ACTIVE.includes(current.data.status) && !hasUnconfirmedVideoSubmission(current))) return false;
       attach(id, current.data.chromaJobId);
       return true;
     },

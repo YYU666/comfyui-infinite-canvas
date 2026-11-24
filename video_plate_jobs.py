@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 from project_store import StoreError
+from video_job_submission import prepared_video_submission, video_submission_fields
 from video_edit_document import EditDocumentError
 from video_edit_ffmpeg import Cancelled, FFmpegError, Runner, probe
 from video_plate_document import PlateDocumentError, normalize_plate_document
@@ -100,7 +101,7 @@ class VideoPlateJobs:
 
     def submit(self, payload):
         with self.lock:
-            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "video", "settings"}:
+            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "video", "settings", "requestId"}:
                 raise _bad("绿幕白模作业字段无效。")
             project_id, node_id = self._identity(payload)
             document = self._settings(payload)
@@ -108,7 +109,10 @@ class VideoPlateJobs:
             self.root.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
                 raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-            job_id = f"vwp_{uuid.uuid4().hex}"
+            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vwp', ('videoWhitePlate',))
+            if existing:
+                return self.get(job_id)
+            job_id = job_id or f"vwp_{uuid.uuid4().hex}"
             job = {
                 "id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
                 "stage": "排队中", "error": None, "result": None, "createdAt": time.time(), "video": payload.get("video"),
@@ -120,7 +124,7 @@ class VideoPlateJobs:
                 if active:
                     raise StoreError("VIDEO_PLATE_BUSY", "此绿幕白模节点已有导出作业，请等待或取消。", 409, {"jobId": active[0]["id"]})
                 self._trim()
-                self.jobs[job_id] = {**job, "_document": document, "_video": video}
+                self.jobs[job_id] = {**job, **video_submission_fields(payload), "_document": document, "_video": video}
                 self.wake.notify_all()
                 if not self.worker or not self.worker.is_alive():
                     self.worker = threading.Thread(target=self._loop, name="video-plate-jobs", daemon=True)

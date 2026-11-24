@@ -49,9 +49,9 @@ export function nativeUVDeliveredPreviews(node) {
   return Object.keys(result).length>2?result:null;
 }
 export function native3DBusyFeedback(data) {
-  if(!['queued','running','finishing','uploading'].includes(data?.status))return null;
+  if(!['submitting','queued','running','finishing','uploading'].includes(data?.status))return null;
   const verb=({source_lod:'减面',ai_lowpoly:'减面',repair_lod:'修复减面',uv_plan:'生成切缝',uv:'展开UV',bake:'烘焙材质',analyze:'分析模型'})[data.operation]||'处理3D';
-  const title=data.status==='queued'?`等待${verb}`:data.status==='finishing'?'正在保存结果':data.status==='uploading'?'正在导入模型':`正在${verb}`;
+  const title=data.status==='submitting'?'待提交确认':data.status==='queued'?`等待${verb}`:data.status==='finishing'?'正在保存结果':data.status==='uploading'?'正在导入模型':`正在${verb}`;
   const progress=data.status==='running'&&Number.isFinite(data.progress)?Math.min(100,Math.max(0,Math.round(data.progress))):null;
   return {title,stage:data.stage||'',progress,historical:Boolean(data.posterAssetPath||data.resultAssetPath||data.nativeUVPlan)};
 }

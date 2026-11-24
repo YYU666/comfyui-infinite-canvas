@@ -1,3 +1,4 @@
+import { hasUnconfirmedVideoSubmission, makeVideoSubmission, postVideoSubmission, videoSubmissionError, videoSubmissionPhase } from './video-submission.js';
 // CPU jobs only. Asset import and result commit use the page's revision-safe save queue.
 import { videoStreamAsset, videoStreamKind } from './video-stream.js';
 import { REPAIR_PORT, REPAIR_PREVIEW_MODES, isVideoRepair, normalizeRepairPreviewTime, repairDocumentFromNode, repairSourceSignature } from './video-repair-document.js';
@@ -55,10 +56,16 @@ export function createVideoRepairRunner(deps) {
         await sleep(deps.pollInterval ?? 700, controller.signal);
         const job = await request(jobPath(jobId), undefined, controller.signal);
         if (node(id)?.data.repairJobId !== jobId || deps.getProjectId() !== projectId || !canWrite()) return;
+        const receipt = videoSubmissionPhase(node(id), jobId, 'accepted');
+        if (receipt.videoSubmission) {
+          deps.updateNode(id, receipt);
+          await deps.persistProject?.().catch(() => {});
+        }
         if (ACTIVE.includes(job.status)) { deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress }); continue; }
         if (job.status !== 'completed') {
-          deps.updateNode(id, { status: job.status === 'cancelled' ? 'cancelled' : 'error', stage: job.stage, error: job.status === 'cancelled' ? null : job.error || '修复失败。' });
-          await deps.persistProject?.(); return;
+          deps.updateNode(id, { status: job.status === 'cancelled' ? 'cancelled' : 'error', stage: job.stage, error: job.status === 'cancelled' ? null : job.error || '修复失败。', ...videoSubmissionPhase(node(id), jobId, job.status === 'cancelled' ? 'cancelled' : 'failed') });
+          await deps.persistProject?.().catch(() => {});
+          return;
         }
         controller.signal.throwIfAborted();
         deps.updateNode(id, { status: 'running', stage: '正在保存到项目素材', progress: 0.99 });
@@ -91,7 +98,7 @@ export function createVideoRepairRunner(deps) {
       }
     } catch (error) {
       if (node(id)?.data.repairJobId === jobId && deps.getProjectId() === projectId && canWrite()) {
-        deps.updateNode(id, { status: controller.signal.aborted ? 'cancelled' : 'error', stage: controller.signal.aborted ? '已取消' : '修复失败', error: controller.signal.aborted ? null : error.status === 404 ? '后台任务已不存在，请重新提交。' : error.message });
+        deps.updateNode(id, { status: controller.signal.aborted ? 'cancelled' : 'error', stage: controller.signal.aborted ? '已取消' : '修复失败', error: controller.signal.aborted ? null : error.status === 404 ? '后台任务已不存在，请重新提交。' : error.message, ...videoSubmissionError(node(id), jobId, error) });
         await deps.persistProject?.().catch?.(() => {});
       }
     } finally { unregister(id, controller); }
@@ -105,9 +112,14 @@ export function createVideoRepairRunner(deps) {
       if (!canWrite()) return { ok: false, error: '当前画布不可编辑。' };
       const current = node(id);
       if (!isVideoRepair(current)) return { ok: false, error: '找不到局部修复节点。' };
+      if (!deps.jobs.has(id) && current.data.repairJobId && hasUnconfirmedVideoSubmission(current)) {
+        attach(id, current.data.repairJobId, projectId);
+        return { ok: false, code: 'VIDEO_SUBMISSION_UNKNOWN', jobId: current.data.repairJobId, error: '正在核对原作业。' };
+      }
       if (deps.jobs.has(id) || ACTIVE.includes(current.data.status)) return { ok: false, error: '此节点正在处理，请等待或取消。' };
       const controller = new AbortController(), projectId = deps.getProjectId();
       register(id, controller);
+      let preparation;
       let submitted;
       try {
         const settings = repairDocumentFromNode(current.data);
@@ -116,18 +128,30 @@ export function createVideoRepairRunner(deps) {
         const source = await resolveSource(id, controller.signal);
         controller.signal.throwIfAborted();
         // Keep the POST response: cancellation during submission must cancel its returned job too.
-        submitted = await request('/jobs', { projectId, nodeId: id, source, settings });
+        preparation = makeVideoSubmission('vrp', { projectId, nodeId: id, source, settings });
+        deps.updateNode(id, { stage: '待提交 · 正在保存作业准备记录', videoSubmission: preparation,
+          repairJobId: preparation.id, repairSubmittedSettings: JSON.stringify(settings), repairSubmittedSource: signature });
+        submitted = await postVideoSubmission(preparation, { persistProject: deps.persistProject,
+          current: () => deps.getProjectId() === projectId && canWrite() && node(id)?.data.videoSubmission?.id === preparation.id,
+          signal: controller.signal, submit: payload => request('/jobs', payload), lookup: jobId => request(jobPath(jobId)) });
         if (controller.signal.aborted || !node(id) || deps.getProjectId() !== projectId || !canWrite()) { controller.abort(); controller.signal.throwIfAborted(); }
-        deps.updateNode(id, { status: 'running', stage: submitted.stage, progress: submitted.progress, repairJobId: submitted.id, repairSubmittedSettings: JSON.stringify(settings), repairSubmittedSource: signature });
-        await deps.persistProject?.();
+        deps.updateNode(id, { status: 'running', stage: submitted.stage, progress: submitted.progress, ...videoSubmissionPhase(node(id), submitted.id, 'accepted') });
+        await deps.persistProject?.().catch(() => {});
         controller.signal.throwIfAborted();
         attach(id, submitted.id, projectId, controller);
         return { ok: true, jobId: submitted.id };
       } catch (error) {
         if (submitted?.id) await cancelJob(submitted.id, projectId).catch(() => {});
         unregister(id, controller);
-        if (node(id) && deps.getProjectId() === projectId && canWrite()) deps.updateNode(id, { status: controller.signal.aborted ? 'cancelled' : 'error', stage: controller.signal.aborted ? '已取消' : '提交失败', error: controller.signal.aborted ? null : error.message });
-        return { ok: false, error: controller.signal.aborted ? '已取消。' : error.message };
+        const pending = error.code === 'VIDEO_SUBMISSION_UNKNOWN';
+        const cancelled = controller.signal.aborted && !pending;
+        if (deps.getProjectId() === projectId && canWrite() && node(id)) {
+          const phase = pending ? 'unconfirmed' : cancelled ? 'cancelled' : 'rejected';
+          deps.updateNode(id, { status: cancelled ? 'cancelled' : 'error', stage: pending ? '原作业未确认' : cancelled ? '已取消' : '提交失败',
+            error: cancelled ? null : error.message, ...videoSubmissionPhase(node(id), preparation?.id, phase) });
+          if (preparation) await deps.persistProject?.().catch(() => {});
+        }
+        return { ok: false, ...(pending && { code: error.code, jobId: preparation.id }), error: cancelled ? '已取消。' : error.message };
       }
     },
     async preview(id, { mode = 'original', time } = {}) {
@@ -167,7 +191,7 @@ export function createVideoRepairRunner(deps) {
         && checkpoint.jobId === current.data.repairJobId
         && checkpoint.repairResultSettings === JSON.stringify(repairDocumentFromNode(current.data))
         && checkpoint.repairResultSource === repairSourceSignature(id, deps.getNodes(), deps.getEdges());
-      if (!ACTIVE.includes(current.data.status) && !recoverable) return false;
+      if (!ACTIVE.includes(current.data.status) && !recoverable && !hasUnconfirmedVideoSubmission(current)) return false;
       attach(id, current.data.repairJobId, deps.getProjectId()); return true;
     },
   };

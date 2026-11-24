@@ -61,7 +61,7 @@ class SpriteTests(unittest.TestCase):
             process = FakeProcess(command, **kwargs)
             self.spawned.append(process)
             return process
-        self.manager = SpriteAtlasAPI(self.store, self.root / "rendered", popen=popen, blender=self.blender, timeout=2)
+        self.manager = SpriteAtlasAPI(self.store, self.root / "rendered", popen=popen, blender=self.blender, timeout=2, allow_legacy=True)
 
     def tearDown(self):
         self.manager.close()
@@ -79,6 +79,39 @@ class SpriteTests(unittest.TestCase):
                 return result
             time.sleep(0.01)
         self.fail("worker did not reach expected state")
+
+    def test_prepared_request_binds_source_options_and_recovers_once(self):
+        self.manager.allow_legacy = False
+        with self.assertRaises(StoreError):
+            self.manager.create(self.payload())
+        original = self.payload(requestId="visible_fixture")
+        with self.assertRaises(StoreError) as missing:
+            self.manager.create(original)
+        self.assertEqual(missing.exception.code, "VISIBLE_CANVAS_REQUIRED")
+        document = self.store.get(original["projectId"])
+        node = document["canvas"]["nodes"][0]
+        options = validate_options(original["options"])
+        node["data"].update(spriteInputPath=original["inputPath"], spriteOptions=options,
+                            spriteRun={"requestId": original["requestId"], "phase": "prepared",
+                                       "inputPath": original["inputPath"], "options": options})
+        self.store.save(document["id"], document, document["revision"])
+        original["revision"] = self.store.get(document["id"])["revision"]
+        with self.assertRaises(StoreError) as mismatch:
+            self.manager.create({**original, "options": {**options, "directions": 8}})
+        self.assertEqual(mismatch.exception.code, "REVISION_CONFLICT")
+        job = self.manager.create(original)
+        expected = "spa_" + module.hashlib.sha256("\\0".join([original["projectId"], original["nodeId"], original["requestId"]]).encode()).hexdigest()[:32]
+        self.assertEqual(job["id"], expected)
+        self.assertEqual(self.manager.create(original)["id"], expected)
+        result = self.wait(job)
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(self.manager.get(expected)["requestId"], original["requestId"])
+        self.assertEqual(len(self.spawned), 1)
+        fresh = SpriteAtlasAPI(self.store, self.root / "rendered", blender=self.blender)
+        try:
+            self.assertEqual(fresh.get(expected)["files"], result["files"])
+        finally:
+            fresh.close()
 
     def test_defaults_and_resource_bounds(self):
         self.assertEqual(validate_options({})["frameSize"], 192)

@@ -9,6 +9,7 @@ import {
   buildWorkflow, cancelPrompt, createClientId, durationToFrames, extractVideos,
   getHistory, getSystemStats, openProgressSocket, queuePrompt, uploadImage,
 } from './workbench-api';
+import { getVisibleGenerationPage, startCurrentCanvasPage } from './canvas-current-page.js';
 import './styles.css';
 
 const EXAMPLES = [
@@ -84,6 +85,9 @@ function VideoCard({ item, onSelect, onDelete }) {
 
 export default function App({ onCanvasMode }) {
   const [page, setPage] = useState('create');
+  useEffect(() => startCurrentCanvasPage({
+    tools: [], getPage: () => ({ projectId: 'legacy', readOnly: false, visible: true }),
+  }), []);
   const [form, setForm] = useState(DEFAULT_FORM);
   const [firstFrame, setFirstFrame] = useState(null);
   const [lastFrame, setLastFrame] = useState(null);
@@ -96,7 +100,7 @@ export default function App({ onCanvasMode }) {
   const [jobs, setJobs] = useState(readJobs);
   const [notice, setNotice] = useState(null);
   const [elapsed, setElapsed] = useState(0);
-  const clientId = useMemo(createClientId, []);
+  const clientId = useMemo(() => 'legacy:' + createClientId(), []);
   const activeRef = useRef(null);
   const socketRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -215,8 +219,8 @@ export default function App({ onCanvasMode }) {
       ]);
       updateActive((old) => ({ ...old, state: 'queued', stage: '正在提交本地生成任务' }));
       const workflow = buildWorkflow({ ...localJob, firstFrame: first, lastFrame: last });
-      const result = await queuePrompt(workflow, clientId);
-      saveJob(result.prompt_id, localJob);
+      const result = await queuePrompt(workflow, clientId, getVisibleGenerationPage('legacy'));
+      saveJob(result.prompt_id, { ...localJob, origin: result.origin });
       updateActive((old) => ({ ...old, promptId: result.prompt_id, state: 'queued', stage: '任务已排队，等待 GPU', ...localJob }));
     } catch (error) {
       updateActive((old) => ({ ...old, state: 'error', stage: '无法提交任务', error: error.message }));

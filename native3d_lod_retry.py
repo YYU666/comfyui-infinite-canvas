@@ -3,13 +3,9 @@ import copy
 import hashlib
 import json
 import math
+import re
 import time
 from pathlib import Path
-import numpy as np
-import trimesh
-from native3d_geometry import mesh_hash
-from native3d_geometry_audit import audit_geometry, require_audited
-from native3d_lod_source import _canonical_mesh, _save_mesh, _Reference, _sample, logical_target
 
 
 def validate_retry_context(manager, job):
@@ -28,12 +24,17 @@ def validate_retry_context(manager, job):
     if Path(filename).name!=filename or not filename.endswith('.glb'):
         reject('Parent canonical filename invalid')
     file=manager._safe_file(prior['id'],filename)
-    digest=hashlib.sha256(file.read_bytes()).hexdigest()
+    hasher = hashlib.sha256()
+    with file.open('rb') as stream:
+        while chunk := stream.read(1024 * 1024):
+            hasher.update(chunk)
+    digest = hasher.hexdigest()
     if digest!=record.get('file_sha256') or digest!=job['source']['sha256']:
         reject('Retry source must exactly match accepted parent file hash')
-    loaded=trimesh.load(file,force='mesh',process=False)
-    if mesh_hash(loaded.vertices,loaded.faces)!=record['mesh_hash']:
-        reject('Parent mesh hash changed')
+    # The exact accepted GLB is now bound to the job. The worker independently
+    # verifies its decoded geometry hash in the mesh runtime before running QEM.
+    if not re.fullmatch(r'[0-9a-f]{64}', str(record.get('mesh_hash') or '')):
+        reject('Parent mesh hash missing or invalid')
     original_sha=geometry.get('retry',{}).get('originalSourceSha256') or geometry.get('sourceFileSha256')
     if not original_sha or job['source'].get('highSha256')!=original_sha:
         reject('Retry requires the exact original high source identity')
@@ -50,6 +51,8 @@ def validate_retry_context(manager, job):
 
 
 def seeded_order(vertices, faces, seed):
+    import numpy as np
+
     if type(seed) is not int or not 0<=seed<=4294967295:
         raise ValueError('seed must be uint32')
     rng=np.random.Generator(np.random.PCG64(seed))
@@ -70,6 +73,8 @@ def resolve_retry_target(params, context, source_faces, parent_faces):
     Public lodNKeepPercent fields are default-filled before reaching the worker
     and must never be interpreted as explicit changes to frozen retry settings.
     """
+    from native3d_lod_source import logical_target
+
     stage=params.get('retryStage')
     if stage not in ('lod1','lod2','lod3','lod4') or not params.get('retryJobId') or 'seed' not in params:
         raise ValueError('Retry target requires complete retry context')
@@ -95,7 +100,12 @@ def resolve_retry_target(params, context, source_faces, parent_faces):
 
 
 def run_retry(parent, high, output, params, context, progress=None):
+    import numpy as np
     import open3d as o3d
+    from native3d_geometry import mesh_hash
+    from native3d_geometry_audit import audit_geometry, require_audited
+    from native3d_lod_source import _canonical_mesh, _save_mesh, _Reference, _sample
+
     start=time.monotonic(); deadline=start+900; folder=Path(output); folder.mkdir(parents=True,exist_ok=True)
     level=int(params['retryStage'][3:]); stage=params['retryStage']; seed=params['seed']
     if not 1<=level<=4 or context['parentStage']!='lod'+str(level-1) or context['retryStage']!=stage or context['retryJobId']!=params['retryJobId'] or mesh_hash(parent.vertices,parent.faces)!=context['parentMeshHash']:

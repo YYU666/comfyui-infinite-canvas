@@ -1,5 +1,6 @@
 import { nativeTakeover } from './native3d-takeover.js';
 import { assetUrl } from './project-store-http.js';
+import * as canvasPage from './canvas-current-page.js';
 import {compactNative3DGraph} from './native3d-inline-migration.js';
 import {nativeOutputNode,nativeAppendOutput,nativePatchOutputData,nativeBindOutputEdges,nativeOutputForEdge,nativeOutputCandidates} from './native3d-output.js';
 import {native3DNotifications} from './native3d-notifications.js';
@@ -18,6 +19,21 @@ import {nativeInputs,planRecord,planConfirmationKey,assertPlanCurrent,assertConf
 import { transferNativeArtifacts, nativeRunIsCurrent, commitNativeDelivery } from './native3d-delivery.js';
 import { nativeStagePlan, applyNativeStagePlan, saveNativeStagePoster } from './native3d-stage.js';
 import { nativeUVIdentity, nativeUVHasLayout, saveNativeUVPreviews, nativeUVDeliveredPreviews } from './native3d-uv-preview.js';
+
+function matchesNativePageJob(job, submission, origin, originNodeId) {
+  return Boolean(job.canvasSubmission) && job.canvasSubmission.origin === origin
+    && ['projectId','nodeId','opId'].every(key => job[key] === submission[key] && job.canvasSubmission[key] === submission[key])
+    && (job.canvasSubmission.originNodeId || null) === (originNodeId || null)
+    && job.operation === submission.operation && job.source?.assetPath === submission.source.assetPath
+    && job.source?.highAssetPath === submission.source.highAssetPath;
+}
+
+function requireAgentNativePage(options) {
+  if (options.origin === 'agent' && (!options.requestId || options.page?.opId !== options.requestId)) {
+    throw Error('缺少本次 Agent 3D 动作的当前页面凭据。');
+  }
+  options.assertActive?.();
+}
 
 export const PLAN_PREVIEW_MODES=['regions','convex','details','ao'];
 export function supportsPlanPreviews(plan) {
@@ -138,11 +154,20 @@ export function useNative3D(options) {
     catch(error){if(latest.current.projectId===projectId&&o.nodesRef.current===plan.nodes&&o.edgesRef.current===plan.edges){o.nodesRef.current=beforeNodes;o.edgesRef.current=beforeEdges;o.setNodes(beforeNodes);o.setEdges(beforeEdges);}throw error;}
     return {...plan.summary,dryRun:false};
   }
-  async function run(id) {
+  async function run(id, options = {}) {
+    requireAgentNativePage(options);
     const o = current();
     let node = o.nodesRef.current.find(n => n.id === id);
     if (!node) throw new Error('3D节点已不存在。');
-    if (node.data.nativeJobId && node.data.nativeDeliveryErrorJobId === node.data.nativeJobId) return retryDelivery(id);
+    if (options.requestId && node.data.nativeRun?.opId === options.requestId) {
+      const receipt = await syncTask(id);
+      if (!receipt.jobId) throw Error('原请求未被后台接受，请使用新请求重新运行此节点。');
+      return { ok:true, ...receipt, opId: options.requestId, execution:'accepted' };
+    }
+    if (node.data.nativeJobId && node.data.nativeDeliveryErrorJobId === node.data.nativeJobId) {
+      if (options.origin === 'agent') throw Error('旧任务待交付，请先通过同步任务恢复结果。');
+      return retryDelivery(id);
+    }
     if(node.data.nativeSubmissionUncertain)throw Error('提交结果待核实，请先同步任务状态；不会更换种子或重复提交。');
     if(node.data.nativeLocalRepair&&(node.data.nativeRun||node.data.nativeJobId))throw Error('此候选已有局部修复尝试，请查看已有进度或结果。');
 
@@ -185,7 +210,7 @@ export function useNative3D(options) {
         await o.persistProject();
         if (!sameSource()) throw Error('模型输入已改变。');
         patch(id,{...previous,nativeSourceImport:null});
-        return run(id);
+        return run(id, options);
       } catch (error) {
         if (ownsImport()) patch(id,{...previous,nativeSourceImport:null,error:error.message});
         throw error;
@@ -231,32 +256,77 @@ export function useNative3D(options) {
       }
       if(node.data.operation==='bake'&&parameters.reviewedBoundaryJobId){const highHash=inputs.high?.data.assetPath?.match(/^assets\/([a-f0-9]{64})\.[a-z0-9]+$/)?.[1];if(!highHash)throw Error('已审阅候选烘焙需要明确连接且已保存的材质高模。');parameters={...parameters,reviewedBoundaryBakeHighSha256:highHash};}
       const geometryError=nativeGeometryInputError(source,node.data.operation,parameters);if(geometryError)throw Error(geometryError);
-      const opId = crypto.randomUUID(); trackedOpId = opId;
+      if (options.origin === 'agent') {
+        if (!await o.focusNode?.(id,{duration:0})) throw Error('当前画布无法定位 3D 任务节点。');
+        if (!ownsDraft()) throw Error('定位后模型输入或当前任务已改变，请重新确认。');
+      }
+      const opId = options.requestId || crypto.randomUUID();
+      trackedOpId = opId;
+      const requestOrigin = options.origin === 'agent' ? 'agent' : 'manual';
+      const getPage = Reflect.get(canvasPage, 'getVisibleGenerationPage');
+      const livePage = options.page || getPage?.(o.projectId);
+      if (!livePage) throw Error('没有连接到当前可写画布，本次 3D 任务未提交。');
+      const page = { epoch:livePage.epoch, sessionId:livePage.sessionId,
+        ...(requestOrigin === 'agent' ? { opId:livePage.opId,
+          ...(options.originNodeId ? { originNodeId:options.originNodeId } : {}) } : {}) };
+      if (!page.epoch || !page.sessionId || (requestOrigin === 'agent' && page.opId !== opId)) {
+        throw Error('3D 任务与本次画布派发不一致。');
+      }
       const snapshot = { opId, identity };
-      patch(id, { status: 'queued', progress:null, error: null, stage: '提交3D任务', nativeJobId: null, nativeDeliveryErrorJobId: null,nativeSubmissionUncertain:false,nativeBackendStatus:null,
+      const adapterId = adapter?.id || adapter?.adapterId;
+      const originalAssetPath = inputs.high?.data.assetPath || source.data.originalAssetPath || source.data.assetPath;
+      const submission = {
+        opId, projectId: o.projectId, nodeId: id, operation: node.data.operation,
+        source: { assetPath: source.data.assetPath,
+          ...(['bake','repair_lod','uv','uv_plan','source_lod'].includes(node.data.operation) ? { highAssetPath: originalAssetPath } : {}) },
+        parameters, ...(adapterId ? { adapterId } : {}),
+      };
+      options.assertActive?.();
+      patch(id, { status: 'submitting', progress:null, error: null, stage: '待提交3D任务', nativeJobId: null, nativeDeliveryErrorJobId: null,nativeSubmissionUncertain:true,nativeBackendStatus:null,
         ...((node.data.operation==='source_lod'&&parameters.retryStage)?{nativeLODLastSubmittedSeed:parameters.seed}:{}),
-        nativeRun: { ...snapshot, parameters, ...((['uv_plan','source_lod'].includes(node.data.operation) || inputs.high || inputs.plan) ? {inputsVersion:2}:{}),adapterId: adapter?.id || adapter?.adapterId, sourceId: source.id, sourceAssetPath: source.data.assetPath,highAssetPath:inputs.high?.data.assetPath, originalAssetPath: inputs.high?.data.assetPath || source.data.originalAssetPath || source.data.assetPath } });
+        nativeRun: { ...snapshot, parameters, requestOrigin, submission, page,
+          ...((['uv_plan','source_lod'].includes(node.data.operation) || inputs.high || inputs.plan) ? {inputsVersion:2}:{}),
+          adapterId, sourceId: source.id, sourceAssetPath: source.data.assetPath, highAssetPath:inputs.high?.data.assetPath, originalAssetPath } });
       await o.persistProject();
       assertRun(o.projectId, id, snapshot);
+      options.assertActive?.();
       submissionStarted = true;
-      const value = await nativeRequest('/jobs', { opId, projectId: o.projectId, nodeId: id, operation: node.data.operation,
-        source: { assetPath: source.data.assetPath, ...(['bake','repair_lod','uv','uv_plan','source_lod'].includes(node.data.operation) ? { highAssetPath: inputs.high?.data.assetPath || source.data.originalAssetPath || source.data.assetPath } : {}) },
-        parameters, ...(adapter?.id || adapter?.adapterId ? { adapterId: adapter.id || adapter.adapterId } : {}) });
+      const value = await nativeRequest('/jobs', submission, {
+        'X-Refmuse-Native3D-Page': requestOrigin, 'X-Refmuse-Native3D-Proof': JSON.stringify(page),
+      });
+      const job = value.job || value;
+      if (!/^n3d_[a-f0-9]{32}$/.test(job.id || '') || !matchesNativePageJob(job, submission, requestOrigin, page.originNodeId)) {
+        throw Error('3D 后台回执与本次画布提交不一致，请同步任务。');
+      }
+      submittedJobId = job.id;
       assertRun(o.projectId, id, snapshot);
-      submittedJobId = (value.job || value).id;
       if(typeof native3DNotifications!=='undefined')native3DNotifications.arm(submittedJobId);
-      patch(id, { nativeJobId: submittedJobId });
-      await o.persistProject();
-      assertRun(o.projectId, id, snapshot);
+      if (latest.current.nodesRef.current.find(n => n.id === id)?.data.nativeJobId !== submittedJobId) {
+        patch(id, { nativeJobId:submittedJobId, status:job.status === 'running' ? 'running' : 'queued',
+          stage:'后台已接受，正在同步任务', nativeSubmissionUncertain:false, nativeBackendStatus:job.status });
+      }
+      try {
+        await o.persistProject();
+      } catch (error) {
+        if (ownsDraft()) patch(id,{error:`后台已接受，状态保存失败：${error.message}`});
+      }
+      return { ok:true, jobId: submittedJobId, opId, status:job.status, execution:'accepted' };
     } catch (error) {
-      if (ownsDraft() && [422].includes(error.status) && error.code?.startsWith('NATIVE3D_GLB_')) {
-        const {status,progress,stage,nativeRun,nativeJobId,nativeDeliveryErrorJobId,nativeBackendStatus,nativeSubmissionUncertain} = node.data;
-        patch(id,{status,progress,stage,nativeRun,nativeJobId,nativeDeliveryErrorJobId,nativeBackendStatus,nativeSubmissionUncertain,error:error.message});
-      } else if (ownsDraft()) patch(id, { nativeSubmissionUncertain:submissionStarted&&!submittedJobId,...((!submissionStarted)?{nativeRun:null,nativeLocalRepairSaveFailed:Boolean(node.data.nativeLocalRepair),nativeRetrySaveFailed:Boolean(node.data.nativeRetryFailureJobId)}:{}), status: submittedJobId ? 'queued' : 'error', error: submittedJobId ? `任务已提交，状态保存失败：${error.message}` : error.message });
+      if (ownsDraft()) {
+        const refused = !submissionStarted || (error.status >= 400 && error.status < 500 && error.code !== 'OP_ID_CONFLICT');
+        if (refused) {
+          const {status,progress,stage,nativeRun,nativeJobId,nativeDeliveryErrorJobId,nativeBackendStatus,nativeSubmissionUncertain,nativeLODLastSubmittedSeed} = node.data;
+          patch(id,{status,progress,stage,nativeRun,nativeJobId,nativeDeliveryErrorJobId,nativeBackendStatus,nativeSubmissionUncertain,nativeLODLastSubmittedSeed,error:error.message});
+        } else {
+          patch(id,{nativeSubmissionUncertain:!submittedJobId,status:submittedJobId?'queued':'submitting',
+            stage:submittedJobId?'后台已接受，正在同步任务':'核实后台是否已接受',error:error.message});
+        }
+      }
+      if (submittedJobId) return { ok:true, jobId:submittedJobId, opId:trackedOpId, status:'accepted', execution:'accepted' };
       throw error;
     }
   }
-  async function importModel(id, file) {
+  async function importModel(id, file, { analyze = true } = {}) {
     const o = current();
     const token = crypto.randomUUID(); imports.current.set(id, token);
     let submissionStarted = false;
@@ -273,6 +343,7 @@ export function useNative3D(options) {
       patch(id, { nativePendingSource: { path, name: file.name }, nativeJobId: null, nativeRun: null, status: 'idle', error: null });
       await o.persistProject();
       if (!ownsImport()) throw new Error('导入目标已改变，旧素材未绑定。');
+      if (!analyze) return { nodeId:id, assetPath:path, imported:true, generated:false };
       submissionStarted = true;
       await run(id);
     } catch (error) {
@@ -288,9 +359,23 @@ export function useNative3D(options) {
     const assertCurrent=()=>assertRun(projectId,node.id,before);
     let job;
     if(before.jobId){const response=await nativeRequest(`/jobs/${encodeURIComponent(before.jobId)}`);job=response.job||response;}
+    else if (before.submission && before.page) {
+      const query = new URLSearchParams({ projectId, nodeId:node.id, opId:before.opId });
+      const response = await nativeRequest(`/submission?${query}`);
+      assertCurrent();
+      if (response.status === 'not_submitted') {
+        patch(node.id, { nativeRun:null, nativeSubmissionUncertain:false, status:'idle',
+          stage:'原页面已关闭，后台未接受这次请求', error:null });
+        if (retrySave) await o.persistProject(true);
+        return { jobId:null, opId:before.opId, status:response.status };
+      }
+      if (!response.job) throw Error('后台尚未确认原请求，未重复提交。');
+      job = response.job;
+    }
     else{const response=await nativeRequest(`/jobs?projectId=${encodeURIComponent(projectId)}`);const matches=(response.jobs||[]).filter(j=>j.nodeId===node.id&&j.opId===before.opId);if(matches.length!==1)throw Error('尚未找到唯一已提交任务，未重复计算。');job=matches[0];}
     assertCurrent();
-    if(job.projectId!==projectId||job.nodeId!==node.id||job.opId!==before.opId||job.operation!==node.data.operation||job.source?.assetPath!==before.sourceAssetPath)throw Error('后台任务来源与当前提交不一致。');
+    if(job.projectId!==projectId||job.nodeId!==node.id||job.opId!==before.opId||job.operation!==node.data.operation||job.source?.assetPath!==before.sourceAssetPath
+      || (before.submission && !matchesNativePageJob(job, before.submission, before.requestOrigin, before.page?.originNodeId))) throw Error('后台任务来源与当前提交不一致。');
     const terminal=['succeeded','completed','success'].includes(job.status),failed=['failed','error','cancelled'].includes(job.status);
     patch(node.id,{nativeJobId:job.id,nativeSubmissionUncertain:false,nativeBackendStatus:job.status,status:terminal?'finishing':job.status,progress:Number.isFinite(job.progress)?Math.round(job.progress*100):null,stage:terminal?'后台已完成，正在同步结果':job.stage,error:failed?(typeof job.error==='string'?job.error:job.error?.message):null});
     before.jobId=job.id;
@@ -353,7 +438,7 @@ export function useNative3D(options) {
       const o = latest.current;
       if(typeof native3DNotifications!=='undefined'&&!o.readOnly&&!o.switchingRef.current)native3DNotifications.observe(o.nodesRef.current);
       try {
-        if(!o.readOnly&&!o.switchingRef.current)for(const pending of o.nodesRef.current.filter(n=>n.type==='native3d'&&n.data.nativeRun?.opId&&!n.data.nativeJobId&&(n.data.nativeSubmissionUncertain||n.data.status==='queued'))){try{await syncTask(pending.id,false);}catch{/* unresolved submission stays bound; never auto-resubmit */}}
+        if(!o.readOnly&&!o.switchingRef.current)for(const pending of o.nodesRef.current.filter(n=>n.type==='native3d'&&n.data.nativeRun?.opId&&!n.data.nativeJobId&&(n.data.nativeSubmissionUncertain||['submitting','queued'].includes(n.data.status)))){try{await syncTask(pending.id,false);}catch{/* unresolved submission stays bound; never auto-resubmit */}}
         if (!o.readOnly && !o.switchingRef.current) for (const node of o.nodesRef.current.filter(n => n.type === 'native3d' && n.data.nativeJobId && n.data.nativeDeliveredJobId !== n.data.nativeJobId && n.data.nativeDeliveryErrorJobId !== n.data.nativeJobId && n.data.status!=='stale'&&!['failed','error','cancelled'].includes(n.data.nativeBackendStatus))) {
           const before = { ...node.data.nativeRun, jobId: node.data.nativeJobId };
           let job;
@@ -487,11 +572,12 @@ export function useNative3D(options) {
       return {ready:true,...target};
     }catch(error){return {ready:false,message:error.message};}
   }
-  async function repairLOD(id,settings={}) {
+  async function repairLOD(id,settings={},options={}) {
+    requireAgentNativePage(options);
     const initial=current(),projectId=initial.projectId,bound=initial.nodesRef.current.find(n=>n.id===id);
     const origin=nextStepOrigin(bound),jobId=bound?.data.sourceJobId||bound?.data.nativeJobId;
     if(!jobId)throw Error('缺少当前候选任务。');
-    const repairKey=`${projectId}:${jobId}:${JSON.stringify(settings)}`;
+    const repairKey=`${projectId}:${jobId}:${JSON.stringify(settings)}:${options.requestId || 'manual'}`;
     if(localRepairPromises.current.has(repairKey))return localRepairPromises.current.get(repairKey);
     const promise=withNativeRerunLock(rerunLocks.current,`local-repair:${jobId}`,async()=>{
       const assertOrigin=()=>{const o=current();if(o.projectId!==projectId||nextStepOrigin(o.nodesRef.current.find(n=>n.id===id))!==origin)throw Error('来源或项目已改变，修复未继续。');return o;};
@@ -504,12 +590,12 @@ export function useNative3D(options) {
       const plan=localRepairDraft({...args,bound:draftSource(o),nodes:o.nodesRef.current,edges:o.edgesRef.current,id:`native3d-local-repair-${crypto.randomUUID()}`});
       if(!plan.reused){o.recordHistory?.(o.nodesRef.current,o.edgesRef.current);o.nodesRef.current=o.nodesRef.current.concat(plan.node);o.edgesRef.current=o.edgesRef.current.concat(plan.edges);o.setNodes(o.nodesRef.current);o.setEdges(o.edgesRef.current);}
       o.focusNode?.(plan.node.id);
-      if(plan.node.data.nativeRun||plan.node.data.nativeJobId)return {nodeId:plan.node.id,reused:true,status:plan.node.data.status,jobId:plan.node.data.nativeJobId};
+      if(plan.node.data.nativeRun||plan.node.data.nativeJobId)return {nodeId:plan.node.id,reused:true,generated:false,status:plan.node.data.status,existingJobId:plan.node.data.nativeJobId};
       const retrySave=Boolean(plan.node.data.nativeLocalRepairSaveFailed);
       try{await o.persistProject(retrySave);}catch(error){o=assertOrigin();o.updateNode(plan.node.id,{nativeLocalRepairSaveFailed:true});throw error;}
       o=assertOrigin();localRepairDraft({...args,bound:draftSource(o),nodes:o.nodesRef.current,edges:o.edgesRef.current,id:plan.node.id});
-      await run(plan.node.id);
-      return {nodeId:plan.node.id,reused:plan.reused,generated:true};
+      const receipt = await run(plan.node.id,{...options,originNodeId:id});
+      return {...receipt,nodeId:plan.node.id,reused:plan.reused,generated:Boolean(receipt?.jobId)};
     });
     localRepairPromises.current.set(repairKey,promise);
     try{return await promise;}finally{localRepairPromises.current.delete(repairKey);}
@@ -578,7 +664,8 @@ export function useNative3D(options) {
       }
     });
   }
-  async function retryLOD(id) {
+  async function retryLOD(id,options={}) {
+    requireAgentNativePage(options);
     const initial=current(),projectId=initial.projectId,bound=initial.nodesRef.current.find(n=>n.id===id),origin=nextStepOrigin(bound);
     const jobId=bound?.data.sourceJobId||bound?.data.nativeJobId;
     if(!jobId)throw Error('缺少本档失败任务。');
@@ -610,13 +697,18 @@ export function useNative3D(options) {
       const fresh=o.nodesRef.current.find(n=>n.id===newId),actualLinks=o.edgesRef.current.filter(e=>e.target===newId&&['model','high'].includes(e.targetHandle)).map(e=>[e.source,e.targetHandle]).sort();
       if(JSON.stringify(fresh?.data.nativeParameters)!==parameters||JSON.stringify(actualLinks)!==links)throw Error('重试设置或输入连接已改变，未提交。');
       nativeLODStageRetryPlan(virtual,o.nodesRef.current.filter(n=>n.id!==newId),parent,projectId,seed,newId);
-      await run(newId);return {nodeId:newId,seed,retryStage:stage,retryJobId:parentId,keepPercent:keep};
+      const receipt = await run(newId,{...options,originNodeId:id});
+      return {...receipt,nodeId:newId,seed,retryStage:stage,retryJobId:parentId,keepPercent:keep};
     });
   }
-  async function rerunResult(id) {
+  async function rerunResult(id,options={}) {
+    requireAgentNativePage(options);
     const target=rerunStatus(id);
     if(!target.ready)throw new Error(target.message);
-    if(target.operation!=='source_lod')return withNativeRerunLock(rerunLocks.current,target.processorId,()=>run(target.processorId));
+    if(target.operation!=='source_lod') {
+      if(options.origin==='agent')throw Error('请从原可编辑处理节点重新运行此步骤。');
+      return withNativeRerunLock(rerunLocks.current,target.processorId,()=>run(target.processorId,options));
+    }
     const initial=current(),key=`${target.retryJobId}:${target.retryStage}`;
     return withNativeRerunLock(rerunLocks.current,key,async()=>{
       const assertOrigin=()=>{
@@ -643,10 +735,11 @@ export function useNative3D(options) {
         if(JSON.stringify(checked.edges)!==JSON.stringify(planned.edges))throw new Error('父LOD或高模来源已改变，未提交任务。');
         const draft=live.nodesRef.current.find(n=>n.id===newId);
         if(!draft||JSON.stringify(draft.data.nativeParameters)!==JSON.stringify(planned.node.data.nativeParameters))throw new Error('单档重试设置已改变，未提交。');
-        await run(newId);
-        return {nodeId:newId,seed,retryStage:target.retryStage,retryJobId:target.retryJobId};
+        const receipt = await run(newId,{...options,originNodeId:id});
+        return {...receipt,nodeId:newId,seed,retryStage:target.retryStage,retryJobId:target.retryJobId};
       }catch(error){
-        if(latest.current.projectId===initial.projectId&&!latest.current.nodesRef.current.find(n=>n.id===newId)?.data.nativeJobId)patch(newId,{status:'error',error:error.message});
+        const draft = latest.current.nodesRef.current.find(n=>n.id===newId);
+        if(latest.current.projectId===initial.projectId&&!draft?.data.nativeJobId&&!draft?.data.nativeSubmissionUncertain)patch(newId,{status:'error',error:error.message});
         throw error;
       }
     });
@@ -707,7 +800,7 @@ export function useNative3D(options) {
       if (plan.planSha256!==hash || node.data.nativeUVPlanViewed!==key || viewedPlans.current.get(id)?.key!==key || viewedPlans.current.get(id)?.projectId!==o.projectId) throw Error('请先在当前页3D面板查看真实方案。');
       patch(id,{nativeUVPlanConfirmation:key});
       try {await o.persistProject();assertLivePlan(plan,current());} catch(error) {if(latest.current.projectId===o.projectId)patch(id,{nativeUVPlanConfirmation:null});throw error;}
-      return {nodeId:id,planSha256:hash,confirmed:true};
+      return {nodeId:id,planSha256:hash,confirmed:true,generated:false};
     },
     createStage: async ({sourceId,stage,...position}) => {
       const o=current();const source=o.nodesRef.current.find(n=>n.id===sourceId);

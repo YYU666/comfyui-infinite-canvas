@@ -17,6 +17,7 @@ except ImportError:
     psutil = None
 from native3d_presets import AI_LOWPOLY_DEFAULTS, AI_LOWPOLY_PRESET
 from project_store import StoreError
+from native3d_canvas_submission import check_saved_submission
 from native3d_fbx import capabilities as fbx_capabilities
 
 TERMINAL = {'succeeded', 'failed', 'cancelled'}
@@ -429,6 +430,22 @@ class Native3DJobs:
         with self.lock:
             return [copy.deepcopy(job) for job in self.jobs.values() if job['projectId'] == project_id]
 
+    def submission_status(self, project_id, node_id, op_id, bridge):
+        with self.lock:
+            for job in self.jobs.values():
+                if (job['projectId'], job['nodeId'], job['opId']) == (project_id, node_id, op_id):
+                    return {'job': copy.deepcopy(job)}
+            saved = self.store.get(project_id)
+            node = next((n for n in saved['canvas']['nodes'] if n['id'] == node_id and n['type'] == 'native3d'), None)
+            run = node['data'].get('nativeRun') if node else None
+            proof = run.get('page') if isinstance(run, dict) and run.get('opId') == op_id else None
+            if bridge is not None and isinstance(proof, dict) and isinstance(proof.get('sessionId'), str):
+                with bridge.lock:
+                    bridge._expire()
+                    if proof.get('epoch') != bridge.epoch or proof['sessionId'] not in bridge.sessions:
+                        return {'status': 'not_submitted'}
+            return {'status': 'pending'}
+
     def _canvas_source_records(self, document, asset_path):
         """Include historical inline outputs; their canvas labels cannot grant quality."""
         for node in document.get('canvas', {}).get('nodes', document.get('nodes', [])):
@@ -461,7 +478,7 @@ class Native3DJobs:
                     fail('Inline source is not a recorded job output', 409, 'GEOMETRY_BLOCKED')
                 yield output
 
-    def submit(self, payload):
+    def submit(self, payload, *, canvas_submission=None):
         if not isinstance(payload, dict) or set(payload) - {'opId','projectId','nodeId','operation','source','parameters','adapterId'}:
             fail('Unknown job fields')
         for key in ('opId','projectId','nodeId'):
@@ -482,13 +499,18 @@ class Native3DJobs:
         if len(encoded.encode()) > 65536:
             fail('Job request exceeds 64 KiB')
         fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
+        page, proof, live_page = canvas_submission or (None, None, None)
         with self.lock:
             for job in self.jobs.values():
                 if job['projectId'] == payload['projectId'] and job['opId'] == payload['opId']:
                     if job['fingerprint'] != fingerprint:
                         fail('opId already used with different payload', 409, 'OP_ID_CONFLICT')
+                    if page is not None and job.get('canvasSubmission') != page:
+                        fail('Job does not belong to this canvas submission', 409, 'NATIVE3D_CANVAS_MISMATCH')
                     return copy.deepcopy(job)
             document = self.store.get(payload['projectId'])
+            if page is not None:
+                check_saved_submission(document, payload, encoded, page, proof, self.jobs.get)
             if payload['operation'] in ('uv_plan','uv','bake'):
                 for data in self._canvas_source_records(document, source['assetPath']):
                     geometry=data.get('metadata',{}).get('geometry',{})
@@ -533,6 +555,8 @@ class Native3DJobs:
                 job = {**copy.deepcopy(payload), 'parameters': parameters, 'id': job_id,
                        'fingerprint': fingerprint, 'status':'queued', 'stage':'queued', 'progress':0,
                        'source':{**source, 'sha256':sha}, 'createdAt':time.time()}
+                if page is not None:
+                    job['canvasSubmission'] = page.copy()
                 config = self.config()
                 request = {**copy.deepcopy(job), 'sourcePath':str(snapshot), 'adapterConfig':config.get('adapterConfig', {})}
                 if parameters.get('reviewedBoundaryJobId') and not source.get('highAssetPath'):
@@ -590,13 +614,25 @@ class Native3DJobs:
                     if reuse is not None:request['bakePaddingReuse']=reuse
                 atomic(directory / 'request.json', request)
                 atomic(directory / 'runtime.json', config)
-                self._persist(job)
-                self.jobs[job_id] = job
+                if page is None:
+                    self._admit(job)
+                else:
+                    project_id = payload['projectId']
+                    project_path = self.store._project_path(project_id)
+                    with self.store._guard(project_path):
+                        self.store._require_writable(project_path)
+                        check_saved_submission(self.store.get(project_id), payload, encoded, page, proof, self.jobs.get)
+                        with live_page():
+                            self._admit(job)
             except Exception:
                 shutil.rmtree(directory)
                 raise
             self.wake.set()
             return copy.deepcopy(job)
+
+    def _admit(self, job):
+        self._persist(job)
+        self.jobs[job["id"]] = job
 
     def _snapshot_plan(self, job, directory):
         """Only immutable, same-project registered plan artifacts enter a worker."""

@@ -94,7 +94,7 @@ export function Native3DNode({ id, data, selected }) {
   const [uvBusy,setUVBusy]=useState(false); const [uvError,setUVError]=useState(''); const [enlarged,setEnlarged]=useState(false);
   const adapters = (api.capabilities?.adapters || []).filter(a => a.operation === data.operation || a.operations?.includes(data.operation));
   const adapter = adapters.find(a => (a.id || a.adapterId) === data.adapterId) || adapters[0] || api.capabilities?.operations?.[data.operation];
-  const busy = ['uploading','queued','running','finishing'].includes(data.status);
+  const busy = ['uploading','submitting','queued','running','finishing'].includes(data.status);
   const locked = api.readOnly || busy;
   const busyFeedback=native3DBusyFeedback(data);
   const reviewedWarning=reviewedDownstreamWarning(data);
@@ -182,7 +182,7 @@ export function Native3DNode({ id, data, selected }) {
       {planOutput && <small>确认后从方案端口连接UV展开</small>}
       {bakePreview&&<section className="native3d-next-step"><strong>{bakePreview.mode==='grey'?'灰模外形':`烘焙贴图 · ${bakePreview.selected.label}`}</strong><div className="native3d-actions">{bakePreview.channels.map(channel=><button key={channel.key} disabled={api.readOnly} aria-pressed={bakePreview.mode===channel.key} onClick={()=>api.patch(id,{nativeBakePreviewMode:channel.key})}>{channel.label}</button>)}</div><small>此处为二维贴图；双击放大。查看模型上的材质请打开3D效果。</small><button onClick={()=>api.view({path:bakePreview.materialPath,title:data.title,materialPreview:true})}>查看材质效果</button></section>}
       {uvIdentity && <><div className="native3d-actions">{uvPreviews ? uvModes.map(mode=><button key={mode} aria-pressed={uvMode===mode} disabled={api.readOnly} onClick={()=>api.patch(id,{nativeUVPreviewMode:mode})}>{({seams:'最终缝',checker:'棋盘',layout:'UV图集',ao:'AO依据','ao-seams':'候选缝',grey:'灰模'})[mode]}</button>) : <button disabled={locked || uvBusy} onClick={refreshUV}>{uvBusy ? '读取UV预览…' : '显示UV切缝'}</button>}{uvPreviews && <button disabled={locked || uvBusy} title="更新UV预览" onClick={refreshUV}>{uvBusy ? '读取UV预览…' : uvPreviews.seamsAssetPath?'更新UV预览':'显示表面切缝 / 棋盘'}</button>}</div><small>{uvPreviews ? uvLegend : '当前为灰模外形；点击显示真实UV切缝与棋盘预览。'}</small>{uvPreviews?.aoUnavailable && <small>AO来源证据不足，诊断不可用。</small>}{uvError && <p className="native3d-error">{uvError}</p>}</>}
-      <small>{acceptedLOD?'几何检查通过 · 可继续LOD或制作UV':data.nativeUVPlan?`切缝已生成 · ${planConfirmed?'已确认':'待确认'}`:`${displayTriangles?`${displayTriangles} 面 · `:''}${({idle:'待开始',completed:'已完成',failed:'失败',error:'失败',queued:'排队中',running:'处理中',finishing:'保存中',stale:'输入已改变',cancelled:'已取消',uploading:'导入中'}[data.status]||'待开始')}${needsReview?' · 待复核':''}${busy?` · ${data.progress!=null?`${Math.round(data.progress)}%`:''}`:''}`}</small>
+      <small>{acceptedLOD?'几何检查通过 · 可继续LOD或制作UV':data.nativeUVPlan?`切缝已生成 · ${planConfirmed?'已确认':'待确认'}`:`${displayTriangles?`${displayTriangles} 面 · `:''}${({idle:'待开始',completed:'已完成',failed:'失败',error:'失败',submitting:'待提交确认',queued:'排队中',running:'处理中',finishing:'保存中',stale:'输入已改变',cancelled:'已取消',uploading:'导入中'}[data.status]||'待开始')}${needsReview?' · 待复核':''}${busy?` · ${data.progress!=null?`${Math.round(data.progress)}%`:''}`:''}`}</small>
       {uvSummary && <small>{uvSummary}</small>}
       <details className="native3d-settings"><summary>模型与设置</summary>
       <div className="native3d-settings-content"><div>{data.name || `${fbxReady ? 'FBX / ' : ''}GLB / OBJ 静态资产`}</div><small>顶点 {metadata.vertices ?? '—'}</small>

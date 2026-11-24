@@ -84,6 +84,63 @@ class Native3DJobsTests(unittest.TestCase):
         with self.assertRaises(StoreError) as error:
             self.jobs.submit(self.payload)
         self.assertEqual(409,error.exception.status)
+    def test_saved_canvas_claim_is_required_before_one_durable_dispatch(self):
+        from contextlib import contextmanager
+        project_id = self.doc["id"]
+        payload = {**self.payload,"operation":"source_lod","parameters":{"lodCount":2},
+                   "source":{**self.payload["source"],"highAssetPath":self.asset["path"]}}
+        page = {"origin":"agent",**{key:payload[key] for key in ("projectId","nodeId","opId")}}
+        proof = {"epoch":"epoch_1","sessionId":"session_1","opId":payload["opId"]}
+        active = True
+        @contextmanager
+        def live_page():
+            if not active:
+                raise StoreError("NO_VISIBLE_CANVAS","page closed",409)
+            yield
+        claim = (page, proof, live_page)
+        with self.assertRaises(StoreError) as unsaved:
+            self.jobs.submit(payload, canvas_submission=claim)
+        self.assertEqual(unsaved.exception.code, "NATIVE3D_CANVAS_MISMATCH")
+        document = self.store.get(project_id)
+        source = {"id":"generated","type":"media","position":{"x":0,"y":0},
+                  "data":{"kind":"model","assetPath":self.asset["path"]}}
+        node = {"id":payload["nodeId"],"type":"native3d","position":{"x":300,"y":0},
+                "data":{"operation":"source_lod","status":"submitting","nativeRun":{
+                    "opId":payload["opId"],"requestOrigin":"agent","page":proof,"submission":payload,
+                    "parameters":payload["parameters"],"sourceId":"generated","sourceAssetPath":self.asset["path"]}}}
+        document["canvas"]["nodes"] = [source,node]
+        document["canvas"]["edges"] = [{"id":"edge_1","source":"generated","target":node["id"],
+                                         "sourceHandle":"model","targetHandle":"model"}]
+        self.store.save(project_id, document, document["revision"])
+        with self.assertRaises(StoreError) as altered:
+            self.jobs.submit({**payload, "parameters":{"lodCount":3}}, canvas_submission=claim)
+        self.assertEqual(altered.exception.code, "NATIVE3D_CANVAS_MISMATCH")
+        active = False
+        with self.assertRaises(StoreError) as closed:
+            self.jobs.submit(payload, canvas_submission=claim)
+        self.assertEqual(closed.exception.code, "NO_VISIBLE_CANVAS")
+        self.assertEqual(list((self.root/"jobs").glob("n3d_*")),[])
+        from canvas_page_bridge import CanvasPageBridge
+        bridge = CanvasPageBridge()
+        bridge.epoch = proof["epoch"]
+        bridge.heartbeat({"sessionId":proof["sessionId"],"projectId":project_id,"visible":True})
+        self.assertEqual(self.jobs.submission_status(project_id, node["id"], payload["opId"], bridge),{"status":"pending"})
+        bridge.release({"sessionId":proof["sessionId"]})
+        self.assertEqual(self.jobs.submission_status(project_id, node["id"], payload["opId"], bridge),{"status":"not_submitted"})
+        active = True
+        accepted = self.jobs.submit(payload, canvas_submission=claim)
+        self.assertEqual(accepted["canvasSubmission"],page)
+        self.assertEqual(self.jobs.submit(payload, canvas_submission=claim)["id"],accepted["id"])
+        with self.assertRaises(StoreError) as replay:
+            self.jobs.submit({**payload,"parameters":{"lodCount":3}}, canvas_submission=claim)
+        self.assertEqual(replay.exception.code,"OP_ID_CONFLICT")
+        active = False
+        durable = self.jobs.list(project_id)
+        self.assertEqual([job["id"] for job in durable],[accepted["id"]])
+        self.assertEqual(durable[0]["parameters"]["lodCount"],2)
+        self.assertEqual(self.jobs.submission_status(project_id, node["id"], payload["opId"], bridge)["job"]["id"],accepted["id"])
+        self.assertTrue((self.root/"jobs"/accepted["id"]/"manifest.json").is_file())
+
     def test_source_traversal_and_hash(self):
         self.payload['source']['assetPath'] = 'assets/../../evil.obj'
         with self.assertRaises(StoreError): self.jobs.submit(self.payload)

@@ -48,6 +48,21 @@ export async function spriteRequest(path, { fetchImpl = fetch, ...options } = {}
   return body;
 }
 
+export async function spriteRequestJobId(projectId, nodeId, requestId) {
+  const bytes = new TextEncoder().encode([projectId, nodeId, requestId].join('\\0'));
+  const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes));
+  return 'spa_' + Array.from(digest.slice(0, 16), value => value.toString(16).padStart(2, '0')).join('');
+}
+
+export async function recoverSpriteRequest({ projectId, nodeId, requestId }, { signal, fetchImpl = fetch } = {}) {
+  const id = await spriteRequestJobId(projectId, nodeId, requestId);
+  const job = await spriteRequest('/jobs/' + id, { signal, fetchImpl });
+  if (job.id !== id || job.projectId !== projectId || job.nodeId !== nodeId || job.requestId !== requestId) {
+    throw new Error('精灵图任务回执不匹配。');
+  }
+  return job;
+}
+
 export const spritePost = payload => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
 
 const pollDelay = (milliseconds, signal) => new Promise((resolve, reject) => {

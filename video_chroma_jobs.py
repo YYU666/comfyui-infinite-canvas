@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 from project_store import StoreError
+from video_job_submission import prepared_video_submission, video_submission_fields
 from video_chroma_document import ChromaDocumentError, normalize_chroma_document, normalize_preview_request
 from video_chroma_ffmpeg import render_export, render_preview
 from video_edit_document import EditDocumentError
@@ -105,7 +106,7 @@ class VideoChromaJobs:
     def submit(self, payload):
         # Bind source resolution and admission to one project-store epoch.
         with self.lock:
-            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "foreground", "background", "settings"}:
+            if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "foreground", "background", "settings", "requestId"}:
                 raise _bad("绿幕扣像作业字段无效。")
             project_id, node_id = self._identity(payload)
             document = self._settings(payload)
@@ -113,7 +114,10 @@ class VideoChromaJobs:
             self.root.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
                 raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-            job_id = f"vck_{uuid.uuid4().hex}"
+            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vck', ('videoChromaKey',))
+            if existing:
+                return self.get(job_id)
+            job_id = job_id or f"vck_{uuid.uuid4().hex}"
             job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
                    "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
                    "foreground": payload.get("foreground"), "background": payload.get("background")}
@@ -124,7 +128,7 @@ class VideoChromaJobs:
                 if active:
                     raise StoreError("VIDEO_CHROMA_BUSY", "此绿幕节点已有导出作业，请等待或取消。", 409, {"jobId": active[0]["id"]})
                 self._trim()
-                self.jobs[job_id] = {**job, "_document": document, "_foreground": foreground, "_background": background, "_background_is_image": background_is_image}
+                self.jobs[job_id] = {**job, **video_submission_fields(payload), "_document": document, "_foreground": foreground, "_background": background, "_background_is_image": background_is_image}
                 self.wake.notify_all()
                 if not self.worker or not self.worker.is_alive():
                     self.worker = threading.Thread(target=self._loop, name="video-chroma-jobs", daemon=True)

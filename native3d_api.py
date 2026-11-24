@@ -3,6 +3,7 @@ import json
 import re
 import urllib.parse
 from project_store import StoreError
+from native3d_canvas_submission import authorize_page, canvas_bridge
 
 class Native3DAPI:
     def __init__(self, jobs):
@@ -31,6 +32,15 @@ class Native3DAPI:
             elif path == '/api/native3d/jobs':
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
                 handler.send_json(200, {'jobs':self.jobs.list(query.get('projectId', [''])[0])})
+            elif path == '/api/native3d/submission':
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+                if set(query) != {'projectId','nodeId','opId'} or any(
+                    len(values) != 1 or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', values[0])
+                    for values in query.values()
+                ):
+                    raise StoreError('BAD_REQUEST', 'Invalid Native3D submission identity.')
+                project_id, node_id, op_id = (query[key][0] for key in ('projectId','nodeId','opId'))
+                handler.send_json(200, self.jobs.submission_status(project_id, node_id, op_id, canvas_bridge(handler)))
             elif match := re.fullmatch(r'/api/native3d/jobs/(n3d_[a-f0-9]{32})', path):
                 handler.send_json(200, self.jobs.get(match[1]))
             elif match := re.fullmatch(r'/api/native3d/jobs/(n3d_[a-f0-9]{32})/diagnostic-preview/(layout|checker)', path):
@@ -107,7 +117,8 @@ class Native3DAPI:
                     payload = json.loads(handler.rfile.read(length).decode('utf-8'))
                 except (ValueError, UnicodeError):
                     raise StoreError('BAD_REQUEST', 'Expected JSON object up to 64 KiB')
-                handler.send_json(200, self.jobs.submit(payload))
+                page, proof, live_page = authorize_page(handler, payload)
+                handler.send_json(200, self.jobs.submit(payload, canvas_submission=(page, proof, live_page)))
             elif match := re.fullmatch(r'/api/native3d/jobs/(n3d_[a-f0-9]{32})/cancel', path):
                 handler.send_json(200, self.jobs.cancel(match[1]))
             else:

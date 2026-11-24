@@ -1240,7 +1240,7 @@ async function parseResponse(response) {
   try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text }; }
   if (!response.ok) {
     const detail = data?.node_errors ? `\n${JSON.stringify(data.node_errors)}` : '';
-    throw new Error(`${data?.error?.message || data?.error || `请求失败 (${response.status})`}${detail}`);
+    throw Object.assign(new Error(`${data?.error?.message || data?.error || data?.message || `请求失败 (${response.status})`}${detail}`), { status: response.status, code: data?.code });
   }
   return data;
 }
@@ -1311,9 +1311,9 @@ export async function importVideoFromUrl(url, { signal } = {}) {
   return parseResponse(response);
 }
 
-export async function optimizePrompt(options) {
+export async function optimizePrompt(options, { signal } = {}) {
   const response = await fetch('/api/optimize-prompt', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    signal, method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(options),
   });
   return parseResponse(response);
@@ -1331,17 +1331,17 @@ export function uploadImage(file) {
   return uploadMedia(file, 'image');
 }
 
-export function queuePrompt(workflow, clientId) {
-  return comfyFetch('/prompt', {
+export async function queuePrompt(workflow, clientId, page) {
+  return parseResponse(await fetch('/api/legacy/prompt', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt: workflow, client_id: clientId }),
-  });
+    body: JSON.stringify({ workflow, clientId, page }),
+  }));
 }
 
-export async function enqueueGeneration({ workflow, plan, projectId, nodeId, clientId, priority = 0 }) {
+export async function enqueueGeneration({ executionJson, projectId, nodeId, requestId, revision, page, priority = 0 }) {
   const response = await fetch('/api/queue', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workflow, plan, projectId, nodeId, clientId, priority }),
+    body: JSON.stringify({ executionJson, projectId, nodeId, requestId, revision, page, priority }),
   });
   return parseResponse(response);
 }
@@ -1349,6 +1349,16 @@ export async function enqueueGeneration({ workflow, plan, projectId, nodeId, cli
 export async function getQueueSnapshot() {
   const response = await fetch('/api/queue');
   return parseResponse(response);
+}
+
+export async function getGenerationJob(jobId) {
+  return parseResponse(await fetch('/api/queue/' + encodeURIComponent(jobId)));
+}
+
+export async function retryGenerationJob(jobId, preparation) {
+  return parseResponse(await fetch('/api/queue/' + encodeURIComponent(jobId) + '/retry', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(preparation),
+  }));
 }
 
 export async function cancelGenerationJob(jobId) {

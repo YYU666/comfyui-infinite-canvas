@@ -150,13 +150,17 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
 // 5. Runner: submit → poll → commit through the page's versioned asset channel → same node.
 {
   const calls = [];
-  const jobId = `ved_${'2'.repeat(32)}`;
+  let jobId;
   let polls = 0;
   globalThis.fetch = async (url, options = {}) => {
     calls.push([url, options.method || 'GET', options.body ? JSON.parse(options.body) : null]);
     const json = (status, value) => ({ ok: status < 400, status, json: async () => value, blob: async () => new Blob(['x'], { type: 'video/mp4' }) });
     if (url === '/comfy/view?filename=sam3.mp4') return json(200, {});
-    if (url === '/api/video-edit/jobs') return json(201, { id: jobId, status: 'queued', stage: '排队中', progress: 0 });
+    if (url === '/api/video-edit/jobs') {
+      const { projectId, nodeId, requestId } = JSON.parse(options.body);
+      jobId = `ved_${requestId}`;
+      return json(201, { id: jobId, projectId, nodeId, status: 'queued', stage: '排队中', progress: 0 });
+    }
     if (url === `/api/video-edit/jobs/${jobId}`) return json(200, ++polls < 2 ? { id: jobId, status: 'running', stage: '正在逐帧导出', progress: 0.5 } : { id: jobId, status: 'completed', stage: '已导出', progress: 1, result: { frames: 24, width: 128, height: 72, audio: 'clips' } });
     if (url === `/api/video-edit/jobs/${jobId}/commit`) return json(201, { asset: { path: `assets/${'e'.repeat(64)}.mp4` }, revision: 9 });
     if (url.endsWith('/cancel')) return json(200, {});
@@ -187,7 +191,7 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
   assert.equal(calls.find(([url]) => url.endsWith('/commit'))[2].revision, 8, 'commit 使用页面当前 revision');
   assert.equal(nodes[1].data.editResultDocument, JSON.stringify(nodes[1].data.editDocument));
   assert.equal(videoEditSummary(nodes[1].data).editStale, false);
-  assert.equal(persisted, 2, 'submission identity and completed asset are each saved');
+  assert.equal(persisted, 3, 'preparation, receipt and completed asset are each saved');
   assert.equal(jobs.has('e9'), false);
   // second run reuses the cached import and can be cancelled (only this job).
   polls = -1000;
@@ -211,9 +215,9 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
   const originalFetch = globalThis.fetch;
   let response, submitted = false;
   const cancelled = [];
-  const jobId = `ved_${'9'.repeat(32)}`;
+  let jobId;
   globalThis.fetch = async (url, options) => {
-    if (url === '/api/video-edit/jobs') { submitted = true; await new Promise(resolve => { response = resolve; }); return { ok: true, json: async () => ({ id: jobId }) }; }
+    if (url === '/api/video-edit/jobs') { const { projectId, nodeId, requestId } = JSON.parse(options.body); jobId = `ved_${requestId}`; submitted = true; await new Promise(resolve => { response = resolve; }); return { ok: true, json: async () => ({ id: jobId, projectId, nodeId }) }; }
     if (url.endsWith('/cancel')) { cancelled.push(JSON.parse(options.body)); return { ok: true, json: async () => ({}) }; }
     throw new Error(`Unexpected mocked request: ${url}`);
   };
@@ -221,7 +225,7 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
   const edit = { id: 'edit', type: 'videoEdit', data: { editDocument: doc() } };
   const jobs = new Map(); let writeable = true;
   const deps = { getProjectId: () => 'prj_race', getNodes: () => [source, edit], getEdges: () => [{ source: source.id, target: edit.id, targetHandle: 'v1' }], jobs,
-    canWrite: () => writeable, updateNode: (_id, patch) => { Object.assign(edit.data, patch); } };
+    canWrite: () => writeable, persistProject: async () => {}, updateNode: (_id, patch) => { Object.assign(edit.data, patch); } };
   const runner = createVideoEditRunner(deps);
   const pending = runner.run(edit.id);
   while (!submitted) await new Promise(resolve => setTimeout(resolve, 1));
@@ -241,15 +245,12 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
   assert.equal(pasted.nodes[0].data.videoEditJobId, undefined);
   assert.equal(pasted.nodes[0].data.editResultAssetPath, undefined, 'copies cannot reuse another node export identity');
 }
-// A submission must be durably saved before the first poll; failed saves cancel
-// the exact submitted job and preserve the previous exported asset.
+// Failed preparation saves never dispatch a job and preserve the previous export.
 {
   const originalFetch = globalThis.fetch;
-  const jobId = `ved_${'8'.repeat(32)}`;
   const calls = [];
   globalThis.fetch = async (url) => {
     calls.push(url);
-    if (url === '/api/video-edit/jobs') return { ok: true, json: async () => ({ id: jobId, status: 'queued' }) };
     if (url.endsWith('/cancel')) return { ok: true, json: async () => ({}) };
     throw new Error('Polling before the submission save completed');
   };
@@ -260,15 +261,15 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
   const runner = createVideoEditRunner({ getProjectId: () => 'prj_save', getNodes: () => [source, edit],
     getEdges: () => [{ source: 'source', target: 'edit', targetHandle: 'v1' }], jobs,
     updateNode: (_id, patch) => Object.assign(edit.data, patch),
-    persistProject: () => new Promise((_resolve, reject) => { releaseSave = () => reject(new Error('Synthetic save failure')); }) });
+    persistProject: () => releaseSave ? Promise.resolve() : new Promise((_resolve, reject) => { releaseSave = () => reject(new Error('Synthetic save failure')); }) });
   const pending = runner.run('edit');
   while (!releaseSave) await new Promise(resolve => setTimeout(resolve, 1));
   await new Promise(resolve => setTimeout(resolve, 750));
-  assert.deepEqual(calls, ['/api/video-edit/jobs']);
-  assert.equal(edit.data.videoEditJobId, jobId);
+  assert.deepEqual(calls, []);
+  assert.match(edit.data.videoEditJobId, /^ved_[a-f0-9]{32}$/);
   releaseSave();
   assert.equal((await pending).ok, false);
-  assert.deepEqual(calls, ['/api/video-edit/jobs', `/api/video-edit/jobs/${jobId}/cancel`]);
+  assert.deepEqual(calls, []);
   assert.equal(edit.data.editResultAssetPath, 'assets/previous.mp4');
   assert.equal(jobs.size, 0);
   globalThis.fetch = originalFetch;

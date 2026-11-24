@@ -120,7 +120,7 @@ MCP 等价工具：`canvas_current`、`canvas_call`（等到页面工具返回�
 | `canvas_connect_nodes` | 连接两个真实节点 | 省略 `targetHandle` 时按规则自动判断；必须回读边数据，不能靠外观 |
 | `canvas_import_asset` | 复用已保存素材 | 需要素材节点；`assetPath` 必须是 `assets/<64位十六进制>.<扩展名>` |
 | `canvas_download_video` | 把分享链接下载进当前画布 | 必填 `url`（仅 http/https，可含一段分享文字）。可选 `nodeId`（已有视频链接下载节点）、`x`/`y`（新建坐标，须成对）、`wait`（默认 `false`） |
-| `canvas_generate_node` | 提交一次生成 | **`wait` 必须为 `false`**；成功只表示已提交（有新 `promptId`）。`wait:true` 会被拒绝 |
+| `canvas_generate_node` | 提交一次生成 | **`wait` 必须为 `false`**；成功表示执行器已接受，以新 `jobId` 为准。`wait:true` 会被拒绝 |
 | `canvas_wait_for_node` | 只读等待已提交的任务 | `timeoutMs` 在当前页通道为 1000–20000，省略则 20000。未结束返回 `pending:true`。Native3D 续查同时传原 `nodeId` 和 `jobId` |
 | `canvas_cancel_node` | 取消该节点正在进行的生成 | 只有 `nodeId`。与界面取消按钮相同，不删除节点。只读页会拒绝 |
 | `canvas_focus_node` | 把当前页视口对到节点 | 聚焦后回传本地视口。项目内容修订用于跟踪已保存的编辑 |
@@ -158,7 +158,7 @@ MCP 等价工具：`canvas_current`、`canvas_call`（等到页面工具返回�
 - `canvas_wait_for_node` 可以在当前页通道使用。`timeoutMs` 超过 20000 会得到 400；省略则按 20000。到时 `pending:true`，任务仍在跑，不要因此重新提交。
 - 取消用 `canvas_cancel_node`。不要调用不存在的 `canvas_cancel`。运行中删除节点也可能按界面取消任务，那不是取消接口。
 - `canvas_import_asset` 只复用已保存素材，不能上传任意本地文件。`assetPath` 必须匹配 `assets/<64位十六进制>.<扩展名>`，目标必须是素材节点。
-- `canvas_generate_node` 的 `wait` 必须为 `false`。页桥和当前页执行都会拒绝其他值。
+- 页桥的 `canvas_generate_node` 使用 `wait:false`。当前页不可写、修订不同或准备记录保存失败时拒绝执行。未知提交应查原 `opId`、节点准备记录或原任务。页关闭后，后台已接受的任务继续运行。
 
 ---
 
@@ -260,7 +260,7 @@ Agent 不判断自己是「强」还是「弱」，也不因自认能力高低�
 2. `canvas_update_node` 写入提示词、`duration`、`ratio`、`resolution`（默认不要擅自改到 1080P）。
 3. 首尾帧：把图片素材连到 `first`／`last`，**必须指定端口**。
 4. 回读节点，确认参数和连线。
-5. `canvas_generate_node`（`wait:false`），记录 `promptId`，向用户报告「已提交」而不是「已完成」。
+5. 读取当前页保存修订，再调用 `canvas_generate_node`（`expectedRevision`、`wait:false`）。页面先展示并保存目标、连线输入和参数。收到真实 `jobId` 后记录同一请求的 `opId`，任务才算已提交。
 6. 用 `GET /api/agent/canvas/events` 或 `canvas_wait_for_node` 等到 `done`、`error`、`cancelled`，或 `pending:true`。`pending` 只表示这一小段时间还没结束，用新的 `opId` 再等，不要重新 `canvas_generate_node`。然后 `canvas_get_state` 核对结果节点和 `media`。
 
 **期望：** 终态 `done`，出现可播放的视频结果节点，连回该生成节点，对应本次 `promptId`，revision 已保存。
@@ -431,3 +431,11 @@ python_embeded\python.exe video-workbench\scripts\model_catalog.py status --comf
 ```
 
 这两条命令只展示信息，**不会下载**。
+
+### 查询原任务与重新执行
+
+普通图像、视频和自定义工作流的准备记录绑定本次实际提交的工作流或分阶段执行方案、有序输入和保存修订。准备记录保存 SHA-256 和字节数。画布在提交前显示摘要，并展开不超过 64 KiB 的配置，凭据字段被遮盖。已有后端任务的执行详情用原任务 ID 查看。
+
+`canvas_wait_for_node` 可带上回执的 `jobId` 和 `attempt`，只查询指定执行。`canvas_retry_generation` 需要当前可写画布、原 `jobId` 和 `expectedAttempt`。成功后同一作业的 `attempt` 增加一，代表用保存的原配置重新执行。回执遗失时先按原任务和请求标识核对。
+
+Refmuse 的通用 Comfy 代理保留查询和素材接口，画布生成通过工作台队列。简易模式人工按钮使用独立身份 `legacy-manual`，其 `prompt_id` 属于简易模式。

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -41,8 +42,8 @@ class AgentTransportTests(unittest.TestCase):
         self.server.project_store = self.store
         self.server.project_api = ProjectAPI(self.store)
         self.server.queue_manager = self.queue
-        self.server.queue_api = QueueAPI(self.queue)
         self.server.agent_api = AgentAPI(self.store, self.queue)
+        self.server.queue_api = QueueAPI(self.queue, lambda: (self.store, self.server.agent_api.canvas))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.origin = f"http://127.0.0.1:{self.server.server_port}"
@@ -62,11 +63,46 @@ class AgentTransportTests(unittest.TestCase):
     def test_http_client_full_chain_and_resources(self):
         state = self.client.call_tool("state", {"projectId": self.pid})
         self.assertIn("nodes=0", state["digest"])
-        applied = self.client.call_tool("apply", {"projectId": self.pid, "opId": "http-full", "ops": [
+        self.client.call_tool("apply", {"projectId": self.pid, "opId": "http-shot", "ops": [
             {"op": "shot.create", "name": "HTTP 镜头", "prompt": "正面看向镜头"},
-            {"op": "generate", "target": "s1"},
         ]})
-        job = next(row["job"] for row in applied["results"] if "job" in row)
+        saved = self.store.get(self.pid)
+        node = saved["canvas"]["nodes"][0]
+        node_id = node["id"]
+        workflow = {"1": {"class_type": "Fixture", "inputs": {}}}
+        execution = json.dumps({"workflow": workflow, "plan": None})
+        endpoint = "/api/agent/canvas"
+        page = {"sessionId": "existing_canvas", "projectId": self.pid, "visible": True}
+        payload = {"projectId": self.pid, "nodeId": node_id, "shotId": "s1", "executionJson": execution,
+                   "revision": saved["revision"], "requestId": "visible_fixture"}
+        self.queue.pause(True)
+        with self.assertRaises(RuntimeError):
+            self.client.request("POST", "/api/queue", payload)
+        registration = self.client.request("POST", endpoint + "/heartbeat", page)
+        proof = {"sessionId": page["sessionId"], "epoch": registration["epoch"], "opId": payload["requestId"]}
+        command = {**proof, "projectId": self.pid, "tool": "canvas_generate_node", "args": {"nodeId": node_id}}
+        self.client.request("POST", endpoint + "/commands", command)
+        self.assertEqual(self.client.request("POST", endpoint + "/heartbeat", page)["command"]["opId"], proof["opId"])
+        with self.assertRaises(RuntimeError):
+            self.client.request("POST", "/api/queue", {**payload, "page": proof})
+        node["data"]["visibleRun"] = {"requestId": payload["requestId"], "phase": "prepared", "inputs": [], "parameters": {},
+                                      "execution": {"digest": hashlib.sha256(execution.encode()).hexdigest()}}
+        saved = self.store.save(self.pid, saved, saved["revision"])
+        with self.assertRaises(RuntimeError):
+            self.client.request("POST", "/api/queue", {**payload, "page": proof})
+        self.assertEqual(self.queue.snapshot()["jobs"], [])
+        payload.update(page=proof, revision=saved["revision"])
+        with self.assertRaisesRegex(RuntimeError, "不符"):
+            self.client.request("POST", "/api/queue", {**payload, "executionJson": "{}"})
+        self.assertEqual(self.queue.snapshot()["jobs"], [])
+        first = self.client.request("POST", "/api/queue", payload)
+        self.assertEqual(self.client.request("POST", "/api/queue", payload)["id"], first["id"])
+        self.assertEqual(first["requestId"], payload["requestId"])
+        job = first["id"]
+        self.client.request("POST", endpoint + "/release", {"sessionId": page["sessionId"]})
+        with self.assertRaises(RuntimeError):
+            self.client.request("POST", "/api/queue", payload)
+        self.queue.pause(False)
         waited = self.client.call_tool("wait", {"projectId": self.pid, "jobs": [job], "timeoutMs": 2000})
         self.assertEqual(waited["jobs"][0]["takes"], ["t1"])
         self.client.call_tool("apply", {"projectId": self.pid, "opId": "http-select", "ops": [{"op": "take.select", "shot": "s1", "take": "t1"}]})
@@ -84,6 +120,32 @@ class AgentTransportTests(unittest.TestCase):
         self.assertEqual(context["content"]["project"]["id"], self.pid)
         page = self.client.call_tool("query", {"projectId": self.pid, "source": "nodes", "fields": ["handle", "title"], "limit": 1, "maxChars": 200})
         self.assertEqual(len(page["rows"]), 1)
+
+        terminal = self.queue.get(job)
+        self.queue.pause(True)
+        with self.assertRaises(RuntimeError) as denied:
+            self.client.request("POST", f"/api/queue/{job}/retry", {})
+        self.assertEqual(denied.exception.code, "VISIBLE_CANVAS_REQUIRED")
+        self.assertEqual(self.queue.get(job)["attempts"], terminal["attempts"])
+        self.assertEqual(self.queue.adapter.submissions, 1)
+        retry_page = {"sessionId": "retry_canvas", "projectId": self.pid, "visible": True}
+        registration = self.client.request("POST", endpoint + "/heartbeat", retry_page)
+        proof = {"epoch": registration["epoch"], "sessionId": retry_page["sessionId"]}
+        document = self.store.get(self.pid)
+        node = document["canvas"]["nodes"][0]
+        node["data"].update(queueJobId=job, visibleRetry={"jobId": job, "requestId": "retry_once", "phase": "prepared",
+                                                           "previousAttempt": terminal["attempts"], "origin": "human"})
+        document = self.store.save(self.pid, document, document["revision"])
+        retry_body = {"page": proof, "requestId": "retry_once", "revision": document["revision"], "expectedAttempt": terminal["attempts"]}
+        retry = self.client.request("POST", f"/api/queue/{job}/retry", retry_body)
+        self.assertEqual((retry["id"], retry["status"]), (job, "queued"))
+        self.assertEqual(retry["attempts"], terminal["attempts"] + 1)
+        self.assertEqual(self.client.request("POST", f"/api/queue/{job}/retry", retry_body)["attempts"], retry["attempts"])
+        self.assertEqual(self.queue.adapter.submissions, 1)
+        self.queue.pause(False)
+        self.client.call_tool("wait", {"projectId": self.pid, "jobs": [job], "timeoutMs": 2000})
+        self.assertEqual(self.queue.get(job)["attempts"], retry["attempts"])
+        self.assertEqual(self.queue.adapter.submissions, 2)
 
     def test_current_page_channel_uses_existing_page_and_deduplicates(self):
         base = "/api/agent/canvas"

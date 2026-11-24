@@ -38,7 +38,7 @@ export async function runVideoProcessorFixture(config) {
       if (url.pathname === '/api/health') return json({ ok: true, comfy: { state: 'ready' } });
       if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
       if (url.pathname === '/api/queue') return json({ jobs: [] });
-      if (url.pathname === `/api/${config.api}/jobs`) { submitted.push(request.postDataJSON()); return json({ id: `${config.prefix}_${String(submitted.length).repeat(32)}`, status: 'queued', progress: 0 }, 201); }
+      if (url.pathname === `/api/${config.api}/jobs`) { const payload = request.postDataJSON(); const { requestId, ...intent } = payload; const record = project.canvas.nodes.find((node) => node.id === intent.nodeId)?.data.videoSubmission; assert.deepEqual(record, { id: `${config.prefix}_${requestId}`, requestId, intent, phase: 'prepared' }); submitted.push(payload); return json({ id: record.id, projectId: intent.projectId, nodeId: intent.nodeId, status: 'queued', progress: 0 }, 201); }
       if (url.pathname.startsWith(`/api/${config.api}/jobs/`)) {
         if (url.pathname.endsWith('/cancel')) { cancelled.push(request.postDataJSON()); return json({ status: 'cancelled' }); }
         if (url.pathname.endsWith('/commit')) { committed.push(request.postDataJSON()); return json({ asset: { path: output }, revision: ++project.revision }, 201); }

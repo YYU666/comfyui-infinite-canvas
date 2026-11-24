@@ -37,7 +37,7 @@ C:\ComfyUI_windows_portable\python_embeded\python.exe agent_mcp.py
 1. 先按手册连上当前可见画布。会话开始可以读取 `state(view=context)` 或 `canvas://context`，不要重放历史，也不要据此改走无头生成。
 2. 日常摘要可用 `state(view=digest)`；排障才使用 `generation/errors/topology`，不要默认 `all`。用户可见生成的终态仍以 `canvas_get_state` 为准。
 3. 用 `query` 在服务端过滤和投影字段，用 `maxChars` 控制预算；出现 `truncated` 时按 `nextCursor` 继续。
-4. 用户要看见的图片或视频不要放进 `apply` 的 `generate`。按手册在可见画布上创建、连接、`canvas_generate_node`（`wait:false`），用完成事件或 `canvas_wait_for_node` 等待，再以 `canvas_get_state` 核对。
+4. `apply` 只允许以 `dryRun:true` 预检 `generate`。实际生成必须使用当前可写画布。先创建并连接节点，再用 `canvas_generate_node`（`wait:false`）发起。页面会展示并保存目标、输入和参数，然后提交。
 5. `apply` 仍可用于接力 `handoff.update`，以及已经出现在项目里的 Take 选用与导出。每次提供唯一 `opId`；相同 `opId` 重放不会重复生成。需要预检时先 `dryRun=true`。过期 `revision` 返回 409，不覆盖其他窗口。
 6. 协议 `wait` 没有完成 SSE，只是阻塞轮询队列里的任务 ID，并在完成后把绑定镜头的输出写入 Take。它不能代替可见节点上的终态，也不能代替画布上的结果节点。
 7. `take.select` 后执行 `delivery.export`。导出时才把外部 ComfyUI 输出复制到项目目录。
@@ -58,7 +58,7 @@ GET  /api/agent/canvas/commands/<opId>
 
 当前页可使用 `canvas_download_video` 下载分享链接。必填 `url`，可选 `nodeId`、成对的 `x` 和 `y`；`wait` 默认为 `false`。进度见下载节点。
 
-提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","wait":false}`。显式传入的 `wait` 只要不是 `false`，页桥就返回 400。实际执行发生在现有页面。命令回执 `done` 且 `result.ok` 为真，只表示页面工具已返回；生成终态仍以当前页节点为准。
+提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","expectedRevision":42,"wait":false}`。显式传入的 `wait` 只要不是 `false`，页桥就返回 400。实际执行发生在现有页面。生成提交成功时保留原 `opId` 和真实 `jobId`。该回执表示执行器已接受，终态仍需查询。无可写页、保存冲突或准备失败时，队列保持原状。
 
 等待完成用下面之一，不要紧循环打 `canvas_get_state`：
 
@@ -92,9 +92,9 @@ GET  /api/agent/resources/<protocol|context|schema>
 
 ## 批量与语义操作
 
-这些 op 存在于后端 `apply`，不能代替手册里的可见节点回路。用户要看见的图片或视频不要提交 `generate` 或 `shot.create` 来绕过当前页。可见生成的取消用 `canvas_cancel_node`。协议 `wait` 不会把结果节点画到当前页上。
+后端 `apply` 只管理内容和预检。任何包含实际 `generate` 的批次都会在修改项目或访问队列之前整批拒绝。旧版尚未完成的生成批次也不会继续派发。可见生成的取消用 `canvas_cancel_node`。协议 `wait` 不会把结果节点画到当前页上。
 
-`apply` 基础 op：`create`、`connect`、`set`、`generate`、`delete`、`cancel`。用户要在当前画布上取消一次可见生成时，用 `canvas_cancel_node`，不要改走这里的 `cancel`。
+`apply` 基础 op：`create`、`connect`、`set`、`delete`、`cancel`。用户要在当前画布上取消一次可见生成时，用 `canvas_cancel_node`，不要改走这里的 `cancel`。
 
 语义 op：
 
@@ -134,7 +134,7 @@ GET  /api/agent/resources/<protocol|context|schema>
 
 ## CLI
 
-下面的命令调用后端协议。用户要在画布上看到的图片或视频不要用 `generate --wait` 或 `shot-create` 代替手册中的可见节点回路。
+内容命令调用后端协议。`generate --project PROJECT --node NODE --expected-revision REVISION --op-id RUN_ID` 通过当前可写页提交。没有可写页时拒绝。
 
 ```bat
 python_embeded\python.exe video-workbench\agent_cli.py state --project prj_xxx --view context
@@ -150,4 +150,4 @@ C:\ComfyUI_windows_portable\python_embeded\python.exe scripts\agent_benchmark.py
 
 fixture 为 200 节点、20 镜头、5 角色、50 Take。脚本在任一指标超预算时失败：digest ≤100、query ≤150、写回执 ≤30、四操作 apply ≤200、wait ≤50、工具 schema ≤600 tokens。响应的 `meta.estTokens` 使用公开的四字符/token 确定性估算，便于不同 Agent 复核。
 
-服务端语义构建器目前覆盖 H3 文生视频和图片参考视频；这只说明构建器范围，见 `docs/WORKFLOW_SUPPORT.md`。只要用户要在画布上看到结果，就走手册的可见节点回路，不用 `apply` 的 `generate` 或向 8188 直接提交来代替。视频／音频项目素材的直接 Agent 上传及其他画布专用工作流仍走现有画布流程，不用伪造工作流替代。
+服务端语义构建器目前覆盖 H3 文生视频和图片参考视频；这只说明构建器范围，见 `docs/WORKFLOW_SUPPORT.md`。只要用户要在画布上看到结果，就走手册的可见节点回路，以当前页准备记录和真实任务回执为准。视频／音频项目素材的直接 Agent 上传及其他画布专用工作流仍走现有画布流程，不用伪造工作流替代。

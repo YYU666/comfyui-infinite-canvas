@@ -1,3 +1,5 @@
+import { getGenerationJob } from './workbench-api.js';
+import { imageRunSummary } from './image-visible-run.js';
 import { CHARACTER_SHEET_SETTING_KEYS, validateCharacterSheetSettings } from './character-sheet-settings.js';
 import { MOSS_POSE_DEFAULTS, validateMossPoseSettings } from './moss-pose.js';
 import { normalizeVideoSuperResolutionSettings } from './video-super-resolution.js';
@@ -290,6 +292,7 @@ export function nodeSummary(node, includeContent = true, graph = {}) {
   if (node.type === 'native3d') return native3dNodeSummary(node);
   const media = mediaLocation(node.data);
   return {
+    ...imageRunSummary(node),
     id: node.id,
     type: node.type,
     title: node.data.title || '',
@@ -420,13 +423,22 @@ async function waitForNative3D(latest, nodeId, timeoutMs, waitImpl) {
   return {pending:false,jobId:id,node:nodeSummary(node),resultNode:nodeSummary(result)};
 }
 
-export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000 }, waitImpl = waitFor) {
+export async function generateNodeForMcp(latest, { nodeId, wait = false, timeoutMs = 300000, expectedRevision }, waitImpl = waitFor, generation = {}) {
+  generation.assertActive?.();
+  if (expectedRevision !== undefined) {
+    const save = latest.current.getAgentState?.().save;
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw agentReceiptError('BAD_REQUEST', 'expectedRevision 无效。');
+    if (save?.revision !== expectedRevision) throw agentReceiptError('REVISION_CONFLICT', '保存修订已变化，本次生成未提交。', { save });
+    if (save.state !== 'saved') throw agentReceiptError('SAVE_PENDING', '当前页尚未保存，本次生成未提交。', { save });
+  }
+  const options = { ...generation, expectedRevision, origin: 'agent' };
   const initial = mcpNode(latest, nodeId);
   if (['uploading', 'queued', 'running', 'finishing'].includes(initial.data.status)) throw new Error('节点已经在生成，请使用 canvas_wait_for_node 等待，避免重复提交。');
   if (initial.type === 'spriteAtlas') {
-    const result = await latest.current.actions.generateNode(nodeId);
+    const result = await latest.current.actions.generateNode(nodeId, options);
     if (!result?.ok) throw new Error(result?.error || '精灵图提交失败。');
-    if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId };
+    if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId,
+      requestId: result.requestId, execution: result.execution, status: result.status };
     const finished = await waitImpl(() => {
       const node = mcpNode(latest, nodeId);
       return node.data.spriteJobId === result.jobId && ['done', 'error', 'cancelled'].includes(node.data.status) ? node : null;
@@ -435,13 +447,13 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     return { node: nodeSummary(finished) };
   }
   if (initial.type === 'artDirector') {
-    const result = await latest.current.actions.generateNode(nodeId);
+    const result = await latest.current.actions.generateNode(nodeId, options);
     if (!result?.ok) throw new Error(result?.error || '解析图输出失败。');
     return { node: nodeSummary(mcpNode(latest, nodeId)), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
   }
   if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial) || isVideoPlate(initial)) {
     const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : isVideoRepair(initial) ? 'repairJobId' : 'plateJobId';
-    const result = await latest.current.actions.generateNode(nodeId);
+    const result = await latest.current.actions.generateNode(nodeId, options);
     if (!result?.ok) throw new Error(result?.error || '视频导出提交失败。');
     if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId };
     const finished = await waitForVideoJob(latest, nodeId, jobKey, result.jobId, timeoutMs, waitImpl);
@@ -449,7 +461,7 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     return finished;
   }
   if (isImageProcess(initial)) {
-    const result = await latest.current.actions.generateNode(nodeId);
+    const result = await latest.current.actions.generateNode(nodeId, options);
     if (!result?.ok) throw new Error(result?.error || '图片输出失败。');
     const finished = await waitImpl(() => {
       const node = mcpNode(latest, nodeId);
@@ -458,13 +470,16 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     return { node: nodeSummary(finished), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
   }
   if (initial.type === 'native3d') {
-    await latest.current.actions.generateNode(nodeId);
+    const result = await latest.current.actions.generateNode(nodeId, options);
+    if (!result?.jobId || result.ok === false) {
+      throw agentReceiptError(result?.code || 'SUBMISSION_UNCONFIRMED', result?.error || '没有确认的 3D 后台任务。');
+    }
     if (wait) return waitForNative3D(latest, nodeId, timeoutMs, waitImpl);
-    const node = mcpNode(latest, nodeId);
-    return { node: nodeSummary(node), jobId: node.data.nativeJobId };
+    return { ...result, requestId: result.opId || options.requestId, execution: 'accepted',
+      node: { id: nodeId, type: 'native3d', nativeJobId: result.jobId, status: result.status } };
   }
   if (isImageProcess(initial)) {
-    const result = await latest.current.actions.generateNode(nodeId);
+    const result = await latest.current.actions.generateNode(nodeId, options);
     if (!result?.ok) throw new Error(result?.error || '图片输出失败。');
     const finished = await waitImpl(() => {
       const node = mcpNode(latest, nodeId);
@@ -473,7 +488,9 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
     return { node: nodeSummary(finished), resultNode: nodeSummary(mcpNode(latest, result.resultId)) };
   }
   const before = initial.data.queueJobId;
-  await latest.current.actions.generateNode(nodeId);
+  const receipt = await latest.current.actions.generateNode(nodeId, options);
+  if (receipt?.ok === false) throw agentReceiptError(receipt.code || 'SUBMISSION_FAILED', receipt.error, receipt.requestId ? { requestId: receipt.requestId } : {});
+  if (!wait && receipt?.jobId) return { ...receipt, node: { id: nodeId, queueJobId: receipt.jobId, status: receipt.status } };
   const submitted = await waitImpl(() => {
     const node = mcpNode(latest, nodeId);
     if (node.data.status === 'error') throw new Error(node.data.error || '生成提交失败。');
@@ -493,7 +510,7 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
   return { node: nodeSummary(finished), resultNode: nodeSummary(resultNode), ...(finished.data.modelPickNote ? { announcement: finished.data.modelPickNote } : {}) };
 }
 
-export async function waitForNodeForMcp(latest, { nodeId, jobId, timeoutMs = 300000 }, waitImpl = waitFor) {
+export async function waitForNodeForMcp(latest, { nodeId, jobId, attempt, timeoutMs = 300000 }, waitImpl = waitFor) {
   const initial = mcpNode(latest, nodeId);
   if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial) || isVideoPlate(initial)) {
     const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : isVideoRepair(initial) ? 'repairJobId' : 'plateJobId';
@@ -524,7 +541,16 @@ export async function waitForNodeForMcp(latest, { nodeId, jobId, timeoutMs = 300
   }
   const promptId = initial.data.promptId;
   const queueJobId = initial.data.queueJobId;
+  if (jobId && jobId !== queueJobId) throw agentReceiptError('JOB_CHANGED', '节点当前任务与原 jobId 不同。');
   if (!promptId && !queueJobId) throw new Error('这个节点还没有提交生成任务。');
+  const assertAttempt = async () => {
+    if (attempt === undefined) return;
+    if (!queueJobId || !Number.isSafeInteger(attempt) || attempt < 1) throw agentReceiptError('BAD_REQUEST', '查询原轮次需要有效的作业 ID 和 attempt。');
+    if ((await getGenerationJob(queueJobId)).attempts !== attempt) {
+      throw agentReceiptError('ATTEMPT_CHANGED', '该作业已重新执行，不能把新轮次当作原任务。');
+    }
+  };
+  await assertAttempt();
   let finished;
   try {
     finished = await waitImpl(() => {
@@ -539,6 +565,7 @@ export async function waitForNodeForMcp(latest, { nodeId, jobId, timeoutMs = 300
     const pendingEdge = latest.current.edgesRef.current.find((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
     return { pending: true, node: nodeSummary(current), resultNode: pendingEdge ? nodeSummary(mcpNode(latest, pendingEdge.target)) : null };
   }
+  await assertAttempt();
   const resultEdge = latest.current.edgesRef.current.find((edge) => edge.source === nodeId && edge.targetHandle === 'preview');
   return { pending: false, node: nodeSummary(finished), resultNode: resultEdge ? nodeSummary(mcpNode(latest, resultEdge.target)) : null };
 }
@@ -664,9 +691,9 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         throw agentReceiptError('SAVE_PENDING', '当前页尚未保存或暂不可编辑。', { save });
       }
     };
-    const respond = (callback) => async (args = {}) => {
+    const respond = (callback) => async (args = {}, options = {}) => {
       try {
-        const result = await callback(args);
+        const result = await callback(args, options);
         return JSON.stringify({ ok: true, ...result });
       } catch (error) {
         const glbError = ['NATIVE3D_GLB_LAYOUT_UNSUPPORTED','NATIVE3D_GLB_INVALID'].includes(error?.code);
@@ -779,11 +806,11 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       {
         name:'canvas_native3d_retry_stage',description:'仅从当前LOD结果节点重试该单档LOD，保留旧结果；运行时验证原任务与已通过父档并自动选新seed，不接受路径或seed覆盖。',
         inputSchema:schema({nodeId:nodeIdProperty},['nodeId']),
-        execute:respond(async request=>{
+        execute:respond(async (request, options)=>{
           if(!request||Object.keys(request).some(key=>key!=='nodeId')||typeof request.nodeId!=='string')throw new Error('仅允许指定LOD结果nodeId。');
           const node=nativeOutputNode(latest.current.nodesRef.current.find(n=>n.id===request.nodeId));
           if(node?.type!=='native3d'||node.data?.operation!=='analyze'||node.data.metadata?.operation!=='source_lod')throw new Error('必须选择真实LOD结果节点。');
-          return latest.current.actions.native3dRetryStage(request.nodeId);
+          return latest.current.actions.native3dRetryStage(request.nodeId,{...options.generation,origin:'agent'});
         }),
       },
       {
@@ -1156,13 +1183,14 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         inputSchema: schema({
           sourceId: nodeIdProperty,
           targetId: nodeIdProperty,
+          sourceHandle: { type: 'string', description: '可选源端口，如保存的 GLB 使用 model。' },
           targetHandle: { type: 'string', description: '目标端口。自定义工作流必须指定定义中的输入 id；内置节点通常留空自动判断。' },
         }, ['sourceId', 'targetId']),
-        execute: respond(async ({ sourceId, targetId, targetHandle }) => {
+        execute: respond(async ({ sourceId, targetId, sourceHandle, targetHandle }) => {
           const source = getNode(sourceId);
           const target = getNode(targetId);
           const handle = target.data.mode === 'qwenEdit' && source.type !== 'prompt' && source.data.mediaRole !== 'mask' && ['guide', 'identity', undefined].includes(targetHandle) ? 'references' : targetHandle || (isVideoEdit(target) ? nextVideoEditPort(target, source, latest.current.edgesRef.current) : defaultTargetHandle(target, source, latest.current.edgesRef.current));
-          const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: (source.type === 'native3d' || (source.type === 'media' && source.data.kind === 'model')) ? (isNativePlanSource(source) ? 'plan' : 'model') : source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref', targetHandle: handle });
+          const connected = latest.current.actions.onConnect({ source: sourceId, target: targetId, sourceHandle: sourceHandle || ((source.type === 'native3d' || (source.type === 'media' && source.data.kind === 'model')) ? (isNativePlanSource(source) ? 'plan' : 'model') : source.type === 'prompt' ? 'prompt' : source.data.mediaRole === 'mask' ? 'mask' : 'ref'), targetHandle: handle });
           if (connected?.error) throw new Error(connected.error);
           const edge = await waitFor(() => {
             return latest.current.edgesRef.current.find((item) => connected?.edgeId ? item.id === connected.edgeId : item.source === sourceId && item.target === targetId && item.targetHandle === handle) || null;
@@ -1172,24 +1200,36 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       },
       {
         name: 'canvas_generate_node',
-        description: '从当前画布节点发起真实本地生成。素材上传、工作流构建、进度、结果文件和自动创建结果节点均走现有画布流程。默认只提交；需要等待成片时把 wait 设为 true。',
+        description: '由当前可写画布保存生成准备记录后提交，返回真实任务身份。页桥使用 wait:false。可用 expectedRevision 检查此前读取的保存修订。',
         inputSchema: schema({
           nodeId: nodeIdProperty,
+          expectedRevision: { type: 'integer', minimum: 1 },
           wait: { type: 'boolean', description: '是否等待生成结束，默认 false。' },
           timeoutMs: { type: 'integer', minimum: 1000, maximum: 1500000, description: 'wait 为 true 时的等待上限，默认 300000 毫秒。' },
         }, ['nodeId']),
-        execute: respond(async ({ nodeId, wait = false, timeoutMs = 300000 }) => generateNodeForMcp(latest, { nodeId, wait, timeoutMs })),
+        execute: respond(async (args, options) => generateNodeForMcp(latest, args, waitFor, options.generation)),
+      },
+      {
+        name: 'canvas_retry_generation',
+        description: '在当前可写画布按原工作流重新执行已结束的作业，返回同 jobId 的新 attempt。查询原任务不使用本工具。',
+        inputSchema: schema({ nodeId: nodeIdProperty, jobId: { type: 'string' },
+          expectedAttempt: { type: 'integer', minimum: 1 }, expectedRevision: { type: 'integer', minimum: 1 },
+        }, ['nodeId', 'jobId', 'expectedAttempt']),
+        execute: respond(async ({ nodeId, ...args }, options) => latest.current.actions.retryGeneration(nodeId, {
+          ...args, ...options.generation, origin: 'agent',
+        })),
       },
       {
         name: 'canvas_wait_for_node',
         description: '只读等待当前画布上已经提交的任务进入完成、失败或取消状态，并返回自动生成结果节点。不会重复提交任务。',
         inputSchema: schema({
           nodeId: nodeIdProperty,
-          jobId: { type: 'string', description: 'Native3D 续查时传入原任务标识，防止读到新任务。' },
+          jobId: { type: 'string', description: '传入原任务标识，防止读到新任务。' },
+          attempt: { type: 'integer', minimum: 1, description: '可选，只查询指定队列轮次。' },
           timeoutMs: { type: 'integer', minimum: 1000, maximum: 1500000, description: '等待上限，默认 300000 毫秒。当前页通道最长 20000 毫秒；到时返回 pending:true，不重新提交。' },
         }, ['nodeId']),
         annotations: { readOnlyHint: true, untrustedContentHint: true },
-        execute: respond(async ({ nodeId, jobId, timeoutMs = 300000 }) => waitForNodeForMcp(latest, { nodeId, jobId, timeoutMs })),
+        execute: respond(async ({ nodeId, jobId, attempt, timeoutMs = 300000 }) => waitForNodeForMcp(latest, { nodeId, jobId, attempt, timeoutMs })),
       },
       {
         name: 'canvas_cancel_node',
@@ -1259,8 +1299,8 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
     });
     tools.push({name:'canvas_native3d_compact',description:'显式整理本地3D重复结果；默认只预览，清理仅限指定且无依赖的失败节点，不删除素材文件。',inputSchema:schema({dryRun:{type:'boolean',default:true},cleanupFailed:{type:'boolean',default:false},cleanupIds:{type:'array',items:nodeIdProperty,maxItems:100}}),execute:respond(async({dryRun=true,cleanupFailed=false,cleanupIds=[]})=>latest.current.actions.native3dCompact({dryRun,cleanupFailed,cleanupIds}))});
     tools.push({name:'canvas_native3d_sync_task',description:'核对当前节点已提交任务并重试保存或交付，不重新计算。',inputSchema:schema({nodeId:nodeIdProperty},['nodeId']),execute:respond(async({nodeId})=>latest.current.actions.native3dSyncTask(nodeId))});
-    tools.push({name:'canvas_native3d_retry_lod',description:'从确切已验收父LOD单档重试，保留原失败档比例并换新种子；局部修复追溯原失败任务。',inputSchema:schema({nodeId:nodeIdProperty},['nodeId']),execute:respond(async({nodeId})=>latest.current.actions.native3dRetryLOD(nodeId))});
-    tools.push({name:'canvas_native3d_repair_lod',description:'保存并提交当前未通过LOD候选的局部修复；保留原结果，重复调用查看同一修复。',inputSchema:schema({nodeId:nodeIdProperty,settings:{type:'object',properties:{localRepairMaxPatches:{type:'integer',minimum:1,maximum:4},localRepairDisplacementFraction:{type:'number',minimum:.0001,maximum:.01},localRepairCorrectionFraction:{type:'number',minimum:.1,maximum:1}},additionalProperties:false}},['nodeId']),execute:respond(async ({nodeId,settings})=>settings===undefined?latest.current.actions.native3dRepairLOD(nodeId):latest.current.actions.native3dRepairLOD(nodeId,settings))});
+    tools.push({name:'canvas_native3d_retry_lod',description:'从确切已验收父LOD单档重试，保留原失败档比例并换新种子；局部修复追溯原失败任务。',inputSchema:schema({nodeId:nodeIdProperty},['nodeId']),execute:respond(async({nodeId}, options)=>latest.current.actions.native3dRetryLOD(nodeId,{...options.generation,origin:'agent'}))});
+    tools.push({name:'canvas_native3d_repair_lod',description:'保存并提交当前未通过LOD候选的局部修复；保留原结果，重复调用查看同一修复。',inputSchema:schema({nodeId:nodeIdProperty,settings:{type:'object',properties:{localRepairMaxPatches:{type:'integer',minimum:1,maximum:4},localRepairDisplacementFraction:{type:'number',minimum:.0001,maximum:.01},localRepairCorrectionFraction:{type:'number',minimum:.1,maximum:1}},additionalProperties:false}},['nodeId']),execute:respond(async ({nodeId,settings}, options)=>latest.current.actions.native3dRepairLOD(nodeId,settings,{...options.generation,origin:'agent'}))});
     tools.push({name:'canvas_native3d_create_resolution',description:'为外轮廓未通过的LOD创建保留更多面的同档草稿，不启动生成；沿用确切父模型和质量门。',inputSchema:schema({nodeId:nodeIdProperty,keepPercent:{type:'number',exclusiveMinimum:0,maximum:100}},['nodeId','keepPercent']),execute:respond(async ({nodeId,keepPercent})=>latest.current.actions.native3dCreateResolution(nodeId,keepPercent))});
     tools.push({
       name:'canvas_native3d_next_step',
@@ -1316,7 +1356,9 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         if (mutation && latest.current.readOnly) return JSON.stringify({ ok: false, error: '当前画布为只读。',
           ...(conditionalEdit ? { code: 'READ_ONLY' } : {}) });
         const result = JSON.parse(await original(args, executionOptions));
-        if (mutation && result.ok && !conditionalEdit && !['canvas_download_video', 'canvas_publish_extension', 'canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
+        const admittedGeneration = ['canvas_generate_node', 'canvas_retry_generation'].includes(tool.name)
+          && result.jobId && result.execution === 'accepted';
+        if (mutation && result.ok && !admittedGeneration && !conditionalEdit && !['canvas_download_video', 'canvas_publish_extension', 'canvas_create_project', 'canvas_open_project', 'canvas_retry_save'].includes(tool.name)) {
           try { await latest.current.actions.persistProject?.(); }
           catch (error) { return JSON.stringify({ ...result, ok: false, error: error.message, localChangesRetained: true }); }
         }
