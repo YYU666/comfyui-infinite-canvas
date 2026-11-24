@@ -161,8 +161,7 @@ export async function revealProject(id) {
 }
 
 export async function renameProject(project, name) {
-  const current = await request(`/${project.id}`);
-  return saveProject(project.id, current.revision, name, current.canvas);
+  return request(`/${project.id}/name`, json('PUT', { revision: project.revision, name }));
 }
 
 export async function importProject(fileOrPath) {

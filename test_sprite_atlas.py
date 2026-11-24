@@ -126,11 +126,13 @@ class SpriteTests(unittest.TestCase):
         for change in ({"revision": 0}, {"revision": True}, {"revision": None}, {"nodeId": "missing"}):
             with self.subTest(change=change), self.assertRaises(StoreError):
                 self.manager.create(self.payload(**change))
-        self.store._read_only.add(self.store._project_path(self.document["id"]))
+        self.store.release(self.document["id"])
+        self.store.open(self.document["id"], read_only=True)
         with self.assertRaises(StoreError) as caught:
             self.manager.create(self.payload())
         self.assertEqual(caught.exception.code, "READ_ONLY")
-        self.store._read_only.clear()
+        self.store.release(self.document["id"])
+        self.store.open(self.document["id"])
         lock = self.store._project_path(self.document["id"]).parent / ".lock"
         lock.write_text(json.dumps({"owner": "other", "pid": os.getpid()}))
         with self.assertRaises(StoreError) as caught:

@@ -614,22 +614,42 @@ class ProjectStore:
         except StoreError:
             return None
 
+    def rename(self, project_id, name, expected_revision):
+        name = validate_name(name)
+        path = self._project_path(project_id)
+        with self._guard(path):
+            self._require_project_id(path, project_id)
+            self._require_writable(path)
+            already_open = (path.parent / ".lock", self.owner_id) in self._held
+            self.acquire_lock(path)
+            try:
+                document = self._read(path)
+                document["name"] = name
+                saved = self._write(path, document, int(expected_revision))
+                return {"id": project_id, "name": saved["name"], "revision": saved["revision"]}
+            finally:
+                if not already_open:
+                    self._release_lock(path)
+
     def release(self, project_id):
         path = self._project_path(project_id)
-        lock_path = path.parent / ".lock"
         with self._guard(path):
-            for held_path, owner in list(self._held):
-                if held_path != lock_path:
-                    continue
-                try:
-                    lock = json.loads(lock_path.read_text(encoding="utf-8"))
-                    if lock.get("owner") == owner:
-                        lock_path.unlink(missing_ok=True)
-                except (OSError, UnicodeError, json.JSONDecodeError):
-                    pass
-                self._held.discard((held_path, owner))
+            self._release_lock(path)
             self._read_only.discard(project_id)
         return {"closed": True, "id": project_id}
+
+    def _release_lock(self, path):
+        lock_path = path.parent / ".lock"
+        for held_path, owner in list(self._held):
+            if held_path != lock_path:
+                continue
+            try:
+                lock = json.loads(lock_path.read_text(encoding="utf-8"))
+                if isinstance(lock, dict) and lock.get("owner") == owner:
+                    lock_path.unlink(missing_ok=True)
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                pass
+            self._held.discard((held_path, owner))
 
     def acquire_lock(self, path, owner_id=None):
         owner = owner_id or self.owner_id
