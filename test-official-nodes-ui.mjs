@@ -85,7 +85,7 @@ try {
    return result;
  });
  for (const name of ['图片调色', '图像混合', 'RGBA 通道合并']) assert.ok(groups['本地图片工具与素材'].includes(name), `${name} belongs to local image tools`);
- assert.deepEqual(groups['付费 API 节点'], ['电子主美 · 图解分析']);
+ assert.deepEqual(groups['付费 API 节点'], ['云端图片生成', '云端视频生成', '电子主美 · 图解分析']);
  assert.deepEqual(groups['游戏美术 / 精灵图'], ['3D 角色转多方向图集']);
  for (const name of ['视频生成', '文生图', '图片高清', '视频高清二采']) assert.ok(groups['本地模型节点'].includes(name), `${name} belongs to local models`);
  assert.match(await menu.innerText(), /Qwen Research License/);
