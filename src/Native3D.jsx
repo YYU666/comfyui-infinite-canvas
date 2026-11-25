@@ -146,6 +146,7 @@ export function Native3DNode({ id, data, selected }) {
   useEffect(()=>{if (!enlarged) return; const close=e=>{if(e.key==='Escape'){e.stopPropagation();setEnlarged(false);}}; window.addEventListener('keydown',close,true); return ()=>window.removeEventListener('keydown',close,true);},[enlarged]);
   return <div className={`native3d-node ${selected ? 'selected' : ''} ${busy?'native3d-busy':''}`} onPointerDownCapture={()=>api.unlockNotificationSound?.()}>
     <header><strong title={displayedTitle}>{displayedTitle}</strong><span>3D</span></header>
+    {gpuJobText(data.gpu) && <p className="gpu-job-state" data-gpu-state={data.gpu.state} title={data.gpu.device}>{gpuJobText(data.gpu)}</p>}
     {api.takeover && (outputData.proxyAssetPath || outputData.assetPath || outputData.resultAssetPath || inputLowPreview) &&
       <button className="native3d-takeover-button nodrag" type="button" onClick={() => {
         if (api.takeover(id)?.preview) api.view({takeoverNodeId:id});
@@ -204,7 +205,6 @@ export function Native3DNode({ id, data, selected }) {
       {nextDraftNotice(data,inputs)&&<small>{nextDraftNotice(data,inputs)}</small>}
       {data.nativeResolutionSaveFailed&&<p className="native3d-error">调整草稿保留在本页，保存未完成；回到来源重复创建可重试保存。</p>}
       {data.nativeNextStepSaveFailed&&<p className="native3d-error">节点保留在本页，保存未完成；回到来源重复点击下一步可重试保存。</p>}
-      {gpuJobText(data.gpu) && <p className="gpu-job-state" data-gpu-state={data.gpu.state} title={data.gpu.device}>{gpuJobText(data.gpu)}</p>}
       {!planOutput&&<div className="native3d-actions">{!failedLOD&&!(data.nativeLocalRepair&&data.nativeJobId)&&<button disabled={locked || (data.operation==='uv' && !planStatus?.ready && !retry) || (!source && adapter?.ready === false && !retry)} onClick={() => source && !data.assetPath && !data.nativePendingSource ? input.current.click() : (retry ? api.retryDelivery(id) : api.run(id)).catch(e => setUVError(e.message))}>{retry ? '重新交付' : source ? data.assetPath || data.nativePendingSource ? '分析模型' : '导入模型' : (data.nativeNextStep?.action==='next_lod'||data.nativeResolution)&&!data.nativeJobId?`生成${data.nativeParameters?.retryStage?.toUpperCase()}`:nativeProcessorRunLabel(data,retry)}</button>}{busy && <button disabled={api.readOnly} onClick={() => api.cancel(id)}>取消</button>}{!bakePreview&&<button disabled={!data.proxyAssetPath} onClick={() => api.view({path:data.proxyAssetPath,title:data.title,materialPreview:['bake','material_wear','image_to_3d'].includes(data.metadata?.operation)})}>{data.metadata?.operation==='bake'?'查看材质效果':'查看3D代理'}</button>}</div>}
       {failedLOD&&/^lod[1-4]$/.test(failedStage||'')&&<button disabled={api.readOnly||rerunBusy||busy} onClick={async()=>{setRerunBusy(true);setUVError('');try{await api.retryLOD(id);}catch(e){setUVError(e.message);}finally{setRerunBusy(false);}}}>{rerunBusy?'提交中…':`重新生成${failedStage.toUpperCase()}（新种子）`}</button>}
       {(data.nativeRun?.opId||data.sourceJobId)&&<button disabled={api.readOnly||rerunBusy} onClick={async()=>{setRerunBusy(true);setUVError('');try{await api.syncTask(id);}catch(e){setUVError(e.message);}finally{setRerunBusy(false);}}}>同步任务状态</button>}

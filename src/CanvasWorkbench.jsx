@@ -355,13 +355,19 @@ function MediaNode({ id, data, selected }) {
   </div>;
 }
 
-function VisibleGenerationRecord({ run, nodeId, status, retry, gpu }) {
+function GpuJobStatus({ gpu }) {
+  const label = gpuJobText(gpu);
+  if (!label) return null;
+  return <p className="gpu-job-state nodrag" data-gpu-state={gpu.state} title={gpu.device}>{label}</p>;
+}
+
+function VisibleGenerationRecord({ run, nodeId, status, retry }) {
   const { retryGeneration, readOnly } = useContext(NodeContext);
   if (!run || !Array.isArray(run.inputs) || !run.parameters || typeof run.parameters !== 'object') return null;
   const state = { prepared: '待提交', accepted: '已提交', rejected: '提交被拒绝', unconfirmed: '提交待核对' }[run.phase];
   const executionPreview = getVisibleExecutionPreview(run.requestId);
   return <details className="nodrag nowheel visible-generation-record" data-phase={run.phase} open={run.phase === "prepared" || undefined}>
-    <summary>{state} · {run.engine}{gpuJobText(gpu) && <small className="gpu-job-state" data-gpu-state={gpu.state} title={gpu.device}> · {gpuJobText(gpu)}</small>}</summary>
+    <summary>{state} · {run.engine}</summary>
 
     {retry && <div>重新执行 · {retry.phase === 'prepared' ? '待提交' : retry.phase === 'accepted' ? '已提交' : '请核对'} · 第 {retry.attempt} 次</div>}
     {!readOnly && run.jobId && ['done', 'error', 'cancelled'].includes(status) && retry?.phase !== 'prepared' &&
@@ -395,6 +401,7 @@ function CustomWorkflowNode({ id, data, selected }) {
   const refs = getReferences(id);
   return <div className={`generator-shell h3-node custom-workflow-node ${presentation.compact ? 'result-compact' : ''} ${selected ? 'selected' : ''}`}>
     <NodeTitle id={id} data={data} kind="generator" engine={data.extensionPackageId} /><NodeActions id={id} data={data} selected={selected} generator />
+    <GpuJobStatus gpu={data.gpu} />
     <ResultSettingsToggle presentation={presentation} />
     <div className="custom-workflow-identity" title={data.extensionDigest}>{data.extensionPackageId} · {data.extensionVersion} · {data.extensionDigest?.slice(0, 12)}</div>
     {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'model' ? <a className="nodrag" href={data.resultUrl} download>下载 GLB</a> : data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
@@ -407,7 +414,7 @@ function CustomWorkflowNode({ id, data, selected }) {
     {data.error && <p className="custom-workflow-error" role="alert">{data.error}</p>}
     {data.shareError && <p className="custom-workflow-error" role="alert">节点上传：{data.shareError}</p>}
     {data.dependencyWarning && <p className="custom-workflow-error">{data.dependencyWarning}</p>}
-    <VisibleGenerationRecord run={data.visibleRun} nodeId={id} status={data.status} retry={data.visibleRetry} gpu={data.gpu} />
+    <VisibleGenerationRecord run={data.visibleRun} nodeId={id} status={data.status} retry={data.visibleRetry} />
     <div className="custom-workflow-footer"><span>{data.stage || '固定版本 · 本地工作流'}{running ? ` ${data.progress || 0}%` : ''}</span><button className="node-share-button nodrag" disabled={running} onClick={() => checkNodeDependencies(id)}>检查依赖</button><button className="node-share-button nodrag" disabled={running} aria-label="上传此节点" title="上传此节点到节点库" onClick={() => openNodeShare(id)}><Upload size={14} /></button><button className="send-button nodrag" aria-label={running ? '取消工作流' : '运行工作流'} disabled={!running && !serverOnline} onClick={() => running ? cancelNode(id) : generateNode(id)}>{running ? <Square size={16} /> : <ArrowUp size={16} />}</button></div>
     <Handle type="source" position={Position.Right} id="image" className="neo-handle source" /><Handle type="source" position={Position.Right} id="video" style={{ top: '65%' }} className="neo-handle source" />
     {data.workflowDefinition?.outputs?.some((output) => output.type === 'model') && <Handle type="source" position={Position.Right} id="model" style={{ top: '80%' }} className="neo-handle source" />}
@@ -470,6 +477,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
 
   return <div className={`generator-shell h3-node ${presentation.compact ? 'result-compact' : ''} ${mode === 'characterSheet' ? `character-sheet-native ${sheetAdvanced ? 'advanced-open' : ''}` : ''} ${mode === 'swap' ? 'swap-node' : ''} ${imageFamily ? 'image-generator-node' : ''} ${selected ? 'selected' : ''} ${running ? 'running' : ''} ${data.pinned ? 'pinned' : ''}`}>
     <NodeTitle id={id} data={data} kind="generator" engine={modelLabel} /><NodeActions id={id} data={data} selected={selected} generator />
+    <GpuJobStatus gpu={data.gpu} />
     <ResultSettingsToggle presentation={presentation} />
     <div className="generator-preview" title={imageFamily && data.resultUrl ? '双击预览大图' : undefined} onDoubleClick={(event) => {
       if (!imageFamily || !data.resultUrl) return;
@@ -588,7 +596,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
           {mode === 'swap' && <span className="param-pill active" title="SAM3.1 遮罩直接作用于源视频 latent，而非生成后回填"><Crosshair size={12} />潜空间保护</span>}
         </div>
         <button className="node-share-button nodrag" disabled={running} aria-label="上传此节点" title="上传此节点到节点库" onClick={() => openNodeShare(id)}><Upload size={14} /></button>
-        <VisibleGenerationRecord run={data.visibleRun} nodeId={id} status={data.status} retry={data.visibleRetry} gpu={data.gpu} />
+        <VisibleGenerationRecord run={data.visibleRun} nodeId={id} status={data.status} retry={data.visibleRetry} />
         {running ? <button className="send-button cancel" onClick={() => cancelNode(id)} title="取消生成"><Square size={15} fill="currentColor" /></button> : <button className="send-button node-generate" onClick={() => generateNode(id)} disabled={!serverOnline} title={mode === 'imageUpscale' ? '本地高清放大' : '本地生成'} aria-label={mode === 'characterSheet' ? ((data.characterSheetStage || 'all') === 'all' ? '生成四视图' : '生成当前单格') : '本地生成'}>{mode === 'characterSheet' ? ((data.characterSheetStage || 'all') === 'all' ? '生成四视图' : '生成当前单格') : <ArrowUp size={17} />}</button>}
       </div>
       {['image', 'qwenEdit'].includes(mode) && (data.modelPickNote || (data.resultUrl && data.status === 'done')) && <div className="image-model-foot nodrag">
