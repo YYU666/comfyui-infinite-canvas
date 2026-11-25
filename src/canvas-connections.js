@@ -1,3 +1,4 @@
+import { cloudMediaPorts } from './cloud-media.js';
 import { ART_PORTS } from './art-director.js';
 import {nativeOutputNode} from './native3d-output.js';
 import { nativeModelConnection } from './native3d.js';
@@ -68,6 +69,23 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   if (busy(target)) return fail('目标节点正在生成，请完成后再修改连接。');
   const nativePlan = nativeModelConnection(connection, source, target, edges);
   if (nativePlan) return { ...nativePlan, resolvedFrom: resolved.resolvedFrom };
+  if (target.type === 'cloudMedia') {
+    const slot = connection.targetHandle;
+    const model = target.data.cloudModel || (target.data.provider === 'apipool' ? 'gpt-image-2' : '');
+    if (target.data.cloudAttempt) return fail('请先完成当前云端任务，再修改参考连线。');
+    if (source.type !== 'media' || source.data.kind !== 'image' || isMaskNode(source)
+      || !/\.(png|jpe?g)$/i.test(source.data.assetPath || '') || !cloudMediaPorts(target.data.provider, model).includes(slot)) {
+      return fail('此云端端口接受当前项目中已保存的 PNG 或 JPEG。');
+    }
+    if (source.data.sourceCloudId === target.id) return fail('不能将本节点的输出直接连回同一节点。');
+    const normalized = { source: source.id, sourceHandle: 'ref', target: target.id, targetHandle: slot };
+    const existing = edges.find(edge => Object.entries(normalized).every(([key, value]) => edge[key] === value));
+    const maximum = target.data.provider === 'ark' ? 9 : target.data.provider === 'apipool' ? 1 : 16;
+    if (slot === 'references' && !existing && edges.filter(edge => edge.target === target.id && edge.targetHandle === slot).length >= maximum) {
+      return fail(`此供应商最多接受 ${maximum} 张参考图。`);
+    }
+    return { connection: normalized, source, target, multiple: slot === 'references', existing, resolvedFrom: resolved.resolvedFrom };
+  }
   if (target.type === 'artDirector') {
     if (source.type !== 'media' || source.data.kind !== 'image' || isMaskNode(source) || !ART_PORTS.includes(connection.targetHandle)) return fail('电子主美只接受作品与可选参考图片。');
     const queue = [target.id], seen = new Set();

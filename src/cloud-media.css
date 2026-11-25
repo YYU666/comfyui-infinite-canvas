@@ -1,0 +1,31 @@
+.cloud-media-node {
+  width: 410px;
+  border: 1px solid #536579;
+  border-radius: 14px;
+  color: #dce8f3;
+  background: #17202d;
+  box-shadow: 0 12px 35px #0004;
+}
+.cloud-media-controls { padding: 10px 18px 18px; font-size: 12px; }
+.cloud-media-controls fieldset { display: grid; gap: 7px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.cloud-media-controls label { display: grid; gap: 3px; min-width: 0; }
+.cloud-media-controls input, .cloud-media-controls textarea, .cloud-media-controls select, .cloud-media-controls button {
+  color: inherit;
+  background: #22354a;
+  border: 1px solid #526981;
+  padding: 5px 7px;
+  border-radius: 5px;
+  font: inherit;
+  min-width: 0;
+}
+.cloud-media-controls textarea { min-height: 52px; resize: vertical; }
+.cloud-media-controls button:disabled { opacity: .5; }
+.cloud-media-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.cloud-media-options label { flex: 1; }
+.cloud-media-inputs { padding-left: 18px; overflow-wrap: anywhere; }
+.cloud-media-credentials { border-block: 1px solid #3c5268; padding: 7px 0; margin-block: 8px; }
+.cloud-media-controls .cloud-media-confirm { display: flex; align-items: flex-start; gap: 6px; margin: 8px 0; }
+.cloud-media-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+.cloud-media-status { padding: 6px 0; color: #a9e2d9; }
+.cloud-media-status small { display: block; overflow-wrap: anywhere; }
+.cloud-media-error { color: #ffc9ab; }

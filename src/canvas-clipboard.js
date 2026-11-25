@@ -108,6 +108,7 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
       Object.assign(data, { status: 'idle', stage: '' });
       ['spriteJobId', 'spriteJobSignature', 'spriteFiles', 'spriteResultSignature', 'error'].forEach(key => delete data[key]);
     }
+    if (source.type === 'cloudMedia') delete data.cloudAttempt;
     if (source.type === 'artDirector') {
       Object.assign(data,{status:'idle',stage:'',analysis:null,boardAssetPath:null,boardSignature:null,boardResultId:null,stale:false});
       delete data.error;

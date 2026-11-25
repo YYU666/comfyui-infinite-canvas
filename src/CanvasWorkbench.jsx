@@ -1,3 +1,5 @@
+import CloudMediaNode from './CloudMediaNode.jsx';
+import { submitCloud, readCloudMedia } from './cloud-media.js';
 import { inlineImageView, compactInlineImages, imageCompactArgs } from './image-inline-output.js';
 import CharacterSheetControls from './CharacterSheetControls.jsx';
 import { CHARACTER_SHEET_STAGES } from './character-sheet-settings.js';
@@ -576,7 +578,11 @@ function SpriteAtlasCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <SpriteAtlasNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
-const nodeTypes = { native3d: React.memo(Native3DNode), videoWhitePlate: React.memo(VideoPlateCanvasNode), videoLocalRepair: React.memo(VideoRepairCanvasNode), videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) };
+function CloudMediaCanvasNode(props) {
+  const actions = useContext(NodeContext);
+  return <CloudMediaNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
+}
+const nodeTypes = { cloudMedia: React.memo(CloudMediaCanvasNode), native3d: React.memo(Native3DNode), videoWhitePlate: React.memo(VideoPlateCanvasNode), videoLocalRepair: React.memo(VideoRepairCanvasNode), videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) };
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
   const saved = useMemo(() => {
@@ -1783,6 +1789,10 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (type === 'generator') data = { ...DEFAULT_GENERATOR, ...extra };
     else if (type === 'native3d') data = { title: '3D模型', operation: 'analyze', status: 'idle', nativeParameters: {}, ...extra };
     else if (type === 'spriteAtlas') data = { title: '3D 角色转多方向图集', status: 'idle', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS }, ...extra };
+    else if (type === 'cloudMedia') data = {
+      prompt: '', size: '1024x1024', quality: 'medium', aspect: '1:1', imageResolution: '1k',
+      count: 1, duration: 5, ratio: '16:9', resolution: '480p', ...extra,
+    };
     else if (type === 'artDirector') data = { title: '电子主美 · 图解分析', status: 'idle', brief: '', preserve: '', referencePurposes: {}, ...extra };
     else if (type === 'imageProcess') data = { ...DEFAULT_ADJUSTMENTS, adjustmentType: 'basic', mode: 'colorAdjust', title: '颜色调整', status: 'idle', blendMode: 'normal', opacity: 100, fit: 'cover', maskChannel: 'luminance', maskInvert: false, ...extra };
     else if (type === 'videoSpeed') data = { title: '恒定速度', status: 'idle', ...defaultSpeedSettings(), ...extra };
@@ -2298,6 +2308,77 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     const next = nodesRef.current.map(n => n.id === id ? { ...n, data: { ...n.data, ...patch } } : n);
     nodesRef.current = next; setNodes(next);
   };
+  const cloudReferences = useCallback((id) => edgesRef.current.filter(edge => edge.target === id).flatMap(edge => {
+    const node = nodesRef.current.find(item => item.id === edge.source);
+    return node?.type === 'media' ? [{ id: node.id, title: node.data.title, asset: node.data.assetPath, slot: edge.targetHandle }] : [];
+  }), []);
+  const cloudOutputExists = useCallback((id, attempt, index) => nodesRef.current.some(node =>
+    node.type === 'media' && node.data.sourceCloudId === id && node.data.sourceCloudAttempt === attempt
+    && node.data.sourceCloudIndex === index && node.data.assetPath), []);
+  const guardCloudNode = useCallback((id, projectId, owner) => {
+    if (projectRef.current.id !== projectId || switchingRef.current || projectRef.current.readOnly
+      || owner !== autoSaveRef.current || !owner || owner.failure) throw new Error('项目、权限或保存状态已改变。请返回原项目处理任务。');
+    const node = nodesRef.current.find(item => item.id === id);
+    if (node?.type !== 'cloudMedia') throw new Error('云端生成节点已移除。');
+    return node;
+  }, []);
+  const submitCloudNode = useCallback(async (id, configuration, referenceUrls, confirmedReferences) => {
+    const projectId = project.id, owner = autoSaveRef.current;
+    if (guardCloudNode(id, projectId, owner).data.cloudAttempt) throw new Error('此节点已有提交记录。请查询原任务。');
+    const attempt = crypto.randomUUID().replaceAll('-', '');
+    flushSync(() => updateNode(id, { cloudAttempt: attempt }));
+    try {
+      await persistProject();
+      if (guardCloudNode(id, projectId, owner).data.cloudAttempt !== attempt
+        || JSON.stringify(cloudReferences(id)) !== JSON.stringify(confirmedReferences)) {
+        throw new Error('节点或参考图已更改，请核对后确认提交。');
+      }
+    } catch (error) {
+      if (projectRef.current.id === projectId && !switchingRef.current && owner === autoSaveRef.current) {
+        updateNode(id, { cloudAttempt: null });
+      }
+      throw error;
+    }
+    try {
+      return { ...await submitCloud(projectId, attempt, { nodeId: id, configuration, referenceUrls }), attempt };
+    } catch (error) {
+      if (['CLOUD_INVALID', 'CLOUD_ROUTE_CHANGED'].includes(error.code)
+        && projectRef.current.id === projectId && !switchingRef.current && owner === autoSaveRef.current) {
+        updateNode(id, { cloudAttempt: null });
+      }
+      throw error;
+    }
+  }, [cloudReferences, guardCloudNode, persistProject, project.id, updateNode]);
+  const adoptCloudOutput = useCallback(async (id, attempt, output, index) => {
+    const projectId = project.id, owner = autoSaveRef.current;
+    if (guardCloudNode(id, projectId, owner).data.cloudAttempt !== attempt) throw new Error('当前节点的提交记录已更改。');
+    if (cloudOutputExists(id, attempt, index)) return;
+    const blob = await readCloudMedia(projectId, attempt, index);
+    const source = guardCloudNode(id, projectId, owner);
+    if (source.data.cloudAttempt !== attempt || cloudOutputExists(id, attempt, index)) return;
+    const resultId = uid('cloud-output');
+    const saved = await saveCanvasAsset(new File([blob], output.name, { type: output.mime }), ({ asset }) => {
+      const current = guardCloudNode(id, projectId, owner);
+      if (current.data.cloudAttempt !== attempt || cloudOutputExists(id, attempt, index)) return { ok: true };
+      const outputNode = {
+        id: resultId, type: 'media',
+        position: findFreePosition(nodesRef.current, { x: current.position.x + 475, y: current.position.y }, 'media'),
+        data: { kind: current.data.cloudKind, title: `${current.data.title} · 结果 ${index + 1}`, name: output.name,
+          assetPath: asset.path, url: assetUrl(projectId, asset.path), localFile: true, output: true, metadata: output.metadata,
+          sourceCloudId: id, sourceCloudAttempt: attempt, sourceCloudIndex: index,
+          refTag: nextReferenceTag(nodesRef.current, current.data.cloudKind) },
+      };
+      const nextNodes = [...nodesRef.current, outputNode];
+      const nextEdges = [...edgesRef.current, { id: `edge-${id}-${resultId}`, source: id, sourceHandle: 'ref', target: resultId, targetHandle: 'preview' }];
+      flushSync(() => {
+        nodesRef.current = nextNodes; setNodes(nextNodes);
+        edgesRef.current = nextEdges; setEdges(nextEdges);
+      });
+      return { ok: true };
+    }, id);
+    if (!saved?.ok) throw new Error(saved?.error?.message || '结果尚未加入当前画布。');
+    await persistProject();
+  }, [cloudOutputExists, guardCloudNode, persistProject, project.id, saveCanvasAsset, setEdges, setNodes]);
   const native3d = useNative3D({ projectId: project.id, readOnly: project.readOnly, switchingRef, nodesRef, edgesRef, updateNode: nativePatch, chooseMedia, saveNativeFile, persistProject, setNodes, setEdges, focusNode,
     recordHistory: (nextNodes,nextEdges) => historyRef.current.observe(nextNodes,nextEdges) });
   nativeRunRef.current = native3d;
@@ -2305,7 +2386,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const spriteAtlas = useSpriteAtlas({ project, projectRef, revisionRef, switchingRef, nodes, nodesRef, updateNode, persistProject, localImageJobsRef, setLocalImageJobsVersion });
   spriteRunRef.current = spriteAtlas;
   artRunRef.current = (id) => { const state = artDirector.getArtDirectorState(id); return state.node?.data.analysis?.sourceVersion === state.signature ? artDirector.exportArtBoard(id) : artDirector.runArtAnalysis(id); };
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, cloudReferences, cloudOutputExists, submitCloudNode, adoptCloudOutput, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview: setImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, cloudReferences, cloudOutputExists, submitCloudNode, adoptCloudOutput, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -2574,6 +2655,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={() => addNode('generator', { mode: 'videoSuperResolution', title: '视频超分', videoUpscaleModel: 'rtx', videoUpscaleScale: 2, rtxQuality: 'ULTRA', rtxStrength: 1, randomSeed: false }, addMenu.flow)}><i><Maximize2 size={17} /></i><span>视频超分<small>RTX 超分 / 降噪 / 去模糊 · SeedVR2</small></span><Plus size={13} /></button>
           <button disabled title="官方 HyperFlow 必需双时间模型与逐步终点条件；本机尚无经过验证的兼容运行时。普通 LoRA 转换不能替代。"><i><Sparkles size={17} /></i><span>2K 精修 · Open-H3 IC<small>兼容适配未完成 · 暂不可运行</small></span></button>
           <div className="add-menu-title">付费 API 节点</div>
+          <button onClick={() => addNode('cloudMedia', { title: '云端图片生成', cloudKind: 'image', provider: 'images' }, addMenu.flow)}><i><ImageIcon size={17} /></i><span>云端图片生成<small>供应商 API · 图片与参考图</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('cloudMedia', { title: '云端视频生成', cloudKind: 'video', provider: 'ark' }, addMenu.flow)}><i><Video size={17} /></i><span>云端视频生成<small>供应商 API · 参考图与首尾帧</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('artDirector', {}, addMenu.flow)}><i><Crosshair size={17} /></i><span>电子主美 · 图解分析<small>云端视觉 API · 按服务商计费 · 上传作品及参考</small></span><Plus size={13} /></button>
           <div className="add-menu-title">第三方工具</div>
           <button onClick={() => addNode(...NODE_PRESETS.moss_pose, addMenu.flow)}><i><WandSparkles size={17} /></i><span>MOSS 姿势控制<small>Apache-2.0 · OpenPose + 可选 Qwen 身份对齐 · 待本地实测</small></span><Plus size={13} /></button>

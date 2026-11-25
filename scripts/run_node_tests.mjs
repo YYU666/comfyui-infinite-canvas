@@ -115,6 +115,7 @@ const suites = {
     'test-workflow-exchange-ui.mjs',
     'test-canvas-save-ui.mjs',
     'test-project-resume-ui.mjs',
+    'test-cloud-media-ui.mjs',
     'test-canvas-thumbnails-ui.mjs',
     'test-canvas-media-preview-ui.mjs',
     'test-canvas-clipboard-ui.mjs',

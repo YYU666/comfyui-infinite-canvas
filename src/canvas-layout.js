@@ -12,6 +12,7 @@ const NODE_SIZES = {
   videoLocalRepair: { width: 400, height: 920 },
   videoWhitePlate: { width: 400, height: 560 },
   media: { width: 440, height: 550 },
+  cloudMedia: { width: 410, height: 490 },
   generator: { width: 440, height: 520 },
   prompt: { width: 370, height: 430 },
   note: { width: 310, height: 250 },

@@ -43,6 +43,7 @@ from video_plate_jobs import VideoPlateJobs
 from video_edit_api import VideoEditAPI
 from video_edit_jobs import VideoEditJobs
 from art_director import ArtDirectorAPI
+from cloud_media import CloudMediaAPI
 from pureref_sessions import PureRefSessions
 from sprite_atlas import SpriteAtlasAPI
 from native3d_api import Native3DAPI
@@ -715,6 +716,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         agent_api = getattr(self.server, "agent_api", None)
         if agent_api and agent_api.handle_get(self, path):
             return
+        cloud_media_api = getattr(self.server, "cloud_media_api", None)
+        if cloud_media_api and cloud_media_api.handle(self, "GET", path):
+            return
         art_director_api = getattr(self.server, "art_director_api", None)
         if art_director_api and art_director_api.handle_get(self, path):
             return
@@ -856,6 +860,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         agent_api = getattr(self.server, "agent_api", None)
         if agent_api and agent_api.handle_post(self, path):
+            return
+        cloud_media_api = getattr(self.server, "cloud_media_api", None)
+        if cloud_media_api and cloud_media_api.handle(self, "POST", path):
             return
         art_director_api = getattr(self.server, "art_director_api", None)
         if art_director_api and art_director_api.handle_post(self, path):
@@ -1030,6 +1037,8 @@ def apply_server_settings(server):
         if getattr(server, "video_repair_api", None): server.video_repair_api.jobs.replace_store(replacement)
         if getattr(server, "video_chroma_api", None): server.video_chroma_api.jobs.replace_store(replacement)
         if getattr(server, "video_rhythm_api", None): server.video_rhythm_api.jobs.replace_store(replacement)
+        if getattr(server, "cloud_media_api", None):
+            server.cloud_media_api.store = replacement
         if getattr(server, "art_director_api", None):
             server.art_director_api.store = replacement
         if hasattr(server, "native3d_jobs"):
@@ -1118,6 +1127,7 @@ def main(argv=None):
             server.pureref_sessions = PureRefSessions(server.project_store)
             server.sprite_atlas_api = SpriteAtlasAPI(server.project_store, runtime_dir() / "sprite-atlas")
             server.art_director_api = ArtDirectorAPI(server.project_store)
+            server.cloud_media_api = CloudMediaAPI(server.project_store, runtime_dir())
             server.native3d_jobs = Native3DJobs(runtime_dir() / "native3d-jobs", server.project_store)
             server.native3d_api = Native3DAPI(server.native3d_jobs)
             server.thumbnail_cache = ThumbnailCache(runtime_dir() / "thumbnails", server.project_store, COMFY_URL)
