@@ -23,6 +23,8 @@ export function nativeRerunTarget(result,nodes) {
 }
 export function nativeProcessorRunLabel(data,retry=false) {
   if(retry)return '重新交付';
+  if(data.operation==='image_to_3d')return '生成模型';
+  if(data.operation==='material_wear')return '应用曲率磨损';
   if(data.operation==='uv_plan')return '预览切缝';
   if(data.operation==='uv')return ['failed','error'].includes(data.status)?'重新分UV':'展开确认方案';
   if(data.operation==='source_lod'&&data.nativeParameters?.localRepairStage)return `重新生成${data.nativeParameters.localRepairStage.toUpperCase()}（新种子）`;

@@ -26,7 +26,9 @@ assert.equal(nativeDeliveryState({...target,data:{...target.data,adapterId:'beta
 assert.equal(nativeDeliveryState({...target,data:{...target.data,nativeParameters:{seed:8}}},source,{id:'job-a'}),'stale');
 assert.equal(nativeAssetUrl('prj_1','../private.glb'),null);
 assert.equal(nativeAssetUrl('prj_1','assets/safe.glb'),'/api/projects/prj_1/assets/safe.glb');
-assert.equal(Object.keys(NATIVE3D_PRESETS).length,7);
+assert.equal(Object.keys(NATIVE3D_PRESETS).length,9);
+assert.equal(NATIVE3D_PRESETS.model_image_to_3d[1].operation,'image_to_3d');
+assert.equal(NATIVE3D_PRESETS.model_material_wear[1].operation,'material_wear');
 console.log('NATIVE3D_STATE_OK schemas, ports, readiness protections, source/config snapshots, completed delivery dedup');
 
 assert.equal(NATIVE3D_PRESETS.model_lod[1].operation,'source_lod');

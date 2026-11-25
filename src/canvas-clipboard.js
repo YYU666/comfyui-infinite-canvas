@@ -96,7 +96,7 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
   const offset = findGroupPosition(layoutNodes, existingNodes);
   const nodes = clipboard.nodes.map((source) => {
     const data = remapQwenReferences(cloneData(source.data), idMap);
-    ['videoSubmission', 'imageRun', 'visibleRun', 'visibleRetry', 'queueJobId'].forEach((key) => delete data[key]);
+    ['gpu', 'videoSubmission', 'imageRun', 'visibleRun', 'visibleRetry', 'queueJobId'].forEach((key) => delete data[key]);
     if (data.maskSourceId) data.maskSourceId = idMap.get(data.maskSourceId) || data.maskSourceId;
     if (data.inlineImageOwnerId) {
       if (idMap.has(data.inlineImageOwnerId)) data.inlineImageOwnerId = idMap.get(data.inlineImageOwnerId);

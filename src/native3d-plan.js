@@ -30,7 +30,7 @@ export function planEdgeLayerVisible(key,mode) {
 }
 export function nativeInputs(node,nodes,edges) {
   const find=handle=>{const edge=edges.find(e=>e.target===node?.id && e.targetHandle===handle);return nativeOutputForEdge(nodes.find(n=>n.id===edge?.source),edge);};
-  return {model:find('model'),high:find('high'),plan:find('plan')};
+  return {model:find('model'),high:find('high'),plan:find('plan'),image:find('image')};
 }
 export function planRecord(job,saved,run,producerNodeId) {
   const plan=job.result?.metadata?.uvPlan;

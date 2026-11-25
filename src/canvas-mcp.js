@@ -220,6 +220,7 @@ export function native3dNodeSummary(node) {
   safeArtifacts.sort((a, b) => Number(b.role === 'report') - Number(a.role === 'report'));
   const result = {
     id: nativeSummaryText(node.id, 128), type: 'native3d', title: nativeSummaryText(data.title, 128) || '',
+    gpu: data.gpu || undefined,
     nativeStageProvenance: data.nativeStageProvenance ? nativeSummaryScalars(data.nativeStageProvenance,['processorNodeId','referenceNodeId','parentStage','parentMeshHash','parentTriangles','stageIndex']) : undefined,
     nativeUVPreviews: data.nativeUVPreviews ? nativeSummaryScalars(data.nativeUVPreviews,['jobId','modelAssetPath','seamsAssetPath','checkerAssetPath','layoutAssetPath','aoAssetPath','aoSeamsAssetPath','aoUnavailable']) : undefined,
     nativeUVPreviewMode: nativeSummaryText(data.nativeUVPreviewMode, 24),
@@ -309,6 +310,7 @@ export function nodeSummary(node, includeContent = true, graph = {}) {
     progress: node.data.progress,
     promptId: node.data.promptId,
     queueJobId: node.data.queueJobId,
+    gpu: node.data.gpu || undefined,
     ...(includeContent ? { prompt: node.data.prompt, text: node.data.text } : {}),
     ...(node.data.mode === 'image' ? { imageModel: node.data.imageModel || 'krea2', ...(node.data.imageModel === 'h3_image' ? { h3ImageResolution: node.data.h3ImageResolution || '4MP' } : {}) } : {}),
     ...(node.data.mode === 'outfitEdit' ? { outfitLayout: node.data.outfitLayout || 'legacy', outfitPanel: node.data.outfitPanel || node.data.panelId || null, outfitPanels: node.data.outfitPanels || null } : {}),
@@ -350,7 +352,10 @@ function edgeSummary(edge) {
 
 const isNativePlanSource = (source) => source?.type === 'native3d' && (Boolean(source.data.nativeUVPlan) || source.data.operation === 'uv_plan');
 function defaultTargetHandle(target, source, edges = []) {
-  if (target?.type === 'native3d') return isNativePlanSource(source) ? 'plan' : 'model';
+  if (target?.type === 'native3d') {
+    if (target.data.operation === 'image_to_3d') return 'image';
+    return isNativePlanSource(source) ? 'plan' : 'model';
+  }
   if (isVideoChroma(target)) return defaultChromaHandle(target, source, edges);
   if (isVideoRepair(target)) return 'video';
   if (isVideoPlate(target)) return PLATE_PORT;
@@ -947,7 +952,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
           if (!Object.entries(job.inputs).every(([slot, path]) => inputs[slot]?.assetPath === path)) {
             throw new Error('分析后输入素材已更换，请重新分析。');
           }
-          const summary = { jobId, status: job.status, stage: job.stage, mode: job.mode, progress: job.progress, error: job.error };
+          const summary = { jobId, status: job.status, stage: job.stage, mode: job.mode, progress: job.progress, error: job.error, gpu: job.gpu };
           if (!job.result || job.mode !== 'transcript') return { ...summary, result: job.result };
           const { segments, source, language, durationMs, wordTimingsTruncated } = job.result;
           const page = [];

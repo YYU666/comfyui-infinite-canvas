@@ -19,13 +19,29 @@ from native3d_presets import AI_LOWPOLY_DEFAULTS, AI_LOWPOLY_PRESET
 from project_store import StoreError
 from native3d_canvas_submission import check_saved_submission
 from native3d_fbx import capabilities as fbx_capabilities
+from gpu_lease import GpuLeases, gpu_status, job_owner, physical_device
+from local_worker import verified_result, worker_progress
+from native3d_triposr import IMAGE_SUFFIXES, MAX_IMAGE_BYTES, MODULES as TRIPOSR_MODULES, configuration_errors, worker_env
 
 TERMINAL = {'succeeded', 'failed', 'cancelled'}
-OPERATIONS = ('analyze', 'ai_lowpoly', 'repair_lod', 'source_lod', 'uv_plan', 'uv', 'bake')
+OPERATIONS = ('analyze', 'ai_lowpoly', 'repair_lod', 'source_lod', 'uv_plan', 'uv', 'bake', 'image_to_3d', 'material_wear')
 MAX_SOURCE = 512 * 1024**2
 ADAPTER_ID = 'meshanything-v2-local'
 SCHEMAS = {
     'analyze': {},
+    'image_to_3d': {
+        'gridResolution': {'type':'integer', 'enum':[96,128,160,192], 'default':128, 'title':'重建网格分辨率'},
+        'background': {'type':'string','enum':['light','alpha','keep'],'default':'light','title':'参考图背景'},
+        'foregroundRatio': {'type':'number','minimum':.5,'maximum':.95,'default':.85,'title':'主体在构图中的占比'},
+    },
+    'material_wear': {
+        'bakeJobId': {'type':'string','pattern':'^n3d_[a-f0-9]{32}$'},
+        'strength': {'type':'number','minimum':0,'maximum':1,'default':.7,'title':'磨损强度'},
+        'threshold': {'type':'number','minimum':0,'maximum':.95,'default':.18,'title':'凸棱阈值'},
+        'edgeLighten': {'type':'number','minimum':0,'maximum':1,'default':.32,'title':'棱边提亮'},
+        'edgeRoughness': {'type':'number','minimum':0,'maximum':1,'default':.55,'title':'磨损粗糙度'},
+        'metalExposure': {'type':'number','minimum':0,'maximum':1,'default':0,'title':'磨损露出金属量'},
+    },
     'ai_lowpoly': {
         'conditioningProfile': {'type':'string', 'enum':['canonical_safe','legacy_world_fp16'], 'default':AI_LOWPOLY_DEFAULTS['conditioningProfile']},
         'inputSeed': {'type':'integer', 'minimum':0, 'maximum':4294967295, 'default':AI_LOWPOLY_DEFAULTS['inputSeed']},
@@ -139,6 +155,8 @@ def validate_parameters(operation, values):
         if not valid or ('enum' in schema and value not in schema['enum']) or ('minimum' in schema and not schema['minimum'] <= value <= schema['maximum']) or ('pattern' in schema and not re.fullmatch(schema['pattern'],value)) or ('maxLength' in schema and len(value.encode('utf-8')) > schema['maxLength']):
             fail('Invalid parameter: ' + key)
         result[key] = value
+    if operation == 'material_wear' and not result.get('bakeJobId'):
+        fail('曲率磨损需要确切烘焙任务。')
     if operation == 'repair_lod':
         if result['fitBoundaryMode'] == 'reviewed_bounded' and not result.get('reviewedBoundaryMeshHash'):
             fail('Boundary fitting requires a reviewed source mesh hash')
@@ -211,7 +229,7 @@ def accepted_source_lod_stage(record):
             and record.get('mesh_hash')==audit.get('mesh_hash'))
 
 class Native3DJobs:
-    def __init__(self, root, store, config_path=None, engine_path=None, autostart=True):
+    def __init__(self, root, store, config_path=None, engine_path=None, autostart=True, gpu_leases=None, gpu_device=physical_device):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.store = store
@@ -219,6 +237,8 @@ class Native3DJobs:
         self.engine_path = Path(engine_path or Path(__file__).with_name('native3d_engine.py')).resolve()
         self.lock = threading.RLock()
         self.preview_lock = threading.Lock()
+        self.gpu_leases = gpu_leases
+        self.gpu_device = gpu_device
         self.wake = threading.Event()
         self.stopping = False
         self.process = None
@@ -265,15 +285,15 @@ class Native3DJobs:
         except (OSError, ValueError, TypeError, RecursionError):
             return {'pythonExecutable':'', 'configurationError':'native3d-config.json is malformed; repair the local configuration object and absolute Python executable path.'}
 
-    def _probe(self, python, modules):
-        key = (python, tuple(modules))
+    def _probe(self, python, modules, env=None):
+        key = (python, tuple(modules), env.get('PYTHONPATH') if env else None)
         cached = self._probe_cache.get(key)
         if cached and time.monotonic() - cached[0] < 30:
             return cached[1]
         script = "import importlib.util,json; print(json.dumps([m for m in " + repr(list(modules)) + " if importlib.util.find_spec(m) is None]))"
         try:
             result = subprocess.run([python, '-c', script], capture_output=True, text=True,
-                                    timeout=8, creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                                    timeout=8, env=env, creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             missing = json.loads(result.stdout) if result.returncode == 0 else ['Python dependency probe failed']
             missing = ['Missing dependency: ' + str(item) for item in missing]
         except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -317,8 +337,21 @@ class Native3DJobs:
             ai_missing.append('MeshAnything checkpointSha256 must identify trusted weights')
         if not re.fullmatch(r'[a-fA-F0-9]{64}', str(adapter.get('mesh2sdfCoreSha256', ''))):
             ai_missing.append('MeshAnything mesh2sdfCoreSha256 must identify the trusted official MC256 extension')
+        image_cfg = config.get('imageTo3D')
+        image_missing = configuration_errors(image_cfg)
+        if not self.engine_path.is_file():
+            image_missing.append('native3d_engine.py is missing')
+        if not image_missing:
+            image_python = image_cfg['pythonExecutable']
+            if self._comfy_python(Path(image_python)):
+                image_missing.append('请为 TripoSR 配置独立 Python。')
+            else:
+                image_missing.extend(self._probe(image_python, TRIPOSR_MODULES, worker_env(image_cfg)))
         dependency_missing = {}
         for op in OPERATIONS:
+            if op == 'image_to_3d':
+                dependency_missing[op] = image_missing
+                continue
             modules = ['numpy','trimesh','PIL','fast_simplification','psutil']
             if op == 'ai_lowpoly': modules += ['skimage','open3d']
             if op == 'uv': modules += ['xatlas','open3d','scipy','igl']
@@ -338,6 +371,7 @@ class Native3DJobs:
             dependency_missing['uv_plan'].append(partfield['reason'])
         ai_missing = dependency_missing['ai_lowpoly']
         operations = {op: {'ready': not dependency_missing[op],
+                           'missing': dependency_missing[op],
                            'reason': '; '.join(dependency_missing[op]),
                            'parameters': {'type':'object','properties':SCHEMAS[op],'required':[], 'additionalProperties':False}}
                       for op in OPERATIONS}
@@ -519,11 +553,16 @@ class Native3DJobs:
             if not any(asset['path'] == source['assetPath'] for asset in document.get('assets', [])):
                 fail('Source is not a registered project asset')
             path = self.store.asset_file(payload['projectId'], source['assetPath'])
-            if path.suffix.lower() not in {'.glb','.obj','.fbx'}:
-                fail('Only GLB, OBJ and bounded static FBX sources are supported')
-            if path.stat().st_size > MAX_SOURCE:
-                fail('Source exceeds 512 MiB')
-            preflight_glb_layout(path, "model")
+            image_input = payload['operation'] == 'image_to_3d'
+            if image_input:
+                if source.get('highAssetPath') or path.suffix.lower() not in IMAGE_SUFFIXES or path.stat().st_size > MAX_IMAGE_BYTES:
+                    fail('图生模型只接受小于 32 MiB 的 PNG、JPEG 或 WebP 项目素材。')
+            else:
+                if path.suffix.lower() not in {'.glb','.obj','.fbx'}:
+                    fail('Only GLB, OBJ and bounded static FBX sources are supported')
+                if path.stat().st_size > MAX_SOURCE:
+                    fail('Source exceeds 512 MiB')
+                preflight_glb_layout(path, "model")
             readiness = self.capabilities()
             if path.suffix.lower() == '.fbx' and '.fbx' not in readiness.get('sourceFormats', []):
                 fail('Pinned local FBX converter is unavailable', 503, 'NATIVE3D_FBX_NOT_READY')
@@ -540,8 +579,8 @@ class Native3DJobs:
                 with path.open('rb') as src, snapshot.open('xb') as dst:
                     while chunk := src.read(1024 * 1024):
                         total += len(chunk)
-                        if total > MAX_SOURCE:
-                            fail('Source exceeds 512 MiB')
+                        if total > (MAX_IMAGE_BYTES if image_input else MAX_SOURCE):
+                            fail('Source exceeds the configured size limit')
                         digest.update(chunk)
                         dst.write(chunk)
                 sha = digest.hexdigest()
@@ -605,6 +644,12 @@ class Native3DJobs:
                 if payload['operation']=='source_lod' and parameters.get('retryJobId'):
                     from native3d_lod_retry import validate_retry_context
                     request['sourceLodRetry'] = validate_retry_context(self, job)
+                if image_input:
+                    config = {**config, 'pythonExecutable':config['imageTo3D']['pythonExecutable']}
+                    request['imageTo3D'] = copy.deepcopy(config['imageTo3D'])
+                if payload['operation'] == 'material_wear':
+                    from native3d_material_wear import freeze_wear
+                    request['materialWear'] = freeze_wear(self, job, directory)
                 if payload['operation']=='bake' and parameters.get('padding',0)>0:
                     from native3d_bake_padding import freeze_padding_reuse
                     try:
@@ -679,6 +724,8 @@ class Native3DJobs:
             if not job:
                 fail('Native3D job not found', 404, 'NOT_FOUND')
             if job['status'] not in TERMINAL:
+                if job.get('gpu', {}).get('state') == 'waiting':
+                    job.pop('gpu')
                 job.update(status='cancelled', stage='cancelled')
                 self._persist(job)
                 if self.active == job_id and self.process and self.process.poll() is None:
@@ -1023,9 +1070,30 @@ class Native3DJobs:
     def _loop(self):
         while not self.stopping:
             with self.lock:
-                job = next((j for j in self.jobs.values() if j['status'] == 'queued'), None)
-            if job:
-                self._run(job)
+                queued = [job for job in self.jobs.values() if job['status'] == 'queued']
+            for job in queued:
+                if job['operation'] != 'image_to_3d':
+                    self._run(job)
+                    break
+                try:
+                    device = self.gpu_device()
+                    if self.gpu_leases is None:
+                        self.gpu_leases = GpuLeases()
+                    grant, blocker = self.gpu_leases.claim(device, job_owner('native3d', job))
+                except (OSError, ValueError, RuntimeError) as exc:
+                    with self.lock:
+                        if job['status'] == 'queued':
+                            job.update(status='failed', stage='gpu_unavailable', error=str(exc))
+                            self._persist(job)
+                    continue
+                if grant:
+                    self._run(job, grant)
+                    break
+                with self.lock:
+                    status = gpu_status(device, 'waiting', blocker)
+                    if job['status'] == 'queued' and job.get('gpu') != status:
+                        job.update(stage='waiting_gpu', gpu=status)
+                        self._persist(job)
             else:
                 self.wake.wait(0.5)
                 self.wake.clear()
@@ -1060,45 +1128,45 @@ class Native3DJobs:
             self.jobs[job_id].update(status='failed', stage='timeout', error='Native3D worker exceeded configured execution timeout')
             self._persist(self.jobs[job_id])
 
-    def _run(self, job):
+    def _run(self, job, grant=None):
         timer = None
         directory = self.root / job['id']
         output = directory / 'output'
         output.mkdir(exist_ok=True)
         try:
             with self.lock:
-                if job['status'] != 'queued':
+                if self.stopping or job['status'] != 'queued':
                     return
                 config = json.loads((directory / 'runtime.json').read_text(encoding='utf-8'))
                 command = [config['pythonExecutable'], '-u', str(self.engine_path), '--request', str(directory / 'request.json'), '--output', str(output)]
                 log = (directory / 'worker.log').open('w', encoding='utf-8')
-                self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True, encoding='utf-8', errors='replace', cwd=directory, creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                env = worker_env(config['imageTo3D']) if job['operation'] == 'image_to_3d' else None
+                if grant:
+                    env = grant.worker_environment(env)
+                self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True, encoding='utf-8', errors='replace', cwd=directory, env=env, creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 self.active = job['id']
                 timeout = max(1, min(3600, int(config.get('timeoutSeconds', 900))))
                 timer = threading.Timer(timeout, self._timeout, args=(job['id'],))
                 timer.daemon = True
                 timer.start()
                 job.update(status='running', stage='starting')
+                if grant:
+                    job['gpu'] = gpu_status(grant.device, 'held', grant.owner)
                 self._persist(job)
             try:
-                while line := self.process.stdout.readline(65537):
-                    if len(line) > 65536:
-                        raise ValueError('Worker progress line exceeds limit')
-                    try:
-                        progress = json.loads(line)
-                    except ValueError:
-                        continue
+                for event in worker_progress(self.process.stdout):
                     with self.lock:
-                        if job['status'] == 'running' and isinstance(progress, dict):
-                            value = progress.get('progress', job['progress'])
-                            if isinstance(value, (int,float)) and 0 <= value <= 1:
-                                job['progress'] = value
-                            job['stage'] = str(progress.get('stage', job['stage']))[:128]
+                        if job['status'] == 'running':
+                            job.update(event)
                             self._persist(job)
                 returncode = self.process.wait()
             finally:
                 log.close()
                 self.process.stdout.close()
+            if grant and grant.release():
+                with self.lock:
+                    job['gpu'] = gpu_status(grant.device, 'released', grant.owner)
+                    self._persist(job)
             with self.lock:
                 if job['status'] == 'cancelled':
                     return
@@ -1106,29 +1174,8 @@ class Native3DJobs:
                     return
                 if returncode:
                     raise ValueError(self._worker_error(directory, returncode))
-                result_path = output / 'result.json'
-                if result_path.is_symlink() or result_path.stat().st_size > 4 * 1024**2:
-                    raise ValueError('Invalid result manifest')
-                result = json.loads(result_path.read_text(encoding='utf-8'), parse_constant=lambda value: (_ for _ in ()).throw(ValueError('Non-finite worker JSON')))
-                if not isinstance(result, dict) or not isinstance(result.get('metadata'), dict) or not isinstance(result.get('quality'), dict) or not isinstance(result.get('warnings'), list) or not isinstance(result.get('files'), list) or len(result['files']) > 64:
-                    raise ValueError('Invalid result manifest')
-                seen = set()
-                for entry in result['files']:
-                    if not isinstance(entry, dict) or not isinstance(entry.get('role'), str) or not isinstance(entry.get('mime'), str) or entry.get('name') in seen:
-                        raise ValueError('Invalid result file descriptor')
-                    allowed = {'model':{'.glb','.obj'}, 'proxy':{'.glb','.obj'}, 'poster':{'.png'}, 'texture':{'.png'}, 'report':{'.json'}, 'export':{'.glb','.obj','.fbx','.png'}, 'plan':{'.json','.bin'}, 'evidence':{'.npz'}}
-                    if Path(str(entry.get('name'))).suffix.lower() not in allowed.get(entry['role'], set()) or (entry['role'] == 'report' and entry.get('name') != 'report.json'):
-                        raise ValueError('Unsupported output role or file format')
-                    if Path(str(entry.get('name'))).suffix.lower() == '.fbx':
-                        entry['mime'] = 'application/octet-stream'
-                    seen.add(entry.get('name'))
-                    file = self._safe_file(job['id'], entry['name'])
-                    entry['bytes'] = file.stat().st_size
-                    digest=hashlib.sha256()
-                    with file.open('rb') as stream:
-                        while chunk:=stream.read(1024*1024):digest.update(chunk)
-                    entry['sha256']=digest.hexdigest()
-                    entry['url'] = '/api/native3d/jobs/%s/files/%s' % (job['id'], entry['name'])
+                result = verified_result(output / 'result.json', lambda name: (
+                    self._safe_file(job['id'], name), '/api/native3d/jobs/%s/files/%s' % (job['id'], name)))
                 job.update(status='succeeded', stage='completed', progress=1, result=result)
                 self._persist(job)
         except Exception as exc:
@@ -1142,6 +1189,11 @@ class Native3DJobs:
         finally:
             if timer:
                 timer.cancel()
+            released = grant and grant.release()
+            if released:
+                with self.lock:
+                    job['gpu'] = gpu_status(grant.device, 'released', grant.owner)
+                    self._persist(job)
             with self.lock:
                 self.active = None
                 self.process = None

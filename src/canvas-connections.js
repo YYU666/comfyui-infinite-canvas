@@ -10,7 +10,7 @@ import { isVideoRepair, planVideoRepairConnection } from './video-repair-documen
 import { isVideoPlate, planVideoPlateConnection } from './video-plate-document.js';
 import { isVideoEdit, planVideoEditConnection } from './video-edit-document.js';
 
-const busy = (node) => ['uploading', 'queued', 'running', 'finishing'].includes(node?.data?.status);
+const busy = (node) => ['uploading', 'submitting', 'queued', 'running', 'finishing'].includes(node?.data?.status);
 const fail = (error) => ({ error });
 
 export function resolvePlateAsset(source, nodes) {

@@ -52,6 +52,7 @@ from project_store import ProjectStore
 from queue_api import QueueAPI
 from workbench_doctor import WorkbenchDoctor
 from workbench_comfy_lifecycle import ComfyLifecycle
+from gpu_lease import GpuLeases
 from workbench_queue import ComfyQueueAdapter, QueueManager
 from hardware_metrics import hardware_metrics
 from workbench_security import session_cookie, valid_content_type, valid_host, valid_origin, valid_token
@@ -1188,7 +1189,9 @@ def main(argv=None):
             server.pureref_sessions = PureRefSessions(server.project_store)
             server.sprite_atlas_api = SpriteAtlasAPI(server.project_store, runtime_dir() / "sprite-atlas")
             server.art_director_api = ArtDirectorAPI(server.project_store)
-            server.native3d_jobs = Native3DJobs(runtime_dir() / "native3d-jobs", server.project_store)
+            gpu_leases = GpuLeases() if (os.environ.get("H3_WORKBENCH_TEST_MODE") != "1"
+                                               or os.environ.get("H3_GPU_LEASES") == "1") else None
+            server.native3d_jobs = Native3DJobs(runtime_dir() / "native3d-jobs", server.project_store, gpu_leases=gpu_leases)
             server.native3d_api = Native3DAPI(server.native3d_jobs)
             server.thumbnail_cache = ThumbnailCache(runtime_dir() / "thumbnails", server.project_store, COMFY_URL)
             server.doctor = WorkbenchDoctor(
@@ -1197,7 +1200,7 @@ def main(argv=None):
                 secret_provider=lambda: server.art_director_api.redaction_secrets(),
             )
             queue_adapter = ComfyQueueAdapter(COMFY_URL) if enabled else _ComfyDisabled()
-            server.queue_manager = QueueManager(adapter=queue_adapter, concurrency=server.settings.data["queue"]["concurrency"])
+            server.queue_manager = QueueManager(adapter=queue_adapter, concurrency=server.settings.data["queue"]["concurrency"], gpu_leases=gpu_leases)
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
             server.agent_api = AgentAPI(server.project_store, server.queue_manager)
             server.queue_api = QueueAPI(server.queue_manager, lambda: (server.project_store, server.agent_api.canvas))

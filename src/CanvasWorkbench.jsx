@@ -1,3 +1,4 @@
+import { gpuJobText } from './gpu-job-status.js';
 import { canOptimizeImageCanvasTarget, imageGenerationSeed, imageInput, imageRunError, pageImageRun, preparePageImageRun, promptRunSnapshot, recoverInterruptedImageRuns } from './image-visible-run.js';
 import { getVisibleGenerationPage } from './canvas-current-page.js';
 import { getGenerationJob, retryGenerationJob } from './workbench-api.js';
@@ -354,13 +355,14 @@ function MediaNode({ id, data, selected }) {
   </div>;
 }
 
-function VisibleGenerationRecord({ run, nodeId, status, retry }) {
+function VisibleGenerationRecord({ run, nodeId, status, retry, gpu }) {
   const { retryGeneration, readOnly } = useContext(NodeContext);
   if (!run || !Array.isArray(run.inputs) || !run.parameters || typeof run.parameters !== 'object') return null;
   const state = { prepared: '待提交', accepted: '已提交', rejected: '提交被拒绝', unconfirmed: '提交待核对' }[run.phase];
   const executionPreview = getVisibleExecutionPreview(run.requestId);
   return <details className="nodrag nowheel visible-generation-record" data-phase={run.phase} open={run.phase === "prepared" || undefined}>
-    <summary>{state} · {run.engine}</summary>
+    <summary>{state} · {run.engine}{gpuJobText(gpu) && <small className="gpu-job-state" data-gpu-state={gpu.state} title={gpu.device}> · {gpuJobText(gpu)}</small>}</summary>
+
     {retry && <div>重新执行 · {retry.phase === 'prepared' ? '待提交' : retry.phase === 'accepted' ? '已提交' : '请核对'} · 第 {retry.attempt} 次</div>}
     {!readOnly && run.jobId && ['done', 'error', 'cancelled'].includes(status) && retry?.phase !== 'prepared' &&
       <button type="button" onClick={() => retryGeneration(nodeId, { jobId: run.jobId })}>按原配置重新执行</button>}
@@ -405,7 +407,7 @@ function CustomWorkflowNode({ id, data, selected }) {
     {data.error && <p className="custom-workflow-error" role="alert">{data.error}</p>}
     {data.shareError && <p className="custom-workflow-error" role="alert">节点上传：{data.shareError}</p>}
     {data.dependencyWarning && <p className="custom-workflow-error">{data.dependencyWarning}</p>}
-    <VisibleGenerationRecord run={data.visibleRun} nodeId={id} status={data.status} retry={data.visibleRetry} />
+    <VisibleGenerationRecord run={data.visibleRun} nodeId={id} status={data.status} retry={data.visibleRetry} gpu={data.gpu} />
     <div className="custom-workflow-footer"><span>{data.stage || '固定版本 · 本地工作流'}{running ? ` ${data.progress || 0}%` : ''}</span><button className="node-share-button nodrag" disabled={running} onClick={() => checkNodeDependencies(id)}>检查依赖</button><button className="node-share-button nodrag" disabled={running} aria-label="上传此节点" title="上传此节点到节点库" onClick={() => openNodeShare(id)}><Upload size={14} /></button><button className="send-button nodrag" aria-label={running ? '取消工作流' : '运行工作流'} disabled={!running && !serverOnline} onClick={() => running ? cancelNode(id) : generateNode(id)}>{running ? <Square size={16} /> : <ArrowUp size={16} />}</button></div>
     <Handle type="source" position={Position.Right} id="image" className="neo-handle source" /><Handle type="source" position={Position.Right} id="video" style={{ top: '65%' }} className="neo-handle source" />
     {data.workflowDefinition?.outputs?.some((output) => output.type === 'model') && <Handle type="source" position={Position.Right} id="model" style={{ top: '80%' }} className="neo-handle source" />}
@@ -586,7 +588,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
           {mode === 'swap' && <span className="param-pill active" title="SAM3.1 遮罩直接作用于源视频 latent，而非生成后回填"><Crosshair size={12} />潜空间保护</span>}
         </div>
         <button className="node-share-button nodrag" disabled={running} aria-label="上传此节点" title="上传此节点到节点库" onClick={() => openNodeShare(id)}><Upload size={14} /></button>
-        <VisibleGenerationRecord run={data.visibleRun} nodeId={id} status={data.status} retry={data.visibleRetry} />
+        <VisibleGenerationRecord run={data.visibleRun} nodeId={id} status={data.status} retry={data.visibleRetry} gpu={data.gpu} />
         {running ? <button className="send-button cancel" onClick={() => cancelNode(id)} title="取消生成"><Square size={15} fill="currentColor" /></button> : <button className="send-button node-generate" onClick={() => generateNode(id)} disabled={!serverOnline} title={mode === 'imageUpscale' ? '本地高清放大' : '本地生成'} aria-label={mode === 'characterSheet' ? ((data.characterSheetStage || 'all') === 'all' ? '生成四视图' : '生成当前单格') : '本地生成'}>{mode === 'characterSheet' ? ((data.characterSheetStage || 'all') === 'all' ? '生成四视图' : '生成当前单格') : <ArrowUp size={17} />}</button>}
       </div>
       {['image', 'qwenEdit'].includes(mode) && (data.modelPickNote || (data.resultUrl && data.status === 'done')) && <div className="image-model-foot nodrag">
@@ -1285,6 +1287,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       flushSync(() => updateNode(job.nodeId, { visibleRetry, status: job.status, stage: job.stage, promptId: job.comfyPromptId || null }));
       node = nodesRef.current.find((item) => item.id === job.nodeId);
     }
+    if (node?.data.queueJobId === job.id && JSON.stringify(node.data.gpu || null) !== JSON.stringify(job.gpu || null)) {
+      updateNode(node.id, { gpu: job.gpu || null });
+    }
     const action = queueJobAction(node, job);
     if (action?.type === 'complete') await completeGeneration(node.id, action.promptId, action.history, action.attempt);
     else if (action?.type === 'patch') updateNode(node.id, action.patch);
@@ -1747,7 +1752,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         node = { ...node, data: { ...node.data, ...decision.patch } };
       }
     }
-    updateNode(id, { status: 'uploading', stage: '正在准备素材', progress: 0, error: null, promptId: null, queueJobId: null });
+    updateNode(id, { status: 'uploading', stage: '正在准备素材', progress: 0, error: null, promptId: null, queueJobId: null, gpu: null });
     let submitting = false;
     try {
       if (node.data.mode === 'image' && node.data.imageModel === 'moss') {

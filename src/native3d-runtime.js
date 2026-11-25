@@ -35,6 +35,30 @@ function requireAgentNativePage(options) {
   options.assertActive?.();
 }
 
+function generatedReference(node) {
+  return node?.type === 'media' && node.data.kind === 'image' && node.data.output === true
+    && node.data.type === 'output' && typeof node.data.url === 'string' && node.data.url.startsWith('/api/comfy/view?');
+}
+
+async function generatedSourceFile(blob, data, image) {
+  if (!image) {
+    if (blob.size > 512 * 1024**2 || await blob.slice(0,4).text() !== 'glTF') {
+      throw Error('生成结果不是受支持的 GLB。');
+    }
+    await checkGLBLayout(blob);
+    return new File([blob],data.filename || data.name,{type:'model/gltf-binary'});
+  }
+  if (blob.size > 32 * 1024**2) throw Error('参考图超过 32 MiB。');
+  const head = new Uint8Array(await blob.slice(0,12).arrayBuffer());
+  const ascii = String.fromCharCode(...head);
+  const format = head.slice(0,8).join(',') === '137,80,78,71,13,10,26,10' ? ['png','image/png']
+    : head[0] === 255 && head[1] === 216 && head[2] === 255 ? ['jpg','image/jpeg']
+    : ascii.startsWith('RIFF') && ascii.slice(8,12) === 'WEBP' ? ['webp','image/webp'] : null;
+  if (!format) throw Error('参考图不是有效的 PNG、JPEG 或 WebP。');
+  const title = (data.filename || data.name || 'reference').replace(/\.[^.]+$/, '');
+  return new File([blob],`${title}.${format[0]}`,{type:format[1]});
+}
+
 export const PLAN_PREVIEW_MODES=['regions','convex','details','ao'];
 export function supportsPlanPreviews(plan) {
   return plan?.settings?.seamPlanningMode==='ai_structure_ao_v2' && ['convex_structural','concave_structural'].every(reason=>plan.edgeReasons?.includes(reason)) && Boolean(plan.overlay?.arrays?.edgeReason);
@@ -112,7 +136,7 @@ export function useNative3D(options) {
   const patch = (id, data) => {const o=current(),node=o.nodesRef.current.find(n=>n.id===id);o.updateNode(id,node?.data.nativeCurrentOutputId?nativePatchOutputData(node.data,data):data);};
   const sourceFor = (o, node) => node?.data.operation === 'analyze'
     ? (node.data.nativePendingSource ? { ...node, data: { ...node.data, assetPath: node.data.nativePendingSource.path, originalAssetPath: node.data.nativePendingSource.path } } : node)
-    : nativeInputs(node,o.nodesRef.current,o.edgesRef.current).model;
+    : nativeInputs(node,o.nodesRef.current,o.edgesRef.current)[node?.data.operation === 'image_to_3d' ? 'image' : 'model'];
   const inputsFor=(o,node)=>nativeInputs(node,o.nodesRef.current,o.edgesRef.current);
   const identityFor=(node,source)=>{
     const inputs=inputsFor(latest.current,node);
@@ -180,7 +204,9 @@ export function useNative3D(options) {
       node=o.nodesRef.current.find(n=>n.id===id);
     }
     let source = sourceFor(o, node);
-    if (['source_lod','repair_lod'].includes(node.data.operation) && isGeneratedGLB(source) && !source.data.assetPath) {
+    const usesGeneratedReference = node.data.operation === 'image_to_3d' && generatedReference(source);
+    const usesGeneratedModel = ['source_lod','repair_lod'].includes(node.data.operation) && isGeneratedGLB(source);
+    if ((usesGeneratedReference || usesGeneratedModel) && !source.data.assetPath) {
       const previous = {status:node.data.status || 'idle', stage:node.data.stage || ''};
       const importId = crypto.randomUUID();
       const ownsImport = () => {
@@ -199,14 +225,12 @@ export function useNative3D(options) {
       };
       generatedImports.current.add(importId);
       try {
-        patch(id,{status:'uploading',stage:'保存生成的 GLB',error:null,nativeSourceImport:{id:importId,previous}});
+        patch(id,{status:'uploading',stage:usesGeneratedReference?'保存参考图':'保存生成的 GLB',error:null,nativeSourceImport:{id:importId,previous}});
         const response = await fetch(model.url,{redirect:'error'});
-        if (!response.ok) throw Error('生成的 GLB 无法读取，请检查原生成结果。');
-        const blob = await response.blob();
-        if (blob.size > 512 * 1024**2 || await blob.slice(0,4).text() !== 'glTF') throw Error('生成结果不是受支持的 GLB。');
-        await checkGLBLayout(blob);
-        if (!sameSource()) throw Error('模型输入已改变。');
-        const assetPath = await o.saveNativeFile(new File([blob],model.filename || model.name,{type:'model/gltf-binary'}));
+        if (!response.ok) throw Error('无法读取原生成结果。');
+        const file = await generatedSourceFile(await response.blob(),model,usesGeneratedReference);
+        if (!sameSource()) throw Error('连接的输入已改变。');
+        const assetPath = await o.saveNativeFile(file);
         if (!sameSource()) throw Error('模型输入已改变。');
         o.updateNode(sourceId,{assetPath,localFile:true});
         await o.persistProject();
@@ -234,7 +258,9 @@ export function useNative3D(options) {
         && live && live.data.nativeRun?.opId === trackedOpId && identityFor(live, sourceFor(latest.current, live)) === identity;
     };
     try {
-      if (!source?.data.assetPath) throw new Error('请先导入并连接已保存的3D模型。');
+      if (!source?.data.assetPath) {
+        throw Error(node.data.operation === 'image_to_3d' ? '请先保存并连接参考图。' : '请先导入并连接已保存的3D模型。');
+      }
       const paths = [[source.data.assetPath,'model'],[inputs.high?.data.assetPath || source.data.originalAssetPath,'high']];
       for (const [path,role] of paths) {
         if (role === 'high' && (!['bake','repair_lod','uv','uv_plan','source_lod'].includes(node.data.operation) || path === paths[0][0])) continue;
@@ -259,6 +285,12 @@ export function useNative3D(options) {
         parameters={...parameters,...planUVParameters(plan,node.data.nativeParameters || {},nativeAdapterSchema(adapter))};
       }
       if(node.data.operation==='bake'&&parameters.reviewedBoundaryJobId){const highHash=inputs.high?.data.assetPath?.match(/^assets\/([a-f0-9]{64})\.[a-z0-9]+$/)?.[1];if(!highHash)throw Error('已审阅候选烘焙需要明确连接且已保存的材质高模。');parameters={...parameters,reviewedBoundaryBakeHighSha256:highHash};}
+      if (node.data.operation === 'material_wear') {
+        if (source.data.metadata?.operation !== 'bake' || !/^n3d_[a-f0-9]{32}$/.test(source.data.sourceJobId || '')) {
+          throw Error('曲率磨损需要连接真实烘焙结果。');
+        }
+        parameters = {...parameters, bakeJobId:source.data.sourceJobId};
+      }
       const geometryError=nativeGeometryInputError(source,node.data.operation,parameters);if(geometryError)throw Error(geometryError);
       if (options.origin === 'agent') {
         if (!await o.focusNode?.(id,{duration:0})) throw Error('当前画布无法定位 3D 任务节点。');
@@ -307,7 +339,7 @@ export function useNative3D(options) {
       if(typeof native3DNotifications!=='undefined')native3DNotifications.arm(submittedJobId);
       if (latest.current.nodesRef.current.find(n => n.id === id)?.data.nativeJobId !== submittedJobId) {
         patch(id, { nativeJobId:submittedJobId, status:job.status === 'running' ? 'running' : 'queued',
-          stage:'后台已接受，正在同步任务', nativeSubmissionUncertain:false, nativeBackendStatus:job.status });
+          stage:'后台已接受，正在同步任务', nativeSubmissionUncertain:false, gpu:job.gpu||null,nativeBackendStatus:job.status });
       }
       try {
         await o.persistProject();
@@ -381,7 +413,7 @@ export function useNative3D(options) {
     if(job.projectId!==projectId||job.nodeId!==node.id||job.opId!==before.opId||job.operation!==node.data.operation||job.source?.assetPath!==before.sourceAssetPath
       || (before.submission && !matchesNativePageJob(job, before.submission, before.requestOrigin, before.page?.originNodeId))) throw Error('后台任务来源与当前提交不一致。');
     const terminal=['succeeded','completed','success'].includes(job.status),failed=['failed','error','cancelled'].includes(job.status);
-    patch(node.id,{nativeJobId:job.id,nativeSubmissionUncertain:false,nativeBackendStatus:job.status,status:terminal?'finishing':job.status,progress:Number.isFinite(job.progress)?Math.round(job.progress*100):null,stage:terminal?'后台已完成，正在同步结果':job.stage,error:failed?(typeof job.error==='string'?job.error:job.error?.message):null});
+    patch(node.id,{nativeJobId:job.id,nativeSubmissionUncertain:false,gpu:job.gpu||null,nativeBackendStatus:job.status,status:terminal?'finishing':job.status,progress:Number.isFinite(job.progress)?Math.round(job.progress*100):null,stage:terminal?'后台已完成，正在同步结果':job.stage,error:failed?(typeof job.error==='string'?job.error:job.error?.message):null});
     before.jobId=job.id;
     if(retrySave){await o.persistProject(true);assertRun(projectId,node.id,before);patch(node.id,{nativeDeliveryErrorJobId:null});}
     if(terminal&&node.data.nativeDeliveredJobId===job.id){patch(node.id,{status:'completed',progress:100,stage:'结果已保存',error:null});return {jobId:job.id,status:'completed'};}
@@ -476,12 +508,12 @@ export function useNative3D(options) {
           const assertCurrent = () => { if (stopped) throw new Error('交付已停止。'); return assertRun(o.projectId, node.id, before); };
           if (['failed', 'error', 'cancelled'].includes(job.status)) {
             if(typeof native3DNotifications!=='undefined')native3DNotifications.discard(job.id);
-            assertCurrent(); o.updateNode(node.id, { nativeBackendStatus:job.status,status: job.status, error: typeof job.error === 'string' ? job.error : job.error?.message, stage: job.stage }); continue;
+            assertCurrent(); o.updateNode(node.id, { gpu:job.gpu||null,nativeBackendStatus:job.status,status: job.status, error: typeof job.error === 'string' ? job.error : job.error?.message, stage: job.stage }); continue;
           }
           if (!['completed', 'succeeded', 'success'].includes(job.status)) {
-            assertCurrent(); o.updateNode(node.id, { nativeBackendStatus:job.status,error:null,status: job.status, stage: job.stage, progress: Number.isFinite(job.progress)?Math.round(job.progress*100):null }); continue;
+            assertCurrent(); o.updateNode(node.id, { gpu:job.gpu||null,nativeBackendStatus:job.status,error:null,status: job.status, stage: job.stage, progress: Number.isFinite(job.progress)?Math.round(job.progress*100):null }); continue;
           }
-          assertCurrent();o.updateNode(node.id,{nativeBackendStatus:job.status,error:null,status:'finishing',stage:'后台已完成，正在保存结果'});
+          assertCurrent();o.updateNode(node.id,{gpu:job.gpu||null,nativeBackendStatus:job.status,error:null,status:'finishing',stage:'后台已完成，正在保存结果'});
           if (delivering.current.has(job.id)) continue;
           delivering.current.add(job.id);
           try {
@@ -494,7 +526,7 @@ export function useNative3D(options) {
             const inheritedGeometry=sourceFor(o,now)?.data.metadata?.geometry;
             const geometry=job.result?.metadata?.geometry || inheritedGeometry;
             const common = { ...(now.data.operation==='source_lod' ? {nativeLODLevel:geometry?.selectedLodLevel,nativeNaniteCandidate:geometry?.status==='accepted'&&geometry?.selectedLodLevel===0}:{}),...(uvPlan ? {nativeUVPlan:uvPlan,nativeUVPlanConfirmation:null}:{}),nativeArtifacts: Object.values(saved).map(item => ({ name: item.name, role: item.role, assetPath: item.path })), metadata: { ...job.result?.metadata, ...(uvPlan ? {uvPlan} : {}),...(geometry ? {geometry} : {}) }, nativeGeometryProvenance: ['repair_lod','source_lod'].includes(now.data.operation) || Boolean(sourceFor(o,now)?.data.nativeGeometryProvenance), quality: geometry?.status==='blocked'?{...job.result?.quality,status:'blocked'}:job.result?.quality, warnings: job.result?.warnings || [],
-              proxyAssetPath: saved.proxy?.path, posterAssetPath: saved.poster?.path, status: 'completed', progress: 100, stage: '结果已保存', error: null, nativeDeliveredJobId: job.id, originalAssetPath: now.data.nativeRun.originalAssetPath };
+              proxyAssetPath: saved.proxy?.path, posterAssetPath: saved.poster?.path, status: 'completed', progress: 100, stage: '结果已保存', error: null, nativeDeliveredJobId: job.id, originalAssetPath: now.data.operation === 'image_to_3d' ? saved.model.path : now.data.nativeRun.originalAssetPath };
             if(now.data.operation==='uv'&&saved.model) {
               common.nativeUVPreviews=nativeUVDeliveredPreviews({type:'native3d',data:{...common,operation:'uv',nativeJobId:job.id,resultAssetPath:saved.model.path}});
               common.nativeUVPreviewMode=now.data.nativeUVPreviewMode || null;

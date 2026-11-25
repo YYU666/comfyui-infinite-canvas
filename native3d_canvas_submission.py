@@ -88,14 +88,19 @@ def _output_on_edge(canvas, node_id, target_handle):
     ]
     if not edges:
         return None, {}
-    if len(edges) != 1 or edges[0].get("sourceHandle") != "model":
-        _mismatch("模型输入连线缺失或不唯一。")
+    expected_handle = "ref" if target_handle == "image" else "model"
+    if len(edges) != 1 or edges[0].get("sourceHandle") != expected_handle:
+        _mismatch("输入连线缺失、类型错误或不唯一。")
     edge = edges[0]
     matches = [n for n in canvas["nodes"] if n.get("id") == edge.get("source")]
     if len(matches) != 1:
         _mismatch("连线来源节点缺失或不唯一。")
     source = matches[0]
     data = source["data"]
+    if target_handle == "image":
+        if source.get("type") != "media" or data.get("kind") != "image" or data.get("mediaRole") == "mask":
+            _mismatch("图生模型需要一张已保存的普通图片素材。")
+        return source["id"], data
     if source.get("type") != "native3d" and not (source.get("type") == "media" and data.get("kind") == "model"):
         _mismatch("连线来源不是已保存的模型节点。")
     record_id = _object(edge.get("data")).get("outputRecordId") or data.get("nativeCurrentOutputId")
@@ -158,10 +163,16 @@ def check_saved_submission(document, payload, encoded, page, proof, find_job):
         imported = _object(data.get("nativePendingSource")).get("path")
         source = {"assetPath": imported or data.get("assetPath"), "originalAssetPath": imported or data.get("originalAssetPath")}
     else:
-        source_id, source = _output_on_edge(canvas, payload["nodeId"], "model")
+        handle = "image" if payload["operation"] == "image_to_3d" else "model"
+        source_id, source = _output_on_edge(canvas, payload["nodeId"], handle)
     primary = payload["source"]["assetPath"]
     if not source_id or source_id != run.get("sourceId") or source.get("assetPath") != primary or run.get("sourceAssetPath") != primary:
         _mismatch("保存的模型连线与本次提交来源不一致。")
+    if payload["operation"] == "material_wear" and (
+        _object(source.get("metadata")).get("operation") != "bake"
+        or source.get("sourceJobId") != payload["parameters"].get("bakeJobId")
+    ):
+        _mismatch("曲率磨损必须连接与本次参数一致的真实烘焙输出。")
     if "highAssetPath" in payload["source"]:
         _, high = _output_on_edge(canvas, payload["nodeId"], "high")
         expected = high.get("assetPath") or source.get("originalAssetPath") or primary

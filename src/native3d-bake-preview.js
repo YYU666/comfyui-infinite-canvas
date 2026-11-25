@@ -1,16 +1,17 @@
 import {nativeOutputNode} from './native3d-output.js';
-export const BAKE_CHANNELS=[['basecolor','底色'],['normal','法线'],['ao','AO'],['roughness','粗糙度'],['metallic','金属度']];
+export const BAKE_CHANNELS=[['basecolor','底色'],['normal','法线'],['ao','AO'],['roughness','粗糙度'],['metallic','金属度'],['curvature','凸棱曲率'],['edge-wear','磨损遮罩']];
 const modelPath=/^assets\/[a-f0-9]{64}\.(glb|obj)$/i;
 const imagePath=/^assets\/[a-f0-9]{64}\.png$/i;
 export function nativeBakePreview(node) {
   const live=node?.data;
-  if(node?.type!=='native3d'||live?.status!=='completed'||live.error||live.metadata?.operation!=='bake')return null;
-  const jobId=live.operation==='bake'?live.nativeJobId:live.operation==='analyze'?live.sourceJobId:null;
-  const model=live.operation==='bake'?live.resultAssetPath:live.assetPath;
+  const operation = live?.metadata?.operation;
+  if(node?.type!=='native3d'||live?.status!=='completed'||live.error||!['bake','material_wear'].includes(operation))return null;
+  const jobId=live.operation===operation?live.nativeJobId:live.operation==='analyze'?live.sourceJobId:null;
+  const model=live.operation===operation?live.resultAssetPath:live.assetPath;
   if(!/^n3d_[a-f0-9]{32}$/.test(jobId||'')||live.nativeDeliveredJobId!==jobId||!modelPath.test(model||''))return null;
   let output;try{output=nativeOutputNode(node);}catch{return null;}
   const data=output.data;
-  if(output.nativeOutputRecordId&&(data.sourceJobId!==jobId||data.nativeDeliveredJobId!==jobId||data.assetPath!==model||data.status!=='completed'||data.error||data.metadata?.operation!=='bake'))return null;
+  if(output.nativeOutputRecordId&&(data.sourceJobId!==jobId||data.nativeDeliveredJobId!==jobId||data.assetPath!==model||data.status!=='completed'||data.error||data.metadata?.operation!==operation))return null;
   const artifacts=data.nativeArtifacts || [];
   const models=artifacts.filter(a=>a.name==='model.glb'&&a.role==='model'&&a.assetPath===model);
   if(models.length!==1)return null;

@@ -317,6 +317,7 @@ def read_mesh(path):
     source_uv = False
     source_normals = False
     source_tangents = False
+    source_colors = False
     material_info = []
     texture_wrapping = []
     if suffix == '.obj':
@@ -355,8 +356,7 @@ def read_mesh(path):
             for primitive in mesh.get('primitives', []):
                 if primitive.get('mode', 4) != 4 or primitive.get('targets'):
                     raise ValueError('Only static triangle primitives supported')
-                if 'COLOR_0' in primitive.get('attributes', {}):
-                    raise ValueError('GLB COLOR_0 vertex-color transfer unsupported; convert vertex colors to an embedded base-color texture before import')
+                source_colors |= 'COLOR_0' in primitive.get('attributes', {})
                 source_uv |= 'TEXCOORD_0' in primitive.get('attributes', {})
                 source_tangents |= 'TANGENT' in primitive.get('attributes', {})
                 source_normals |= 'NORMAL' in primitive.get('attributes', {})
@@ -376,6 +376,10 @@ def read_mesh(path):
         raise ValueError('Triangle count outside1..3000000 pilot bounds')
     if not np.isfinite(mesh.vertices).all() or np.ptp(mesh.vertices, axis=0).max() <= 0:
         raise ValueError('Source contains nonfinite or zero-size geometry')
+    if source_colors:
+        if getattr(mesh.visual, 'kind', None) != 'vertex':
+            raise ValueError('GLB COLOR_0 mixed with unsupported material attributes.')
+        mesh.metadata['nativeSourceVertexColor'] = True
     mesh.metadata['nativeSourceUV'] = source_uv
     mesh.metadata['nativeSourceTangentDeclared'] = source_tangents
     mesh.metadata['nativeMaterials'] = material_info
@@ -513,7 +517,16 @@ def bake(low, high, out, params, progress_callback=None):
     if source_normal:
         def filtered_high_normals(*args, **kwargs):
             return filtered_source_normals(*args, **kwargs, source_material=source_material)
-    factor = np.asarray(pbr.get('baseColorFactor', [1, 1, 1, 1]) if materials else [.5, .5, .5, 1])[:3]
+    vertex_rgb = (np.asarray(high.visual.vertex_colors[:, :3], dtype=np.float32) / 255
+                  if high.metadata.get('nativeSourceVertexColor') else None)
+    factor = np.asarray(pbr.get('baseColorFactor', [1, 1, 1, 1]) if materials else
+                        ([1, 1, 1, 1] if vertex_rgb is not None else [.5, .5, .5, 1]))[:3]
+    if vertex_rgb is not None:
+        source_material.report['vertexColor'] = 'GLB linear vertex color barycentric projection'
+    from native3d_material_wear import surface_curvature, curvature_samples
+    high_curvature = surface_curvature(high)
+    curvature = np.zeros((resolution, resolution), dtype=np.uint8)
+    curvature_radius = float(np.linalg.norm(high.extents)) * .008
     rough_factor = float(pbr.get('roughnessFactor', 1) if materials else .8)
     metal_factor = float(pbr.get('metallicFactor', 1) if materials else 0)
     cage=settings['cageDistance']
@@ -638,8 +651,14 @@ def bake(low, high, out, params, progress_callback=None):
             if valid.any():
                 ids = found['primitive_ids'][valid]
                 primitive_uvs = found['primitive_uvs'][valid]
-                if base_pixels is not None:
-                    linear = source_material.sample('baseColorTexture', ids, primitive_uvs) * factor
+                curvature[y[valid], x[valid]] = np.rint(
+                    curvature_samples(high_curvature, ids, primitive_uvs, curvature_radius) * 255).astype(np.uint8)
+                if base_pixels is not None or vertex_rgb is not None:
+                    if base_pixels is not None:
+                        linear = source_material.sample('baseColorTexture', ids, primitive_uvs) * factor
+                    else:
+                        bary = np.column_stack((1-primitive_uvs.sum(axis=1), primitive_uvs))
+                        linear = (vertex_rgb[high_faces[ids]] * bary[..., None]).sum(axis=1) * factor
                     srgb = np.where(linear <= .0031308, linear * 12.92, 1.055 * np.maximum(linear, 0) ** (1/2.4) - .055)
                     basecolor[y[valid], x[valid]] = np.clip(srgb * 255, 0, 255).astype(np.uint8)
                 if mr_pixels is not None:
@@ -675,10 +694,11 @@ def bake(low, high, out, params, progress_callback=None):
     from scipy.ndimage import distance_transform_edt
     distance, indices = distance_transform_edt(hitmask == 0, return_indices=True)
     dilated = (coverage == 0) & (distance <= settings['padding'])
-    for pixels in (normal, ao, basecolor, roughness, metallic):
+    for pixels in (normal, ao, basecolor, roughness, metallic, curvature):
         pixels[dilated] = pixels[indices[0][dilated], indices[1][dilated]]
     Image.fromarray(normal).save(out / 'normal.png')
     Image.fromarray(ao).save(out / 'ao.png')
+    Image.fromarray(curvature).save(out / 'curvature.png')
     Image.fromarray(coverage * 255).save(out / 'coverage.png')
     Image.fromarray(hitmask).save(out / 'hits.png')
     Image.fromarray(normal_hitmask).save(out / 'normal-valid.png')
@@ -750,7 +770,9 @@ def bake(low, high, out, params, progress_callback=None):
             'shadingNormalRepair': basis['normalRepair'],
             'rasterConvention': 'UV*resolution; texel centers at integer+.5',
             'windingRepair': winding,
-            'materialFallback': 'neutral matte: linear baseColor0.5,roughness0.8,metallic0; no original high material' if not materials else 'none; original material factors/textures preserved',
+            'materialFallback': ('vertex colors; roughness 0.8, metallic 0' if vertex_rgb is not None else
+                                 'neutral matte: linear baseColor0.5,roughness0.8,metallic0; no original high material') if not materials else 'none; original material factors/textures preserved',
+            'curvature': {'kind':'convex-edge-dihedral','radius':curvature_radius},
             'sourceMaterialTransfer': source_material.report,
             'pbrTransfer': {'baseColor': 'embedded texture times original factor' if base_pixels is not None else 'original/default scalar factor',
                             'metallicRoughness': 'embedded texture times original factors' if mr_pixels is not None else 'original/default scalar factors'},
@@ -765,7 +787,7 @@ def run(request, output):
         raise ValueError('Refusing to overwrite an existing successful result')
     source = Path(request['sourcePath'])
     operation = request['operation']
-    if operation not in ('analyze', 'ai_lowpoly', 'repair_lod', 'source_lod', 'uv_plan', 'uv', 'bake'):
+    if operation not in ('analyze', 'ai_lowpoly', 'repair_lod', 'source_lod', 'uv_plan', 'uv', 'bake', 'image_to_3d', 'material_wear'):
         raise ValueError('Unsupported operation')
     params = request.get('parameters') or {}
     if operation=='bake':
@@ -778,7 +800,14 @@ def run(request, output):
     progress('read_source', 5)
     if source.is_file():
         memory_gate(max(512 * 1024**2, source.stat().st_size * 8))
-    mesh = read_mesh(source)
+    generation = None
+    if operation == 'image_to_3d':
+        from native3d_triposr import generate
+        mesh, generation = generate(source, request.get('imageTo3D'), params, progress)
+        if not 4 <= len(mesh.faces) <= MAX_FACES:
+            raise ValueError('图生模型输出的三角面数超出原生处理范围。')
+    else:
+        mesh = read_mesh(source)
     ram = memory_gate(max(512 * 1024**2, len(mesh.faces) * 400 + int(params.get('resolution', 1024))**2 * (64 if operation == 'bake' else 4)))
     original = quality(mesh)
     warnings = ['Quality requires user review; self-intersection has not been exhaustively checked.']
@@ -797,7 +826,14 @@ def run(request, output):
         apply_review_metadata(metadata,warnings,review)
     if operation in ('source_lod','uv_plan') and request.get('source',{}).get('sha256') not in (None,metadata['sourceSha256']):
         raise ValueError('Source snapshot SHA256 changed')
-    if operation == 'ai_lowpoly':
+    if operation == 'image_to_3d':
+        metadata['generation'] = generation
+    elif operation == 'material_wear':
+        from native3d_material_wear import apply_wear
+        metadata['materialWear'] = apply_wear(source, out, request['materialWear'], params)
+        for name in ('basecolor','roughness','metallic','normal','ao','curvature','metallic-roughness','edge-wear'):
+            files.append({'name':name+'.png', 'role':'texture', 'mime':'image/png'})
+    elif operation == 'ai_lowpoly':
         cfg = request.get('adapterConfig') or {}
         if request.get('adapterId', 'meshanything-v2-local') != 'meshanything-v2-local':
             raise ValueError('Unsupported AI adapter')
@@ -1010,7 +1046,9 @@ def run(request, output):
         else:
             progress('project_and_bake', 25)
             metadata['bake'] = bake(mesh, high, out, params, progress_callback=progress)
-        for name in ('normal', 'ao', 'coverage', 'hits', 'normal-valid', 'basecolor', 'roughness', 'metallic', 'metallic-roughness'):
+        for name in ('normal', 'ao', 'coverage', 'hits', 'normal-valid', 'basecolor', 'roughness', 'metallic', 'metallic-roughness', 'curvature'):
+            if name == 'curvature' and not (out/'curvature.png').is_file():
+                continue
             files.append({'name': name + '.png', 'role': 'texture', 'mime': 'image/png'})
         warnings += ['Normal uses2x2 directional-cage high barycentric samples; tangent basis: '+metadata['bake']['tangentBasis']+'. Projection preserves primary finite cage hits; unresolved samples use bounded k32 external-visible candidate first-hit certification, retrying k64 only for still-unresolved samples. Candidate search is not globally optimal; remaining covered misses stay neutral/white and require review. AO uses deterministic cosine Hammersley rays in the actual high geometric-normal hemisphere; radius is independent of cage, while origin epsilon remains cage-linked. '+str(metadata['bake']['padding'])+'px dilation only outside island coverage. PBR channels report original textures or scalar factors.']
     # Detect report type/size errors before spending time rendering and exporting.
@@ -1031,7 +1069,9 @@ def run(request, output):
         len(mesh.faces) <= 300000 and source.stat().st_size <= 32 * 1024**2
     )
     preserve_glb = operation == 'analyze' and source.suffix.lower() == '.glb' and see_original
-    if operation=='bake' and request.get('bakePaddingReuse'):
+    if operation == 'material_wear':
+        metadata['glbPreservation'] = metadata['materialWear']['glbPreservation']
+    elif operation=='bake' and request.get('bakePaddingReuse'):
         # derive_padding already preserves every original geometry/UV/NORMAL/TANGENT buffer byte.
         # A Trimesh round-trip here would discard the original standard TANGENT.
         metadata['glbPreservation']={'mode':'padding_images_only','geometryAttributesBytePreserved':True}
@@ -1078,6 +1118,8 @@ if __name__ == '__main__':
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     try:
+        from gpu_lease import adopt_worker_lease
+        adopt_worker_lease()
         run(json.loads(Path(args.request).read_text(encoding='utf-8-sig')), args.output)
     except Exception as exc:
         print(json.dumps({'stage': 'failed', 'error': str(exc)}), file=sys.stderr, flush=True)

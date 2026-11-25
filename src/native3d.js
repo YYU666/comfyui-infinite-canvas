@@ -18,6 +18,8 @@ export const NATIVE3D_PRESETS = {
   model_uv_plan: ['native3d', { title: 'UV切缝方案', operation: 'uv_plan' }],
   model_uv: ['native3d', { title: 'UV展开', operation: 'uv' }],
   model_bake: ['native3d', { title: '材质烘焙', operation: 'bake' }],
+  model_image_to_3d: ['native3d', { title: '图生模型 · 本地 TripoSR', operation: 'image_to_3d' }],
+  model_material_wear: ['native3d', { title: '曲率磨损', operation: 'material_wear' }],
 };
 export const isNative3D = (node) => node?.type === 'native3d';
 export function isGeneratedGLB(node) {
@@ -82,6 +84,15 @@ export function nativeRunIdentity(node, source, inputs) { source=nativeOutputNod
 export function nativeModelConnection(connection, source, target, edges) {
   source=nativeOutputNode(source);
   if (!isNative3D(source) && !isNative3D(target)) return null;
+  if (isNative3D(target) && target.data.operation === 'image_to_3d') {
+    if (connection.targetHandle !== 'image' || connection.sourceHandle !== 'ref' || source?.type !== 'media'
+      || source.data.kind !== 'image' || source.data.mediaRole === 'mask') {
+      return { error: '图生模型的参考图端口只接普通图片。' };
+    }
+    const normalized = { source:source.id, target:target.id, sourceHandle:'ref', targetHandle:'image' };
+    return { connection:normalized, source, target, multiple:false,
+      existing:edges.find(edge => Object.entries(normalized).every(([key,value]) => edge[key] === value)) };
+  }
   if (isNative3D(source) && isNative3D(target) && connection.targetHandle==='plan') {
     if (target.data.operation!=='uv' || connection.sourceHandle!=='plan' || !source.data.nativeUVPlan || source.data.status!=='completed') return {error:'切缝方案输出仅连接UV展开的方案输入。'};
     return {connection:{source:source.id,target:target.id,sourceHandle:'plan',targetHandle:'plan',data:nativeOutputBinding(source)},source,target,multiple:false};
@@ -98,6 +109,9 @@ export function nativeModelConnection(connection, source, target, edges) {
   }
   if (source?.data.nativeUVPlan) return {error:'切缝方案不是模型，请连接方案端口。'};
   if (!isNative3D(source) || !isNative3D(target) || !source.data.assetPath || target.data.operation === 'analyze' || connection.targetHandle !== 'model' || connection.sourceHandle !== 'model') return { error: '请将已保存的3D模型输出连接到处理节点的模型输入。' };
+  if (target.data.operation === 'material_wear' && source.data.metadata?.operation !== 'bake') {
+    return { error: '曲率磨损输入应连接已完成的材质烘焙。' };
+  }
   const geometryError=nativeGeometryInputError(source,target.data.operation,target.data.nativeParameters);
   if (geometryError) return {error:geometryError};
   const normalized = { source: source.id, target: target.id, sourceHandle: 'model', targetHandle: 'model',...(source.nativeOutputRecordId?{data:nativeOutputBinding(source)}:{}) };

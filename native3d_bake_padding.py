@@ -38,11 +38,12 @@ def freeze_padding_reuse(manager,job,directory):
     for prior in candidates:
         entries={e.get('name'):e for e in prior.get('result',{}).get('files',[])}
         if not all(name in entries and entries[name].get('sha256') for name in FILES):continue
-        paths={name:manager._safe_file(prior['id'],name) for name in FILES}
-        if any(digest(paths[n])!=entries[n]['sha256'] for n in FILES):raise ValueError('Prior bake artifact changed; padding reuse refused')
+        names = FILES + (('curvature.png',) if entries.get('curvature.png',{}).get('sha256') else ())
+        paths={name:manager._safe_file(prior['id'],name) for name in names}
+        if any(digest(paths[n])!=entries[n]['sha256'] for n in names):raise ValueError('Prior bake artifact changed; padding reuse refused')
         folder=Path(directory)/'bake-padding-source';folder.mkdir()
         files={}
-        for name in FILES:
+        for name in names:
             target=folder/name;shutil.copyfile(paths[name],target)
             if digest(target)!=entries[name]['sha256']:raise ValueError('Padding snapshot checksum mismatch')
             files[name]={'path':str(target.resolve()),'sha256':entries[name]['sha256']}
@@ -62,7 +63,7 @@ def validate_context(context,request):
            'parameters':context['priorParameters'],'result':{'metadata':{'bake':context['priorBake']}}}
     if not compatible(prior,request):raise ValueError('Padding reuse recipe incompatible')
     if evidence_hash(context['priorBake'])!=context['priorBakeEvidenceSha256']:raise ValueError('Padding provenance evidence changed')
-    for name in FILES:
+    for name in FILES + (('curvature.png',) if 'curvature.png' in context['files'] else ()):
         item=context.get('files',{}).get(name,{})
         if not item.get('sha256') or digest(item.get('path',''))!=item['sha256']:raise ValueError('Padding source artifact checksum mismatch: '+name)
 
@@ -114,7 +115,7 @@ def derive_padding(context,request,output):
     validate_context(context,request);out=Path(output);out.mkdir(parents=True,exist_ok=True)
     def pixels(name):
         with Image.open(context['files'][name+'.png']['path']) as image:return np.asarray(image).copy()
-    channels={n:pixels(n) for n in CHANNELS};masks={n:pixels(n) for n in MASKS}
+    channels={n:pixels(n) for n in CHANNELS + (('curvature',) if 'curvature.png' in context['files'] else ())};masks={n:pixels(n) for n in MASKS}
     resolution=request['parameters']['resolution']
     if any(a.shape!=(resolution,resolution) or a.dtype!=np.uint8 or not np.isin(a,[0,255]).all() for a in masks.values()):raise ValueError('Padding masks have wrong resolution/encoding')
     for name,array in channels.items():
