@@ -1163,7 +1163,10 @@ class Native3DJobs:
             finally:
                 log.close()
                 self.process.stdout.close()
-            if grant and grant.release():
+            if grant:
+                # The child has exited. A contender may already have reclaimed
+                # this token before the owning workbench saves the receipt.
+                grant.release()
                 with self.lock:
                     job['gpu'] = gpu_status(grant.device, 'released', grant.owner)
                     self._persist(job)
@@ -1189,14 +1192,17 @@ class Native3DJobs:
         finally:
             if timer:
                 timer.cancel()
-            released = grant and grant.release()
-            if released:
+            try:
+                if grant and job.get('gpu', {}).get('state') != 'released':
+                    grant.release()
+                    if self.process is None or self.process.poll() is not None:
+                        with self.lock:
+                            job['gpu'] = gpu_status(grant.device, 'released', grant.owner)
+                            self._persist(job)
+            finally:
                 with self.lock:
-                    job['gpu'] = gpu_status(grant.device, 'released', grant.owner)
-                    self._persist(job)
-            with self.lock:
-                self.active = None
-                self.process = None
+                    self.active = None
+                    self.process = None
 
     def close(self):
         self.stopping = True

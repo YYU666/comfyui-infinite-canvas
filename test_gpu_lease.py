@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from gpu_lease import GpuLeases, process_identity
+from gpu_lease import GpuGrant, GpuLeases, process_identity
 from native3d_jobs import Native3DJobs
 from local_worker import verified_result, worker_progress
 from workbench_queue import QueueManager
@@ -224,8 +224,21 @@ print(json.dumps({'stage':'fixture', 'progress':0.5}), flush=True)
             self.assertEqual(waiting["gpu"]["state"], "waiting")
             self.assertEqual(waiting["gpu"]["owner"]["jobId"], running["id"])
             self.assertFalse((native.root / gpu_id / "worker.log").exists())
-            adapter.finished = True
-            until(lambda: native.get(gpu_id)["status"] == "succeeded")
+            real_release = GpuGrant.release
+            competitor_seen = threading.Event()
+            def take_first(grant):
+                if grant.owner["jobId"] == gpu_id and not competitor_seen.is_set():
+                    replacement, _ = self.leases.claim(DEVICE, SECOND)
+                    self.assertIsNotNone(replacement)
+                    self.assertFalse(real_release(grant))
+                    self.assertTrue(real_release(replacement))
+                    competitor_seen.set()
+                    return False
+                return real_release(grant)
+            with patch.object(GpuGrant, "release", take_first):
+                adapter.finished = True
+                until(lambda: native.get(gpu_id)["status"] == "succeeded")
+            self.assertTrue(competitor_seen.is_set())
             job = native.get(gpu_id)
             self.assertEqual(job["gpu"]["state"], "released")
             self.assertEqual(job["gpu"]["owner"]["jobId"], gpu_id)
