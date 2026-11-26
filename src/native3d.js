@@ -1,4 +1,5 @@
 import {nativeOutputNode,nativeLogicalNodeId,nativeOutputBinding} from './native3d-output.js';
+import { WHITE_MESH_STEP_LABEL } from './white-mesh-step.js';
 export const AI_LOWPOLY_PRESET = Object.freeze({
   id: 'meshanything-v2-demo-v1', label: '标准减面 v1', version: 1,
   sourceJobId: 'n3d_c5585a492d454bf0a87ed641f64e7b9d',
@@ -18,10 +19,11 @@ export const NATIVE3D_PRESETS = {
   model_uv_plan: ['native3d', { title: 'UV切缝方案', operation: 'uv_plan' }],
   model_uv: ['native3d', { title: 'UV展开', operation: 'uv' }],
   model_bake: ['native3d', { title: '材质烘焙', operation: 'bake' }],
-  model_image_to_3d: ['native3d', { title: '图生模型 · 本地 TripoSR', operation: 'image_to_3d' }],
+  model_image_to_3d: ['native3d', { title: WHITE_MESH_STEP_LABEL, operation: 'image_to_3d' }],
   model_material_wear: ['native3d', { title: '曲率磨损', operation: 'material_wear' }],
 };
 export const isNative3D = (node) => node?.type === 'native3d';
+export const GENERATED_GLB_OPERATIONS = ['source_lod', 'repair_lod', 'analyze'];
 export function isGeneratedGLB(node) {
   const data = node?.data;
   if (node?.type !== 'media' || data?.kind !== 'model' || data.output !== true) return false;
@@ -85,9 +87,10 @@ export function nativeModelConnection(connection, source, target, edges) {
   source=nativeOutputNode(source);
   if (!isNative3D(source) && !isNative3D(target)) return null;
   if (isNative3D(target) && target.data.operation === 'image_to_3d') {
-    if (connection.targetHandle !== 'image' || connection.sourceHandle !== 'ref' || source?.type !== 'media'
+    const fromImage = connection.sourceHandle === 'ref' || connection.sourceHandle === 'image';
+    if (connection.targetHandle !== 'image' || !fromImage || source?.type !== 'media'
       || source.data.kind !== 'image' || source.data.mediaRole === 'mask') {
-      return { error: '图生模型的参考图端口只接普通图片。' };
+      return { error: '图生白模的参考图端口只接普通图片。' };
     }
     const normalized = { source:source.id, target:target.id, sourceHandle:'ref', targetHandle:'image' };
     return { connection:normalized, source, target, multiple:false,
@@ -101,8 +104,9 @@ export function nativeModelConnection(connection, source, target, edges) {
     if (!(['uv_plan','uv','bake'].includes(target.data.operation) || (target.data.operation==='source_lod' && /^lod[1-4]$/.test(target.data.nativeParameters?.retryStage || target.data.nativeParameters?.localRepairStage || ''))) || connection.sourceHandle!=='model' || !source.data.assetPath || source.data.nativeUVPlan) return {error:'请将已保存的高模模型连接到高模参考输入。'};
     return {connection:{source:source.id,target:target.id,sourceHandle:'model',targetHandle:'high',data:nativeOutputBinding(source)},source,target,multiple:false};
   }
-  if (isGeneratedGLB(source) && isNative3D(target) && ['source_lod','repair_lod'].includes(target.data.operation)
+  if (isGeneratedGLB(source) && isNative3D(target) && GENERATED_GLB_OPERATIONS.includes(target.data.operation)
       && connection.sourceHandle === 'model' && connection.targetHandle === 'model') {
+    if (target.data.operation === 'analyze' && target.data.sourceJobId) return { error: '请把模型连到分析节点的模型输入，而不是已交付的结果。' };
     const normalized = { source: source.id, target: target.id, sourceHandle: 'model', targetHandle: 'model' };
     return { connection: normalized, source, target, multiple: false,
       existing: edges.find(edge => Object.entries(normalized).every(([key,value]) => edge[key] === value)) };

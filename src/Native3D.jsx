@@ -15,6 +15,7 @@ import React, { createContext, useContext, useEffect, useRef, useState } from 'r
 import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
 import { nativeAdapterSchema, nativeAssetUrl, nativeLowpolyPresetLabel, nativeParameterValue } from './native3d.js';
+import { WHITE_MESH_STEP_LABEL } from './white-mesh-step.js';
 import './Native3D.css';
 import { nativeUVIdentity,nativeUVDeliveredPreviews,native3DBusyFeedback } from './native3d-uv-preview.js';
 import { fitImageView, zoomImageAt } from './native3d-image-zoom.js';
@@ -99,7 +100,7 @@ export function Native3DNode({ id, data, selected }) {
   const locked = api.readOnly || busy;
   const busyFeedback=native3DBusyFeedback(data);
   const reviewedWarning=reviewedDownstreamWarning(data);
-  const displayedTitle=currentLODTitle({...data,title:reviewedDisplayTitle(data)});
+  const displayedTitle=data.operation==='image_to_3d' ? WHITE_MESH_STEP_LABEL : currentLODTitle({...data,title:reviewedDisplayTitle(data)});
   const failedLOD=data.metadata?.geometry?.status==='blocked'&&(data.operation==='source_lod'||data.metadata?.operation==='source_lod');
   const failedStage=data.nativeParameters?.localRepairStage||data.nativeParameters?.retryStage||data.metadata?.geometry?.returnedDiagnosticStage||data.metadata?.geometry?.selectedStage;
   useEffect(()=>setUVError(''),[data.nativeJobId,data.sourceJobId,data.status,data.nativeBackendStatus]);
@@ -154,6 +155,7 @@ export function Native3DNode({ id, data, selected }) {
       }}>接手模型</button>}
     {api.setNotificationSoundEnabled&&<button className="native3d-sound-toggle nodrag" aria-pressed={api.notificationSoundEnabled} onClick={()=>api.setNotificationSoundEnabled(!api.notificationSoundEnabled)}>完成提示音：{api.notificationSoundEnabled?'开':'关'}</button>}
     {busyFeedback&&<section className="native3d-progress-panel" role="status" aria-live="polite"><strong>{busyFeedback.title}{busyFeedback.progress!==null?` · ${busyFeedback.progress}%`:''}</strong>{busyFeedback.stage&&<span>{busyFeedback.stage}</span>}<progress aria-label={busyFeedback.title} max="100" value={busyFeedback.progress??undefined}/>{busyFeedback.historical&&<small>下方为上一次结果，本次任务尚未完成。</small>}</section>}
+    {source && !data.sourceJobId && <Handle type="target" position={Position.Left} id="model" title="模型输入" />}
     {source && data.sourceJobId && <Handle type="target" position={Position.Left} id="provenance" />}
     {source && provenance?.referenceNodeId && <Handle type="target" position={Position.Left} id="reference" style={{top:'72%',background:'#8a8263'}} />}
     {!source && <Handle type="target" position={Position.Left} id={imageToModel ? 'image' : 'model'}
@@ -178,6 +180,7 @@ export function Native3DNode({ id, data, selected }) {
       {data.operation==='uv'&&['failed','error'].includes(data.status)&&!diagnostic&&<button disabled={locked||uvBusy} onClick={async()=>{setUVBusy(true);setUVError('');try{await api.refreshDiagnosticPreview(id);}catch(e){setUVError(e.message);}finally{setUVBusy(false);}}}>{uvBusy?'保存诊断…':'显示待审UV诊断'}</button>}
       {data.nativeNaniteCandidate && <small>LOD0 · Nanite候选（未构建UE Nanite）</small>}
       {data.nativeLocalRepair&&<p>当前候选局部修复 · {data.nativeParameters.localRepairStage?.toUpperCase()} · {data.stage||data.status}</p>}
+      {imageToModel && <small>{WHITE_MESH_STEP_LABEL} · 只接上一张参考图 · 只输出未展 UV、无材质的高模 GLB</small>}
       {data.operation==='source_lod' && !data.nativeLocalRepair && <small>{data.nativeParameters?.retryStage?`LOD${Number(data.nativeParameters.retryStage.slice(3))-1} → ${data.nativeParameters.retryStage.toUpperCase()} · 仅重试本档 · 种子 ${data.nativeParameters.seed}`:'原高模 → LOD0 → LOD1–4 · 设置中编辑保留百分比'}</small>}
       {data.operation==='uv_plan' && <small>候选缝 / 分区 / AO · 此步骤不展开UV</small>}
       {data.operation==='uv' && <small>{planStatus?.mode==='coherent'?'CPU 连续展 UV':planStatus?.mode==='structural'?'CPU 结构展 UV':planStatus?.ready?'已绑定当前确认方案':planStatus?.message || '连接低模、高模和已确认方案'}</small>}

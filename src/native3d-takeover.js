@@ -6,7 +6,7 @@ const busy = new Set(['uploading', 'submitting', 'queued', 'running', 'finishing
 const modelPath = /^assets\/[a-f0-9]{64}\.(glb|obj)$/i;
 const jobPattern = /^n3d_[a-f0-9]{32}$/;
 const labels = { analyze: '模型分析', source_lod: '减面与 LOD', repair_lod: '修复减面', ai_lowpoly: 'AI 低模',
-  image_to_3d: '图生模型 · TripoSR', uv_plan: 'UV 切缝方案', uv: 'UV 展开', bake: '材质烘焙', material_wear: '曲率磨损' };
+  image_to_3d: '图生白模 · 未展UV无材质', uv_plan: 'UV 切缝方案', uv: 'UV 展开', bake: '材质烘焙', material_wear: '曲率磨损' };
 
 const inputLabels = {model:'模型输入', high:'高模参考', plan:'切缝方案'};
 const taskLabels = {uploading:'上传中', submitting:'待提交确认', queued:'排队中', running:'运行中', finishing:'正在交付',

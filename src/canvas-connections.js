@@ -47,11 +47,11 @@ export function resolveConnectionSource(source, handle, nodes, edges) {
   if (source?.type !== 'generator') return { source };
   if (!source.data.resultUrl) return fail('此节点还没有生成结果，请先生成，再连接成品素材。');
   const outputs = nodes.filter((node) => node.type === 'media' && node.data.output && !isMaskNode(node)
-    && ['image', 'video'].includes(node.data.kind)
+    && ['image', 'video', 'model'].includes(node.data.kind)
     && (!handle || handle === 'ref' || node.data.kind === handle)
     && (node.data.sourceGeneratorId === source.id || edges.some((edge) => edge.source === source.id && edge.target === node.id && edge.targetHandle === 'preview'))
     && node.data.url === source.data.resultUrl);
-  if (outputs.length !== 1) return fail('找不到唯一的当前成品，请直接从要使用的成品图片或视频节点连线。');
+  if (outputs.length !== 1) return fail('找不到唯一的当前成品，请直接从要使用的成品图片、视频或模型节点连线。');
   return { source: outputs[0], resolvedFrom: source.id };
 }
 

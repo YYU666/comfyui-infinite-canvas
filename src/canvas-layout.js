@@ -1,3 +1,5 @@
+import { isInlineBackingMedia } from './image-inline-output.js';
+
 // Shared by add, paste and tidy; distances are in canvas units, independent of zoom.
 export const CANVAS_SPACING = { horizontal: 44, vertical: 44, grid: 22, rowWidth: 3200 };
 
@@ -41,8 +43,7 @@ export function nodeLayoutSize(node) {
 
 export function visibleLayoutNodes(nodes) {
   const byId = new Map(nodes.map(node => [node.id, node]));
-  return nodes.filter(node => !node.hidden && !(node.type === 'media' && node.data?.kind === 'image'
-    && node.data.output && byId.get(node.data.inlineImageOwnerId)?.type === 'generator'));
+  return nodes.filter(node => !node.hidden && !isInlineBackingMedia(node, byId.get(node.data?.inlineImageOwnerId)));
 }
 
 const box = node => ({ ...node.position, ...nodeLayoutSize(node) });

@@ -14,7 +14,7 @@ import {nativeRerunTarget,withNativeRerunLock,nativeAutomaticLODStages,layoutNat
 import { findFreePosition } from './canvas-layout.js';
 import { useEffect, useRef, useState } from 'react';
 import { checkGLBLayout, checkSavedGLBLayout } from "./native3d-glb-layout.js";
-import { isGeneratedGLB, nativeRequest, nativeRunIdentity, nativeParameters, nativeAdapterSchema, nativeGeometryInputError } from './native3d.js';
+import { GENERATED_GLB_OPERATIONS, isGeneratedGLB, nativeRequest, nativeRunIdentity, nativeParameters, nativeAdapterSchema, nativeGeometryInputError } from './native3d.js';
 import {nativeInputs,planRecord,planConfirmationKey,assertPlanCurrent,assertConfirmedPlan,planUVParameters} from './native3d-plan.js';
 import { transferNativeArtifacts, nativeRunIsCurrent, commitNativeDelivery } from './native3d-delivery.js';
 import { nativeStagePlan, applyNativeStagePlan, saveNativeStagePoster } from './native3d-stage.js';
@@ -134,9 +134,16 @@ export function useNative3D(options) {
     return o;
   };
   const patch = (id, data) => {const o=current(),node=o.nodesRef.current.find(n=>n.id===id);o.updateNode(id,node?.data.nativeCurrentOutputId?nativePatchOutputData(node.data,data):data);};
-  const sourceFor = (o, node) => node?.data.operation === 'analyze'
-    ? (node.data.nativePendingSource ? { ...node, data: { ...node.data, assetPath: node.data.nativePendingSource.path, originalAssetPath: node.data.nativePendingSource.path } } : node)
-    : nativeInputs(node,o.nodesRef.current,o.edgesRef.current)[node?.data.operation === 'image_to_3d' ? 'image' : 'model'];
+  const sourceFor = (o, node) => {
+    if (node?.data.operation === 'analyze' && !node.data.sourceJobId) {
+      const connected = nativeInputs(node, o.nodesRef.current, o.edgesRef.current).model;
+      if (connected && (connected.data?.assetPath || isGeneratedGLB(connected))) return connected;
+    }
+    if (node?.data.operation === 'analyze') {
+      return node.data.nativePendingSource ? { ...node, data: { ...node.data, assetPath: node.data.nativePendingSource.path, originalAssetPath: node.data.nativePendingSource.path } } : node;
+    }
+    return nativeInputs(node,o.nodesRef.current,o.edgesRef.current)[node?.data.operation === 'image_to_3d' ? 'image' : 'model'];
+  };
   const inputsFor=(o,node)=>nativeInputs(node,o.nodesRef.current,o.edgesRef.current);
   const identityFor=(node,source)=>{
     const inputs=inputsFor(latest.current,node);
@@ -205,7 +212,7 @@ export function useNative3D(options) {
     }
     let source = sourceFor(o, node);
     const usesGeneratedReference = node.data.operation === 'image_to_3d' && generatedReference(source);
-    const usesGeneratedModel = ['source_lod','repair_lod'].includes(node.data.operation) && isGeneratedGLB(source);
+    const usesGeneratedModel = GENERATED_GLB_OPERATIONS.includes(node.data.operation) && isGeneratedGLB(source);
     if ((usesGeneratedReference || usesGeneratedModel) && !source.data.assetPath) {
       const previous = {status:node.data.status || 'idle', stage:node.data.stage || ''};
       const importId = crypto.randomUUID();

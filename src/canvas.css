@@ -158,6 +158,16 @@
 .audio-content audio { width: 100%; height: 27px; opacity: .7; }
 .generator-shell { width: 440px; }
 .generator-preview { position: relative; width: 440px; height: 248px; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 15px; background: rgba(24,24,27,.8); transition: border-color .15s, box-shadow .15s; }
+.media-shell.media-model { width: 300px; }
+.model-result-preview { height: 100%; min-height: 168px; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 16px; box-sizing: border-box; color: #e7edf5; background: radial-gradient(circle at 18% 12%, rgba(143,176,214,.28), transparent 42%), linear-gradient(165deg, #243044, #151a22 72%); }
+.model-result-preview strong { font-size: 13px; font-weight: 600; letter-spacing: .01em; }
+.custom-workflow-node .generator-preview:has(.model-result-preview) { height: auto; min-height: 188px; }
+.model-result-preview p { margin: 0; color: #b7c3d4; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.model-result-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.model-result-actions button, .model-result-actions a { border: 1px solid rgba(255,255,255,.18); border-radius: 8px; background: #31445f; color: #f4f7fb; padding: 6px 10px; font-size: 12px; line-height: 1.2; text-decoration: none; cursor: pointer; }
+.model-result-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.model-result-actions a:hover, .model-result-actions button:not(:disabled):hover { background: #3d5270; }
+.extract-inline-result { margin: 8px 2px 0; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: transparent; color: #d5dbe6; font-size: 11px; padding: 5px 8px; cursor: pointer; }
 .generator-preview > video, .generator-preview > img { width: 100%; height: 100%; display: block; object-fit: contain; background: #0b0b0d; }
 .image-generator-node .generator-preview { border-color: rgba(152,164,190,.2); }
 .generator-placeholder { height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; color: #696971; text-align: center; }

@@ -10,6 +10,7 @@ const suites = {
     'test-native3d-takeover.mjs',
     'test-native3d-mcp-connect.mjs',
     'test-image-inline-output.mjs',
+    'test-canvas-3d-inline.mjs',
     'browser_video_validation.test.mjs',
     'test-canvas-file-location.mjs',
     'test-image-export.mjs',

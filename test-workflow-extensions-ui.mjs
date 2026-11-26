@@ -25,6 +25,17 @@ const sharedHistory = { outputs: { '9': { images: [file('shared.png')] }, '10': 
 assert.equal(extensionMedia(sharedHistory, pairedOutputs).length, 1, 'each declared output is validated before shared-file deduplication');
 assert.equal(extensionMedia(sharedHistory, [...definition.outputs, { id: 'same-node-alias', type: 'image', nodeId: '9' }]).length, 1);
 
+function minimalGlb() {
+  const json = Buffer.from(JSON.stringify({ materials: [], meshes: [{ primitives: [{}] }] }));
+  const head = Buffer.alloc(20);
+  head.write('glTF');
+  head.writeUInt32LE(2, 4);
+  head.writeUInt32LE(20 + json.length, 8);
+  head.writeUInt32LE(json.length, 12);
+  head.writeUInt32LE(0x4e4f534a, 16);
+  return Buffer.concat([head, json]);
+}
+
 const origin = 'http://127.0.0.1:8799';
 const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 let project = { id: 'prj_extensions_fixture', name: 'Extensions fixture', revision: 1, shots: [], canvas: { viewport: { x: 0, y: 0, zoom: 0.8 }, edges: [], nodes: ['left', 'middle', 'right'].map((id, index) => ({ id, type: 'media', position: { x: 0, y: index * 320 }, data: { kind: 'image', title: id, name: `${id}.png`, remoteName: `${id}.png` } })) } };
@@ -76,7 +87,15 @@ try {
       return json({ jobs: [] });
     }
     if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
-    if (url.pathname === '/api/comfy/view') return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=', 'base64') });
+    if (url.pathname === '/api/comfy/view') {
+      if (url.searchParams.get('filename') === 'shade.glb') return route.fulfill({ contentType: 'model/gltf-binary', body: minimalGlb() });
+      return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=', 'base64') });
+    }
+    if (request.method() === 'PUT' && /^\/api\/projects\/[^/]+\/assets\/.+\.glb$/i.test(url.pathname)) {
+      const sha = 'b'.repeat(64);
+      project = { ...project, revision: project.revision + 1 };
+      return json({ revision: project.revision, asset: { path: `assets/${sha}.glb`, sha256: sha, bytes: 64 } });
+    }
     if (url.pathname === '/api/hardware-metrics') return json({});
     if (url.pathname.startsWith('/api/')) return json({});
     const filename = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
@@ -167,7 +186,7 @@ try {
   await share.getByRole('button', { name: '关闭上传节点到节点库' }).click();
   await mkdir('.cache/extensions-review', { recursive: true });
   await page.screenshot({ path: '.cache/extensions-review/three-image-workflow.jpg', type: 'jpeg', quality: 75 });
-  // A SaveGLB result is saved as a model card and keeps its model edge across reload.
+  // A single SaveGLB stays inline on the generator, is stored in project assets, and keeps its model edge.
   stagedRun = false;
   delete definition.execution;
   definition.outputs = modelOutput;
@@ -180,27 +199,34 @@ try {
     const source = window.fixtureSources.findLast((item) => item.url === '/api/queue/events' && !item.closed);
     source.listeners['job.done']({ data: JSON.stringify({ job: { id: 'job_model', nodeId, projectId, status: 'done', comfyPromptId: 'prompt_model', history } }) });
   }, { nodeId: modelNode.id, projectId: project.id, history: modelHistory });
-  await page.waitForFunction(async () => {
-    const result = JSON.parse(await window.fixtureTools.get('canvas_get_state').execute({}));
-    return result.nodes.some((item) => item.name === 'shade.glb');
-  }, null, { timeout: 10000 }).catch(async (error) => {
-    const snapshot = await call('canvas_get_state');
-    throw new Error(JSON.stringify({ node: snapshot.nodes.find((item) => item.id === modelNode.id), pages: failures }), { cause: error });
-  });
-  state = await call('canvas_get_state');
-  const modelResult = state.nodes.find((item) => item.name === 'shade.glb');
+  const deadline = Date.now() + 10000;
+  let modelResult;
+  let generator;
+  while (Date.now() < deadline) {
+    try { state = await call('canvas_get_state'); }
+    catch { await page.waitForTimeout(100); continue; }
+    modelResult = state.nodes.find((item) => item.name === 'shade.glb');
+    generator = state.nodes.find((item) => item.id === modelNode.id);
+    if (modelResult || generator?.status === 'error') break;
+    await page.waitForTimeout(100);
+  }
+  if (!modelResult) throw new Error(JSON.stringify({ generator, pages: failures }));
   assert.equal(modelResult.kind, 'model');
-  await call('canvas_focus_node', { nodeId: modelResult.id });
-  const modelCard = page.locator('.media-model');
-  await modelCard.waitFor();
-  assert.match(await modelCard.getByRole('link', { name: '下载 GLB' }).getAttribute('href'), /filename=shade\.glb/);
+  assert.match(modelResult.media.assetPath, /^assets\/[a-f0-9]{64}\.glb$/);
+  assert.equal(state.nodes.filter((item) => item.name === 'custom-result.png').length, 1);
+  assert.equal(state.nodes.filter((item) => item.name === 'custom-second.png').length, 1);
+  const modelPreview = page.locator(`.react-flow__node[data-id="${modelNode.id}"] .model-result-preview`);
+  await modelPreview.waitFor();
+  assert.equal(await page.locator('.media-model').count(), 0, 'a single GLB stays inline on the generating node');
+  assert.equal(await modelPreview.getByRole('button', { name: '查看 3D 模型' }).isEnabled(), true);
+  assert.match(await modelPreview.getByRole('link', { name: '下载 GLB' }).getAttribute('href'), /\/assets\/[a-f0-9]{64}\.glb$/);
   assert.ok(state.edges.some((edge) => edge.source === modelNode.id && edge.target === modelResult.id && edge.sourceHandle === 'model'));
   assert.equal((await call('canvas_update_node', { nodeId: modelNode.id, title: 'Saved GLB workflow' })).ok, true);
   await page.reload();
   await page.locator('.neo-header').waitFor();
-  await call('canvas_focus_node', { nodeId: modelResult.id });
-  await modelCard.waitFor();
-  assert.equal(await modelCard.getByRole('link', { name: '下载 GLB' }).getAttribute('download'), 'shade.glb');
+  await page.locator(`.react-flow__node[data-id="${modelNode.id}"] .model-result-preview`).waitFor();
+  assert.equal(await page.locator('.media-model').count(), 0);
+  assert.equal(await page.locator(`.react-flow__node[data-id="${modelNode.id}"]`).getByRole('link', { name: '下载 GLB' }).getAttribute('download'), 'shade.glb');
   assert.deepEqual(failures, []);
   console.log('PASS: local import, dynamic inputs, typed parameters, single/staged queue completion, final declared outputs only, persistence, dependency rejection, staged re-share consent, current-page create tool; all network intercepted.');
 } finally { await browser.close(); }
