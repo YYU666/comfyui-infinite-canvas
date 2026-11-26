@@ -36,9 +36,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="校验 Refmuse 本地工作台 project.json（schema v3）")
     parser.add_argument("project", type=Path)
     args = parser.parse_args()
+    sys.path.insert(0, str(ROOT))
+    from project_uv_storage import decode_project_json
+
     try:
-        document = json.loads(args.project.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        document = decode_project_json(args.project.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
         print(f"读取项目失败：{exc}", file=sys.stderr)
         return 2
     errors = validate_project(document)

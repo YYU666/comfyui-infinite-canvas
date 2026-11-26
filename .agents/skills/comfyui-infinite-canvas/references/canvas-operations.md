@@ -25,6 +25,8 @@
 | `canvas_get_state` | 读取当前项目、真实节点、连线和状态 | 可选 `nodeId`、`includePrompt` |
 | `canvas_inspect_node` | 在当前页内打开节点对应的 ComfyUI 工作流查看器；不提交生成 | 必填 `nodeId`；可选 `stage`（四视图支持单张阶段及 `stitch`） |
 | `canvas_open_reference_library` | 在当前画布内打开外部参考库；只打开界面，不下载、不生成 | 可选 `library`：`refmuse`（默认）、`costume`（衣装）或 `pose`（姿势） |
+| `canvas_publish_extension` | 显式上传已安装的精确节点包，沿用当前页节点库登录；属于外部发布操作 | 必填 `requestId`、`digest`、`packageId`、`version`；`mode` 默认 `update`，首次发布为 `publish` |
+| `canvas_get_extension_publish_status` | 查询发布回执并核对公开摘要，不重新上传 | 必填原 `requestId` |
 | `canvas_import_asset` | 在当前页复用本项目已保存素材 | 必填 `nodeId`、`assetPath`；可选 `name` |
 | `canvas_create_node` | 在当前画布创建节点 | 必填 `preset`；可选 `title`、`prompt`、`text`、`x`、`y`、`focus` |
 | `canvas_update_node` | 更新标题、提示词、备注或白名单参数 | 必填 `nodeId`；可选 `title`、`prompt`、`text`、`settings` |
@@ -36,7 +38,19 @@
 
 `timeoutMs` 范围为 1000 至 1500000。长任务可分段只读等待；超时本身不代表生成失败，应再读取节点状态。
 
+节点库发布须有用户授权。准备分享包、确认可公开内容并导入后，才能提交固定摘要；不要将任意本地素材当作节点包上传。同一上传 `requestId` 固定同一身份、版本和摘要；`submitted`/`unknown` 不代表已发布，也不能据此换请求 ID 重传。网站正常登录在用户当前页完成，不读取 Cookie。详细状态、重试条件与接口见 `docs/NODE_LIBRARY_AGENT_PUBLISH.md`。
+
 ## 3. 节点预设
+
+本地原生3D试用版另有`model_asset`（模型导入/分析）、`model_lowpoly`（AI低模）、`model_uv`（UV展开）、`model_bake`（材质烘焙）。是否启用以当前页schema为准。模型输出与处理输入均使用`model`端口，处理节点的结果用独立结果节点保存，后续连接实际结果。原始高模资产沿来源记录保留，烘焙不以低模冒充高模。
+
+`canvas_native3d_capabilities`读取执行器及参数schema；3D更新使用`adapterId`和`nativeParameters`。不要把普通生图参数传给3D节点。导入本地GLB/OBJ通过当前页面文件选择器；生成仍走`canvas_generate_node(wait:false)`，轮询`canvas_get_state`并核对真实结果节点。服务当前页桥不提供长等待工具时不要改成后台项目写入。交付失败用节点“重新交付”，不为保存错误重新推理。
+
+本地 UV 试用补充：`canvas_native3d_stage(sourceId,stage,title?,x?,y?)` 从已接受的修复/减面结果展示真实 `fit` 或 `lod_N` 模型，同任务同阶段幂等，保留高模来源与来源连线。`canvas_move_nodes(nodes:[{nodeId,x,y}])` 仅移动指定的 1–30 个节点，通过当前页历史及保存流程，不整理其他节点。UV 的 `seamStrategy` 支持 `structural` 与 `ao_geometry`；外部 PartField/SAMesh 分区通过绑定源文件 SHA256 和逐面顺序的 `segmentationEvidence` 传入，仅作为分区建议，不能声称 UV 本身由神经网络直接生成。参数范围以当前能力 schema 为准。
+
+创建或修改节点时若正值结果素材交付，保存屏障可能返回 `localChangesRetained:true`。先查询原节点与任务；等待当前页正常保存，不创建替代节点或重复推理。
+
+原生3D的后台计算不依赖Blender/ComfyUI。专用试用启动可在已安装应用依赖的独立Python下运行`agent_cli.py start --native3d-only`；`native3dServiceReady`只表示队列服务可访问，能力就绪另查capabilities。此模式不启动ComfyUI，图片/视频生成仍未就绪，不能将3D连通误报为全部模型已可用。GPU新任务前检查可用显存，真实8/12GB支持须另行实测。实验质量报告为`needs_review`不等于生产验收通过。
 
 | 类别 | `preset` |
 | --- | --- |

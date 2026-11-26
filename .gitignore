@@ -48,3 +48,19 @@ _archive/
 /export-character-sheet-current.mjs
 /h3-generate-node.mjs
 /h3-generate-wait.mjs
+
+# Per-user provider credentials and runtime state (never distribute)
+*.dpapi
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+id_ecdsa
+/runtime/
+/.runtime/
+/credentials/
+/.credentials/
+/credential-store.json
+/api-keys.json
+/providers.private.json

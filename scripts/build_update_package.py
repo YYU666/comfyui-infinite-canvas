@@ -17,8 +17,14 @@ from workbench_update import asset_name, parse_version
 
 def assert_public_path(relative):
     parts = relative.replace('\\', '/').casefold().split('/')
-    if any(part in {'.local-node-tools', '.cache', 'node_modules', 'dist'} for part in parts) or parts[-1].endswith('.h3pack'):
-        raise RuntimeError(f"本机工具、工作流包和构建缓存不得随开源更新发布：{relative}")
+    basename=parts[-1]
+    private_directories={'.local-node-tools','.cache','node_modules','dist','runtime','.runtime','credentials','.credentials','secrets','.secrets','h3workbench'}
+    private_names={'art-director-credentials.dpapi','credentials.json','credential-store.json','api-keys.json','providers.private.json','instance.json','id_rsa','id_ed25519','id_ecdsa','deepseek-key.json','deepseek-key.txt'}
+    private_suffixes=('.h3pack','.dpapi','.key','.pem','.p12','.pfx','.local','.local.json','.private.json')
+    env_file=basename.startswith('.env') and basename!='.env.example'
+    if any(part in private_directories for part in parts) or basename in private_names or basename.endswith(private_suffixes) or env_file:
+        raise RuntimeError(f"本机凭据、运行目录、工具和构建缓存不得随开源更新发布：{relative}")
+
 
 
 def tracked_files():
@@ -28,7 +34,7 @@ def tracked_files():
     paths = sorted(item.decode("utf-8") for item in result.stdout.split(b"\0") if item)
     if not paths:
         raise RuntimeError("Git 跟踪文件为空，更新包未生成。")
-    required = {"video_workbench_launcher.py", "workbench_update.py", "workbench_update_helper.py", "workbench_lifecycle.py", "package.json", "package-lock.json", "requirements.lock"}
+    required = {"video_workbench_launcher.py", "workbench_comfy_lifecycle.py", "workbench_update.py", "workbench_update_helper.py", "workbench_lifecycle.py", "package.json", "package-lock.json", "requirements.lock"}
     if not required.issubset(paths):
         raise RuntimeError("更新必需文件尚未纳入 Git，已阻止生成不完整升级包。")
     return paths

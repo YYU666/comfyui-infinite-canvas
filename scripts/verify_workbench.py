@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import urllib.request
 from pathlib import Path, PurePosixPath
@@ -55,13 +56,63 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_model_files(files: list[dict], model_roots: list[Path]):
+def configured_model_dirs(config_path: Path) -> dict[str, list[Path]]:
+    try:
+        source = config_path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return {}
+
+    # Use the same YAML parser and directory conventions as ComfyUI.
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ValueError("请使用 ComfyUI 的 Python 解释器读取模型路径配置。") from exc
+    try:
+        sections = yaml.safe_load(source)
+    except yaml.YAMLError as exc:
+        raise ValueError("无法解析 ComfyUI 的模型路径 YAML。") from exc
+
+    directories: dict[str, list[Path]] = {}
+    aliases = {"unet": "diffusion_models", "clip": "text_encoders"}
+    if sections is None:
+        return directories
+    if not isinstance(sections, dict):
+        raise ValueError("ComfyUI 的模型路径 YAML 必须包含配置映射。")
+    for section in sections.values():
+        if section is None:
+            continue
+        if not isinstance(section, dict):
+            raise ValueError("ComfyUI 的模型路径配置节必须是映射。")
+        base = section.get("base_path", "")
+        if not isinstance(base, str):
+            raise ValueError("ComfyUI 的 base_path 必须是字符串。")
+        base_dir = config_path.parent / os.path.expandvars(os.path.expanduser(base))
+        for category, paths in section.items():
+            if category in ("base_path", "is_default"):
+                continue
+            if not isinstance(category, str) or not isinstance(paths, str):
+                raise ValueError("ComfyUI 的模型类别和路径必须是字符串。")
+            category_dirs = directories.setdefault(aliases.get(category, category), [])
+            for entry in paths.splitlines():
+                if entry:
+                    folder = (base_dir / entry).resolve()
+                    if folder not in category_dirs:
+                        category_dirs.append(folder)
+    return directories
+
+
+def verify_model_files(
+    files: list[dict], model_roots: list[Path], model_dirs: dict[str, list[Path]] | None = None,
+):
     problems: list[str] = []
     pending_hashes: list[str] = []
     verified_hashes = 0
     for item in files:
         relative = safe_relative(item["path"])
         candidates = [path / relative for path in model_roots]
+        if model_dirs and len(relative.parts) > 1:
+            category, *filename = relative.parts
+            candidates.extend(folder.joinpath(*filename) for folder in model_dirs.get(category, []))
         existing = [path for path in candidates if path.is_file()]
         if not existing:
             problems.append(f"模型缺失：{item['path']}")
@@ -86,7 +137,7 @@ def verify_model_files(files: list[dict], model_roots: list[Path]):
 def main() -> int:
     parser = argparse.ArgumentParser(description="检查 Refmuse 本地工作台模型、节点和前端")
     parser.add_argument("--comfy-root", type=Path, default=ROOT.parent)
-    parser.add_argument("--model-root", type=Path, action="append", help="默认检查 ComfyUI/models；有多个模型目录时可重复传入")
+    parser.add_argument("--model-root", type=Path, action="append", help="指定目录以替代 ComfyUI 默认和额外模型路径；可重复传入")
     parser.add_argument("--profile", choices=("core-h3", "full"), default="core-h3", help="默认 core-h3 检查七个核心视频权重；full 检查完整可选模型库")
     parser.add_argument("--manifest", type=Path, default=ROOT / "models" / "manifest.json", help=argparse.SUPPRESS)
     parser.add_argument("--online", action="store_true", help="同时查询运行中的 ComfyUI 节点注册情况")
@@ -98,7 +149,12 @@ def main() -> int:
     model_roots = [path / "models" if (path / "models" / "diffusion_models").is_dir() else path for path in model_roots]
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     files = select_model_files(manifest, args.profile)
-    problems, verified_hashes, pending_hashes = verify_model_files(files, model_roots)
+    try:
+        model_dirs = {} if args.model_root else configured_model_dirs(comfy_dir / "extra_model_paths.yaml")
+    except (OSError, ValueError) as exc:
+        print(f"无法读取 ComfyUI 模型路径配置：{exc}")
+        return 1
+    problems, verified_hashes, pending_hashes = verify_model_files(files, model_roots, model_dirs)
 
     for name in NODE_DIRS:
         if not (comfy_dir / "custom_nodes" / name).is_dir():
@@ -119,6 +175,8 @@ def main() -> int:
 
     total_bytes = sum(item["bytes"] for item in files)
     print(f"模型目录：{'; '.join(str(path) for path in model_roots)}")
+    for category, directories in sorted(model_dirs.items()):
+        print(f"ComfyUI 额外路径（{category}）：{'; '.join(str(path) for path in directories)}")
     print(f"模型配置：{args.profile}；{len(files)} 个，{total_bytes / 1024 ** 3:.3f} GiB")
     print(f"SHA256：已登记并核实 {verified_hashes} 个；待核实 {len(pending_hashes)} 个（这些文件仅校验了字节数）")
     if problems:

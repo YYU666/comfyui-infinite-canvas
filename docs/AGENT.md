@@ -26,7 +26,7 @@ C:\ComfyUI_windows_portable\python_embeded\python.exe agent_mcp.py
 
 可选环境变量 `H3_PROJECT_ID` 用于读取 `canvas://context`。MCP 只有 `state`、`query`、`apply`、`wait` 四个核心工具；资源为 `canvas://context`、`canvas://protocol`、`canvas://schema`。
 
-## 调用顺序
+## 明确要求无界面时的调用顺序
 
 1. 会话开始读取 `state(view=context)` 或 `canvas://context`，不要重放历史。
 2. 日常状态使用 `state(view=digest)`；排障才使用 `generation/errors/topology`，不要默认 `all`。
@@ -40,7 +40,7 @@ Take 的 `comfy://view?...` 是对 ComfyUI 原输出的引用，不是项目内�
 
 ## 核心 HTTP
 
-若用户要求在当前已打开网页制作，画布创建、连接、修改和生成必须使用该页面 WebMCP 或下述当前页通道，不能另开后台浏览器，也不能同时用服务端 `apply` 修改同一画布。纯后端协议仍用于明确要求的无界面流程。
+在已有画布制作图片或视频时，默认使用该页面 WebMCP 或下述当前页通道。按项目 ID 选定页面，先保存生成节点上的连线、提示词和参数，再从该节点提交，最后核对真实结果及输出连线。纯后端协议用于明确要求的无界面流程；导入已有文件按素材导入处理。
 
 ```text
 GET  /api/agent/canvas/current?projectId=<project>
@@ -48,7 +48,7 @@ POST /api/agent/canvas/commands
 GET  /api/agent/canvas/commands/<opId>
 ```
 
-`current` 返回 `epoch/sessionId/projectId`；提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","wait":false}`。实际执行发生在现有页面，修改工具等待正常保存后回执。返回 `done` 后还须检查 `result.ok`。无页或多个可见候选时明确报错，不自动创建页面；页面心跳只由前端发送。
+`current` 返回 `epoch/sessionId/projectId`；提交时携带这三个字段和唯一 `opId`、`tool`、`args`。例如 `tool: "canvas_generate_node"`、`args: {"nodeId":"完整节点ID","expectedRevision":42,"wait":false}`。实际执行发生在现有页面，修改工具等待正常保存后回执。返回 `done` 后还须检查 `result.ok`。无页或多个可见候选时明确报错，不自动创建页面；页面心跳只由前端发送。
 
 命令按 ID 去重，断线后不重发已派发的生成。`unknown/dispatched` 应先核对队列和节点，不换 ID 盲目再生成。服务重启后旧 epoch 被拒绝。新通道需要启动新版后端并重新载入现有网页；不会为升级通道自动中断任务。完整流程与容量边界见 `.agents/skills/comfyui-infinite-canvas/references/canvas-operations.md`。
 
@@ -68,7 +68,7 @@ GET  /api/agent/resources/<protocol|context|schema>
 
 ## 批量与语义操作
 
-`apply` 基础 op：`create`、`connect`、`set`、`generate`、`delete`、`cancel`。
+`apply` 基础 op：`create`、`connect`、`set`、`delete`、`cancel`。
 
 语义 op：
 
@@ -130,3 +130,12 @@ C:\ComfyUI_windows_portable\python_embeded\python.exe scripts\agent_benchmark.py
 fixture 为 200 节点、20 镜头、5 角色、50 Take。脚本在任一指标超预算时失败：digest ≤100、query ≤150、写回执 ≤30、四操作 apply ≤200、wait ≤50、工具 schema ≤600 tokens。响应的 `meta.estTokens` 使用公开的四字符/token 确定性估算，便于不同 Agent 复核。
 
 当前服务端语义生成支持 H3 文生视频和图片参考视频；项目图片参考在上传时复用本地 ComfyUI。视频/音频项目素材的直接 Agent 上传及其他画布专用工作流仍走现有画布流程，不用伪造工作流替代。
+
+
+### 查询原任务与重新执行
+
+普通图像、视频和自定义工作流的准备记录绑定本次实际提交的工作流或分阶段执行方案、有序输入和保存修订。准备记录保存 SHA-256 和字节数。画布在提交前显示摘要，并展开不超过 64 KiB 的配置，凭据字段被遮盖。已有后端任务的执行详情用原任务 ID 查看。
+
+`canvas_wait_for_node` 可带上回执的 `jobId` 和 `attempt`，只查询指定执行。`canvas_retry_generation` 需要当前可写画布、原 `jobId` 和 `expectedAttempt`。成功后同一作业的 `attempt` 增加一，代表用保存的原配置重新执行。回执遗失时先按原任务和请求标识核对。
+
+Refmuse 的通用 Comfy 代理保留查询和素材接口，画布生成通过工作台队列。简易模式人工按钮使用独立身份 `legacy-manual`，其 `prompt_id` 属于简易模式。

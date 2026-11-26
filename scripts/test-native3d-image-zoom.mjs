@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {fitImageView,zoomImageAt,imageZoomLimits} from '../src/native3d-image-zoom.js';
+const fitted=fitImageView({width:640,height:480},{width:1000,height:600});
+assert.deepEqual(fitted,{scale:1.25,x:100,y:0});
+assert.deepEqual(fitImageView({width:640,height:480},{width:1000,height:600},1),{scale:1,x:180,y:60});
+const point={x:315,y:270};
+const before={scale:1.25,x:-45,y:70};
+const after=zoomImageAt(before,point,1.3);
+for (const axis of ['x','y']) assert.ok(Math.abs((point[axis]-before[axis])/before.scale-(point[axis]-after[axis])/after.scale)<1e-10,'pixel under pointer must remain anchored');
+assert.equal(zoomImageAt(before,point,100).scale,imageZoomLimits.max);
+assert.equal(zoomImageAt(before,point,0.00001).scale,imageZoomLimits.min);
+const roundTrip=zoomImageAt(after,point,1/1.3);
+for (const key of ['scale','x','y']) assert.ok(Math.abs(roundTrip[key]-before[key])<1e-10);
+console.log('native3d static image fit, cursor anchoring, zoom bounds and reversibility passed');
