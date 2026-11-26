@@ -130,21 +130,40 @@ def infer_features(samples,output,*,gpu_authorized=False,config=None,worker_leas
     with (Path(output).parent/'partfield-worker.log').open('w',encoding='utf-8') as log:
         result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,timeout=900,env=environment,
                               creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-    if result.returncode:raise RuntimeError('PartField worker failed; private job log retained')
+    if result.returncode:
+        path = Path(output).parent / 'partfield-worker.log'
+        with path.open('rb') as stream:
+            stream.seek(max(0, path.stat().st_size - 8192))
+            detail = stream.read().decode('utf-8', errors='replace').splitlines()
+        for line in reversed(detail):
+            if line.startswith('ValueError: PartField blocked:'):
+                raise RuntimeError(line.removeprefix('ValueError: '))
+        raise RuntimeError('PartField worker failed; private job log retained')
 
 def _check_gpu_idle():
     """Advisory headroom check; never claims exclusive GPU/Comfy reservation."""
-    import urllib.request,urllib.error,shutil
+    import urllib.request,urllib.error,urllib.parse,shutil
     import re,time,xml.etree.ElementTree as ET
+    from gpu_lease import comfy_process
+    origin = os.environ.get('H3_COMFY_URL', 'http://127.0.0.1:8188').rstrip('/')
+    parsed = urllib.parse.urlsplit(origin)
+    if (parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1','::1','localhost')
+            or not parsed.port or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
+        raise ValueError('Cannot verify ComfyUI availability through a non-loopback endpoint')
     def check_comfy():
         try:
-            with urllib.request.urlopen('http://127.0.0.1:8188/queue',timeout=3) as response:queue=json.load(response)
+            with urllib.request.urlopen(origin + '/queue',timeout=3) as response:queue=json.load(response)
             if not isinstance(queue,dict) or not all(isinstance(queue.get(key),list) for key in ('queue_running','queue_pending')):raise ValueError('Cannot verify ComfyUI queue')
             if queue['queue_running'] or queue['queue_pending']:raise ValueError('PartField blocked: ComfyUI has running/pending work')
         except urllib.error.URLError as exc:
             reason=exc.reason
             if not isinstance(reason,ConnectionRefusedError) and getattr(reason,'winerror',None)!=10061 and getattr(reason,'errno',None) not in (61,111,10061):raise ValueError('Cannot verify ComfyUI availability') from exc
-    check_comfy()
+            return None
+        try:
+            return comfy_process(origin)['pid']
+        except (OSError, ValueError, RuntimeError, KeyError):
+            return None
+    comfy_pid = check_comfy()
     executable=shutil.which('nvidia-smi')
     if not executable:raise ValueError('Cannot verify NVIDIA GPU occupancy')
     def run(arguments):
@@ -163,7 +182,7 @@ def _check_gpu_idle():
         for index in range(2):
             if index:
                 time.sleep(.2)
-                check_comfy()
+                comfy_pid = check_comfy()
                 external=external_pids(query('--query-compute-apps=pid'))
             try:root=ET.fromstring(run(['-q','-x']))
             except ET.ParseError as exc:raise ValueError('Cannot parse NVIDIA occupancy report') from exc
@@ -174,11 +193,16 @@ def _check_gpu_idle():
             processes=gpu.find('processes')
             if processes is None:raise ValueError('Cannot verify WDDM process records')
             observed=set()
+            managed_idle = comfy_pid in external
             for process in processes.findall('process_info'):
                 pid=process.findtext('pid','').strip()
                 if not re.fullmatch(r'[1-9][0-9]*',pid):raise ValueError('Cannot parse WDDM process identity')
-                if int(pid)==os.getpid():continue
-                observed.add(int(pid))
+                pid = int(pid)
+                if pid not in external:
+                    continue  # The full XML includes graphics-only desktop rows.
+                observed.add(pid)
+                if pid == comfy_pid:
+                    continue  # The exact listening process has an empty queue; cached tensors may remain.
                 if process.findtext('type','').strip()!='C+G' or process.findtext('used_memory','').strip()!='N/A':
                     raise ValueError('PartField blocked: another GPU compute process is present; not an ambiguous WDDM C+G/N/A record')
             if not external<=observed:raise ValueError('Cannot reconcile NVIDIA compute identities with WDDM report')
@@ -189,8 +213,10 @@ def _check_gpu_idle():
                 if not np.isfinite(value):raise ValueError('Cannot verify finite WDDM resource metric')
                 return value
             used=number('fb_memory_usage/used','MiB');free=number('fb_memory_usage/free','MiB');util=number('utilization/gpu_util','%')
-            if used>2048 or free<6144 or util>50:raise ValueError('PartField blocked: WDDM desktop headroom requires used<=2GiB, free>=6GiB, utilization<=50%')
-            samples.append({'driverModel':'WDDM','externalAmbiguousProcesses':len(observed),'usedMiB':used,'freeMiB':free,'utilizationPercent':util})
+            if free < 6144 or util > 50 or (not managed_idle and used > 2048):
+                raise ValueError('PartField blocked: WDDM desktop headroom requires free>=6GiB and utilization<=50%; without a verified idle Comfy backend it also requires used<=2GiB')
+            samples.append({'driverModel':'WDDM','externalAmbiguousProcesses':len(observed)-int(managed_idle),
+                            'verifiedIdleComfyResident':managed_idle,'usedMiB':used,'freeMiB':free,'utilizationPercent':util})
         check_comfy()
         return {'mode':'wddm_ambiguous_desktop_headroom','exclusiveGPU':False,'samples':samples,'comfyQueue':'empty_or_connection_refused','sampleIntervalSeconds':.2}
     free=query('--query-gpu=memory.free')
