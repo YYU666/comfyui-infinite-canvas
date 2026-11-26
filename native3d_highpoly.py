@@ -90,32 +90,68 @@ def topology_report(mesh, epsilon=1e-5, island_fraction=0.01):
     }
 
 
+def _quantize_uv(array):
+    """Match the historical 5-decimal seam key, including +0 and -0."""
+    quantized = np.round(np.asarray(array, dtype=np.float64), 5)
+    quantized[quantized == 0] = 0.0
+    return quantized
+
+
 def _uv_seams(mesh, epsilon):
+    """Count welded edges that carry more than one quantized UV signature.
+
+    Half-edges are packed as arrays and reduced with one sort. A 300k-face
+    mesh must not walk faces in Python.
+    """
     uv = _uv_array(mesh)
     if uv is None:
         return 0, 0
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    if len(faces) == 0:
+        return 0, 0
     vertices = np.asarray(mesh.vertices, dtype=np.float64)
-    faces = np.asarray(mesh.faces)
     keys = np.round(vertices / max(float(epsilon), 1e-12)).astype(np.int64)
     _, inverse = np.unique(keys, axis=0, return_inverse=True)
-    signatures = {}
-    users = {}
-    for face in faces:
-        welded = inverse[face]
-        for start, end in ((0, 1), (1, 2), (2, 0)):
-            left, right = int(welded[start]), int(welded[end])
-            if left == right:
-                continue
-            if left > right:
-                left, right = right, left
-                start, end = end, start
-            pair = (tuple(np.round(uv[face[start]], 5)), tuple(np.round(uv[face[end]], 5)))
-            edge = (left, right)
-            signatures.setdefault(edge, set()).add(pair)
-            users[edge] = users.get(edge, 0) + 1
-    seams = [edge for edge, pairs in signatures.items() if len(pairs) > 1]
-    on_boundary = sum(1 for edge in seams if users.get(edge, 0) < 2)
-    return len(seams), int(on_boundary)
+    welded = inverse[faces]
+    quantized = _quantize_uv(uv)
+    starts = np.stack([welded[:, 0], welded[:, 1], welded[:, 2]], axis=0).reshape(-1)
+    ends = np.stack([welded[:, 1], welded[:, 2], welded[:, 0]], axis=0).reshape(-1)
+    uv_starts = np.stack([quantized[faces[:, 0]], quantized[faces[:, 1]], quantized[faces[:, 2]]], axis=0).reshape(-1, 2)
+    uv_ends = np.stack([quantized[faces[:, 1]], quantized[faces[:, 2]], quantized[faces[:, 0]]], axis=0).reshape(-1, 2)
+    swap = starts > ends
+    left = np.where(swap, ends, starts)
+    right = np.where(swap, starts, ends)
+    uv_left = np.where(swap[:, None], uv_ends, uv_starts)
+    uv_right = np.where(swap[:, None], uv_starts, uv_ends)
+    valid = left != right
+    if not np.any(valid):
+        return 0, 0
+    left, right, uv_left, uv_right = left[valid], right[valid], uv_left[valid], uv_right[valid]
+    edge_dtype = [('a', np.int64), ('b', np.int64)]
+    edges = np.empty(len(left), dtype=edge_dtype)
+    edges['a'] = left
+    edges['b'] = right
+    unique_edges, user_counts = np.unique(edges, return_counts=True)
+    packed = np.empty(len(left), dtype=[
+        ('a', np.int64), ('b', np.int64),
+        ('u0', np.float64), ('v0', np.float64), ('u1', np.float64), ('v1', np.float64),
+    ])
+    packed['a'] = left
+    packed['b'] = right
+    packed['u0'] = uv_left[:, 0]
+    packed['v0'] = uv_left[:, 1]
+    packed['u1'] = uv_right[:, 0]
+    packed['v1'] = uv_right[:, 1]
+    unique_sig = np.unique(packed)
+    signature_edges = np.empty(len(unique_sig), dtype=edge_dtype)
+    signature_edges['a'] = unique_sig['a']
+    signature_edges['b'] = unique_sig['b']
+    ordered_edges, signature_counts = np.unique(signature_edges, return_counts=True)
+    seam = signature_counts > 1
+    if not np.any(seam):
+        return 0, 0
+    positions = np.searchsorted(unique_edges, ordered_edges[seam])
+    return int(np.count_nonzero(seam)), int(np.count_nonzero(user_counts[positions] < 2))
 
 
 def _isolated_fragments(vertices, faces, fraction):
@@ -166,26 +202,61 @@ def _drop_islands(vertices, faces, fraction):
 
 
 def _drop_nonmanifold(vertices, faces):
-    faces = np.asarray(faces)
+    """Drop the smallest face on each non-manifold edge without rebuilding the mesh.
+
+    The full edge table is built once. Only faces that touch a count>2 edge are
+    candidates, and each deletion decrements those edge counts in place.
+    """
+    faces = np.asarray(faces, dtype=np.int64)
+    if len(faces) == 0:
+        return faces, 0
+    stacked = np.stack((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]), axis=0)
+    edges = np.sort(stacked, axis=2).reshape(-1, 2)
+    _unique, inverse, counts = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
+    inverse = inverse.reshape(3, len(faces)).T
+    counts = counts.astype(np.int64, copy=True)
+    bad_ids = np.flatnonzero(counts > 2)
+    if len(bad_ids) == 0:
+        return faces, 0
+    bad = set(int(item) for item in bad_ids)
+    candidate = np.flatnonzero(np.isin(inverse, bad_ids).any(axis=1))
+    incident = {edge: [] for edge in bad}
+    for index in candidate.tolist():
+        for edge in inverse[index]:
+            edge = int(edge)
+            if edge in incident:
+                incident[edge].append(index)
+    areas = _areas(vertices, faces)
+    alive = np.ones(len(faces), dtype=bool)
     removed = 0
-    for _ in range(max(1, len(faces))):
-        edges, counts = _edge_table(faces)
-        bad = {tuple(int(v) for v in edge) for edge, count in zip(edges, counts) if count > 2}
-        if not bad:
-            break
-        areas = _areas(vertices, faces)
+    while bad:
         victim = None
-        victim_area = None
-        for index, face in enumerate(faces):
-            tri = [tuple(sorted((int(face[i]), int(face[(i + 1) % 3])))) for i in range(3)]
-            if any(edge in bad for edge in tri) and (victim is None or areas[index] < victim_area):
-                victim = index
-                victim_area = areas[index]
+        victim_key = None
+        seen = set()
+        for edge in bad:
+            for index in incident[edge]:
+                if index in seen or not alive[index]:
+                    continue
+                seen.add(index)
+                key = (float(areas[index]), index)
+                if victim_key is None or key < victim_key:
+                    victim_key = key
+                    victim = index
         if victim is None:
             break
-        faces = np.delete(faces, victim, axis=0)
+        alive[victim] = False
         removed += 1
-    return faces, removed
+        for edge in inverse[victim]:
+            edge = int(edge)
+            counts[edge] -= 1
+            if edge in bad and counts[edge] <= 2:
+                bad.discard(edge)
+    if removed == 0:
+        return faces, 0
+    kept = faces[alive]
+    if len(kept) == 0:
+        return np.zeros((0, 3), dtype=np.int64), removed
+    return kept, removed
 
 
 def _boundary_loops(faces):
@@ -319,11 +390,204 @@ def _closest_uv(origin, vertices, faces, uv):
     return weights @ uv[faces[pick]]
 
 
-def _resample_uv_vertices(vertices, original):
+def _uv_islands(faces, uv):
+    """Face groups connected by an edge whose quantized UVs agree.
+
+    A seam is not a link, so each side of a split vertex stays in its own chart.
+    """
+    faces = np.asarray(faces, dtype=np.int64)
+    count = len(faces)
+    if count == 0:
+        return []
+    quantized = _quantize_uv(uv)
+    parent = np.arange(count, dtype=np.int64)
+    rank = np.zeros(count, dtype=np.int8)
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = int(parent[index])
+        return index
+
+    def union(left, right):
+        left, right = find(left), find(right)
+        if left == right:
+            return
+        if rank[left] < rank[right]:
+            parent[left] = right
+        elif rank[left] > rank[right]:
+            parent[right] = left
+        else:
+            parent[right] = left
+            rank[left] += 1
+
+    records = []
+    face_ids = np.arange(count, dtype=np.int64)
+    for start, end in ((0, 1), (1, 2), (2, 0)):
+        va = faces[:, start]
+        vb = faces[:, end]
+        ua = quantized[va]
+        ub = quantized[vb]
+        swap = va > vb
+        rec = np.empty(count, dtype=[
+            ('v0', np.int64), ('v1', np.int64),
+            ('u0', np.float64), ('w0', np.float64), ('u1', np.float64), ('w1', np.float64),
+            ('face', np.int64),
+        ])
+        rec['v0'] = np.where(swap, vb, va)
+        rec['v1'] = np.where(swap, va, vb)
+        rec['u0'] = np.where(swap, ub[:, 0], ua[:, 0])
+        rec['w0'] = np.where(swap, ub[:, 1], ua[:, 1])
+        rec['u1'] = np.where(swap, ua[:, 0], ub[:, 0])
+        rec['w1'] = np.where(swap, ua[:, 1], ub[:, 1])
+        rec['face'] = face_ids
+        records.append(rec)
+    records = np.concatenate(records)
+    records = records[records['v0'] != records['v1']]
+    if len(records) == 0:
+        return [np.arange(count, dtype=np.int64)]
+    records = records[np.argsort(records, order=('v0', 'v1', 'u0', 'w0', 'u1', 'w1'))]
+    same = (
+        (records['v0'][1:] == records['v0'][:-1]) & (records['v1'][1:] == records['v1'][:-1]) &
+        (records['u0'][1:] == records['u0'][:-1]) & (records['w0'][1:] == records['w0'][:-1]) &
+        (records['u1'][1:] == records['u1'][:-1]) & (records['w1'][1:] == records['w1'][:-1])
+    )
+    for left, right in zip(records['face'][:-1][same].tolist(), records['face'][1:][same].tolist()):
+        union(int(left), int(right))
+    roots = np.fromiter((find(index) for index in range(count)), dtype=np.int64, count=count)
+    order = np.argsort(roots)
+    splits = np.flatnonzero(np.diff(roots[order])) + 1
+    return np.split(order, splits)
+
+
+def _take_faces(vertices, faces, uv, face_ids):
+    subset = np.asarray(faces, dtype=np.int64)[np.asarray(face_ids, dtype=np.int64)]
+    used = np.unique(subset)
+    remap = np.full(len(vertices), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return np.asarray(vertices, dtype=np.float64)[used], remap[subset], np.asarray(uv, dtype=np.float64)[used]
+
+
+def _compact_indexed(vertices, faces, uv):
+    if len(faces) == 0:
+        return vertices[:0], faces, uv[:0]
+    used = np.unique(faces)
+    if len(used) == len(vertices):
+        return vertices, faces, uv
+    remap = np.full(len(vertices), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return vertices[used], remap[faces], uv[used]
+
+
+def _max_uv_edge(uv, faces):
+    if len(faces) == 0:
+        return 0.0
+    triangles = np.asarray(uv, dtype=np.float64)[np.asarray(faces, dtype=np.int64)]
+    lengths = np.linalg.norm(np.stack((
+        triangles[:, 0] - triangles[:, 1],
+        triangles[:, 1] - triangles[:, 2],
+        triangles[:, 2] - triangles[:, 0],
+    )), axis=2)
+    return float(lengths.max()) if lengths.size else 0.0
+
+
+def _project_uv_onto_island(points, vertices, faces, uv):
+    """Closest-face barycentric UV restricted to one source island.
+
+    The candidate triangles are the ones that can beat the nearest source
+    vertex. That search uses a centroid tree, so it does not need rtree.
+    """
     from scipy.spatial import cKDTree
-    source_uv = _uv_array(original)
-    _, index = cKDTree(np.asarray(original.vertices, dtype=np.float64)).query(np.asarray(vertices, dtype=np.float64), k=1)
-    return np.asarray(source_uv, dtype=np.float64)[np.asarray(index, dtype=np.int64)]
+
+    points = np.asarray(points, dtype=np.float64)
+    vertices = np.asarray(vertices, dtype=np.float64)
+    faces = np.asarray(faces, dtype=np.int64)
+    uv = np.asarray(uv, dtype=np.float64)
+    if len(points) == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    triangles = vertices[faces]
+    centers = triangles.mean(axis=1)
+    radii = np.linalg.norm(triangles - centers[:, None, :], axis=2).max(axis=1)
+    upper, _index = cKDTree(vertices).query(points, k=1)
+    upper = np.maximum(np.asarray(upper, dtype=np.float64), 0.0)
+    reach = upper + (float(radii.max()) if len(radii) else 0.0) + 1e-8
+    candidates = cKDTree(centers).query_ball_point(points, r=reach)
+    chosen = np.empty(len(points), dtype=np.int64)
+    closest = np.empty_like(points)
+    for index, hits in enumerate(candidates):
+        cand = np.asarray(hits, dtype=np.int64)
+        if len(cand):
+            near = np.linalg.norm(centers[cand] - points[index], axis=1) <= upper[index] + radii[cand] + 1e-8
+            cand = cand[near]
+        if len(cand) == 0:
+            cand = np.arange(len(faces))
+        hit = trimesh.triangles.closest_point(triangles[cand], np.repeat(points[index:index + 1], len(cand), axis=0))
+        pick = int(np.argmin(np.linalg.norm(hit - points[index], axis=1)))
+        chosen[index] = int(cand[pick])
+        closest[index] = hit[pick]
+    bary = np.clip(trimesh.triangles.points_to_barycentric(triangles[chosen], closest), 0, None)
+    totals = bary.sum(axis=1, keepdims=True)
+    totals[totals < 1e-12] = 1.0
+    return np.einsum('ij,ijk->ik', bary / totals, uv[faces[chosen]])
+
+
+def _reduce_large_uv_islands(mesh, target_faces, distortion_limit):
+    """Simplify each UV chart on its own and interpolate UV only inside that chart.
+
+    Island borders stay locked, so a seam vertex is never welded to the chart
+    on the other side and then given that chart's UV.
+    """
+    import fast_simplification
+
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    uv = np.asarray(_uv_array(mesh), dtype=np.float64)
+    groups = _uv_islands(faces, uv)
+    sizes = np.array([len(group) for group in groups], dtype=np.int64)
+    raw = np.maximum(2, np.rint(float(target_faces) * sizes / max(int(sizes.sum()), 1)).astype(np.int64))
+    targets = np.minimum(sizes, raw)
+    parts_v, parts_f, parts_uv = [], [], []
+    measured = 0.0
+    for group, target in zip(groups, targets):
+        island_v, island_f, island_uv = _take_faces(vertices, faces, uv, group)
+        target = int(target)
+        if len(island_f) > max(target, 4):
+            points, indexed = fast_simplification.simplify(
+                np.ascontiguousarray(island_v, dtype=np.float64),
+                np.ascontiguousarray(island_f),
+                target_count=max(target, 4), preserve_border=True)
+            points = np.asarray(points, dtype=np.float64)
+            indexed = np.asarray(indexed, dtype=np.int64)
+            if len(indexed) == 0 or len(points) == 0:
+                points, indexed, chart_uv = island_v, island_f, island_uv
+            else:
+                points, indexed, _unused = _compact_indexed(points, indexed, np.zeros((len(points), 2)))
+                chart_uv = _project_uv_onto_island(points, island_v, island_f, island_uv)
+        else:
+            points, indexed, chart_uv = island_v, island_f, island_uv
+        measured = max(measured, _max_uv_edge(chart_uv, indexed))
+        parts_v.append(points)
+        parts_f.append(indexed)
+        parts_uv.append(chart_uv)
+    merged_v, merged_f, merged_uv = [], [], []
+    offset = 0
+    for points, indexed, chart_uv in zip(parts_v, parts_f, parts_uv):
+        merged_v.append(points)
+        merged_f.append(np.asarray(indexed, dtype=np.int64) + offset)
+        merged_uv.append(chart_uv)
+        offset += len(points)
+    points = np.vstack(merged_v)
+    indexed = np.vstack(merged_f)
+    chart_uv = np.vstack(merged_uv)
+    result = trimesh.Trimesh(points, indexed, process=False)
+    result.visual = trimesh.visual.TextureVisuals(uv=chart_uv, material=getattr(mesh.visual, 'material', None))
+    limit = float(distortion_limit)
+    return result, {
+        'targetFaces': _as_int(target_faces), 'faces': _as_int(len(indexed)), 'vertices': _as_int(len(points)),
+        'uvDistortion': float(measured), 'uvDistortionLimit': limit,
+        'uvDistortionExceeded': bool(measured > limit), 'resampled': True,
+        'uvTransfer': 'per-UV-island border lock, then closest-face barycentric UV inside that island',
+    }
 
 
 def _resample_uv(vertices, faces, original):
@@ -338,19 +602,7 @@ def _resample_uv(vertices, faces, original):
 
 def _reduce_preserving_uv(mesh, target_faces, distortion_limit):
     if len(mesh.faces) > 1500 and len(mesh.faces) > target_faces:
-        import fast_simplification
-        points, indexed = fast_simplification.simplify(
-            np.asarray(mesh.vertices, dtype=np.float64), np.asarray(mesh.faces),
-            target_count=int(target_faces), preserve_border=True)
-        uv = _resample_uv_vertices(points, mesh)
-        result = trimesh.Trimesh(points, indexed, process=False)
-        result.visual = trimesh.visual.TextureVisuals(uv=uv, material=getattr(mesh.visual, 'material', None))
-        return result, {
-            'targetFaces': _as_int(target_faces), 'faces': _as_int(len(indexed)), 'vertices': _as_int(len(points)),
-            'uvDistortion': float(distortion_limit), 'uvDistortionLimit': float(distortion_limit),
-            'uvDistortionExceeded': True, 'resampled': True,
-            'uvTransfer': 'border-preserving simplification, then barycentric UV resample from High',
-        }
+        return _reduce_large_uv_islands(mesh, target_faces, distortion_limit)
     vertices = np.asarray(mesh.vertices, dtype=np.float64)
     faces = np.asarray(mesh.faces, dtype=np.int64)
     uv = np.array(_uv_array(mesh), dtype=np.float64, copy=True)
@@ -420,12 +672,107 @@ def derive_shared_lods(mesh, medium_ratio=0.30, low_ratio=0.12, distortion_limit
     }
 
 
+def _vertex_tangents(mesh):
+    """Area-weighted vertex tangents using the engine face basis formula.
+
+    ``face_tangent_basis`` is the per-triangle form: UV determinant, tangent
+    projected off the normal, and glTF handedness ``-sign(det)``.
+    """
+    from native3d_engine import face_tangent_basis
+
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    uv = np.asarray(_uv_array(mesh), dtype=np.float64)
+    vertex_normals = np.asarray(mesh.vertex_normals, dtype=np.float64)
+    xyz = vertices[faces]
+    tri_uv = uv[faces]
+    delta = tri_uv[:, 1:] - tri_uv[:, :1]
+    determinant = np.linalg.det(delta)
+    geometric = np.cross(xyz[:, 1] - xyz[:, 0], xyz[:, 2] - xyz[:, 0])
+    area = 0.5 * np.linalg.norm(geometric, axis=1)
+    ok = (np.abs(determinant) >= 1e-12) & (area >= 1e-15)
+    # Keep the exported frames on the same formula as face_tangent_basis.
+    tangent = np.zeros((len(faces), 3), dtype=np.float64)
+    if np.any(ok):
+        tangent[ok] = (
+            (xyz[ok, 1] - xyz[ok, 0]) * delta[ok, 1, 1:2]
+            - (xyz[ok, 2] - xyz[ok, 0]) * delta[ok, 0, 1:2]
+        ) / determinant[ok, None]
+        face_n = geometric[ok] / np.maximum(np.linalg.norm(geometric[ok], axis=1, keepdims=True), 1e-20)
+        tangent[ok] -= face_n * np.einsum('ij,ij->i', face_n, tangent[ok])[:, None]
+        tangent[ok] /= np.maximum(np.linalg.norm(tangent[ok], axis=1, keepdims=True), 1e-20)
+        sample = int(np.flatnonzero(ok)[0])
+        normal = geometric[sample] / max(float(np.linalg.norm(geometric[sample])), 1e-20)
+        expected, _bitangent, expected_hand = face_tangent_basis(xyz[sample], tri_uv[sample], normal)
+        if not np.allclose(tangent[sample], expected, atol=1e-5) or not np.isclose(-np.sign(determinant[sample]), expected_hand):
+            raise RuntimeError('vertex tangents diverged from face_tangent_basis')
+    handed = np.where(ok, -np.sign(determinant), 0.0)
+    weight = np.where(ok, area, 0.0)
+    accum = np.zeros((len(vertices), 3), dtype=np.float64)
+    hand = np.zeros(len(vertices), dtype=np.float64)
+    total = np.zeros(len(vertices), dtype=np.float64)
+    for corner in range(3):
+        np.add.at(accum, faces[:, corner], tangent * weight[:, None])
+        np.add.at(hand, faces[:, corner], handed * weight)
+        np.add.at(total, faces[:, corner], weight)
+    accum -= vertex_normals * np.einsum('ij,ij->i', vertex_normals, accum)[:, None]
+    length = np.linalg.norm(accum, axis=1)
+    missing = (total <= 0) | (length < 1e-12)
+    axis_index = np.argmin(np.abs(vertex_normals), axis=1)
+    axis = np.zeros_like(vertex_normals)
+    axis[np.arange(len(vertices)), axis_index] = 1.0
+    fallback = np.cross(vertex_normals, axis)
+    fallback /= np.maximum(np.linalg.norm(fallback, axis=1, keepdims=True), 1e-20)
+    use = np.where(missing[:, None], fallback, accum / np.maximum(length, 1e-20)[:, None])
+    sign = np.where(missing, 1.0, np.where(hand >= 0, 1.0, -1.0))
+    frames = np.concatenate((use.astype(np.float32), sign.astype(np.float32)[:, None]), axis=1)
+    return vertex_normals.astype(np.float32), np.ascontiguousarray(frames, dtype=np.float32)
+
+
+def _ensure_tangents(mesh):
+    existing = mesh.vertex_attributes.get('_TANGENT') if getattr(mesh, 'vertex_attributes', None) is not None else None
+    if existing is not None:
+        existing = np.asarray(existing)
+        if existing.shape == (len(mesh.vertices), 4) and np.isfinite(existing).all():
+            mesh.vertex_normals = np.asarray(mesh.vertex_normals, dtype=np.float32)
+            return
+    normals, frames = _vertex_tangents(mesh)
+    mesh.vertex_normals = normals
+    mesh.vertex_attributes['_TANGENT'] = frames
+
+
+def _ensure_shared_orm(mesh):
+    """Point occlusion and metallic-roughness at one image object."""
+    from PIL import Image
+
+    material = getattr(mesh.visual, 'material', None)
+    if not hasattr(material, 'occlusionTexture'):
+        material = trimesh.visual.material.PBRMaterial(
+            roughnessFactor=float(getattr(material, 'roughnessFactor', 1.0) or 1.0),
+            metallicFactor=float(getattr(material, 'metallicFactor', 0.0) or 0.0))
+        mesh.visual.material = material
+    occlusion = getattr(material, 'occlusionTexture', None)
+    metallic = getattr(material, 'metallicRoughnessTexture', None)
+    if occlusion is not None and occlusion is metallic:
+        return
+    image = metallic if metallic is not None else occlusion
+    if image is None:
+        image = Image.new('RGB', (4, 4), (255, 180, 16))
+    material.occlusionTexture = image
+    material.metallicRoughnessTexture = image
+
+
 def deliver_shared_lods(mesh, output, **kwargs):
     derived = derive_shared_lods(mesh, **kwargs)
+    from native3d_engine import export_glb
     folder = Path(output)
+    folder.mkdir(parents=True, exist_ok=True)
     names = {'high': 'LOD0_high.glb', 'medium': 'LOD1_medium.glb', 'low': 'LOD2_low.glb'}
     for key, name in names.items():
-        derived[key].export(folder / name)
+        model = derived[key]
+        _ensure_shared_orm(model)
+        _ensure_tangents(model)
+        export_glb(model, folder / name)
     return {
         'files': list(names.values()),
         'sharedTextures': derived['sharedTextures'],

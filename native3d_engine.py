@@ -728,7 +728,7 @@ def bake(low, high, out, params, progress_callback=None):
     Image.fromarray(metallic).save(out / 'metallic.png')
     from native3d_material_atlas import texture_qc_warnings, write_packed_maps
     write_packed_maps(out, ao, roughness, metallic)
-    texture_warnings = texture_qc_warnings(normal, roughness)
+    texture_warnings = texture_qc_warnings(normal, roughness, mask=coverage > 0)
     def loaded_image(name):
         with Image.open(out / name) as image:
             return image.copy()

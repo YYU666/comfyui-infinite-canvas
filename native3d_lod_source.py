@@ -52,7 +52,11 @@ def resolve_lod_settings(params=None):
     if reference == 'lod0' and any(a < b for a, b in zip(percentages, percentages[1:])):
         raise ValueError('Cumulative LOD0 percentages must not increase')
     caps = [_cap(c, 'LOD'+str(i)+' face cap') for i, c in enumerate(caps)]
-    count = params.get('lodCount', 5)
+    # New tasks default to 3, matching native3d_jobs.validate_parameters.
+    # A saved manifest that omitted lodCount is the historical 5-level encoding:
+    # this function still omits the key when count is 5, and readers use
+    # settings.get('lodCount', 5). The frontend lodCountOf fallback stays 5.
+    count = params.get('lodCount', 3)
     if type(count) is not int or not 1 <= count <= 5:
         raise ValueError('lodCount must be an integer within 1..5')
     selected = params.get('selectedLodLevel', 0)

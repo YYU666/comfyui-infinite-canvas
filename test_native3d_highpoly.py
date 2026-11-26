@@ -1,4 +1,7 @@
+import json
+import struct
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -6,9 +9,10 @@ import numpy as np
 import trimesh
 from PIL import Image
 
-from native3d_highpoly import FACE_LIMIT, derive_shared_lods, repair_high, topology_report
+from native3d_highpoly import FACE_LIMIT, deliver_shared_lods, derive_shared_lods, repair_high, topology_report
 from native3d_jobs import validate_parameters
-from native3d_material_atlas import texture_qc_warnings, write_packed_maps
+from native3d_lod_source import resolve_lod_settings
+from native3d_material_atlas import shares_orm_storage, texture_qc_warnings, write_packed_maps
 
 
 def _grid(n=8):
@@ -144,6 +148,147 @@ class HighpolyRepairTests(unittest.TestCase):
         varied_normal = np.zeros((4, 4, 3), np.uint8)
         varied_normal[..., 0] = np.arange(16, dtype=np.uint8).reshape(4, 4)
         self.assertEqual(texture_qc_warnings(varied_normal, np.arange(16, dtype=np.uint8).reshape(4, 4)), [])
+
+    def test_new_lod_settings_default_to_three_levels(self):
+        fresh = resolve_lod_settings()
+        self.assertEqual(fresh['lodCount'], 3)
+        legacy = resolve_lod_settings({'lodCount': 5})
+        self.assertNotIn('lodCount', legacy)
+
+    def test_large_mesh_lods_keep_uv_islands_apart(self):
+        mesh = _seamed_panels(24)
+        self.assertGreater(len(mesh.faces), 2000)
+        self.assertGreater(len(mesh.faces), 1500)
+        derived = derive_shared_lods(mesh)
+        for key in ('medium', 'low'):
+            model = derived[key]
+            uv = np.asarray(model.visual.uv)
+            triangles = uv[np.asarray(model.faces)]
+            horizontal = triangles[:, :, 0]
+            left = (horizontal >= 0.05 - 1e-3) & (horizontal <= 0.40 + 1e-3)
+            right = (horizontal >= 0.60 - 1e-3) & (horizontal <= 0.95 + 1e-3)
+            self.assertTrue(np.all(left | right))
+            self.assertTrue(np.all(left.all(axis=1) | right.all(axis=1)))
+            self.assertTrue(np.any(left))
+            self.assertTrue(np.any(right))
+            # The charts are 0.20 apart in U. A seam-crossing edge is at least
+            # that long in U; a coarse triangle inside one chart is not.
+            delta_u = np.max(np.abs(np.stack((
+                horizontal[:, 0] - horizontal[:, 1],
+                horizontal[:, 1] - horizontal[:, 2],
+                horizontal[:, 2] - horizontal[:, 0],
+            ))), axis=0)
+            self.assertLess(float(delta_u.max()), 0.15)
+            report = derived['reports'][key]
+            self.assertIsInstance(report['uvDistortion'], float)
+            self.assertGreater(report['uvDistortion'], 0)
+            self.assertLess(report['uvDistortion'], report['uvDistortionLimit'])
+            self.assertFalse(report['uvDistortionExceeded'])
+
+    def test_large_nonmanifold_repair_is_vectorized(self):
+        mesh = _seamed_panels(100, fins=80)
+        self.assertGreaterEqual(len(mesh.faces), 20000)
+        started = time.perf_counter()
+        repaired, report = repair_high(mesh)
+        after = topology_report(repaired)
+        elapsed = time.perf_counter() - started
+        self.assertGreaterEqual(report['before']['nonManifoldEdges'], 80)
+        self.assertGreater(report['before']['uvSeamEdges'], 0)
+        self.assertEqual(after['nonManifoldEdges'], 0)
+        self.assertEqual(after['degenerateTriangles'], 0)
+        self.assertEqual(report['after']['nonManifoldEdges'], 0)
+        self.assertEqual(report['after']['degenerateTriangles'], 0)
+        self.assertLess(elapsed, 3.0)
+
+    def test_texture_qc_uses_uv_coverage_mask(self):
+        mask = np.zeros((64, 64), dtype=bool)
+        mask.ravel()[: int(0.6 * 64 * 64)] = True
+        roughness = np.zeros((64, 64), np.uint8)
+        roughness[mask] = 157
+        normal = np.zeros((64, 64, 3), np.uint8)
+        normal[mask, 0] = 128
+        normal[mask, 1] = 128
+        normal[mask, 2] = 255
+        warnings = texture_qc_warnings(normal, roughness, mask)
+        self.assertTrue(any('死灰' in item for item in warnings))
+        self.assertTrue(any('纯平紫' in item for item in warnings))
+        self.assertFalse(any('死灰' in item or '纯平紫' in item for item in texture_qc_warnings(normal, roughness)))
+        healthy_roughness = np.zeros((64, 64), np.uint8)
+        covered = int(mask.sum())
+        healthy_roughness[mask] = np.arange(covered, dtype=np.uint8) % 180
+        healthy_normal = np.zeros((64, 64, 3), np.uint8)
+        healthy_normal[mask, 0] = np.arange(covered, dtype=np.uint8)
+        healthy_normal[mask, 1] = 40
+        healthy_normal[mask, 2] = 200
+        self.assertEqual(texture_qc_warnings(healthy_normal, healthy_roughness, mask), [])
+
+    def test_shared_lod_glb_exports_tangents_and_one_orm(self):
+        mesh = _grid()
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            delivered = deliver_shared_lods(mesh, folder, distortion_limit=2)
+            self.assertEqual(delivered['files'], ['LOD0_high.glb', 'LOD1_medium.glb', 'LOD2_low.glb'])
+            for name in delivered['files']:
+                blob = (folder / name).read_bytes()
+                self.assertEqual(blob[:4], b'glTF')
+                json_size = struct.unpack('<I', blob[12:16])[0]
+                document = json.loads(blob[20:20 + json_size])
+                attributes = document['meshes'][0]['primitives'][0]['attributes']
+                self.assertIn('TANGENT', attributes)
+                self.assertNotIn('_TANGENT', attributes)
+                self.assertTrue(shares_orm_storage(document, document['materials'][0]))
+
+
+def _seamed_panels(n, fins=0):
+    """Two charts that meet in 3D and stay apart in UV. Optional non-manifold fins."""
+    def panel(origin, u0, u1):
+        vertices, uv, faces = [], [], []
+        for y in range(n + 1):
+            for x in range(n + 1):
+                vertices.append((origin + x, y, 0.0))
+                uv.append((u0 + (u1 - u0) * x / n, 0.05 + 0.90 * y / n))
+        def index(x, y):
+            return y * (n + 1) + x
+        for y in range(n):
+            for x in range(n):
+                a, b, c, d = index(x, y), index(x + 1, y), index(x + 1, y + 1), index(x, y + 1)
+                faces.append((a, b, c))
+                faces.append((a, c, d))
+        return vertices, uv, faces
+    left_v, left_uv, left_f = panel(0, 0.05, 0.40)
+    right_v, right_uv, right_f = panel(n, 0.60, 0.95)
+    offset = len(left_v)
+    vertices = np.array(left_v + right_v, dtype=float)
+    uv = np.array(left_uv + right_uv, dtype=float)
+    faces = np.array(left_f + [(a + offset, b + offset, c + offset) for a, b, c in right_f], dtype=int)
+    if fins:
+        extra_v, extra_uv, extra_f = [], [], []
+        used = set()
+        for face in left_f:
+            if len(extra_f) >= fins:
+                break
+            a, b = int(face[0]), int(face[1])
+            if not (1 <= vertices[a, 0] <= n - 2 and 1 <= vertices[a, 1] <= n - 2):
+                continue
+            if not (1 <= vertices[b, 1] <= n - 2):
+                continue
+            key = (a, b) if a < b else (b, a)
+            if key in used or key[0] == key[1]:
+                continue
+            used.add(key)
+            midpoint = (vertices[a] + vertices[b]) / 2 + np.array([0.0, 0.0, 0.05])
+            extra_v.append(midpoint)
+            extra_uv.append((uv[a] + uv[b]) / 2)
+            extra_f.append((a, b, len(vertices) + len(extra_v) - 1))
+        if len(extra_f) < fins:
+            raise RuntimeError('not enough interior edges for non-manifold fins')
+        vertices = np.vstack([vertices, np.array(extra_v, dtype=float)])
+        uv = np.vstack([uv, np.array(extra_uv, dtype=float)])
+        faces = np.vstack([faces, np.array(extra_f, dtype=int)])
+    mesh = trimesh.Trimesh(vertices, faces, process=False)
+    mesh.visual = trimesh.visual.TextureVisuals(
+        uv=uv, material=trimesh.visual.material.PBRMaterial(roughnessFactor=0.8, metallicFactor=0.0))
+    return mesh
 
 
 if __name__ == '__main__':
