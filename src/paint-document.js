@@ -245,6 +245,13 @@ export function createHistory(limit = HISTORY_LIMIT) {
   return { undo: [], redo: [], limit: Math.max(1, Math.min(50, limit)) };
 }
 
+export function structurePatch(buffers, nextBuffers) {
+  const patch = new Map();
+  for (const [id, buffer] of nextBuffers) if (buffers.get(id) !== buffer) patch.set(id, buffer);
+  for (const id of buffers.keys()) if (!nextBuffers.has(id)) patch.set(id, null);
+  return patch;
+}
+
 export function pushHistory(history, entry) {
   if (!entry) return history;
   history.undo.push(entry);

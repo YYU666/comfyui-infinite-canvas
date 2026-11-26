@@ -3093,7 +3093,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       }} />}
       {nodeShare && <WorkflowShare {...nodeShare} onClose={() => setNodeShare(null)} onSend={async (packet) => { setReferenceLibrary(null); setNodeLibraryMounted(true); setNodeLibraryOpen(true); setSharePacket(packet); setNodeShare(null); }} />}
       {referenceLibraryTab && <ReferenceLibrary library={referenceLibraryTab} open={Boolean(referenceLibrary)} onLibraryChange={openReferenceLibrary} readOnly={project.readOnly} onImport={importReference} onClose={() => setReferenceLibrary(null)} />}
-      {paintEditorId && nodes.some((item) => item.id === paintEditorId) && <PaintEditor node={nodes.find((item) => item.id === paintEditorId)} swatches={nodes.filter((item) => item.type === 'paint' && item.id !== paintEditorId).flatMap((item) => item.data.swatches || [])} baseImage={(() => {
+      {paintEditorId && nodes.some((item) => item.id === paintEditorId) && <PaintEditor key={paintEditorId} node={nodes.find((item) => item.id === paintEditorId)} swatches={nodes.filter((item) => item.type === 'paint' && item.id !== paintEditorId).flatMap((item) => item.data.swatches || [])} baseImage={(() => {
         const edge = edges.find((item) => item.target === paintEditorId && item.targetHandle === 'base');
         const source = nodes.find((item) => item.id === edge?.source);
         if (!source) return null;

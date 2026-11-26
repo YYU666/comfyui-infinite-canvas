@@ -696,9 +696,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith('/api/sprite-atlas/') and getattr(self.server, 'sprite_atlas_api', None) and self.server.sprite_atlas_api.handle(self, "GET", path):
             return
-        if path.startswith('/api/paint/') and getattr(self.server, 'paint_brush_api', None) and self.server.paint_brush_api.handle(self, "GET", path):
-            return
         if path.startswith('/api/paint/lan/') and getattr(self.server, 'paint_lan_bridge', None) and self.server.paint_lan_bridge.handle_control(self, "GET", path):
+            return
+        if path.startswith('/api/paint/brushes') and getattr(self.server, 'paint_brush_api', None) and self.server.paint_brush_api.handle(self, "GET", path):
             return
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "GET", path):
             return
@@ -837,9 +837,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith('/api/sprite-atlas/') and getattr(self.server, 'sprite_atlas_api', None) and self.server.sprite_atlas_api.handle(self, "POST", path):
             return
-        if path.startswith('/api/paint/') and getattr(self.server, 'paint_brush_api', None) and self.server.paint_brush_api.handle(self, "POST", path):
-            return
         if path.startswith('/api/paint/lan/') and getattr(self.server, 'paint_lan_bridge', None) and self.server.paint_lan_bridge.handle_control(self, "POST", path):
+            return
+        if path.startswith('/api/paint/brushes') and getattr(self.server, 'paint_brush_api', None) and self.server.paint_brush_api.handle(self, "POST", path):
             return
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "POST", path):
             return
@@ -1006,7 +1006,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
-        if path.startswith('/api/paint/') and getattr(self.server, 'paint_brush_api', None) and self.server.paint_brush_api.handle(self, "PATCH", path):
+        if path.startswith('/api/paint/lan/') and getattr(self.server, 'paint_lan_bridge', None) and self.server.paint_lan_bridge.handle_control(self, "PATCH", path):
+            return
+        if path.startswith('/api/paint/brushes') and getattr(self.server, 'paint_brush_api', None) and self.server.paint_brush_api.handle(self, "PATCH", path):
             return
         self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
 
@@ -1016,7 +1018,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "DELETE", path):
             return
-        if path.startswith('/api/paint/') and getattr(self.server, 'paint_brush_api', None) and self.server.paint_brush_api.handle(self, "DELETE", path):
+        if path.startswith('/api/paint/lan/') and getattr(self.server, 'paint_lan_bridge', None) and self.server.paint_lan_bridge.handle_control(self, "DELETE", path):
+            return
+        if path.startswith('/api/paint/brushes') and getattr(self.server, 'paint_brush_api', None) and self.server.paint_brush_api.handle(self, "DELETE", path):
             return
         if self.handle_comfy_proxy(path):
             return

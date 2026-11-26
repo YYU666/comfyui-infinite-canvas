@@ -1,26 +1,32 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  Blend, Brush, Circle, Eraser, Eye, EyeOff, FlipHorizontal2, Lasso, Layers, Locate, Lock, Move,
+  PaintBucket, Pipette, Redo2, RotateCw, Save, Square, Tablet, Undo2, Wand, X, ZoomIn,
+} from 'lucide-react';
+import {
   LAYER_LIMIT_MESSAGE, OUTPUT_MODES, OUTPUT_MODE_LABELS, PAPER_PRESETS, BACKGROUNDS, TEXTURES, GUIDES,
   addLayer, deleteLayer, duplicateLayer, moveLayer, patchLayer, renameLayer, createHistory, pushHistory,
-  undoHistory, redoHistory, initialPaperForBase, normalizePaintData,
+  undoHistory, redoHistory, initialPaperForBase, normalizePaintData, structurePatch,
 } from './paint-document.js';
 import {
-  BASIC_ROUND_BRUSH, PaintBuffer, applyStroke, eraseStroke, floodFill, smudgeStroke, previewComposite, scaleStamp,
+  BASIC_ROUND_BRUSH, PaintBuffer, applyStroke, eraseStroke, floodFill, smudgeStroke, previewRect, scaleStamp,
   rectSelection, ellipseSelection, lassoSelection, magicWandSelection, combineSelection, invertSelection,
   fillColor, clearSelection, copySelection, moveSelectionPixels, translateBuffer, selectionOutline,
   captureRect, restoreRect, resizeBuffers, createBuffers, compositeLayers, exportPaint, toMask,
   mergeDown, stampVisible, tintBuffer, hsvToRgb, rgbToHsv, colorToHex, parseColor, constrainPoint, rasterShape,
-  transformBuffer, sampleColor, featherSelection, growSelection,
+  transformBuffer, sampleColor, featherSelection, growSelection, createStrokeSession, strokeTo, finishStroke,
+  selectionContains, opaqueBounds, clearBuffer, countInk, offsetSelection,
 } from './paint-engine.js';
+import { clientToCanvasPoint } from './paint-viewport.js';
 import { parseAbr } from './paint-abr-parser.js';
 import { qrSvg } from './paint-qr.js';
 import { builtinBrushes, brushState, IMPORT_BRUSH_PARAMS } from './paint-brushes.js';
 
 const TOOLS = [
-  ['brush', '画笔', 'B'], ['eraser', '橡皮', 'E'], ['picker', '吸管', 'I'], ['smudge', '涂抹', 'S'],
-  ['bucket', '油漆桶', 'G'], ['geometry', '几何', 'U'], ['select-rect', '矩形选区', 'M'],
-  ['select-ellipse', '椭圆选区', ''], ['select-lasso', '套索', 'L'], ['select-wand', '魔棒', 'W'], ['move', '移动', 'V'],
+  ['brush', '画笔', 'B', Brush], ['eraser', '橡皮', 'E', Eraser], ['picker', '吸管', 'I', Pipette], ['smudge', '涂抹', 'S', Blend],
+  ['bucket', '油漆桶', 'G', PaintBucket], ['geometry', '几何', 'U', Square], ['select-rect', '矩形选区', 'M', Square],
+  ['select-ellipse', '椭圆选区', '', Circle], ['select-lasso', '套索', 'L', Lasso], ['select-wand', '魔棒', 'W', Wand], ['move', '移动', 'V', Move],
 ];
 
 function loadImage(url) {
@@ -62,13 +68,13 @@ export function bufferToPngBlob(buffer) {
   return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG 编码失败')), 'image/png'));
 }
 
-function paintPoint(event, canvas, flip) {
-  const rect = canvas.getBoundingClientRect();
-  let x = (event.clientX - rect.left) * canvas.width / rect.width;
-  const y = (event.clientY - rect.top) * canvas.height / rect.height;
-  if (flip) x = canvas.width - x;
+function paintPoint(event, canvas) {
+  const frame = canvas.closest('.paint-stage-frame') || canvas.parentElement;
+  const local = clientToCanvasPoint(event.clientX, event.clientY, frame);
+  const scaleX = canvas.width / (frame.offsetWidth || canvas.width);
+  const scaleY = canvas.height / (frame.offsetHeight || canvas.height);
   const pressure = event.pointerType === 'pen' ? (event.pressure || 0) : (event.pressure > 0 && event.pressure < 1 ? event.pressure : 1);
-  return { x, y, pressure: event.pointerType === 'mouse' ? 1 : pressure, pointerType: event.pointerType || 'mouse', tiltX: event.tiltX || 0, tiltY: event.tiltY || 0 };
+  return { x: local.x * scaleX, y: local.y * scaleY, pressure: event.pointerType === 'mouse' ? 1 : pressure, pointerType: event.pointerType || 'mouse', tiltX: event.tiltX || 0, tiltY: event.tiltY || 0 };
 }
 
 export default function PaintEditor({ node, baseImage, swatches = [], onClose, onSave, onExtract, readOnly = false, lanRequest = false }) {
@@ -98,6 +104,12 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
   const [pan, setPan] = useState({ x: 40, y: 40 });
   const [rotation, setRotation] = useState(0);
   const [flip, setFlip] = useState(false);
+  const [leftTab, setLeftTab] = useState('brush');
+  const [rightTab, setRightTab] = useState('layers');
+  const [lassoMode, setLassoMode] = useState('free');
+  const [eraserTip, setEraserTip] = useState(true);
+  const [transform, setTransform] = useState(null);
+  const [polygon, setPolygon] = useState([]);
   const [saving, setSaving] = useState(false);
   const [ink, setInk] = useState(0);
   const canvasRef = useRef(null);
@@ -116,36 +128,73 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
   const brushRef = useRef(brush);
   const toolRef = useRef(tool);
   const bootRef = useRef(initial);
+  const outlineRef = useRef([]);
+  const paintRaf = useRef(0);
+  const pendingRect = useRef(null);
+  const transformRef = useRef(null);
+  const polygonRef = useRef([]);
+  const eraserTipRef = useRef(true);
+  const lanRef = useRef(null);
 
   useEffect(() => { docRef.current = doc; }, [doc]);
   useEffect(() => { selectionRef.current = selection; }, [selection]);
   useEffect(() => { colorRef.current = color; }, [color]);
   useEffect(() => { brushRef.current = brush; }, [brush]);
   useEffect(() => { toolRef.current = tool; }, [tool]);
+  useEffect(() => { transformRef.current = transform; }, [transform]);
+  useEffect(() => { polygonRef.current = polygon; }, [polygon]);
+  useEffect(() => { eraserTipRef.current = eraserTip; }, [eraserTip]);
+  useEffect(() => { lanRef.current = lan; }, [lan]);
+  useEffect(() => { outlineRef.current = selectionOutline(selection); }, [selection]);
 
-  const redraw = useCallback(() => {
+  const paintFrame = useCallback((rect) => {
     const canvas = canvasRef.current;
     const current = docRef.current;
-    if (!canvas) return;
-    canvas.width = current.paper.width;
-    canvas.height = current.paper.height;
-    const preview = previewComposite(current, buffersRef.current, { base: baseRef.current, guides: true });
+    if (!canvas || !current) return;
+    const sizeChanged = canvas.width !== current.paper.width || canvas.height !== current.paper.height;
+    if (sizeChanged) {
+      canvas.width = current.paper.width;
+      canvas.height = current.paper.height;
+    }
+    const region = sizeChanged || !rect ? { x: 0, y: 0, width: current.paper.width, height: current.paper.height } : rect;
+    const patch = previewRect(current, buffersRef.current, region, { base: baseRef.current, guides: true });
     const context = canvas.getContext('2d');
-    context.putImageData(new ImageData(new Uint8ClampedArray(preview.data), preview.width, preview.height), 0, 0);
-    const outline = selectionOutline(selectionRef.current);
+    if (patch.width && patch.height) context.putImageData(new ImageData(new Uint8ClampedArray(patch.pixels), patch.width, patch.height), patch.x, patch.y);
+    const outline = outlineRef.current;
     if (outline.length) {
-      context.save();
       context.fillStyle = '#f4f1e8';
       for (const [x, y] of outline) if (((x + y) % 8) < 4) context.fillRect(x, y, 1, 1);
-      context.restore();
-    }
-    const active = buffersRef.current.get(current.activeLayerId);
-    if (active) {
-      let count = 0;
-      for (let index = 3; index < active.data.length; index += 16) if (active.data[index]) count += 1;
-      setInk(count);
     }
   }, []);
+
+  const updateInk = () => {
+    const active = buffersRef.current.get(docRef.current.activeLayerId);
+    setInk(active ? countInk(active) : 0);
+  };
+
+  const redraw = useCallback(() => {
+    if (paintRaf.current) cancelAnimationFrame(paintRaf.current);
+    paintRaf.current = 0;
+    pendingRect.current = null;
+    paintFrame(null);
+  }, [paintFrame]);
+
+  const schedulePaint = (rect) => {
+    if (!rect) { redraw(); return; }
+    const current = pendingRect.current;
+    pendingRect.current = current ? {
+      x: Math.min(current.x, rect.x), y: Math.min(current.y, rect.y),
+      width: Math.max(current.x + current.width, rect.x + rect.width) - Math.min(current.x, rect.x),
+      height: Math.max(current.y + current.height, rect.y + rect.height) - Math.min(current.y, rect.y),
+    } : rect;
+    if (paintRaf.current) return;
+    paintRaf.current = requestAnimationFrame(() => {
+      paintRaf.current = 0;
+      const region = pendingRect.current;
+      pendingRect.current = null;
+      paintFrame(region);
+    });
+  };
 
   useEffect(() => {
     let cancel = false;
@@ -188,6 +237,8 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
     pushHistory(historyRef.current, { ...entry, layerId: entry.layerId || docRef.current.activeLayerId });
     setDoc((current) => ({ ...current, touched: true }));
     redraw();
+    updateInk();
+    publishLan({ type: 'stroke', clientId: 'desktop', layerId: entry.layerId || docRef.current.activeLayerId });
   };
 
   const replaceDoc = (next, bufferPatch) => {
@@ -245,13 +296,29 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
     const onKeyDown = (event) => {
       event.stopPropagation();
       const typing = event.target instanceof Element && event.target.closest('input, textarea, select');
-      if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (transformRef.current) { setTransform(null); return; }
+        if (polygonRef.current.length) { setPolygon([]); return; }
+        onClose();
+        return;
+      }
       if (event.code === 'Space') { spaceRef.current = true; event.preventDefault(); }
       if (event.key === 'Alt') altRef.current = true;
       if (typing) return;
       const key = event.key.toLowerCase();
       const command = event.ctrlKey || event.metaKey;
-      if (['delete', 'backspace'].includes(key) && !command) {
+      if (event.altKey && ['delete', 'backspace'].includes(key)) {
+        event.preventDefault();
+        commitPixels(fillColor(activeBuffer(), colorRef.current, selectionRef.current, activeLayer().alphaLock));
+        return;
+      }
+      if (command && ['delete', 'backspace'].includes(key)) {
+        event.preventDefault();
+        commitPixels(fillColor(activeBuffer(), background, selectionRef.current, activeLayer().alphaLock));
+        return;
+      }
+      if (['delete', 'backspace'].includes(key)) {
         event.preventDefault();
         if (key === 'delete' && selectionRef.current) commitPixels(clearSelection(activeBuffer(), selectionRef.current));
         return;
@@ -269,8 +336,14 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
         return;
       }
       if (command && key === 'v') { pasteClipboard(); return; }
-      if (event.altKey && key === 'delete') { event.preventDefault(); commitPixels(fillColor(activeBuffer(), colorRef.current, selectionRef.current, activeLayer().alphaLock)); return; }
-      if (command && key === 'delete') { event.preventDefault(); commitPixels(fillColor(activeBuffer(), background, selectionRef.current, activeLayer().alphaLock)); return; }
+      if (command && key === 't') { beginTransform(); return; }
+      if (event.key === 'Enter' && transformRef.current) {
+        event.preventDefault();
+        const entry = transformBuffer(activeBuffer(), selectionRef.current, transformRef.current);
+        setTransform(null);
+        commitPixels(entry);
+        return;
+      }
       if (key === 'x' && !command) { const next = colorRef.current; setColor(background); setBackground(next); return; }
       if (key === 'd' && !command) { setColor('#000000'); setBackground('#ffffff'); return; }
       if (key === 'h' && !command) { setFlip((value) => !value); return; }
@@ -306,6 +379,30 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
   }
   function activeLayer() {
     return docRef.current.layers.find((layer) => layer.id === docRef.current.activeLayerId) || docRef.current.layers[0];
+  }
+  function beginTransform() {
+    const buffer = activeBuffer();
+    if (!buffer) return;
+    const bounds = selectionRef.current?.bounds || opaqueBounds(buffer) || { x: 0, y: 0, width: buffer.width, height: buffer.height };
+    setTransform({ bounds, dx: 0, dy: 0, scaleX: 1, scaleY: 1, rotation: 0, flipH: false, flipV: false });
+  }
+  function confirmTransform() {
+    if (!transformRef.current) return;
+    const entry = transformBuffer(activeBuffer(), selectionRef.current, transformRef.current);
+    setTransform(null);
+    commitPixels(entry);
+  }
+  function applyStructure(result) {
+    if (result.error) { setMessage(result.error); return; }
+    const next = { ...result.doc, touched: true };
+    replaceDoc(next, structurePatch(buffersRef.current, result.buffers));
+  }
+  function publishLan(event) {
+    if (!lanRef.current?.running) return;
+    fetch('/api/paint/lan/publish', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    }).catch(() => {});
   }
   function nudge(dx, dy) {
     const buffer = activeBuffer();
@@ -394,8 +491,23 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       return;
     }
     if (palmReject && event.pointerType === 'touch') return;
-    const point = paintPoint(event, canvas, flip);
+    const point = paintPoint(event, canvas);
     const currentTool = altRef.current ? 'picker' : toolRef.current;
+    if (currentTool.startsWith('select') && !event.shiftKey && !event.altKey && selectionContains(selectionRef.current, point.x, point.y) && lassoMode !== 'polygon') {
+      drawRef.current = { kind: 'select-offset', start: point, selection: selectionRef.current };
+      return;
+    }
+    if (currentTool === 'select-lasso' && lassoMode === 'polygon') {
+      const existing = polygonRef.current;
+      if (existing.length >= 3 && Math.hypot(point.x - existing[0].x, point.y - existing[0].y) < 8) {
+        const next = lassoSelection(docRef.current.paper.width, docRef.current.paper.height, existing);
+        setSelection(combineSelection(selectionRef.current, next, event.shiftKey ? 'add' : event.altKey ? 'subtract' : selectionMode));
+        setPolygon([]);
+        return;
+      }
+      setPolygon([...existing, point]);
+      return;
+    }
     if (currentTool === 'picker') {
       const sample = sampleAll ? previewComposite(docRef.current, buffersRef.current, { base: baseRef.current }) : activeBuffer();
       setColor(colorToHex(sampleColor(sample, point.x, point.y)));
@@ -420,7 +532,12 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       drawRef.current = { kind: 'geometry', start: point, before };
       return;
     }
-    drawRef.current = { kind: currentTool, points: [point] };
+    const brushForStroke = currentTool === 'eraser' && !eraserTipRef.current ? { ...brushRef.current, stamp: null, kind: 'round' } : brushRef.current;
+    const session = currentTool === 'smudge' ? null : createStrokeSession(activeBuffer(), brushForStroke, colorRef.current, {
+      ...strokeOptions(), eraser: currentTool === 'eraser', eraserTip: eraserTipRef.current,
+    });
+    drawRef.current = { kind: currentTool, points: [point], session };
+    if (session) schedulePaint(strokeTo(session, point));
   };
 
   const onPointerMove = (event) => {
@@ -430,23 +547,38 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       setPan({ x: drawRef.current.pan.x + event.clientX - drawRef.current.x, y: drawRef.current.pan.y + event.clientY - drawRef.current.y });
       return;
     }
-    const point = paintPoint(event, canvas, flip);
+    const point = paintPoint(event, canvas);
     const events = event.getCoalescedEvents?.() || [event];
+    if (drawRef.current.kind === 'select-offset') {
+      const dx = point.x - drawRef.current.start.x;
+      const dy = point.y - drawRef.current.start.y;
+      setSelection(offsetSelection(drawRef.current.selection, dx, dy));
+      return;
+    }
     if (drawRef.current.kind === 'brush' || drawRef.current.kind === 'eraser' || drawRef.current.kind === 'smudge') {
-      for (const sample of events) drawRef.current.points.push(paintPoint(sample, canvas, flip));
       const buffer = activeBuffer();
-      if (drawRef.current.before) restoreRect(buffer, { ...drawRef.current.bounds, pixels: drawRef.current.before });
-      const entry = drawRef.current.kind === 'eraser'
-        ? eraseStroke(buffer, drawRef.current.points, brushRef.current, strokeOptions())
-        : drawRef.current.kind === 'smudge'
-          ? smudgeStroke(buffer, drawRef.current.points, Math.max(2, brushRef.current.size / 2), brushRef.current.flow || 50, selectionRef.current)
-          : applyStroke(buffer, drawRef.current.points, brushRef.current, colorRef.current, strokeOptions());
-      if (entry) {
-        drawRef.current.bounds = entry;
-        drawRef.current.before = entry.before;
-        drawRef.current.entry = entry;
+      if (drawRef.current.kind !== 'smudge' && !drawRef.current.session) {
+        const brush = drawRef.current.kind === 'eraser' && !eraserTipRef.current ? { ...brushRef.current, stamp: null, kind: 'round' } : brushRef.current;
+        drawRef.current.session = createStrokeSession(buffer, brush, colorRef.current, {
+          ...strokeOptions(), eraser: drawRef.current.kind === 'eraser', eraserTip: eraserTipRef.current,
+        });
+        schedulePaint(strokeTo(drawRef.current.session, drawRef.current.points[0]));
       }
-      redraw();
+      for (const sample of events) {
+        const next = paintPoint(sample, canvas);
+        drawRef.current.points.push(next);
+        if (drawRef.current.kind !== 'smudge') schedulePaint(strokeTo(drawRef.current.session, next));
+      }
+      if (drawRef.current.kind === 'smudge') {
+        if (drawRef.current.before) restoreRect(buffer, { ...drawRef.current.bounds, pixels: drawRef.current.before });
+        const entry = smudgeStroke(buffer, drawRef.current.points, Math.max(2, brushRef.current.size / 2), brushRef.current.flow || 50, selectionRef.current);
+        if (entry) {
+          drawRef.current.bounds = entry;
+          drawRef.current.before = entry.before;
+          drawRef.current.entry = entry;
+          schedulePaint(entry);
+        }
+      }
       return;
     }
     if (String(drawRef.current.kind).startsWith('select') && drawRef.current.kind !== 'select-wand') {
@@ -469,9 +601,17 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
     drawRef.current = null;
     if (!action || action.kind === 'pan') return;
     const canvas = canvasRef.current;
-    const point = paintPoint(event, canvas, flip);
-    if (action.kind === 'brush' || action.kind === 'eraser' || action.kind === 'smudge') {
+    const point = paintPoint(event, canvas);
+    if (action.kind === 'select-offset') return;
+    if (action.kind === 'brush' || action.kind === 'eraser') {
+      const entry = action.session ? finishStroke(action.session) : action.entry;
+      if (entry) commitPixels(entry);
+      else updateInk();
+      return;
+    }
+    if (action.kind === 'smudge') {
       if (action.entry) commitPixels(action.entry);
+      else updateInk();
       return;
     }
     if (action.kind === 'geometry') {
@@ -550,18 +690,36 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
     const layers = [];
     for (const layer of docRef.current.layers) {
       const buffer = buffersRef.current.get(layer.id);
-      layers.push({ id: layer.id, name: layer.name, visible: layer.visible, opacity: layer.opacity, pngBase64: buffer ? await blobToBase64(await bufferToPngBlob(buffer)) : '' });
+      layers.push({
+        id: layer.id, name: layer.name, visible: layer.visible, opacity: layer.opacity,
+        blendMode: layer.blendMode, clippingMask: layer.clippingMask, alphaLock: layer.alphaLock,
+        pngBase64: buffer ? await blobToBase64(await bufferToPngBlob(buffer)) : '',
+      });
+    }
+    const brushes = [];
+    for (const item of library) {
+      brushes.push({ id: item.id, name: item.name, kind: item.kind || '', params: item.params || {}, stampPngBase64: item.stamp ? await stampPngBase64(item.stamp) : '' });
     }
     const response = await fetch('/api/paint/lan/start', {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nodeId: node.id, paper: docRef.current.paper, activeLayerId: docRef.current.activeLayerId, layers, brushes: library.map((item) => ({ id: item.id, name: item.name })), bindHost: '0.0.0.0' }),
+      body: JSON.stringify({
+        nodeId: node.id, paper: docRef.current.paper, activeLayerId: docRef.current.activeLayerId,
+        baseOverlay: docRef.current.baseOverlay,
+        basePngBase64: baseRef.current ? await blobToBase64(await bufferToPngBlob(baseRef.current)) : '',
+        layers, brushes, bindHost: '0.0.0.0',
+      }),
     });
     const payload = await response.json();
     if (!response.ok) { setMessage(payload.message || '无法开启局域网画板。'); return; }
     setLan(payload);
+    setRightTab('lan');
     setLanHost(payload.hosts?.[0]?.address || '127.0.0.1');
     setMessage('局域网画板已开启，等待平板配对。');
   };
+
+  useEffect(() => () => {
+    if (lanRef.current?.running) fetch('/api/paint/lan/stop', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!lanRequest || lanStarted.current) return;
@@ -581,6 +739,14 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
         for (const command of payload.commands || []) {
           if (command.type === 'undo') undo();
           else if (command.type === 'redo') redo();
+          else if (command.type === 'switchLayer' && docRef.current.layers.some((layer) => layer.id === command.layerId)) setDoc({ ...docRef.current, activeLayerId: command.layerId });
+          else if (command.type === 'toggleVisible') setDoc(patchLayer(docRef.current, command.layerId, { visible: command.visible !== false }).doc);
+          else if (command.type === 'opacity') setDoc(patchLayer(docRef.current, command.layerId, { opacity: Number(command.opacity) || 0 }).doc);
+          else if (command.type === 'clearLayer') {
+            const buffer = buffersRef.current.get(command.layerId);
+            if (buffer) commitPixels({ ...clearBuffer(buffer), layerId: command.layerId });
+          }
+          publishLan({ ...command, clientId: command.clientId || 'tablet' });
         }
         if ((payload.strokes || []).length) {
           clearTimeout(saveTimer.current);
@@ -606,72 +772,166 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
     }
   };
 
+  const saveCustomBrush = async () => {
+    if (!brush.id?.startsWith('br_')) { setMessage('内置笔刷不能覆盖，请先导入笔尖。'); return; }
+    const response = await fetch(`/api/paint/brushes/${brush.id}`, {
+      method: 'PATCH', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: brush.name, params: { ...brush, stamp: undefined } }),
+    });
+    const payload = await response.json();
+    if (!response.ok) { setMessage(payload.message || '笔刷参数保存失败。'); return; }
+    setMessage('已保存笔刷参数预设。');
+  };
+  const deleteCustomBrush = async () => {
+    if (!brush.id?.startsWith('br_')) { setMessage('内置笔刷不能删除。'); return; }
+    const response = await fetch(`/api/paint/brushes/${brush.id}`, { method: 'DELETE', credentials: 'same-origin' });
+    const payload = await response.json();
+    if (!response.ok) { setMessage(payload.message || '删除笔刷失败。'); return; }
+    setLibrary((current) => current.filter((item) => item.id !== brush.id));
+    setBrush(brushState(builtinBrushes()[0]));
+    setMessage('已删除自定义笔刷。');
+  };
   const hsv = rgbToHsv(...parseColor(color));
   const layerItems = [...doc.layers].reverse();
+  const pickSv = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const saturation = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const value = 1 - Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    setColor(colorToHex(hsvToRgb(hsv.h, saturation, value)));
+  };
 
   return createPortal(<div className="paint-editor" ref={dialogRef} tabIndex={-1} role="dialog" aria-label="手绘画板" data-testid="paint-editor" onKeyDown={(event) => event.stopPropagation()}>
     <header className="paint-editor-bar">
       <h2>{doc.title}</h2>
-      {TOOLS.map(([id, label]) => <button type="button" key={id} data-testid={`paint-tool-${id}`} aria-pressed={tool === id} onClick={() => setTool(id)}>{label}</button>)}
+      <button type="button" title="撤销" onClick={undo}><Undo2 size={16} /></button>
+      <button type="button" title="重做" onClick={redo}><Redo2 size={16} /></button>
+      <label className="paint-inline" title="缩放"><ZoomIn size={14} /><input data-testid="paint-zoom" type="range" min="10" max="800" value={Math.round(zoom * 100)} onChange={(event) => setZoom(Number(event.target.value) / 100)} /></label>
+      <label className="paint-inline" title="旋转"><RotateCw size={14} /><input data-testid="paint-rotation" type="range" min="-180" max="180" value={rotation} onChange={(event) => setRotation(Number(event.target.value))} /></label>
+      <button type="button" data-testid="paint-flip" title="水平镜像" aria-pressed={flip} onClick={() => setFlip((value) => !value)}><FlipHorizontal2 size={16} /></button>
+      <button type="button" title="视角复位" onClick={() => { setZoom(1); setPan({ x: 40, y: 40 }); setRotation(0); setFlip(false); }}><Locate size={16} /></button>
+      <select data-testid="paint-output" value={doc.outputMode} onChange={(event) => setDoc({ ...doc, outputMode: event.target.value })}>{OUTPUT_MODES.map((mode) => <option key={mode} value={mode}>{OUTPUT_MODE_LABELS[mode]}</option>)}</select>
+      <button type="button" data-testid="paint-lan-open" onClick={connectLan}><Tablet size={16} /> 连接平板</button>
       <span className="paint-message" data-testid="paint-message" role="status">{message}</span>
       <span data-testid="paint-ink">{ink}</span>
-      <button type="button" data-testid="paint-save" disabled={readOnly || saving} onClick={save}>{saving ? '保存中' : '保存'}</button>
-      <button type="button" data-testid="paint-close" onClick={onClose}>关闭</button>
+      <button type="button" data-testid="paint-save" disabled={readOnly || saving} onClick={save}><Save size={15} />{saving ? '保存中' : '保存'}</button>
+      <button type="button" data-testid="paint-close" onClick={onClose}><X size={16} />关闭</button>
     </header>
-    <aside className="paint-side">
+    <nav className="paint-toolbar" aria-label="绘画工具">
+      {TOOLS.map(([id, label, shortcut, Icon]) => <button type="button" key={id} data-testid={`paint-tool-${id}`} title={`${label}${shortcut ? ` (${shortcut})` : ''}`} aria-pressed={tool === id} onClick={() => setTool(id)}><Icon size={18} /></button>)}
       <div className="paint-colors">
-        <button type="button" className="paint-fg" data-testid="paint-foreground" style={{ background: color }} aria-label="前景色" />
+        <button type="button" className="paint-fg" data-testid="paint-foreground" style={{ background: color }} aria-label="前景色" onClick={() => { const next = color; setColor(background); setBackground(next); }} />
         <button type="button" className="paint-fg back" data-testid="paint-background" style={{ background }} aria-label="背景色" />
       </div>
-      <label>色相<input className="paint-hue" data-testid="paint-hue" type="range" min="0" max="360" value={Math.round(hsv.h)} onChange={(event) => setColor(colorToHex(hsvToRgb(Number(event.target.value), hsv.s || 1, hsv.v || 1)))} /></label>
-      <label>饱和<input type="range" min="0" max="100" value={Math.round(hsv.s * 100)} onChange={(event) => setColor(colorToHex(hsvToRgb(hsv.h, Number(event.target.value) / 100, hsv.v || 1)))} /></label>
-      <label>明度<input type="range" min="0" max="100" value={Math.round(hsv.v * 100)} onChange={(event) => setColor(colorToHex(hsvToRgb(hsv.h, hsv.s, Number(event.target.value) / 100)))} /></label>
-      <label>HEX<input data-testid="paint-hex" value={color} onChange={(event) => setColor(event.target.value)} /></label>
-      <div className="paint-swatches">{[...new Set([color, ...doc.swatches, ...swatches])].slice(0, 16).map((swatch) => <button type="button" key={swatch} className="paint-swatch" style={{ background: swatch }} aria-label={swatch} onClick={() => setColor(swatch)} />)}</div>
-      <button type="button" onClick={() => setDoc((current) => ({ ...current, swatches: [...new Set([color, ...current.swatches])].slice(0, 24) }))}>加入色板</button>
-      <div className="paint-brush-library" data-testid="paint-brush-library">
-        <span data-testid="paint-brush-active">{brush.name || '笔刷'}</span>
-        {library.map((entry) => <button type="button" key={entry.id} data-testid={`paint-brush-${entry.id}`} aria-pressed={brush.id === entry.id} onClick={() => setBrush(brushState(entry))}>{entry.name}</button>)}
-        <input ref={abrRef} data-testid="paint-abr-file" type="file" accept=".abr,.png,image/png" hidden onChange={(event) => { importBrushFile(event.target.files?.[0]); event.target.value = ''; }} />
-        <button type="button" data-testid="paint-import-abr" onClick={() => abrRef.current?.click()}>导入 ABR / PNG 笔尖</button>
+    </nav>
+    <aside className="paint-drawer">
+      <div className="paint-tabs">
+        <button type="button" aria-pressed={leftTab === 'brush'} onClick={() => setLeftTab('brush')}>画笔与颜色</button>
+        <button type="button" aria-pressed={leftTab === 'select'} onClick={() => setLeftTab('select')}>工具与选区</button>
       </div>
-      <label>笔刷大小<input data-testid="paint-size" type="range" min="1" max="500" value={brush.size} onChange={(event) => setBrush({ ...brush, size: Number(event.target.value) })} /></label>
-      <label>硬度<input type="range" min="0" max="100" value={brush.hardness} onChange={(event) => setBrush({ ...brush, hardness: Number(event.target.value) })} /></label>
-      <label>不透明度<input type="range" min="1" max="100" value={brush.opacity} onChange={(event) => setBrush({ ...brush, opacity: Number(event.target.value) })} /></label>
-      <label>流量<input type="range" min="1" max="100" value={brush.flow} onChange={(event) => setBrush({ ...brush, flow: Number(event.target.value) })} /></label>
-      <label>间距<input type="range" min="1" max="200" value={brush.spacing} onChange={(event) => setBrush({ ...brush, spacing: Number(event.target.value) })} /></label>
-      <label>平滑<input data-testid="paint-smoothing" type="range" min="0" max="100" value={brush.smoothing} onChange={(event) => setBrush({ ...brush, smoothing: Number(event.target.value) })} /></label>
-      <label>压感曲线<select data-testid="paint-pressure" value={pressureCurve} onChange={(event) => setPressureCurve(event.target.value)}><option value="linear">线性</option><option value="soft">软</option><option value="hard">硬</option></select></label>
-      <label><input data-testid="paint-palm" type="checkbox" checked={palmReject} onChange={(event) => setPalmReject(event.target.checked)} />防手掌误触</label>
-      <label><input type="checkbox" checked={brush.pressureSize} onChange={(event) => setBrush({ ...brush, pressureSize: event.target.checked })} />压感控制大小</label>
-      <label>最小直径 %<input data-testid="paint-min-diameter" type="range" min="1" max="100" value={brush.minDiameter || 20} onChange={(event) => setBrush({ ...brush, minDiameter: Number(event.target.value) })} /></label>
-      <label><input data-testid="paint-pressure-opacity" type="checkbox" checked={Boolean(brush.pressureOpacity)} onChange={(event) => setBrush({ ...brush, pressureOpacity: event.target.checked })} />压感控制不透明度</label>
-      <label><input data-testid="paint-follow" type="checkbox" checked={Boolean(brush.followDirection)} onChange={(event) => setBrush({ ...brush, followDirection: event.target.checked })} />角度跟随运笔</label>
-      <label>角度<input data-testid="paint-angle" type="range" min="0" max="360" value={brush.angle || 0} onChange={(event) => setBrush({ ...brush, angle: Number(event.target.value) })} /></label>
-      <label>大小抖动<input data-testid="paint-size-jitter" type="range" min="0" max="100" value={brush.sizeJitter || 0} onChange={(event) => setBrush({ ...brush, sizeJitter: Number(event.target.value) })} /></label>
-      <label>角度抖动<input data-testid="paint-angle-jitter" type="range" min="0" max="180" value={brush.angleJitter || 0} onChange={(event) => setBrush({ ...brush, angleJitter: Number(event.target.value) })} /></label>
-      <label>散布<input data-testid="paint-scatter" type="range" min="0" max="100" value={Math.round((brush.scatter || 0) * 50)} onChange={(event) => setBrush({ ...brush, scatter: Number(event.target.value) / 50 })} /></label>
-      <label>几何<select data-testid="paint-shape" value={shape} onChange={(event) => setShape(event.target.value)}><option value="line">直线</option><option value="arrow">箭头</option><option value="rect">空心矩形</option><option value="rect-fill">实心矩形</option><option value="ellipse">空心椭圆</option><option value="ellipse-fill">实心椭圆</option></select></label>
-      <label>选区<select data-testid="paint-select-mode" value={selectionMode} onChange={(event) => setSelectionMode(event.target.value)}><option value="new">新建</option><option value="add">加选</option><option value="subtract">减选</option></select></label>
-      <label>容差<input data-testid="paint-tolerance" type="range" min="0" max="100" value={tolerance} onChange={(event) => setTolerance(Number(event.target.value))} /></label>
-      <label>填充扩边<input type="range" min="0" max="3" value={expand} onChange={(event) => setExpand(Number(event.target.value))} /></label>
-      <label>羽化<input data-testid="paint-feather" type="range" min="0" max="20" value={feather} onChange={(event) => setFeather(Number(event.target.value))} /></label>
-      <button type="button" data-testid="paint-apply-feather" onClick={() => selection && setSelection(featherSelection(selection, feather))}>应用羽化</button>
-      <button type="button" data-testid="paint-grow" onClick={() => selection && setSelection(growSelection(selection, 1))}>扩展选区</button>
-      <button type="button" data-testid="paint-shrink" onClick={() => selection && setSelection(growSelection(selection, -1))}>收缩选区</button>
-      <label><input type="checkbox" checked={sampleAll} onChange={(event) => { setSampleAll(event.target.checked); setBucketAll(event.target.checked); }} />参考全部可见层</label>
-      <label>缩放 {Math.round(zoom * 100)}%<input type="range" min="10" max="800" value={Math.round(zoom * 100)} onChange={(event) => setZoom(Number(event.target.value) / 100)} /></label>
-      <button type="button" onClick={() => { setZoom(1); setPan({ x: 40, y: 40 }); setRotation(0); setFlip(false); }}>视角复位</button>
-      <button type="button" data-testid="paint-flip" aria-pressed={flip} onClick={() => setFlip((value) => !value)}>水平镜像</button>
-      <label>旋转<input type="range" min="-180" max="180" value={rotation} onChange={(event) => setRotation(Number(event.target.value))} /></label>
+      {leftTab === 'brush' && <>
+        <div className="paint-sv" data-testid="paint-sv" style={{ background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(${hsv.h} 100% 50%))` }} onPointerDown={pickSv} onPointerMove={(event) => { if (event.buttons) pickSv(event); }}>
+          <i style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%` }} />
+        </div>
+        <label>色相<input className="paint-hue" data-testid="paint-hue" type="range" min="0" max="360" value={Math.round(hsv.h)} onChange={(event) => setColor(colorToHex(hsvToRgb(Number(event.target.value), hsv.s || 1, hsv.v || 1)))} /></label>
+        <label>HEX<input data-testid="paint-hex" value={color} onChange={(event) => setColor(event.target.value)} /></label>
+        <div className="paint-swatches">{[...new Set([color, ...doc.swatches, ...swatches])].slice(0, 16).map((swatch) => <button type="button" key={swatch} className="paint-swatch" style={{ background: swatch }} aria-label={swatch} onClick={() => setColor(swatch)} />)}</div>
+        <button type="button" onClick={() => setDoc((current) => ({ ...current, swatches: [...new Set([color, ...current.swatches])].slice(0, 24) }))}>加入色板</button>
+        <div className="paint-brush-library" data-testid="paint-brush-library">
+          <span data-testid="paint-brush-active">{brush.name || '笔刷'}</span>
+          {library.map((entry) => <button type="button" key={entry.id} data-testid={`paint-brush-${entry.id}`} aria-pressed={brush.id === entry.id} onClick={() => setBrush(brushState(entry))}>{entry.name}</button>)}
+          <input ref={abrRef} data-testid="paint-abr-file" type="file" accept=".abr,.png,image/png" hidden onChange={(event) => { importBrushFile(event.target.files?.[0]); event.target.value = ''; }} />
+          <button type="button" data-testid="paint-import-abr" onClick={() => abrRef.current?.click()}>导入 ABR / PNG 笔尖</button>
+          <button type="button" data-testid="paint-brush-save" onClick={saveCustomBrush}>保存参数预设</button>
+          <button type="button" data-testid="paint-brush-delete" onClick={deleteCustomBrush}>删除笔刷</button>
+        </div>
+        <label>笔刷大小<input data-testid="paint-size" type="range" min="1" max="500" value={brush.size} onChange={(event) => setBrush({ ...brush, size: Number(event.target.value) })} /></label>
+        <label>硬度<input type="range" min="0" max="100" value={brush.hardness} onChange={(event) => setBrush({ ...brush, hardness: Number(event.target.value) })} /></label>
+        <label>不透明度<input type="range" min="1" max="100" value={brush.opacity} onChange={(event) => setBrush({ ...brush, opacity: Number(event.target.value) })} /></label>
+        <label>流量<input type="range" min="1" max="100" value={brush.flow} onChange={(event) => setBrush({ ...brush, flow: Number(event.target.value) })} /></label>
+        <label>间距<input type="range" min="1" max="200" value={brush.spacing} onChange={(event) => setBrush({ ...brush, spacing: Number(event.target.value) })} /></label>
+        <label>平滑<input data-testid="paint-smoothing" type="range" min="0" max="100" value={brush.smoothing} onChange={(event) => setBrush({ ...brush, smoothing: Number(event.target.value) })} /></label>
+        <label><input data-testid="paint-eraser-tip" type="checkbox" checked={eraserTip} onChange={(event) => setEraserTip(event.target.checked)} />橡皮沿用笔尖纹理</label>
+        <label><input data-testid="paint-palm" type="checkbox" checked={palmReject} onChange={(event) => setPalmReject(event.target.checked)} />防手掌误触</label>
+      </>}
+      {leftTab === 'select' && <>
+        <label>压感曲线<select data-testid="paint-pressure" value={pressureCurve} onChange={(event) => setPressureCurve(event.target.value)}><option value="linear">线性</option><option value="soft">软</option><option value="hard">硬</option></select></label>
+        <label><input type="checkbox" checked={brush.pressureSize} onChange={(event) => setBrush({ ...brush, pressureSize: event.target.checked })} />压感控制大小</label>
+        <label>最小直径 %<input data-testid="paint-min-diameter" type="range" min="1" max="100" value={brush.minDiameter || 20} onChange={(event) => setBrush({ ...brush, minDiameter: Number(event.target.value) })} /></label>
+        <label><input data-testid="paint-pressure-opacity" type="checkbox" checked={Boolean(brush.pressureOpacity)} onChange={(event) => setBrush({ ...brush, pressureOpacity: event.target.checked })} />压感控制不透明度</label>
+        <label><input data-testid="paint-follow" type="checkbox" checked={Boolean(brush.followDirection)} onChange={(event) => setBrush({ ...brush, followDirection: event.target.checked })} />角度跟随运笔</label>
+        <label>角度<input data-testid="paint-angle" type="range" min="0" max="360" value={brush.angle || 0} onChange={(event) => setBrush({ ...brush, angle: Number(event.target.value) })} /></label>
+        <label>大小抖动<input data-testid="paint-size-jitter" type="range" min="0" max="100" value={brush.sizeJitter || 0} onChange={(event) => setBrush({ ...brush, sizeJitter: Number(event.target.value) })} /></label>
+        <label>角度抖动<input data-testid="paint-angle-jitter" type="range" min="0" max="180" value={brush.angleJitter || 0} onChange={(event) => setBrush({ ...brush, angleJitter: Number(event.target.value) })} /></label>
+        <label>散布<input data-testid="paint-scatter" type="range" min="0" max="100" value={Math.round((brush.scatter || 0) * 50)} onChange={(event) => setBrush({ ...brush, scatter: Number(event.target.value) / 50 })} /></label>
+        <label>几何<select data-testid="paint-shape" value={shape} onChange={(event) => setShape(event.target.value)}><option value="line">直线</option><option value="arrow">箭头</option><option value="rect">空心矩形</option><option value="rect-fill">实心矩形</option><option value="ellipse">空心椭圆</option><option value="ellipse-fill">实心椭圆</option></select></label>
+        <label>套索<select data-testid="paint-lasso-mode" value={lassoMode} onChange={(event) => setLassoMode(event.target.value)}><option value="free">自由套索</option><option value="polygon">多边形套索</option></select></label>
+        <label>选区<select data-testid="paint-select-mode" value={selectionMode} onChange={(event) => setSelectionMode(event.target.value)}><option value="new">新建</option><option value="add">加选</option><option value="subtract">减选</option></select></label>
+        <label>容差<input data-testid="paint-tolerance" type="range" min="0" max="100" value={tolerance} onChange={(event) => setTolerance(Number(event.target.value))} /></label>
+        <label>填充扩边<input type="range" min="0" max="3" value={expand} onChange={(event) => setExpand(Number(event.target.value))} /></label>
+        <label>羽化<input data-testid="paint-feather" type="range" min="0" max="20" value={feather} onChange={(event) => setFeather(Number(event.target.value))} /></label>
+        <button type="button" data-testid="paint-apply-feather" onClick={() => selection && setSelection(featherSelection(selection, feather))}>应用羽化</button>
+        <button type="button" data-testid="paint-grow" onClick={() => selection && setSelection(growSelection(selection, 1))}>扩展选区</button>
+        <button type="button" data-testid="paint-shrink" onClick={() => selection && setSelection(growSelection(selection, -1))}>收缩选区</button>
+        <label><input type="checkbox" checked={sampleAll} onChange={(event) => { setSampleAll(event.target.checked); setBucketAll(event.target.checked); }} />参考全部可见层</label>
+      </>}
     </aside>
     <div className="paint-stage-wrap" data-testid="paint-viewport" onWheel={(event) => { event.preventDefault(); setZoom((value) => Math.max(0.1, Math.min(8, value * (event.deltaY > 0 ? 0.9 : 1.1)))); }}>
+      {transform && <div className="paint-transform-bar" data-testid="paint-transform-bar">
+        <label>缩放<input type="number" value={transform.scaleX} onChange={(event) => setTransform({ ...transform, scaleX: Number(event.target.value), scaleY: Number(event.target.value) })} /></label>
+        <label>旋转<input type="number" value={transform.rotation} onChange={(event) => setTransform({ ...transform, rotation: Number(event.target.value) })} /></label>
+        <button type="button" onClick={() => setTransform({ ...transform, flipH: !transform.flipH })}>水平翻转</button>
+        <button type="button" onClick={() => setTransform({ ...transform, flipV: !transform.flipV })}>垂直翻转</button>
+        <button type="button" data-testid="paint-transform-apply" onClick={confirmTransform}>确认</button>
+        <button type="button" onClick={() => setTransform(null)}>取消</button>
+      </div>}
       <div className="paint-stage-frame" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${rotation}deg) scaleX(${flip ? -1 : 1})` }}>
-        <canvas ref={canvasRef} className={`paint-stage${doc.outputMode === 'transparent' ? ' is-transparent' : ''}`} data-testid="paint-stage" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} />
+        <canvas ref={canvasRef} className={`paint-stage${doc.outputMode === 'transparent' ? ' is-transparent' : ''}`} data-testid="paint-stage" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onDoubleClick={() => {
+          if (polygon.length < 3) return;
+          const next = lassoSelection(doc.paper.width, doc.paper.height, polygon);
+          setSelection(combineSelection(selectionRef.current, next, selectionMode));
+          setPolygon([]);
+        }} />
+        {polygon.length > 0 && <svg className="paint-polygon" viewBox={`0 0 ${doc.paper.width} ${doc.paper.height}`}><polyline points={polygon.map((point) => `${point.x},${point.y}`).join(' ')} /></svg>}
+        {transform && <div className="paint-transform" data-testid="paint-transform" style={{ left: transform.bounds.x + transform.dx, top: transform.bounds.y + transform.dy, width: Math.abs(transform.bounds.width * transform.scaleX), height: Math.abs(transform.bounds.height * transform.scaleY), transform: `rotate(${transform.rotation}deg) scaleX(${transform.flipH ? -1 : 1}) scaleY(${transform.flipV ? -1 : 1})` }}
+          onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture?.(event.pointerId); const start = paintPoint(event, canvasRef.current); drawRef.current = { kind: 'transform-move', start, base: { ...transform } }; }}
+          onPointerMove={(event) => {
+            const action = drawRef.current;
+            if (!action || !String(action.kind).startsWith('transform')) return;
+            const point = paintPoint(event, canvasRef.current);
+            if (action.kind === 'transform-move') setTransform({ ...action.base, dx: action.base.dx + point.x - action.start.x, dy: action.base.dy + point.y - action.start.y });
+            if (action.kind === 'transform-scale') {
+              const width = Math.max(1, action.base.bounds.width);
+              const height = Math.max(1, action.base.bounds.height);
+              const dx = point.x - action.start.x;
+              const dy = point.y - action.start.y;
+              const handle = action.handle;
+              let scaleX = action.base.scaleX;
+              let scaleY = action.base.scaleY;
+              if (handle.includes('e')) scaleX = Math.max(0.05, (width * action.base.scaleX + dx) / width);
+              if (handle.includes('w')) scaleX = Math.max(0.05, (width * action.base.scaleX - dx) / width);
+              if (handle.includes('s')) scaleY = Math.max(0.05, (height * action.base.scaleY + dy) / height);
+              if (handle.includes('n')) scaleY = Math.max(0.05, (height * action.base.scaleY - dy) / height);
+              setTransform({ ...action.base, scaleX, scaleY });
+            }
+            if (action.kind === 'transform-rotate') {
+              const cx = action.base.bounds.x + action.base.bounds.width / 2;
+              const cy = action.base.bounds.y + action.base.bounds.height / 2;
+              setTransform({ ...action.base, rotation: Math.round(Math.atan2(point.y - cy, point.x - cx) * 180 / Math.PI) });
+            }
+          }}
+          onPointerUp={() => { if (String(drawRef.current?.kind || '').startsWith('transform')) drawRef.current = null; }}>
+          {['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((handle) => <i key={handle} data-handle={handle} onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture?.(event.pointerId); drawRef.current = { kind: 'transform-scale', handle, start: paintPoint(event, canvasRef.current), base: { ...transform } }; }} />)}
+          <b data-handle="rotate" onPointerDown={(event) => { event.stopPropagation(); drawRef.current = { kind: 'transform-rotate', start: paintPoint(event, canvasRef.current), base: { ...transform } }; }} />
+        </div>}
       </div>
     </div>
-    <aside className="paint-side right" data-testid="paint-layers">
-      <label>输出模式<select data-testid="paint-output" value={doc.outputMode} onChange={(event) => setDoc({ ...doc, outputMode: event.target.value })}>{OUTPUT_MODES.map((mode) => <option key={mode} value={mode}>{OUTPUT_MODE_LABELS[mode]}</option>)}</select></label>
+    <aside className="paint-drawer right" data-testid="paint-layers">
+      <div className="paint-tabs">
+        <button type="button" data-testid="paint-tab-layers" aria-pressed={rightTab === 'layers'} onClick={() => setRightTab('layers')}>图层</button>
+        <button type="button" data-testid="paint-tab-paper" aria-pressed={rightTab === 'paper'} onClick={() => setRightTab('paper')}>纸张与底图</button>
+        <button type="button" data-testid="paint-tab-lan" aria-pressed={rightTab === 'lan'} onClick={() => setRightTab('lan')}>平板联动</button>
+      </div>
+      {rightTab === 'paper' && <>
       <label>纸张<select data-testid="paint-preset" value="" onChange={(event) => { const preset = PAPER_PRESETS.find((item) => item.id === event.target.value); if (preset) updatePaper(preset); }}><option value="">预设</option>{PAPER_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
       <label>宽<input data-testid="paint-width" type="number" min="64" max="4096" value={doc.paper.width} onChange={(event) => updatePaper({ width: Number(event.target.value) })} /></label>
       <label>高<input data-testid="paint-height" type="number" min="64" max="4096" value={doc.paper.height} onChange={(event) => updatePaper({ height: Number(event.target.value) })} /></label>
@@ -683,11 +943,14 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       <label>规划线<select data-testid="paint-guides" value={doc.paper.guideGrid} onChange={(event) => updatePaper({ guideGrid: event.target.value })}>{GUIDES.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
       <label>底图透明度<input type="range" min="0" max="100" value={doc.baseOverlay.opacity} onChange={(event) => setDoc({ ...doc, baseOverlay: { ...doc.baseOverlay, opacity: Number(event.target.value) } })} /></label>
       <button type="button" onClick={() => setDoc({ ...doc, baseOverlay: { ...doc.baseOverlay, position: doc.baseOverlay.position === 'above' ? 'below' : 'above', visible: true } })}>底图{doc.baseOverlay.position === 'above' ? '置顶' : '置底'}</button>
+      </>}
+      {rightTab === 'layers' && <>
       <button type="button" data-testid="paint-add-layer" onClick={() => { const added = addLayer(doc); if (added.error) setMessage(added.error); else replaceDoc(added.doc, new Map([[added.doc.activeLayerId, new PaintBuffer(doc.paper.width, doc.paper.height)]])); }}>新建图层</button>
       <div className="paint-layers">{layerItems.map((layer) => <div key={layer.id} className={`paint-layer${layer.id === doc.activeLayerId ? ' active' : ''}`} data-testid={`paint-layer-${layer.id}`}>
-        <input type="checkbox" checked={layer.visible} aria-label={`${layer.name}可见`} onChange={(event) => setDoc(patchLayer(doc, layer.id, { visible: event.target.checked }).doc)} />
+        <LayerThumb buffer={buffersRef.current.get(layer.id)} />
+        <button type="button" className="paint-eye" aria-label={`${layer.name}可见`} aria-pressed={layer.visible} onClick={() => setDoc(patchLayer(doc, layer.id, { visible: !layer.visible }).doc)}>{layer.visible ? <Eye size={14} /> : <EyeOff size={14} />}</button>
         <button type="button" onClick={() => setDoc({ ...doc, activeLayerId: layer.id })}>{layer.name}</button>
-        <span>{layer.opacity}%</span>
+        <span>{layer.alphaLock ? <Lock size={12} /> : null}{layer.clippingMask ? <Layers size={12} /> : null}{layer.opacity}%</span>
       </div>)}</div>
       <p>{doc.layers.length}/12</p>
       {doc.layers.length >= 12 && <p>{LAYER_LIMIT_MESSAGE}</p>}
@@ -700,14 +963,17 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       <button type="button" onClick={() => setDoc(moveLayer(doc, doc.activeLayerId, 'down').doc)}>下移</button>
       <button type="button" data-testid="paint-duplicate-layer" onClick={() => { const copied = duplicateLayer(doc); if (copied.error) setMessage(copied.error); else replaceDoc(copied.doc, new Map([[copied.doc.activeLayerId, buffersRef.current.get(copied.sourceId).clone()]])); }}>复制图层</button>
       <button type="button" onClick={() => { const removed = deleteLayer(doc); if (removed.error) setMessage(removed.error); else replaceDoc(removed.doc, new Map([[doc.activeLayerId, null]])); }}>删除图层</button>
-      <button type="button" data-testid="paint-merge-down" onClick={() => { const merged = mergeDown(doc, buffersRef.current); if (merged.error) setMessage(merged.error); else { buffersRef.current = merged.buffers; setDoc({ ...merged.doc, touched: true }); redraw(); } }}>向下合并</button>
-      <button type="button" data-testid="paint-stamp" onClick={() => { const stamped = stampVisible(doc, buffersRef.current); if (stamped.error) setMessage(stamped.error); else { buffersRef.current = stamped.buffers; setDoc({ ...stamped.doc, touched: true }); redraw(); } }}>盖印可见层</button>
+      <button type="button" data-testid="paint-merge-down" onClick={() => applyStructure(mergeDown(doc, buffersRef.current))}>向下合并</button>
+      <button type="button" data-testid="paint-stamp" onClick={() => applyStructure(stampVisible(doc, buffersRef.current))}>盖印可见层</button>
+      <button type="button" data-testid="paint-clear-layer" onClick={() => commitPixels({ ...clearBuffer(activeBuffer()), layerId: doc.activeLayerId })}>清空当前图层</button>
       <button type="button" data-testid="paint-tint" onClick={() => { const entry = tintBuffer(buffersRef.current.get(doc.activeLayerId), color); commitPixels({ ...entry, layerId: doc.activeLayerId }); }}>图层着色</button>
       <button type="button" data-testid="paint-extract" onClick={() => extract('transparent')}>拆出为透明图</button>
       <button type="button" data-testid="paint-extract-mask" onClick={() => extract('mask')}>拆出为黑白遮罩</button>
       <button type="button" data-testid="paint-fill-mask" onClick={() => selection && commitPixels(fillColor(activeBuffer(), '#ffffff', selection, false))}>当前选区一键填白生成遮罩</button>
       <button type="button" data-testid="paint-transform-flip" onClick={() => commitPixels(transformBuffer(activeBuffer(), selectionRef.current, { flipH: true }))}>水平翻转像素</button>
-      <button type="button" data-testid="paint-lan-open" onClick={connectLan}>连接平板（局域网）</button>
+      </>}
+      {rightTab === 'lan' && <>
+      <button type="button" onClick={connectLan}>连接平板（局域网）</button>
       {lan?.running && <aside className="paint-lan" data-testid="paint-lan-card">
         <strong>局域网配对</strong>
         <div data-testid="paint-lan-qr" dangerouslySetInnerHTML={{ __html: qrSvg(lanUrl, 3) }} />
@@ -718,8 +984,9 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
         </select></label>
         <p>若平板打不开，请在 Windows 防火墙允许这个本地端口，或把网络改成专用网络。主工作台仍然只监听 127.0.0.1。</p>
         <button type="button" data-testid="paint-lan-save" onClick={save}>同步保存到画布</button>
-        <button type="button" data-testid="paint-lan-stop" onClick={async () => { await fetch('/api/paint/lan/stop', { method: 'POST', credentials: 'same-origin' }); setLan(null); }}>断开平板连接</button>
+        <button type="button" data-testid="paint-lan-stop" onClick={async () => { await fetch('/api/paint/lan/stop', { method: 'POST', credentials: 'same-origin' }); setLan(null); lanRef.current = null; }}>断开平板连接</button>
       </aside>}
+      </>}
     </aside>
   </div>, document.body);
 }
@@ -735,6 +1002,23 @@ async function pngStamp(url) {
   const alpha = new Uint8Array(image.width * image.height);
   for (let index = 0; index < alpha.length; index += 1) alpha[index] = pixels[index * 4 + 3];
   return { width: image.width, height: image.height, alpha };
+}
+
+function LayerThumb({ buffer }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || !buffer) return;
+    const size = 36;
+    const source = document.createElement('canvas');
+    source.width = buffer.width;
+    source.height = buffer.height;
+    source.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(buffer.data), buffer.width, buffer.height), 0, 0);
+    const context = canvas.getContext('2d');
+    context.clearRect(0, 0, size, size);
+    context.drawImage(source, 0, 0, size, size);
+  });
+  return <canvas ref={ref} className="paint-layer-thumb" width={36} height={36} aria-hidden="true" />;
 }
 
 function stampPngBase64(stamp) {

@@ -5,17 +5,27 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import math
+import os
+import queue
 import re
 import secrets
 import socket
 import struct
+import subprocess
 import threading
+import time
 import urllib.parse
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VIRTUAL_HINTS = ("wsl", "hyper-v", "hyperv", "docker", "vmware", "vethernet", "virtual", "vbox", "bluetooth", "loopback", "tun", "tap")
+VIRTUAL_HINTS = (
+    "wsl", "hyper-v", "hyperv", "docker", "vmware", "vbox", "virtualbox", "bluetooth", "loopback",
+    "tun", "tap", "wintun", "wireguard", "tailscale", "zerotier", "clash", "mihomo", "sing-box",
+    "tap-windows", "vethernet", "virtual",
+)
+IDLE_TIMEOUT = 2 * 60 * 60
 COOKIE = "refmuse_lan"
 MAX_FAILURES = 5
 MAX_BODY = 12 * 1024 * 1024
@@ -46,11 +56,130 @@ def filter_addresses(items):
             continue
         if str(ip).startswith("169.254.") or str(ip).startswith("127."):
             continue
-        usable.append({"name": name, "address": str(ip)})
-    return usable
+        usable.append({"name": name, "address": str(ip), "description": str(item.get("description", ""))})
+    return sorted(usable, key=address_rank)
+
+
+def address_rank(item):
+    label = f"{item.get('name', '')} {item.get('description', '')}".lower()
+    ip = ipaddress.ip_address(item["address"])
+    wifi = any(token in label for token in ("wi-fi", "wifi", "wlan", "wireless", "无线"))
+    ethernet = any(token in label for token in ("ethernet", "以太网"))
+    if ip in ipaddress.ip_network("192.168.0.0/16") and (wifi or ethernet):
+        return (0, item["address"])
+    if ip in ipaddress.ip_network("192.168.0.0/16"):
+        return (1, item["address"])
+    if ip in ipaddress.ip_network("172.16.0.0/12") and (wifi or ethernet):
+        return (2, item["address"])
+    if ip in ipaddress.ip_network("10.0.0.0/8") and (wifi or ethernet):
+        return (3, item["address"])
+    if ip in ipaddress.ip_network("172.16.0.0/12"):
+        return (4, item["address"])
+    if ip in ipaddress.ip_network("10.0.0.0/8"):
+        return (5, item["address"])
+    return (6, item["address"])
+
+
+def parse_ipconfig(text):
+    items = []
+    current = None
+    for raw in str(text or "").splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if line[:1] not in {" ", "\t"} and ":" in line:
+            current = {"name": line.split(":", 1)[0].strip(), "description": ""}
+            continue
+        if current is None or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        value = value.strip()
+        if "Description" in key or "描述" in key:
+            current["description"] = value
+        if "IPv4" in key or key.strip() in {"IP Address", "IP 地址", "IPv4 地址"} or "IPv4 地址" in key:
+            address = value.split("(")[0].strip()
+            label = f"{current['name']} {current['description']}".strip()
+            items.append({"name": label, "description": current["description"], "address": address})
+    return items
+
+
+def decode_ipconfig(data):
+    if isinstance(data, str):
+        return data
+    for encoding in ("utf-8", "cp936"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def windows_adapters():
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        iphlpapi = ctypes.WinDLL("iphlpapi")
+        size = wintypes.ULONG(16 * 1024)
+        buffer = ctypes.create_string_buffer(size.value)
+        flags = 0x0002 | 0x0004 | 0x0008
+        for _ in range(3):
+            ret = iphlpapi.GetAdaptersAddresses(2, flags, None, ctypes.cast(buffer, ctypes.c_void_p), ctypes.byref(size))
+            if ret == 0:
+                break
+            if ret != 111:
+                return []
+            buffer = ctypes.create_string_buffer(size.value)
+        else:
+            return []
+        pointer = ctypes.sizeof(ctypes.c_void_p)
+        if pointer == 8:
+            next_off, uni_off, desc_off, name_off = 8, 24, 64, 72
+        else:
+            next_off, uni_off, desc_off, name_off = 8, 16, 36, 40
+        items = []
+        current = ctypes.addressof(buffer)
+        for _ in range(64):
+            if not current:
+                break
+            nxt = int.from_bytes(ctypes.string_at(current + next_off, pointer), "little")
+            uni = int.from_bytes(ctypes.string_at(current + uni_off, pointer), "little")
+            desc_ptr = int.from_bytes(ctypes.string_at(current + desc_off, pointer), "little")
+            name_ptr = int.from_bytes(ctypes.string_at(current + name_off, pointer), "little")
+            description = ctypes.wstring_at(desc_ptr) if desc_ptr else ""
+            friendly = ctypes.wstring_at(name_ptr) if name_ptr else ""
+            node = uni
+            for _hop in range(32):
+                if not node:
+                    break
+                if pointer == 8:
+                    node_next = int.from_bytes(ctypes.string_at(node + 8, 8), "little")
+                    sockaddr = int.from_bytes(ctypes.string_at(node + 16, 8), "little")
+                else:
+                    node_next = int.from_bytes(ctypes.string_at(node + 8, 4), "little")
+                    sockaddr = int.from_bytes(ctypes.string_at(node + 12, 4), "little")
+                if sockaddr and int.from_bytes(ctypes.string_at(sockaddr, 2), "little") == 2:
+                    ip = ".".join(str(byte) for byte in ctypes.string_at(sockaddr + 4, 4))
+                    items.append({"name": f"{friendly} {description}".strip(), "description": description, "address": ip})
+                node = node_next
+            current = nxt
+        return items
+    except Exception:
+        return []
 
 
 def local_interfaces():
+    if os.name == "nt":
+        found = windows_adapters()
+        if not found:
+            try:
+                completed = subprocess.run(["ipconfig", "/all"], capture_output=True, timeout=4)
+                found = parse_ipconfig(decode_ipconfig(completed.stdout or b""))
+            except Exception:
+                found = []
+        if found:
+            return found
     found = []
     route = Path("/proc/net/route")
     names = []
@@ -83,6 +212,16 @@ def local_interfaces():
     return [{"name": socket.gethostname(), "address": item[4][0]} for item in infos]
 
 
+def _finite(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
 def _png_bytes(value):
     if value in (None, ""):
         return b""
@@ -111,6 +250,52 @@ class LanBridge:
         self.session = None
         self.strokes = []
         self.commands = []
+        self.events = []
+        self.revision = 0
+        self.subscribers = []
+        self.idle_timeout = IDLE_TIMEOUT
+        self._now = time.monotonic
+        self.last_activity = self._now()
+
+    def touch(self):
+        self.last_activity = self._now()
+
+    def expired(self):
+        return self.running and (self._now() - self.last_activity) > self.idle_timeout
+
+    def expire_if_idle(self):
+        if self.expired():
+            self.stop()
+            return True
+        return False
+
+    def publish(self, event):
+        if not isinstance(event, dict):
+            raise BridgeError("同步事件无效。")
+        if self.expire_if_idle() or not self.running:
+            raise BridgeError("局域网画板尚未开启。", 409, "LAN_STOPPED")
+        with self.lock:
+            self.touch()
+            self.revision += 1
+            payload = {
+                "type": str(event.get("type") or "update")[:40],
+                "clientId": str(event.get("clientId") or "")[:40],
+                "layerId": str(event.get("layerId") or "")[:64],
+                "revision": self.revision,
+            }
+            for key in ("tool", "brushId", "color", "opacity", "visible"):
+                if key in event:
+                    payload[key] = event[key]
+            if isinstance(event.get("points"), list):
+                payload["points"] = event["points"][:5000]
+            if isinstance(event.get("params"), dict):
+                payload["params"] = event["params"]
+            self.events.append(payload)
+            self.events = self.events[-200:]
+            subscribers = list(self.subscribers)
+        for subscriber in subscribers:
+            subscriber.append(payload)
+        return payload
 
     def addresses(self):
         source = self.interface_source() if self.interface_source else local_interfaces()
@@ -121,6 +306,7 @@ class LanBridge:
         return self.httpd is not None
 
     def status(self):
+        self.expire_if_idle()
         with self.lock:
             return {
                 "running": self.running,
@@ -140,6 +326,9 @@ class LanBridge:
             self.failures = 0
             self.strokes = []
             self.commands = []
+            self.events = []
+            self.revision = 0
+            self.touch()
             if self.httpd is None:
                 handler = lambda *args, **kwargs: CompanionHandler(self, *args, **kwargs)
                 self.httpd = ThreadingHTTPServer((host, int(port)), handler)
@@ -167,15 +356,24 @@ class LanBridge:
             self.session = None
             self.strokes = []
             self.commands = []
+            self.events = []
+            self.revision = 0
+            subscribers = list(self.subscribers)
+            self.subscribers = []
             port = self.port
             self.port = None
         if httpd is not None:
             httpd.shutdown()
             httpd.server_close()
+        for subscriber in subscribers:
+            subscriber.append(None)
         return {"running": False, "port": port}
 
     def poll(self):
+        if self.expire_if_idle():
+            return {"running": False, "strokes": [], "commands": []}
         with self.lock:
+            self.touch()
             strokes = list(self.strokes)
             commands = list(self.commands)
             self.strokes = []
@@ -206,6 +404,9 @@ class LanBridge:
             if path == "/api/paint/lan/stop" and method == "POST":
                 handler.send_json(200, self.stop())
                 return True
+            if path == "/api/paint/lan/publish" and method == "POST":
+                handler.send_json(200, self.publish(_json_body(handler)))
+                return True
             handler.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。"})
             return True
         except BridgeError as exc:
@@ -233,11 +434,20 @@ class LanBridge:
             stored.append({
                 "id": layer["id"], "name": str(layer.get("name") or "图层")[:40],
                 "visible": bool(layer.get("visible", True)), "opacity": max(0, min(100, int(layer.get("opacity") or 100))),
+                "blendMode": str(layer.get("blendMode") or "normal")[:20],
+                "clippingMask": bool(layer.get("clippingMask")), "alphaLock": bool(layer.get("alphaLock")),
                 "png": _png_bytes(layer.get("pngBase64")),
             })
         payload["layers"] = stored
         payload["basePng"] = _png_bytes(payload.get("basePngBase64"))
-        payload["brushes"] = payload.get("brushes") if isinstance(payload.get("brushes"), list) else []
+        overlay = payload.get("baseOverlay") if isinstance(payload.get("baseOverlay"), dict) else {}
+        payload["baseOverlay"] = {
+            "visible": bool(overlay.get("visible", True)),
+            "opacity": max(0, min(100, int(overlay.get("opacity") or 100))),
+            "position": "above" if overlay.get("position") == "above" else "below",
+        }
+        brushes = payload.get("brushes") if isinstance(payload.get("brushes"), list) else []
+        payload["brushes"] = [item for item in brushes if isinstance(item, dict)][:40]
         return payload
 
 
@@ -299,6 +509,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if path == "/api/lan/events" and method == "GET":
             self._events()
             return
+        if path == "/api/lan/sync" and method == "GET":
+            self._sync()
+            return
         if path == "/api/lan/stroke" and method == "POST":
             self._stroke()
             return
@@ -353,8 +566,17 @@ class CompanionHandler(BaseHTTPRequestHandler):
         return {
             "nodeId": session.get("nodeId"),
             "paper": session.get("paper"),
-            "layers": [{"id": layer["id"], "name": layer["name"], "visible": layer["visible"], "opacity": layer["opacity"]} for layer in session.get("layers") or []],
-            "brushes": [{"id": item.get("id"), "name": item.get("name")} for item in session.get("brushes") or [] if isinstance(item, dict)],
+            "layers": [{
+                "id": layer["id"], "name": layer["name"], "visible": layer["visible"], "opacity": layer["opacity"],
+                "blendMode": layer.get("blendMode") or "normal", "clippingMask": bool(layer.get("clippingMask")),
+                "alphaLock": bool(layer.get("alphaLock")),
+            } for layer in session.get("layers") or []],
+            "baseOverlay": session.get("baseOverlay") or {"visible": True, "opacity": 100, "position": "below"},
+            "brushes": [{
+                "id": item.get("id"), "name": item.get("name"), "kind": item.get("kind") or "",
+                "params": item.get("params") if isinstance(item.get("params"), dict) else {},
+                "stampPngBase64": item.get("stampPngBase64") if isinstance(item.get("stampPngBase64"), str) and len(item.get("stampPngBase64")) < 300000 else "",
+            } for item in session.get("brushes") or [] if isinstance(item, dict)],
             "activeLayerId": session.get("activeLayerId") or (session.get("layers") or [{"id": ""}])[0]["id"],
         }
 
@@ -388,16 +610,31 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if not any(layer["id"] == layer_id for layer in (self.bridge.session or {}).get("layers") or []):
             self._send(404, {"code": "NOT_FOUND", "message": "笔迹图层不存在。"})
             return
+        cleaned = []
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            x = _finite(point.get("x"))
+            y = _finite(point.get("y"))
+            pressure = _finite(point.get("pressure", 1))
+            if x is None or y is None or pressure is None:
+                self._send(400, {"code": "BAD_LAN", "message": "笔迹坐标无效。"})
+                return
+            cleaned.append({"x": x, "y": y, "pressure": pressure})
         stroke = {
             "clientId": str(payload.get("clientId") or "")[:40],
             "layerId": layer_id,
-            "tool": payload.get("tool") if payload.get("tool") in {"brush", "eraser", "bucket", "geometry"} else "brush",
+            "tool": payload.get("tool") if payload.get("tool") in {"brush", "eraser", "bucket", "picker", "geometry"} else "brush",
             "brushId": str(payload.get("brushId") or "builtin-hard-round")[:64],
             "color": str(payload.get("color") or "#111111")[:32],
             "params": payload.get("params") if isinstance(payload.get("params"), dict) else {},
-            "points": [{"x": float(point.get("x", 0)), "y": float(point.get("y", 0)), "pressure": float(point.get("pressure", 1))} for point in points if isinstance(point, dict)],
+            "points": cleaned,
         }
+        if self.bridge.expire_if_idle():
+            self._send(409, {"code": "LAN_STOPPED", "message": "局域网画板已因空闲关闭。"})
+            return
         with self.bridge.lock:
+            self.bridge.touch()
             self.bridge.strokes.append(stroke)
         self._send(202, {"ok": True})
 
@@ -411,18 +648,59 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if kind not in {"switchLayer", "toggleVisible", "opacity", "undo", "redo", "clearLayer"}:
             self._send(400, {"code": "BAD_LAN", "message": "不支持的图层指令。"})
             return
-        command = {"type": kind, "layerId": str(payload.get("layerId") or ""), "opacity": payload.get("opacity"), "visible": payload.get("visible")}
+        command = {"type": kind, "layerId": str(payload.get("layerId") or ""), "opacity": payload.get("opacity"), "visible": payload.get("visible"), "clientId": str(payload.get("clientId") or "")[:40]}
+        if self.bridge.expire_if_idle():
+            self._send(409, {"code": "LAN_STOPPED", "message": "局域网画板已因空闲关闭。"})
+            return
         with self.bridge.lock:
+            self.bridge.touch()
             self.bridge.commands.append(command)
         self._send(202, {"ok": True})
 
+    def _sync(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            since = int((query.get("since") or ["0"])[0])
+        except ValueError:
+            since = 0
+        with self.bridge.lock:
+            self.bridge.touch()
+            events = [item for item in self.bridge.events if item.get("revision", 0) > since]
+            revision = self.bridge.revision
+        self._send(200, {"revision": revision, "events": events, "session": self._public_session()})
+
     def _events(self):
+        updates = []
+        with self.bridge.lock:
+            self.bridge.subscribers.append(updates)
+            revision = self.bridge.revision
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
-        self.wfile.write(b"event: ready\ndata: {}\n\n")
+        try:
+            self.wfile.write(f"event: ready\ndata: {json.dumps({'revision': revision})}\n\n".encode("utf-8"))
+            self.wfile.flush()
+            while self.bridge.running:
+                if updates:
+                    item = updates.pop(0)
+                    if item is None:
+                        break
+                    self.wfile.write(b"event: update\ndata: " + json.dumps(item, ensure_ascii=False).encode("utf-8") + b"\n\n")
+                    self.wfile.flush()
+                    continue
+                time.sleep(0.2)
+                if not updates:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except Exception:
+            pass
+        finally:
+            with self.bridge.lock:
+                if updates in self.bridge.subscribers:
+                    self.bridge.subscribers.remove(updates)
 
     def _send(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

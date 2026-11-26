@@ -199,27 +199,53 @@ export function createRoundStamp(size, hardness, pixel = false) {
   return { width: diameter, height: diameter, alpha };
 }
 
-export function scaleStamp(stamp, maxEdge = 512) {
-  if (!stamp || Math.max(stamp.width, stamp.height) <= maxEdge) return stamp;
-  const scale = maxEdge / Math.max(stamp.width, stamp.height);
-  const width = Math.max(1, Math.round(stamp.width * scale));
-  const height = Math.max(1, Math.round(stamp.height * scale));
+function bilinearStamp(stamp, width, height) {
   const alpha = new Uint8Array(width * height);
+  const xScale = stamp.width / width;
+  const yScale = stamp.height / height;
   for (let y = 0; y < height; y += 1) {
+    const sy = (y + 0.5) * yScale - 0.5;
+    const y0 = Math.floor(sy);
+    const y1 = Math.min(stamp.height - 1, Math.max(0, y0 + 1));
+    const yBase = Math.max(0, y0);
+    const fy = Math.min(1, Math.max(0, sy - y0));
     for (let x = 0; x < width; x += 1) {
-      const sx = Math.min(stamp.width - 1, Math.floor(x / scale));
-      const sy = Math.min(stamp.height - 1, Math.floor(y / scale));
-      alpha[y * width + x] = stamp.alpha[sy * stamp.width + sx];
+      const sx = (x + 0.5) * xScale - 0.5;
+      const x0 = Math.floor(sx);
+      const x1 = Math.min(stamp.width - 1, Math.max(0, x0 + 1));
+      const xBase = Math.max(0, x0);
+      const fx = Math.min(1, Math.max(0, sx - x0));
+      const top = stamp.alpha[yBase * stamp.width + xBase] * (1 - fx) + stamp.alpha[yBase * stamp.width + x1] * fx;
+      const bottom = stamp.alpha[y1 * stamp.width + xBase] * (1 - fx) + stamp.alpha[y1 * stamp.width + x1] * fx;
+      alpha[y * width + x] = clampByte(top * (1 - fy) + bottom * fy);
     }
   }
   return { width, height, alpha };
 }
 
+function resizeStampToEdge(stamp, edge, shrinkOnly) {
+  if (!stamp?.alpha || !stamp.width || !stamp.height) return stamp;
+  const longest = Math.max(stamp.width, stamp.height);
+  const target = Math.max(1, Math.round(Number(edge) || 1));
+  if (!Number.isFinite(longest) || longest === target || (shrinkOnly && longest <= target)) return stamp;
+  const scale = target / longest;
+  return bilinearStamp(stamp, Math.max(1, Math.round(stamp.width * scale)), Math.max(1, Math.round(stamp.height * scale)));
+}
+
+export function clampStampMaxEdge(stamp, maxEdge = 512) {
+  return resizeStampToEdge(stamp, maxEdge, true);
+}
+
+export function resizeStamp(stamp, targetDiameter) {
+  return resizeStampToEdge(stamp, targetDiameter, false);
+}
+
+export function scaleStamp(stamp, maxEdge = 512) {
+  return clampStampMaxEdge(stamp, maxEdge);
+}
+
 function brushStamp(brush, diameter) {
-  if (brush.stamp?.alpha) {
-    const fitted = scaleStamp(brush.stamp, Math.max(1, Math.round(diameter)));
-    return fitted;
-  }
+  if (brush.stamp?.alpha) return resizeStamp(brush.stamp, Math.max(1, Math.round(diameter)));
   if (brush.kind === 'pixel') return createRoundStamp(Math.max(1, Math.round(diameter)), 100, true);
   return createRoundStamp(diameter, brush.hardness ?? 100, false);
 }
@@ -379,7 +405,180 @@ export function applyStroke(buffer, points, brush = BASIC_ROUND_BRUSH, color = '
 }
 
 export function eraseStroke(buffer, points, brush, options = {}) {
-  return applyStroke(buffer, points, brush, '#000000', { ...options, eraser: true });
+  return applyStroke(buffer, points, brush, '#000000', { ...options, eraser: true, eraserTip: options.eraserTip !== false });
+}
+
+function normalizeStrokePoint(point) {
+  const mouse = point.pointerType === 'mouse' || point.pressure === undefined;
+  const pressure = mouse ? (point.pressure > 0 && point.pressure !== 0.5 ? point.pressure : 1) : clamp01(point.pressure);
+  return { x: point.x, y: point.y, pressure };
+}
+
+function unionRect(a, b) {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const right = Math.max(a.x + a.width, b.x + b.width);
+  const bottom = Math.max(a.y + a.height, b.y + b.height);
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+function rememberStrokeBefore(session, rect) {
+  const bounds = clipRect(session.buffer, rect);
+  if (!bounds.width || !bounds.height) return null;
+  if (!session.dirty) {
+    session.dirty = bounds;
+    session.before = captureRect(session.buffer, bounds).pixels;
+    return bounds;
+  }
+  const next = unionRect(session.dirty, bounds);
+  if (next.width === session.dirty.width && next.height === session.dirty.height && next.x === session.dirty.x && next.y === session.dirty.y) return bounds;
+  const pixels = new Uint8ClampedArray(next.width * next.height * 4);
+  const offsetX = session.dirty.x - next.x;
+  const offsetY = session.dirty.y - next.y;
+  for (let y = 0; y < session.dirty.height; y += 1) {
+    pixels.set(session.before.subarray(y * session.dirty.width * 4, (y + 1) * session.dirty.width * 4), ((y + offsetY) * next.width + offsetX) * 4);
+  }
+  for (let y = 0; y < next.height; y += 1) {
+    for (let x = 0; x < next.width; x += 1) {
+      const gx = next.x + x;
+      const gy = next.y + y;
+      const inside = gx >= session.dirty.x && gy >= session.dirty.y && gx < session.dirty.x + session.dirty.width && gy < session.dirty.y + session.dirty.height;
+      if (inside) continue;
+      const from = (gy * session.buffer.width + gx) * 4;
+      pixels.set(session.buffer.data.subarray(from, from + 4), (y * next.width + x) * 4);
+    }
+  }
+  session.dirty = next;
+  session.before = pixels;
+  return bounds;
+}
+
+function placeStrokeSample(session, point, index, previous) {
+  const brush = session.brush;
+  const pressure = pressureCurve(point.pressure ?? 1, session.options.pressureCurve || 'linear');
+  const sizePressure = brush.pressureSize ? Math.max((brush.minDiameter || 1) / 100, pressure) : 1;
+  const jitter = brush.sizeJitter ? 1 + (session.random() * 2 - 1) * (brush.sizeJitter / 100) : 1;
+  const diameter = Math.max(1, Math.min(500, (brush.size || 16) * sizePressure * jitter));
+  const opacityPressure = brush.pressureOpacity ? pressure : 1;
+  const flow = clamp01((brush.flow ?? 100) / 100) * clamp01((brush.opacity ?? 100) / 100) * opacityPressure * (session.options.flowScale ?? 1);
+  let angle = brush.angle || 0;
+  if (brush.followDirection && previous && index > 0) angle = Math.atan2(point.y - previous.y, point.x - previous.x) * 180 / Math.PI;
+  if (brush.angleJitter) angle += (session.random() * 2 - 1) * brush.angleJitter;
+  let x = point.x;
+  let y = point.y;
+  if (brush.scatter) {
+    const distance = (session.random() * 2 - 1) * brush.scatter * diameter;
+    const heading = (angle + 90) * Math.PI / 180;
+    x += Math.cos(heading) * distance;
+    y += Math.sin(heading) * distance;
+  }
+  const stamp = session.options.eraser && session.options.eraserTip === false
+    ? createRoundStamp(diameter, brush.hardness ?? 100, false)
+    : brushStamp(brush, diameter);
+  const pad = Math.hypot(stamp.width, stamp.height) / 2 + 3;
+  const rect = { x: x - pad, y: y - pad, width: pad * 2, height: pad * 2 };
+  rememberStrokeBefore(session, rect);
+  stampAt(session.buffer, stamp, x, y, session.color, flow, { ...session.options, angle, eraser: Boolean(session.options.eraser) });
+  return clipRect(session.buffer, rect);
+}
+
+export function createStrokeSession(buffer, brush, color, options = {}) {
+  return {
+    buffer, brush, color, options,
+    smoothed: null,
+    carry: 0,
+    previousSample: null,
+    placed: null,
+    sampleIndex: 0,
+    random: mulberry32(options.seed ?? brush.seed ?? 1),
+    dirty: null,
+    before: null,
+    lastDirty: null,
+  };
+}
+
+export function strokeTo(session, point) {
+  const input = normalizeStrokePoint(point);
+  const amount = session.options.smoothing ?? session.brush.smoothing ?? 0;
+  const keep = 1 - clamp01(amount / 100) * 0.9;
+  const current = session.smoothed ? {
+    ...input,
+    x: session.smoothed.x + (input.x - session.smoothed.x) * keep,
+    y: session.smoothed.y + (input.y - session.smoothed.y) * keep,
+  } : input;
+  session.smoothed = current;
+  if (!session.previousSample) {
+    session.previousSample = current;
+    session.placed = current;
+    session.lastDirty = placeStrokeSample(session, current, 0, current);
+    session.sampleIndex = 1;
+    return session.lastDirty;
+  }
+  const previous = session.previousSample;
+  const length = Math.hypot(current.x - previous.x, current.y - previous.y);
+  const spacingRatio = Math.max(0.01, Math.min(2, (session.brush.spacing || 10) / 100));
+  const step = Math.max(0.75, Math.max(1, Math.min(500, session.brush.size || 16)) * spacingRatio);
+  if (length) {
+    let walked = step - session.carry;
+    while (walked <= length) {
+      const t = walked / length;
+      const sample = {
+        x: previous.x + (current.x - previous.x) * t,
+        y: previous.y + (current.y - previous.y) * t,
+        pressure: previous.pressure + (current.pressure - previous.pressure) * t,
+      };
+      session.lastDirty = placeStrokeSample(session, sample, session.sampleIndex, session.placed || previous);
+      session.placed = sample;
+      session.sampleIndex += 1;
+      walked += step;
+    }
+    session.carry = length - (walked - step);
+  }
+  session.previousSample = current;
+  return session.lastDirty;
+}
+
+export function finishStroke(session) {
+  if (session.previousSample && session.placed) {
+    const gap = Math.hypot(session.previousSample.x - session.placed.x, session.previousSample.y - session.placed.y);
+    if (gap > 0.5) session.lastDirty = placeStrokeSample(session, session.previousSample, session.sampleIndex, session.placed);
+  }
+  if (!session.dirty || !session.before) return null;
+  const after = captureRect(session.buffer, session.dirty);
+  return {
+    type: 'pixels', layerId: session.options.layerId || '', ...session.dirty,
+    before: session.before, after: after.pixels,
+  };
+}
+
+export function selectionContains(selection, x, y) {
+  if (!selection?.data) return false;
+  const px = Math.round(x);
+  const py = Math.round(y);
+  if (px < 0 || py < 0 || px >= selection.width || py >= selection.height) return false;
+  return selection.data[py * selection.width + px] >= 128;
+}
+
+export function opaqueBounds(buffer) {
+  let minX = buffer.width;
+  let minY = buffer.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < buffer.height; y += 1) {
+    for (let x = 0; x < buffer.width; x += 1) {
+      if (buffer.data[(y * buffer.width + x) * 4 + 3] < 8) continue;
+      minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+    }
+  }
+  if (maxX < 0) return null;
+  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+
+export function clearBuffer(buffer) {
+  const before = captureRect(buffer, { x: 0, y: 0, width: buffer.width, height: buffer.height });
+  buffer.clear([0, 0, 0, 0]);
+  const after = captureRect(buffer, before);
+  return { type: 'pixels', ...before, before: before.pixels, after: after.pixels };
 }
 
 export function floodFill(buffer, x, y, color, { tolerance = 0, expand = 0, selection = null, reference = null, alphaLock = false } = {}) {
@@ -1074,6 +1273,79 @@ export function previewComposite(doc, buffers, { base = null, guides = false } =
   if (base && doc.baseOverlay.visible && doc.baseOverlay.position === 'above') blendBuffer(output, fitBuffer(base, doc.paper.width, doc.paper.height), 'normal', doc.baseOverlay.opacity / 100);
   if (guides) drawGuides(output, doc.paper.guideGrid);
   return output;
+}
+
+function pixelAt(buffer, x, y) {
+  const offset = (y * buffer.width + x) * 4;
+  return [buffer.data[offset], buffer.data[offset + 1], buffer.data[offset + 2], buffer.data[offset + 3]];
+}
+
+function shadePixel(pixel, x, y, texture, opacity) {
+  const amount = clamp01((opacity ?? 0) / 100);
+  if (!amount || !texture || texture === 'none') return pixel;
+  const grain = texture === 'watercolor'
+    ? hash2(Math.floor(x / 6), Math.floor(y / 6))
+    : (hash2(x, y) * 0.65 + hash2(x * 0.25, y) * 0.35);
+  const shade = 1 - amount * (0.35 + grain * 0.4);
+  return [clampByte(pixel[0] * shade), clampByte(pixel[1] * shade), clampByte(pixel[2] * shade), pixel[3]];
+}
+
+function guideLines(grid, width, height) {
+  if (!grid || grid === 'none') return [];
+  const vertical = grid === 'thirds' || grid === 'story-3x2' ? 3 : grid === 'story-2x2' ? 2 : 4;
+  const horizontal = grid === 'thirds' ? 3 : grid === 'story-3x2' ? 2 : grid === 'story-2x2' ? 2 : 4;
+  const lines = [];
+  for (let index = 1; index < vertical; index += 1) lines.push(['v', Math.round(width * index / vertical)]);
+  for (let index = 1; index < horizontal; index += 1) lines.push(['h', Math.round(height * index / horizontal)]);
+  return lines;
+}
+
+export function previewRect(doc, buffers, rect, { base = null, guides = false } = {}) {
+  const width = doc.paper.width;
+  const height = doc.paper.height;
+  if (doc.outputMode === 'mask') {
+    const full = previewComposite(doc, buffers, { base, guides });
+    const bounds = clipRect(full, rect || { x: 0, y: 0, width, height });
+    return captureRect(full, bounds);
+  }
+  const bounds = clipRect({ width, height }, rect || { x: 0, y: 0, width, height });
+  const pixels = new Uint8ClampedArray(Math.max(1, bounds.width) * Math.max(1, bounds.height) * 4);
+  if (!bounds.width || !bounds.height) return { ...bounds, pixels };
+  const paper = (PAPER_COLORS[doc.paper.background] || PAPER_COLORS.transparent).slice();
+  const fitted = base ? fitBuffer(base, width, height) : null;
+  const lines = guides ? guideLines(doc.paper.guideGrid, width, height) : [];
+  const layers = doc.layers || [];
+  for (let y = 0; y < bounds.height; y += 1) {
+    for (let x = 0; x < bounds.width; x += 1) {
+      const px = bounds.x + x;
+      const py = bounds.y + y;
+      let dest = shadePixel(paper, px, py, doc.paper.texture, doc.paper.textureOpacity);
+      if (fitted && doc.baseOverlay?.visible && doc.baseOverlay.position !== 'above') {
+        dest = compositePixel('normal', pixelAt(fitted, px, py), dest, (doc.baseOverlay.opacity ?? 100) / 100);
+      }
+      layers.forEach((layer, index) => {
+        if (layer.visible === false || (layer.opacity ?? 100) <= 0) return;
+        const source = buffers.get(layer.id);
+        if (!source) return;
+        let sample = pixelAt(source, px, py);
+        if (layer.clippingMask) {
+          const baseIndex = clipBaseIndex(layers, index);
+          const baseBuffer = baseIndex >= 0 ? buffers.get(layers[baseIndex].id) : null;
+          if (!baseBuffer) return;
+          sample = sample.slice();
+          sample[3] = clampByte(sample[3] * (pixelAt(baseBuffer, px, py)[3] / 255));
+        }
+        dest = compositePixel(normalizeBlend(layer.blendMode), sample, dest, (layer.opacity ?? 100) / 100);
+      });
+      if (fitted && doc.baseOverlay?.visible && doc.baseOverlay.position === 'above') {
+        dest = compositePixel('normal', pixelAt(fitted, px, py), dest, (doc.baseOverlay.opacity ?? 100) / 100);
+      }
+      if (lines.some(([axis, at]) => (axis === 'v' ? px === at : py === at))) dest = [230, 210, 140, 180];
+      const offset = (y * bounds.width + x) * 4;
+      pixels[offset] = dest[0]; pixels[offset + 1] = dest[1]; pixels[offset + 2] = dest[2]; pixels[offset + 3] = dest[3];
+    }
+  }
+  return { ...bounds, pixels };
 }
 
 function drawGuides(buffer, grid) {
