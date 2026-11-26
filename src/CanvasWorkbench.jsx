@@ -8,7 +8,7 @@ import { frameCanvasNodes, ObsidianEdge, ObsidianStatus } from './CanvasObsidian
 import { canvasNodeModality } from './canvas-obsidian.js';
 import { inlineImageView, compactInlineImages, imageCompactArgs, inlineSingleResult, extractInlineOutput } from './image-inline-output.js';
 import { ModelResultPreview } from './ModelResultPreview.jsx';
-import { persistedModelFields, readGeneratedModelFile } from './model-result.js';
+import { persistedModelFields, persistGeneratedModelFiles, readGeneratedModelFile } from './model-result.js';
 import { isWhiteMeshStep } from './white-mesh-step.js';
 import CharacterSheetControls from './CharacterSheetControls.jsx';
 import { CHARACTER_SHEET_STAGES } from './character-sheet-settings.js';
@@ -298,7 +298,7 @@ function MediaDragSurface({ videoRef, video = false, onActivate }) {
 }
 
 function MediaNode({ id, data, selected }) {
-  const { chooseMedia, openImagePreview, viewTier, getMaskGuide, readOnly, createArtDirector, projectId } = useContext(NodeContext);
+  const { chooseMedia, openImagePreview, viewTier, getMaskGuide, readOnly, createArtDirector, projectId, persistGeneratedModel } = useContext(NodeContext);
   const input = useRef(null);
   const videoRef = useRef(null);
   const [maskEditorOpen, setMaskEditorOpen] = useState(false);
@@ -321,7 +321,7 @@ function MediaNode({ id, data, selected }) {
   };
   if (kind === 'model') return <div className={`media-shell media-model ${selected ? 'selected' : ''}`}>
     <NodeTitle id={id} data={data} kind="media" /><NodeActions id={id} data={data} selected={selected} />
-    <ModelResultPreview projectId={projectId} data={data} />
+    <ModelResultPreview projectId={projectId} data={data} onPersist={readOnly ? undefined : (record) => persistGeneratedModel(id, record)} />
     <Handle type="target" position={Position.Left} id="preview" className="neo-handle target" />
     {isGeneratedGLB({type:'media',data}) && <Handle type="source" position={Position.Right} id="model" className="neo-handle source" title="连接到 3D LOD" />}
   </div>;
@@ -400,7 +400,7 @@ function CustomWorkflowNode({ id, data, selected }) {
   const presentation = useResultPresentation(data, data.resultUrl);
   const updateNodeInternals = useUpdateNodeInternals();
   useEffect(() => { updateNodeInternals(id); }, [id, data.workflowDefinition, data.resultUrl, presentation.compact, updateNodeInternals]);
-  const { updateNode, generateNode, cancelNode, serverOnline, getReferences, openNodeShare, checkNodeDependencies, extractInlineResult, projectId } = useContext(NodeContext);
+  const { updateNode, generateNode, cancelNode, serverOnline, getReferences, openNodeShare, checkNodeDependencies, extractInlineResult, projectId, persistGeneratedModel, readOnly } = useContext(NodeContext);
   const running = ['uploading', 'queued', 'running', 'finishing'].includes(data.status);
   const refs = getReferences(id);
   return <div className={`generator-shell h3-node custom-workflow-node ${presentation.compact ? 'result-compact' : ''} ${selected ? 'selected' : ''}`}>
@@ -408,7 +408,7 @@ function CustomWorkflowNode({ id, data, selected }) {
     <GpuJobStatus gpu={data.gpu} />
     <ResultSettingsToggle presentation={presentation} />
     <div className="custom-workflow-identity" title={data.extensionDigest}>{data.extensionPackageId} · {data.extensionVersion} · {data.extensionDigest?.slice(0, 12)}</div>
-    {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'model' ? <ModelResultPreview projectId={projectId} data={{ ...data, name: data.resultFilename || data.name, url: data.resultUrl, assetPath: data.resultAssetPath, bytes: data.resultBytes }} /> : data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
+    {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'model' ? <ModelResultPreview projectId={projectId} data={{ ...data, name: data.resultFilename || data.name, url: data.resultUrl, assetPath: data.resultAssetPath, bytes: data.resultBytes }} onPersist={readOnly ? undefined : (record) => persistGeneratedModel(id, record, { generator: true })} /> : data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
     {data.inlineImageOutputId && <button type="button" className="extract-inline-result nodrag" onClick={() => extractInlineResult(id)}>提取到画布</button>}
     {(data.workflowDefinition?.inputs || []).map((port, index, ports) => <div className="custom-workflow-port" key={port.id} style={{ "--compact-port-top": `${20 + index * 60 / Math.max(1, ports.length - 1)}%` }}><Handle type="target" position={Position.Left} id={port.id} title={port.label || port.name || port.id} className="neo-handle target" /><strong>{port.label || port.name || port.id}</strong> · {port.required ? '必填图片' : '可选图片'}<span> · {refs.find((ref) => ref.data.slot === port.id)?.data.title || '未连接'}</span></div>)}
     <div className="custom-workflow-params nodrag nowheel">{Object.entries(data.workflowDefinition?.parameters?.properties || {}).map(([key, field]) => {
@@ -1198,18 +1198,19 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const customFiles = source?.data.mode === 'customWorkflow' ? extensionMedia(history?.[promptId], source.data.workflowOutputs || source.data.workflowDefinition?.outputs) : null;
       const isImage = customFiles ? customFiles[0]?.kind !== 'video' : ['image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism', 'mossPose'].includes(source?.data.mode);
       const outputEntry = source?.data.mode === 'customWorkflow' ? declaredHistory(history?.[promptId], source.data.workflowOutputs || source.data.workflowDefinition?.outputs) : history?.[promptId];
-      const files = customFiles || (isImage ? extractImages(outputEntry) : extractVideos(outputEntry));
-      if (!files.length) throw new Error(`任务已结束，但没有找到${isImage ? '图片' : '视频'}输出。`);
+      const rawFiles = customFiles || (isImage ? extractImages(outputEntry) : extractVideos(outputEntry));
+      if (!rawFiles.length) throw new Error(`任务已结束，但没有找到${isImage ? '图片' : '视频'}输出。`);
+      const files = customFiles ? await persistGeneratedModelFiles(rawFiles, async (file) => {
+        if (file.kind !== 'model') return {};
+        if (!saveGeneratedFileRef.current) throw new Error('模型保存尚未就绪。');
+        const blob = await readGeneratedModelFile(file.url, file.filename);
+        return persistedModelFields(await saveGeneratedFileRef.current(blob), blob.size);
+      }) : rawFiles;
       const singleOutfit = source?.data.mode === 'outfitEdit' && (source?.data.outfitPanel || source?.data.panelId);
       const preferredImage = files.find((file) => source?.data.mode === 'characterSheet' ? file.filename?.startsWith('H3_CharacterSheet_') : source?.data.mode === 'outfitEdit' ? file.filename?.startsWith(singleOutfit ? `H3_OutfitHD_${singleOutfit}_` : 'H3_OutfitQuad_') : source?.data.mode === 'qwenEdit' ? file.filename?.startsWith(isH3Image(source.data) ? 'H3_Image_Edit_' : 'H3_Qwen21Edit_') : source?.data.mode === 'identityEdit' ? file.filename?.startsWith('H3_IdentityV2_') : source?.data.mode === 'imageUpscale' ? file.filename?.startsWith('H3_Image_HD') : source?.data.mode === 'image' && source?.data.imageModel === 'moss' ? file.filename?.startsWith('H3_MOSS_Image_') : file.filename?.startsWith('H3_Image_'));
-      const result = customFiles ? customFiles[0] : isImage ? preferredImage || files[0] : selectCompletedVideo(source?.data.mode, files);
+      const result = customFiles ? files[0] : isImage ? preferredImage || files[0] : selectCompletedVideo(source?.data.mode, files);
       const resultKind = customFiles ? result.kind : isImage ? 'image' : 'video';
-      let persistedModel = null;
-      if (resultKind === 'model') {
-        if (!saveGeneratedFileRef.current) throw new Error('模型保存尚未就绪。');
-        const file = await readGeneratedModelFile(result.url, result.filename);
-        persistedModel = persistedModelFields(await saveGeneratedFileRef.current(file), file.size);
-      }
+      const persistedModel = resultKind === 'model' && result.assetPath ? { assetPath: result.assetPath, bytes: result.bytes } : null;
       const resultModels = describeNodeModels(source?.data);
       const outfitTitle = singleOutfit ? `${resolveOutfitPanels(source.data).find((panel) => panel.id === singleOutfit)?.label || singleOutfit} · ${result.filename?.startsWith(`H3_OutfitSingle_${singleOutfit}_`) ? '原生尺寸 · 未高清' : '独立高清'}` : `四视图 · 单图按需高清${(source?.data.outfitLayout || 'legacy') === 'legacy' ? '拼接' : '原版面合成'}`;
       const title = isH3Image(source?.data) ? (source.data.mode === 'qwenEdit' ? 'H3-Image 编辑' : 'H3-Image 生图') : source?.data.mode === 'characterSheet' ? '角色四视图生成' : source?.data.mode === 'outfitEdit' ? outfitTitle : source?.data.mode === 'qwenEdit' ? '图生图' : source?.data.mode === 'localRealism' ? '局部写实修复' : source?.data.mode === 'identityEdit' ? '母图编辑 V2' : source?.data.mode === 'image' ? (source?.data.imageModel === 'moss' ? 'MOSS 生图' : 'Krea2 生图') : source?.data.mode === 'imageUpscale' ? '图片高清' : source?.data.mode === 'swap' ? '换人一采' : source?.data.mode === 'upscale' ? '高清二采' : '成片';
@@ -1257,7 +1258,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       }).concat(pinMedia ? [delivered] : []));
       if (pinMedia) setEdges((items) => addEdge({ id: `edge-${id}-${delivered.id}`, source: id, target: delivered.id, sourceHandle: resultKind, targetHandle: 'preview' }, items));
       if (pinMedia && customFiles?.length > 1) {
-        const extraNodes = customFiles.slice(1).map((file, index) => ({
+        const extraNodes = files.slice(1).map((file, index) => ({
           id: uid(file.kind), type: 'media', position: { x: resultPosition.x, y: resultPosition.y + (index + 1) * 340 },
           data: { ...file, output: true, title: `${source.data.title} · ${file.extensionOutputId} ${index + 2}`, name: file.filename, sourcePromptId: promptId, sourceQueueJobId: source.data.queueJobId || null, sourceGeneratorId: id },
         }));
@@ -2620,6 +2621,12 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     }
   };
   saveGeneratedFileRef.current = saveNativeFile;
+  const persistGeneratedModel = async (nodeId, record, { generator = false } = {}) => {
+    const file = await readGeneratedModelFile(record.url, record.name || record.filename || 'model.glb');
+    const fields = persistedModelFields(await saveNativeFile(file), file.size);
+    updateNode(nodeId, generator ? { resultAssetPath: fields.assetPath, resultBytes: fields.bytes, resultFilename: file.name } : fields);
+    return fields;
+  };
   const nativePatch = (id, patch) => {
     if (switchingRef.current || project.readOnly) throw new Error('当前画布不可编辑。');
     const next = nodesRef.current.map(n => n.id === id ? { ...n, data: { ...n.data, ...patch } } : n);
@@ -2668,7 +2675,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }, [setNodes]);
   const resumeVideoAnalysis = useCallback((id, signal) => videoEditRunnerRef.current.resumeAnalysis(id, signal), []);
   const cancelVideoAnalysis = useCallback((id) => videoEditRunnerRef.current.cancelAnalysis(id), []);
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, extractInlineResult, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, extractInlineResult, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, extractInlineResult, persistGeneratedModel, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, extractInlineResult, persistGeneratedModel, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }

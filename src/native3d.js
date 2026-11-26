@@ -31,6 +31,13 @@ export function isGeneratedGLB(node) {
   return typeof data.url === 'string' && data.url.startsWith('/api/comfy/view?')
     && data.type === 'output' && /\.glb$/i.test(data.filename || data.name || '');
 }
+export function analyzePrimaryButton(data, inputs) {
+  if (data?.operation !== 'analyze') return null;
+  const record = inputs?.model?.data;
+  const connected = Boolean(record?.assetPath || record?.resultAssetPath) || isGeneratedGLB(inputs?.model);
+  if (data.assetPath || data.nativePendingSource || connected) return { label: '分析模型', action: 'run' };
+  return { label: '导入模型', action: 'import' };
+}
 export const nativeAssetUrl = (projectId, path) => /^assets\/[a-zA-Z0-9_.-]+$/.test(path || '') ? `/api/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(path.slice(7))}` : null;
 export function nativeAdapterSchema(adapter) { return adapter?.parameters || adapter?.parameterSchema || adapter?.schema || { properties: {} }; }
 export function nativeParameterValue(adapter, draft, key, rule) {

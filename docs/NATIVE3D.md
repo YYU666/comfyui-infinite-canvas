@@ -28,11 +28,11 @@ python scripts/setup_native3d.py --venv <path>
 
 `sourceDirectory` 指向官方 TripoSR 仓库根（验收版本 `107cefdc244c39106fa830359024f6a2f1c78871`）。`modelDirectory` 包含 Stability AI 的 `config.yaml` 和 `model.ckpt`，以及 DINO ViT-B/16 的 `config.json`（保存为 `dino-config.json`）。这些文件必须通过固定 SHA-256 校验。运行环境需安装 CUDA Torch、TorchVision、Transformers、OmegaConf、einops、Trimesh、NumPy、Pillow、imageio、huggingface-hub、PyMCubes、fast-simplification 和 psutil。已有独立 CUDA 环境缺少个别包时，可把补充安装目录的绝对路径配置为 `pythonModuleDirectory`。节点加载本地模型，导出几何 GLB。顶点色只供预览，这一步不展 UV，也不写材质贴图。没有用过的权重请在获得授权后下载。[上游源码](https://github.com/VAST-AI-Research/TripoSR) · [官方权重](https://huggingface.co/stabilityai/TripoSR)
 
-按「参考图 → 图生白模 → 修模 / LOD → 之后的 UV → 材质烘焙 → 曲率磨损」连接节点。白模节点到此为止。烘焙的高模输入回接修模后的 GLB，低模输入接对应 LOD 的 UV 结果。烘焙可投射高模顶点色，并输出基于高模凸棱夹角的曲率贴图。曲率磨损调节底色、粗糙度与可选的金属露出，沿用该烘焙的原网格、UV、法线和 AO。用「查看材质效果」验证模型，运行完成后可下载 GLB 和各张贴图。没有曲率通道的历史烘焙需要从原节点重新运行。
+按「参考图 → 图生白模 → 修模 / LOD → 之后的 UV → 材质烘焙 → 曲率磨损」连接节点。白模节点到此为止。新的百分比 LOD 默认是 High（高模）、Medium（中模）、Low（低模）三档，高模面数上限 12 万；已经保存在旧项目里的 1–5 档数据仍按原档数打开。高模会先做空间焊接、去退化面和孤立碎块，并分开记录破洞边、非流形边和 UV 缝。烘焙的高模输入回接修模后的 GLB，低模输入接对应 LOD 的 UV 结果。烘焙可投射高模顶点色，并输出基于高模凸棱夹角的曲率贴图，同时给出五张 PBR 和一张 ORM。这些贴图留在烘焙节点里预览和下载，需要时再提取单张到画布。粗糙度死灰或法线纯平紫会写进节点状态和 report.json，不会当作无告警通过。曲率磨损调节底色、粗糙度与可选的金属露出，沿用该烘焙的原网格、UV、法线和 AO。用「查看材质效果」验证模型，运行完成后可下载 GLB 和各张贴图。没有曲率通道的历史烘焙需要从原节点重新运行。
 
 ## 处理图生白模结果
 
-把图生白模节点的 `model` 输出直接连到修模、LOD 或分析节点。自定义工作流完成时已把 GLB 写入当前项目 `assets/`。尚未落盘的旧 ComfyUI 地址，会在第一次 Native3D 加工时保存到当前项目。保存期间请留在当前项目；项目、写入权限或模型输入变化会阻止此次提交。Agent 可用原 `nodeId` 和提交返回的 `jobId` 调用 `canvas_wait_for_node`；`pending:true` 时续查同一任务。
+把图生白模节点的 `model` 输出直接连到修模、LOD 或分析节点。分析节点已经接上带 `assetPath` 或已生成 GLB 的模型时，主按钮是「分析模型」，不再弹出系统文件框。自定义工作流里每一个模型输出都会写入当前项目 `assets/`。只有临时预览地址、还没有 `assetPath` 的旧 GLB，可以在预览里点「写入项目并预览」，写入后再打开现有 WebGL 查看器。保存期间请留在当前项目；项目、写入权限或模型输入变化会阻止此次提交。Agent 可用原 `nodeId` 和提交返回的 `jobId` 调用 `canvas_wait_for_node`；`pending:true` 时续查同一任务。
 
 ## 可选能力与检查
 

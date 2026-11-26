@@ -1,5 +1,5 @@
 import {nativeOutputForEdge,nativeOutputNode} from './native3d-output.js';
-export const PLAN_FACE_LIMIT=100000;
+export const PLAN_FACE_LIMIT=120000;
 export const PLAN_BYTE_LIMIT=64*1024*1024;
 const hash=/^[a-f0-9]{64}$/;
 export const isPlanNode=node=>Boolean(node?.data?.nativeUVPlan);
@@ -88,7 +88,7 @@ export async function decodePlanOverlay(buffer,overlay,cryptoImpl=globalThis.cry
     if (!output[name].every(Number.isFinite)) throw Error('方案数据包含非有限数值。');
   }
   const a=overlay.arrays;
-  if (!output.positions || a.positions.count<1 || !output.faces || a.faces.count<1 || a.faces.count>PLAN_FACE_LIMIT || !output.regions || output.regions.length!==a.faces.count || !output.darkness || output.darkness.length!==a.faces.count || !output.edges) throw Error('方案缺少真实几何、分区或AO数据，或超过10万面。');
+  if (!output.positions || a.positions.count<1 || !output.faces || a.faces.count<1 || a.faces.count>PLAN_FACE_LIMIT || !output.regions || output.regions.length!==a.faces.count || !output.darkness || output.darkness.length!==a.faces.count || !output.edges) throw Error('方案缺少真实几何、分区或AO数据，或超过12万面。');
   if (output.faces.some(v=>v>=a.positions.count) || output.edges.some(v=>v>=a.positions.count) || a.edges.count>600000) throw Error('方案索引超界。');
   for(const name of ['confidence','supported'])if(output[name]&&output[name].length!==a.faces.count)throw Error('方案逐面数据长度不一致。');
   if(output.edgeReason&&output.edgeReason.length!==a.edges.count)throw Error('候选边理由数量不一致。');

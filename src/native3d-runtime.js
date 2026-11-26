@@ -19,6 +19,7 @@ import {nativeInputs,planRecord,planConfirmationKey,assertPlanCurrent,assertConf
 import { transferNativeArtifacts, nativeRunIsCurrent, commitNativeDelivery } from './native3d-delivery.js';
 import { nativeStagePlan, applyNativeStagePlan, saveNativeStagePoster } from './native3d-stage.js';
 import { nativeUVIdentity, nativeUVHasLayout, saveNativeUVPreviews, nativeUVDeliveredPreviews } from './native3d-uv-preview.js';
+import { extractBakeTextureNode } from './native3d-bake-preview.js';
 
 function matchesNativePageJob(job, submission, origin, originNodeId) {
   return Boolean(job.canvasSubmission) && job.canvasSubmission.origin === origin
@@ -800,7 +801,17 @@ export function useNative3D(options) {
     const o = latest.current;
     return nativeTakeover(id, o.nodesRef.current, o.edgesRef.current, capabilities);
   };
-  return { takeover, compactResults,output:id=>nativeOutputNode(latest.current.nodesRef.current.find(n=>n.id===id)),notificationSoundEnabled,setNotificationSoundEnabled,unlockNotificationSound:()=>native3DNotifications.unlock(),syncTask,retryLOD, repairLOD, createResolution, nextStep, nextActions: id=>{const node=nextSource(id);return nextStepActions(node).map(action=>{if(action.action!=='unwrap')return action;try{assertLivePlan(node.data.nativeUVPlan,current());return action;}catch{return {...action,disabled:true};}});}, projectId: options.projectId, readOnly: options.readOnly, capabilities, capabilityError, patch, run, rerunStatus, rerunResult, importModel, retryDelivery, refreshUVPreview,refreshDiagnosticPreview,
+  const extractBakeTexture=(id,channel)=>{
+    const o=current();
+    if(o.readOnly)throw Error('当前项目只读。');
+    const node=o.nodesRef.current.find(n=>n.id===id);
+    const plan=extractBakeTextureNode({node,channel,projectId:o.projectId,id:`tex_${channel}_${crypto.randomUUID()}`,position:findFreePosition(o.nodesRef.current,{x:(node?.position?.x||0)+390,y:node?.position?.y||0},'media')});
+    o.recordHistory?.(o.nodesRef.current,o.edgesRef.current);
+    o.nodesRef.current=o.nodesRef.current.concat(plan.nodes);
+    o.setNodes(o.nodesRef.current);
+    return {nodeId:plan.nodes[0].id,assetPath:plan.nodes[0].data.assetPath};
+  };
+  return { takeover, compactResults,extractBakeTexture,output:id=>nativeOutputNode(latest.current.nodesRef.current.find(n=>n.id===id)),notificationSoundEnabled,setNotificationSoundEnabled,unlockNotificationSound:()=>native3DNotifications.unlock(),syncTask,retryLOD, repairLOD, createResolution, nextStep, nextActions: id=>{const node=nextSource(id);return nextStepActions(node).map(action=>{if(action.action!=='unwrap')return action;try{assertLivePlan(node.data.nativeUVPlan,current());return action;}catch{return {...action,disabled:true};}});}, projectId: options.projectId, readOnly: options.readOnly, capabilities, capabilityError, patch, run, rerunStatus, rerunResult, importModel, retryDelivery, refreshUVPreview,refreshDiagnosticPreview,
     diagnosticPreview:id=>{const o=latest.current,n=o.nodesRef.current.find(n=>n.id===id),p=n?.data.nativeUVDiagnosticPreviews;return p?.diagnosticOnly===true&&p.acceptedUV===false&&p.bakeAllowed===false&&p.projectId===o.projectId&&p.nodeId===id&&p.jobId===n.data.nativeJobId&&n.data.operation==='uv'&&['error','failed'].includes(n.data.status)&&p.inputIdentity===identityFor(n,sourceFor(o,n))?p:null;},
     persist:()=>current().persistProject(),
     inputs:id=>inputsFor(latest.current,latest.current.nodesRef.current.find(n=>n.id===id)),

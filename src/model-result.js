@@ -49,3 +49,20 @@ export function modelResultSummary(data = {}) {
     persisted: PROJECT_GLB.test(data.assetPath || ''),
   };
 }
+
+export function modelPreviewActions(data = {}) {
+  const summary = modelResultSummary(data);
+  if (summary.persisted) return { ...summary, view: true, persist: false, viewLabel: '查看 3D 模型' };
+  if (data.url) return { ...summary, view: false, persist: true, viewLabel: '写入项目并预览' };
+  return { ...summary, view: false, persist: false, viewLabel: '查看 3D 模型' };
+}
+
+export async function persistGeneratedModelFiles(files, persist) {
+  if (!Array.isArray(files)) return files;
+  const saved = [];
+  for (const file of files) {
+    if (file?.kind !== 'model') { saved.push(file); continue; }
+    saved.push({ ...file, ...(await persist(file)) });
+  }
+  return saved;
+}

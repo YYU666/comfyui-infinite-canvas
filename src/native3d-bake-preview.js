@@ -1,5 +1,5 @@
 import {nativeOutputNode} from './native3d-output.js';
-export const BAKE_CHANNELS=[['basecolor','底色'],['normal','法线'],['ao','AO'],['roughness','粗糙度'],['metallic','金属度'],['curvature','凸棱曲率'],['edge-wear','磨损遮罩']];
+export const BAKE_CHANNELS=[['basecolor','底色'],['normal','法线'],['roughness','粗糙度'],['metallic','金属度'],['ao','AO'],['orm','ORM'],['curvature','凸棱曲率'],['edge-wear','磨损遮罩']];
 const modelPath=/^assets\/[a-f0-9]{64}\.(glb|obj)$/i;
 const imagePath=/^assets\/[a-f0-9]{64}\.png$/i;
 export function nativeBakePreview(node) {
@@ -27,4 +27,10 @@ export function nativeBakePreview(node) {
   const selected=channels.find(c=>c.key===mode);
   const proxy=artifacts.find(a=>a.role==='proxy'&&a.assetPath===data.proxyAssetPath&&modelPath.test(a.assetPath||''));
   return {jobId,modelAssetPath:model,channels,mode,selected,materialPath:proxy?.assetPath||model};
+}
+export function extractBakeTextureNode({node,channel,projectId,id,position}) {
+  const preview=nativeBakePreview(node);
+  const selected=preview?.channels.find(item=>item.key===channel);
+  if(!selected||selected.key==='grey')throw Error('请选择一张已写入项目的烘焙贴图。');
+  return {nodes:[{id,type:'media',position,data:{kind:'image',output:true,title:selected.label,name:`${selected.key}.png`,assetPath:selected.assetPath,url:`/api/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(selected.assetPath.slice(7))}`,sourceNodeId:node.id,mediaRole:'extracted-texture'}}]};
 }

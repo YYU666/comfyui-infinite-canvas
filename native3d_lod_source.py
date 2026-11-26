@@ -23,8 +23,8 @@ def _percent(value, name):
 def _cap(value, name):
     if value is None or (type(value) is int and value == 0):
         return None
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or not 4 <= value <= 100000:
-        raise ValueError(name+' must be0/None or an integer within4..100000')
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or not 4 <= value <= 120000:
+        raise ValueError(name+' must be0/None or an integer within4..120000')
     return int(value)
 
 
@@ -39,8 +39,8 @@ def resolve_lod_settings(params=None):
     if reference not in ('lod0', 'previous'):
         raise ValueError('lodPercentReference must be lod0 or previous')
     percentages = params.get('lodKeepPercents', [100]+[params.get('lod'+str(i)+'KeepPercent', p)
-                                                     for i, p in enumerate((50, 25, 12.5, 6.25), 1)])
-    caps = params.get('lodFaceCaps', [params.get('lod0FaceCap', 100000)]+
+                                                     for i, p in enumerate((30, 12, 6, 3), 1)])
+    caps = params.get('lodFaceCaps', [params.get('lod0FaceCap', 120000)]+
                       [params.get('lod'+str(i)+'FaceCap', 0) for i in range(1, 5)])
     if not isinstance(percentages, (list, tuple)) or len(percentages) != 5:
         raise ValueError('Exactly five logical LOD keep percentages required')
@@ -58,7 +58,7 @@ def resolve_lod_settings(params=None):
     selected = params.get('selectedLodLevel', 0)
     if type(selected) is not int or not 0 <= selected < count:
         raise ValueError('selectedLodLevel must be below lodCount')
-    return {'lod0KeepPercent': _percent(params.get('lod0KeepPercent', 10), 'Original to LOD0 keep'),
+    return {'lod0KeepPercent': _percent(params.get('lod0KeepPercent', 55), 'Original to LOD0 keep'),
             'lodPercentReference': reference, 'lodKeepPercents': percentages,
             'lodFaceCaps': caps, 'selectedLodLevel': selected, **({'lodCount': count} if count != 5 else {})}
 
@@ -468,6 +468,10 @@ def _run_source_lod_core(mesh, output, params=None, progress=None, *, protected_
     backend = params.get('simplifierBackend','open3d')
     if backend not in ('open3d','fast_simplification'):
         raise ValueError('Source LOD simplifierBackend must be open3d or fast_simplification')
+    from native3d_highpoly import repair_high
+    repaired, high_repair = repair_high(mesh)
+    if high_repair.get('changed'):
+        mesh = repaired
     folder = Path(output)
     folder.mkdir(parents=True, exist_ok=True)
     report_path = folder/'source-lod-report.json'
@@ -483,7 +487,7 @@ def _run_source_lod_core(mesh, output, params=None, progress=None, *, protected_
     manifest = {'status': 'blocked', 'chainStatus':'blocked','chainComplete':False,
                 'mode': 'source_high', 'algorithm': 'CPU '+backend+' QEM; not AI',
                 'backend': backend, 'backendVersion': o3d.__version__ if backend=='open3d' else getattr(fast_simplification, '__version__', 'unknown'),
-                'settings': settings, 'source_mesh_hash': original_hash, 'sourceTriangles': source_count,
+                'settings': settings, 'highRepair': high_repair, 'source_mesh_hash': original_hash, 'sourceTriangles': source_count,
                 'normalized_source_mesh_hash': mesh_hash(v, f), 'sourceNormalization': normalization,
                 'sourceFileSha256': params.get('sourceFileSha256'), 'sourceUnchanged': True,
                 'attributePolicy': 'geometry_only_requires_uv_and_bake',

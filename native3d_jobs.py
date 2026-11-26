@@ -68,11 +68,11 @@ SCHEMAS = {
         'retryKeepPercent': {'type':'number','minimum':0.001,'maximum':100,
                              'title':'本次重试保留比例（%）',
                              'description':'仅单档重试可用；省略沿用冻结比例。基准沿用原任务，只覆盖当前档；原硬面数上限仍生效。'},
-        'lodCount': {'type':'integer','minimum':1,'maximum':5,'default':5,'title':'输出 LOD 档数'},
-        'lod0KeepPercent': {'type':'number','minimum':0.001,'maximum':100,'default':10},
-        'lod0FaceCap': {'type':'integer','minimum':0,'maximum':100000,'default':100000},
-        **{'lod'+str(i)+'KeepPercent': {'type':'number','minimum':0.001,'maximum':100,'default':n} for i,n in enumerate((50,25,12.5,6.25),1)},
-        **{'lod'+str(i)+'FaceCap': {'type':'integer','minimum':0,'maximum':100000,'default':0} for i in range(1,5)},
+        'lodCount': {'type':'integer','minimum':1,'maximum':5,'default':3,'title':'输出 LOD 档数'},
+        'lod0KeepPercent': {'type':'number','minimum':0.001,'maximum':100,'default':55},
+        'lod0FaceCap': {'type':'integer','minimum':0,'maximum':120000,'default':120000},
+        **{'lod'+str(i)+'KeepPercent': {'type':'number','minimum':0.001,'maximum':100,'default':n} for i,n in enumerate((30,12,6,3),1)},
+        **{'lod'+str(i)+'FaceCap': {'type':'integer','minimum':0,'maximum':120000,'default':0} for i in range(1,5)},
         'selectedLodLevel': {'type':'integer','minimum':0,'maximum':4,'default':0},
     },
     'uv': {
@@ -98,8 +98,8 @@ SCHEMAS = {
         'concaveAngleDegrees': {'type':'number', 'minimum':5, 'maximum':90, 'default':25},
         'sharpAngleDegrees': {'type':'number', 'minimum':45, 'maximum':170, 'default':80},
         'externalGeometryReviewed': {'type':'boolean','default':False,'description':'Explicit manual UV permission for externally authored mesh with no known AI job provenance'},
-        'resolution': {'type':'integer', 'enum':[1024,2048,4096], 'default':1024},
-        'padding': {'type':'integer', 'minimum':1, 'maximum':32, 'default':8},
+        'resolution': {'type':'integer', 'enum':[1024,2048,4096], 'default':2048},
+        'padding': {'type':'integer', 'minimum':1, 'maximum':32, 'default':16},
     },
     'bake': {
         'externalGeometryReviewed': {'type':'boolean','default':False,'description':'Explicit manual permission for externally authored mesh with no known AI job provenance'},
@@ -862,7 +862,7 @@ class Native3DJobs:
                 python = self.config().get('pythonExecutable', '')
                 if not Path(python).is_file(): fail('Native3D Python unavailable', 503, 'NATIVE3D_NOT_READY')
                 try:
-                    extra=['--max-faces','100000'] if job.get('operation')=='source_lod' else []
+                    extra=['--max-faces','120000'] if job.get('operation')=='source_lod' else []
                     if diagnostic:
                         evidence_path=folder/(evidence_digest+'-diagnostic.json')
                         if evidence_path.is_symlink():fail('Unsafe diagnostic preview evidence')
@@ -1036,7 +1036,7 @@ class Native3DJobs:
                 fail('Unsafe preview cache')
             folder.mkdir(exist_ok=True)
             target = folder / (digest + '-' + mode + '-v3.png')
-            extra = ['--max-faces','100000'] if plan_verified else []
+            extra = ['--max-faces','120000'] if plan_verified else []
             if evidence is not None:
                 evidence_path = folder / (evidence_digest + '.json')
                 if evidence_path.is_symlink(): fail('Unsafe AO evidence cache')

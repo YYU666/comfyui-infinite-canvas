@@ -13,6 +13,15 @@ export function needsCanonicalLODStage(data) {
  const assets=(data.nativeArtifacts||[]).filter(a=>a.name===records[0].filename&&a.role==='export');
  return assets.length===1&&/^assets\/[a-f0-9]{64}\.glb$/.test(assets[0].assetPath||'')&&data.assetPath!==assets[0].assetPath;
 }
+export function lodCountOf(data) {
+ const stored = data?.nativeParameters?.lodCount ?? data?.metadata?.geometry?.settings?.lodCount;
+ return Number.isInteger(stored) && stored >= 1 && stored <= 5 ? stored : 5;
+}
+export function lodStageLabel(level, lodCount = 3) {
+ const names = ['High（高模）', 'Medium（中模）', 'Low（低模）'];
+ if (Number.isInteger(level) && level >= 0 && level < names.length) return names[level];
+ return `LOD${level}`;
+}
 export function nextStepActions(node) {
  node=nativeOutputNode(node);
  const d=node?.data;if(node?.type!=='native3d'||d.operation!=='analyze'||d.status!=='completed')return [];
@@ -24,7 +33,8 @@ export function nextStepActions(node) {
  if(d.nativeUVPlan){let confirmed=false;try{confirmed=d.nativeUVPlanConfirmation===planConfirmationKey(d.nativeUVPlan);}catch{}return [{action:'unwrap',label:'展开UV',disabled:!confirmed}];}
  if(d.metadata?.operation==='source_lod'&&d.metadata.geometry.status==='accepted'){
   const level=d.nativeLODLevel??d.metadata.geometry.selectedLodLevel;
-  return [...(Number.isInteger(level)&&level>=0&&level<4?[{action:'next_lod',label:`继续LOD${level+1}`}]:[]),{action:'uv_plan',label:'制作UV'}];
+  const lodCount=lodCountOf(d);
+  return [...(Number.isInteger(level)&&level>=0&&level<Math.min(4,lodCount-1)?[{action:'next_lod',label:`继续${lodStageLabel(level+1,lodCount)}`}]:[]),{action:'uv_plan',label:'制作UV'}];
  }
  if(d.metadata?.operation==='uv'&&d.metadata?.uv)return [{action:'bake',label:'烘焙材质'}];
  return [];
@@ -102,7 +112,7 @@ export function nativeNextStepPlan({source,nodes,edges,job,projectId,action,seed
  }
  if(nodes.some(n=>n.id===id))throw Error('节点ID冲突。');
  const links=Object.entries(inputs).map(([targetHandle,source])=>({id:`${id}-${targetHandle}`,source,sourceHandle:targetHandle==='plan'?'plan':'model',target:id,targetHandle,data:nativeOutputBinding(selectedInputs[targetHandle])}));
- const title=action==='next_lod'?`${parameters.retryStage.toUpperCase()} · 待生成`:({uv_plan:'UV切缝方案',uv_plan_reviewed:'UV切缝方案 · 轮廓待复核',unwrap:'UV展开',bake:'4K材质烘焙'})[action];
+ const title=action==='next_lod'?`${lodStageLabel(Number(parameters.retryStage.slice(3)),lodCountOf(d))} · 待生成`:({uv_plan:'UV切缝方案',uv_plan_reviewed:'UV切缝方案 · 轮廓待复核',unwrap:'UV展开',bake:'4K材质烘焙'})[action];
  const node={id,type:'native3d',position:findFreePosition(nodes,{x:source.position.x+390,y:source.position.y},'native3d'),data:{title,operation,status:'idle',nativeParameters:parameters,nativeNextStepNotice:notice,nativeNextStep:{key,sourceId:source.id,sourceJobId:job.id,action,origin,parametersSnapshot:JSON.stringify(parameters),inputsSnapshot:inputSnapshot}}};
  return {node,edges:links,reused:false,notice,origin};
 }

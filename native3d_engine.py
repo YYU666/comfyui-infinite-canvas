@@ -414,13 +414,14 @@ def simplify(mesh, target):
 
 
 def quality(mesh):
-    areas = mesh.area_faces
-    edges = np.sort(mesh.edges, axis=1)
-    _, counts = np.unique(edges, axis=0, return_counts=True)
+    from native3d_highpoly import topology_report
+    topology = topology_report(mesh)
     return {'status': 'needs_review', 'vertices': len(mesh.vertices), 'triangles': len(mesh.faces),
             'bounds': mesh.bounds.tolist(), 'finite': bool(np.isfinite(mesh.vertices).all()),
-            'degenerateTriangles': int(np.count_nonzero(areas <= 1e-15)),
-            'boundaryEdges': int(np.count_nonzero(counts == 1)), 'nonManifoldEdges': int(np.count_nonzero(counts > 2)),
+            'degenerateTriangles': topology['degenerateTriangles'],
+            'boundaryEdges': topology['boundaryEdges'], 'nonManifoldEdges': topology['nonManifoldEdges'],
+            'uvSeamEdges': topology['uvSeamEdges'], 'uvSeamsReportedAsBoundary': topology['uvSeamsReportedAsBoundary'],
+            'weldedVertices': topology['weldedVertices'],
             'watertight': bool(mesh.is_watertight), 'selfIntersection': 'not_checked'}
 
 
@@ -483,7 +484,7 @@ def resolve_bake_settings(params, high_diagonal):
     if not np.isfinite(high_diagonal) or high_diagonal<=0:
         raise ValueError('Bake needs a finite positive high-source diagonal')
     settings['paddingRequested']=settings['padding']
-    settings['padding']=settings['padding'] or settings['resolution']//128
+    settings['padding']=max(8, settings['padding'] or settings['resolution']//128)
     settings['cageDistance']=settings['rayDistance']*high_diagonal
     settings['aoRadius']=settings['aoRadiusFraction']*high_diagonal
     # Deliberately retain existing projection-linked origin bias in this slice.
@@ -725,8 +726,9 @@ def bake(low, high, out, params, progress_callback=None):
     Image.fromarray(basecolor).save(out / 'basecolor.png')
     Image.fromarray(roughness).save(out / 'roughness.png')
     Image.fromarray(metallic).save(out / 'metallic.png')
-    from native3d_material_atlas import write_packed_maps
+    from native3d_material_atlas import texture_qc_warnings, write_packed_maps
     write_packed_maps(out, ao, roughness, metallic)
+    texture_warnings = texture_qc_warnings(normal, roughness)
     def loaded_image(name):
         with Image.open(out / name) as image:
             return image.copy()
@@ -748,6 +750,7 @@ def bake(low, high, out, params, progress_callback=None):
     low.vertex_normals = basis['normals']
     low.vertex_attributes = {key: value[source_vertex] for key, value in saved_attributes.items()}
     low.vertex_attributes['_TANGENT'] = basis['tangents']
+    from native3d_highpoly import deliver_shared_lods
     return {'resolution': resolution,'bakeSettings':settings,'defaultsBaseline':'bake-defaults-20261104',
             'concavitySafety':{'version':'concavity-safety-v1','primaryFacingPolicy':'reject actual high geometric N dot normalized low direction<=0; no blind next-hit search',
                 'highShadingNormalPolicy':'unnormalizable or backfacing to its own actual high geometric N (dot<0) uses that geometric N; tangent dot=0 and positive grazing preserved; never clamps or flips against low N',
@@ -793,7 +796,9 @@ def bake(low, high, out, params, progress_callback=None):
             'pbrTransfer': {'baseColor': ('embedded texture times original factor' if base_pixels is not None else
                                           'linear vertex-color projection encoded to sRGB' if vertex_rgb is not None else 'original/default scalar factor'),
                             'metallicRoughness': 'embedded texture times original factors' if mr_pixels is not None else 'original/default scalar factors'},
-            'dilation': {'pixels':settings['padding'],'requestedPixels':settings['paddingRequested'],'automatic':settings['paddingRequested']==0, 'changedTexels': int(dilated.sum()), 'outsideIslandCoverageOnly': True}}
+            'dilation': {'pixels':settings['padding'],'requestedPixels':settings['paddingRequested'],'automatic':settings['paddingRequested']==0, 'changedTexels': int(dilated.sum()), 'outsideIslandCoverageOnly': True},
+            'textureQuality': {'warnings': texture_warnings},
+            'sharedLods': deliver_shared_lods(low, out)}
 
 
 def run(request, output, *, worker_lease=None):
@@ -982,9 +987,10 @@ def run(request, output, *, worker_lease=None):
         if metadata['geometry']['status'] != 'accepted':
             warnings.append('GEOMETRY BLOCKED: ' + metadata['geometry'].get('blocker', 'Required geometry checks not accepted') + '; diagnostic result only, no formal UV or bake.')
     elif operation == 'uv':
-        if len(mesh.faces) > (100000 if request.get('uvPlanPath') else 20000):
-            raise ValueError('UV pilot limit is20000 triangles; simplify first')
-        resolution = int(params.get('resolution', 1024))
+        uv_face_limit = 120000 if request.get('uvPlanPath') else 20000
+        if len(mesh.faces) > uv_face_limit:
+            raise ValueError('UV pilot limit is'+str(uv_face_limit)+' triangles; simplify first')
+        resolution = int(params.get('resolution', 2048))
         if resolution not in (1024, 2048, 4096):
             raise ValueError('UV resolution must be1024,2048 or4096')
         progress('unwrap', 25)
@@ -1054,8 +1060,8 @@ def run(request, output, *, worker_lease=None):
         high = read_mesh(high_path)
         metadata['highSourceSha256'] = hashlib.sha256(Path(request['highSourcePath']).read_bytes()).hexdigest()
         metadata['ramGate'] = memory_gate(max(512 * 1024**2, (len(high.faces) + len(mesh.faces)) * 400 + params['resolution']**2 * 64))
-        if len(mesh.faces) > 100000:
-            raise ValueError('Bake low mesh pilot limit is100000 triangles')
+        if len(mesh.faces) > 120000:
+            raise ValueError('Bake low mesh pilot limit is120000 triangles')
         if request.get('bakePaddingReuse'):
             from native3d_bake_padding import derive_padding
             if metadata['sourceSha256']!=request['source']['sha256'] or metadata['highSourceSha256']!=request['source']['highSha256']:
@@ -1072,6 +1078,9 @@ def run(request, output, *, worker_lease=None):
                 continue
             files.append({'name': name + '.png', 'role': 'texture', 'mime': 'image/png'})
         warnings += ['Normal uses2x2 directional-cage high barycentric samples; tangent basis: '+metadata['bake']['tangentBasis']+'. Projection preserves primary finite cage hits; unresolved samples use bounded k32 external-visible candidate first-hit certification, retrying k64 only for still-unresolved samples. Candidate search is not globally optimal; remaining covered misses stay neutral/white and require review. AO uses deterministic cosine Hammersley rays in the actual high geometric-normal hemisphere; radius is independent of cage, while origin epsilon remains cage-linked. '+str(metadata['bake']['padding'])+'px dilation only outside island coverage. PBR channels report original textures or scalar factors.']
+        warnings += list(metadata['bake'].get('textureQuality', {}).get('warnings') or [])
+        for name in metadata['bake'].get('sharedLods', {}).get('files') or []:
+            files.append({'name': name, 'role': 'export', 'mime': 'model/gltf-binary'})
     # Detect report type/size errors before spending time rendering and exporting.
     uv_quality = quality(mesh) if operation=='uv' else None
     if operation=='uv':
@@ -1086,7 +1095,7 @@ def run(request, output, *, worker_lease=None):
     # verbatim: Trimesh round-tripping can silently discard standard TANGENT.
     # The proxy simplifier works on split UV vertices and can open seams. Use
     # the verified original for moderately sized textured imports.
-    see_original = len(mesh.faces) <= 100000 or (
+    see_original = len(mesh.faces) <= 120000 or (
         len(mesh.faces) <= 300000 and source.stat().st_size <= 32 * 1024**2
     )
     preserve_glb = operation == 'analyze' and source.suffix.lower() == '.glb' and see_original
