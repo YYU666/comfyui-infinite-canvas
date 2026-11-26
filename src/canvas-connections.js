@@ -4,6 +4,7 @@ import { nativeModelConnection } from './native3d.js';
 import { isMaskNode } from './canvas-mask.js';
 import { qwenCanvasReferences } from './qwen-references.js';
 import { isImageProcess, acceptsImageProcessConnection } from './image-process-graph.js';
+import { planPaintBaseConnection, planPaintGeneratorConnection } from './paint-document.js';
 import { isVideoRhythm, planVideoRhythmConnection } from './video-rhythm-document.js';
 import { isVideoChroma, planVideoChromaConnection } from './video-chroma-document.js';
 import { isVideoRepair, planVideoRepairConnection } from './video-repair-document.js';
@@ -66,10 +67,20 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   const source = resolved.source;
   if (source.id === target.id) return fail('不能连接当前成品自身。');
   if (busy(target)) return fail('目标节点正在生成，请完成后再修改连接。');
+  if (target.type === 'native3d' && target.data?.operation === 'image_to_3d' && source.type === 'paint') {
+    if (connection.targetHandle !== 'image') return fail('图生模型的参考图端口只接普通图片。');
+    const normalized = { source: source.id, sourceHandle: 'ref', target: target.id, targetHandle: 'image' };
+    return { connection: normalized, source, target, multiple: false, existing: edges.find((edge) => Object.entries(normalized).every(([key, value]) => edge[key] === value)), resolvedFrom: resolved.resolvedFrom };
+  }
   const nativePlan = nativeModelConnection(connection, source, target, edges);
   if (nativePlan) return { ...nativePlan, resolvedFrom: resolved.resolvedFrom };
+  if (target.type === 'paint') {
+    const plan = planPaintBaseConnection(connection, source, target, edges);
+    return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom };
+  }
   if (target.type === 'artDirector') {
-    if (source.type !== 'media' || source.data.kind !== 'image' || isMaskNode(source) || !ART_PORTS.includes(connection.targetHandle)) return fail('电子主美只接受作品与可选参考图片。');
+    const artwork = (source.type === 'media' && source.data.kind === 'image' && !isMaskNode(source)) || source.type === 'paint';
+    if (!artwork || !ART_PORTS.includes(connection.targetHandle)) return fail('电子主美只接受作品与可选参考图片。');
     const queue = [target.id], seen = new Set();
     while (queue.length) { const id = queue.pop(); if (id === source.id) return fail('电子主美连线不能形成循环。'); if (seen.has(id)) continue; seen.add(id); edges.filter(e => e.source === id).forEach(e => queue.push(e.target)); }
     const normalized = { source: source.id, sourceHandle: 'ref', target: target.id, targetHandle: connection.targetHandle };
@@ -98,6 +109,9 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   } else if (isMaskNode(target)) {
     if (source.type !== 'media' || source.data.kind !== 'image' || isMaskNode(source) || targetHandle !== 'guide') return fail('遮罩底图只接受图片。');
     if (edges.some((edge) => edge.source === target.id && edge.targetHandle === 'mask' && busy(nodes.find((node) => node.id === edge.target)))) return fail('生成期间不能更改遮罩底图。');
+  } else if (source.type === 'paint') {
+    const plan = planPaintGeneratorConnection(connection, source, target, nodes, edges);
+    return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom };
   } else {
     if (source.type !== 'media' || target.type !== 'generator') return fail('请把图片、视频或音频输出连接到生成节点的输入端口。');
     if (isMaskNode(source) && !(mode === 'qwenEdit' && targetHandle === 'mask')) return fail('局部遮罩修改只连接图生图的遮罩端口。');

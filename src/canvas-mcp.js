@@ -17,6 +17,7 @@ import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current
 import { validateCharacterSheetAngleSeed, validateQwenCacheDevice, validateQwenSourceCrop } from './workbench-api.js';
 import { DEFAULT_ADJUSTMENTS, BLEND_MODES, HSL_CHANNELS, LEVEL_CHANNELS } from './image-compositing.js';
 import { isImageProcess, imageProcessSettings } from './image-process-graph.js';
+import { createPaintData } from './paint-document.js';
 import { PHOTO_ADJUSTMENTS, DEFAULT_PHOTO_SETTINGS, normalizePhotoAdjustment } from './photo-adjustments.js';
 import { CHANNEL_KEYS, normalizeChannelPackSettings } from './channel-packing.js';
 import { qwenCanvasReferences, bindQwenPrompt, displayQwenPrompt } from './qwen-references.js';
@@ -41,6 +42,7 @@ export const NODE_PRESETS = {
   color_curves: ['imageProcess', { mode: 'colorAdjust', adjustmentType: 'curves', title: '曲线 Curves' }],
   image_blend: ['imageProcess', { mode: 'imageBlend', title: '图像混合', blendMode: 'normal', opacity: 100, fit: 'cover' }],
   rgba_pack: ['imageProcess', { mode: 'channelPack', title: 'RGBA 通道合并', packPreview: 'rgb' }],
+  paint: ['paint', createPaintData()],
   image_asset: ['image', {}],
   local_mask: ['image', { mediaRole: 'mask', title: '局部遮罩修改' }],
   video_asset: ['video', {}],

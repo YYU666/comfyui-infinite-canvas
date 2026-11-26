@@ -38,6 +38,9 @@ export function imageProcessSnapshot(id, nodes, edges) {
         if (!source.data.processedAssetPath || source.data.processedSignature !== upstream.signature) throw new Error(`请先重新输出「${source.data.title || '上游处理节点'}」。`);
         return { ...source, data: { kind: 'image', title: source.data.title, slot: edge.targetHandle, assetPath: source.data.processedAssetPath, url: source.data.processedUrl, rawAssetPath: source.data.processedTgaAssetPath || null } };
       }
+      if (source.type === 'paint') {
+        return { ...source, data: { kind: 'image', title: source.data.title || '绘画节点', slot: edge.targetHandle, assetPath: source.data.assetPath || '', url: source.data.url || '', paintSignature: source.data.paintSignature || '' } };
+      }
       if (source.type !== 'media' || source.data.kind !== 'image') throw new Error('处理节点只接受图片输入。');
       return { ...source, data: { ...source.data, slot: edge.targetHandle, rawAssetPath: source.data.tgaAssetPath || null } };
     }).sort((a, b) => a.data.slot.localeCompare(b.data.slot));
@@ -51,7 +54,12 @@ export function imageProcessSnapshot(id, nodes, edges) {
       if (signatureSettings.maskChannel === 'luminance') delete signatureSettings.maskChannel;
       if (!signatureSettings.maskInvert) delete signatureSettings.maskInvert;
     }
-    const signature = JSON.stringify([node.data.mode, signatureSettings, refs.map((ref) => [ref.id, ref.data.slot, ref.data.assetPath || ref.data.url || ref.data.remoteName || '', ...(node.data.mode === 'channelPack' && ref.data.rawAssetPath ? [ref.data.rawAssetPath] : [])])]);
+    const signature = JSON.stringify([node.data.mode, signatureSettings, refs.map((ref) => {
+      const row = [ref.id, ref.data.slot, ref.data.assetPath || ref.data.url || ref.data.remoteName || ''];
+      if (node.data.mode === 'channelPack' && ref.data.rawAssetPath) row.push(ref.data.rawAssetPath);
+      if (Object.hasOwn(ref.data, 'paintSignature')) row.push(ref.data.paintSignature || '');
+      return row;
+    })]);
     const snapshot = { node, refs, settings, signature };
     visiting.delete(nodeId);
     memo.set(nodeId, snapshot);
@@ -64,7 +72,7 @@ export function acceptsImageProcessConnection(connection, nodes, edges) {
   const source = nodes.find((node) => node.id === connection.source);
   const target = nodes.find((node) => node.id === connection.target);
   if (!isImageProcess(target) || !imageProcessPorts(target.data.mode).includes(connection.targetHandle)) return false;
-  if (!(source?.type === 'media' && source.data.kind === 'image') && !isImageProcess(source)) return false;
+  if (!(source?.type === 'media' && source.data.kind === 'image') && !isImageProcess(source) && source?.type !== 'paint') return false;
   const queue = [target.id];
   const seen = new Set();
   while (queue.length) {

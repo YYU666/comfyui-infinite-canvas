@@ -8,7 +8,7 @@ export function canvasNodeModality(type, data = {}) {
   if (type === 'native3d' || data.kind === 'model') return 'jade';
   if (type === 'media' && ['video', 'audio'].includes(data.kind)) return 'coral';
   if (videoTools.has(type) || type === 'video' || type === 'audio') return 'coral';
-  if (type === 'imageProcess' || type === 'spriteAtlas' || data.mediaRole === 'mask') return 'violet';
+  if (type === 'imageProcess' || type === 'spriteAtlas' || type === 'paint' || data.mediaRole === 'mask') return 'violet';
   if (type === 'note' && data.noteRole === 'videoDownload') return 'coral';
   if (type === 'generator') {
     if (data.mode === 'image') return 'gold';
@@ -34,7 +34,7 @@ function portTone(node, handle, direction) {
     return 'pearl';
   }
   if (type === 'videoChromaKey' && handle === 'bg') return 'pearl';
-  if ((type === 'media' && data.kind === 'image') || ['imageProcess', 'artDirector', 'spriteAtlas'].includes(type)) return 'pearl';
+  if ((type === 'media' && data.kind === 'image') || ['imageProcess', 'artDirector', 'spriteAtlas', 'paint'].includes(type)) return 'pearl';
   return node ? canvasNodeModality(type, data) : 'pearl';
 }
 

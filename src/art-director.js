@@ -32,12 +32,20 @@ export function artDirectorSnapshot(id, nodes, edges) {
     const edge = edges.find(e => e.target === id && e.targetHandle === slot);
     if (!edge) return null;
     const source = nodes.find(n => n.id === edge.source);
+    if (source?.type === 'paint') {
+      if (source.data.outputMode === 'mask' || (!source.data.url && !source.data.assetPath)) throw new Error('请连接已保存的图片素材。');
+      return { ...source, data: { kind: 'image', title: source.data.title || '绘画节点', url: source.data.url, assetPath: source.data.assetPath, slot, purpose: node.data.referencePurposes?.[slot] || '配色', paintSignature: source.data.paintSignature || '' } };
+    }
     if (source?.type !== 'media' || source.data.kind !== 'image' || source.data.mediaRole === 'mask' || (!source.data.url && !source.data.assetPath)) throw new Error('请连接已保存的图片素材。');
     return { ...source, data: { ...source.data, slot, purpose: node.data.referencePurposes?.[slot] || '配色' } };
   }).filter(Boolean);
   const artwork = refs.find(r => r.data.slot === 'artwork');
   if (!artwork) throw new Error('请连接作品图片。');
-  const signature = JSON.stringify([1, refs.map(r => [r.id, r.data.slot, r.data.assetPath || r.data.url, r.data.slot === 'artwork' ? '' : r.data.purpose]), node.data.brief || '', node.data.preserve || '']);
+  const signature = JSON.stringify([1, refs.map(r => {
+    const row = [r.id, r.data.slot, r.data.assetPath || r.data.url, r.data.slot === 'artwork' ? '' : r.data.purpose];
+    if (r.data.paintSignature) row.push(r.data.paintSignature);
+    return row;
+  }), node.data.brief || '', node.data.preserve || '']);
   return { node, artwork, refs, signature };
 }
 export function moveGuide(guide, dx, dy) {
