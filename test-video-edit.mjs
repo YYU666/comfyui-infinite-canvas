@@ -151,7 +151,9 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
 {
   const calls = [];
   let jobId;
+  let identity;
   let polls = 0;
+  let cancelled = false;
   globalThis.fetch = async (url, options = {}) => {
     calls.push([url, options.method || 'GET', options.body ? JSON.parse(options.body) : null]);
     const json = (status, value) => ({ ok: status < 400, status, json: async () => value, blob: async () => new Blob(['x'], { type: 'video/mp4' }) });
@@ -159,11 +161,12 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
     if (url === '/api/video-edit/jobs') {
       const { projectId, nodeId, requestId } = JSON.parse(options.body);
       jobId = `ved_${requestId}`;
+      identity = { id: jobId, projectId, nodeId };
       return json(201, { id: jobId, projectId, nodeId, status: 'queued', stage: '排队中', progress: 0 });
     }
-    if (url === `/api/video-edit/jobs/${jobId}`) return json(200, ++polls < 2 ? { id: jobId, status: 'running', stage: '正在逐帧导出', progress: 0.5 } : { id: jobId, status: 'completed', stage: '已导出', progress: 1, result: { frames: 24, width: 128, height: 72, audio: 'clips' } });
+    if (url === `/api/video-edit/jobs/${jobId}`) return json(200, cancelled ? { ...identity, status: 'cancelled', stage: '已取消' } : ++polls < 2 ? { ...identity, status: 'running', stage: '正在逐帧导出', progress: 0.5 } : { ...identity, status: 'completed', stage: '已导出', progress: 1, result: { frames: 24, width: 128, height: 72, audio: 'clips' } });
     if (url === `/api/video-edit/jobs/${jobId}/commit`) return json(201, { asset: { path: `assets/${'e'.repeat(64)}.mp4` }, revision: 9 });
-    if (url.endsWith('/cancel')) return json(200, {});
+    if (url.endsWith('/cancel')) { cancelled = true; return json(200, { ...identity, status: 'running', stage: '正在取消' }); }
     return json(404, { message: 'nope' });
   };
   const generated = { id: 'r1', type: 'media', data: { kind: 'video', url: '/comfy/view?filename=sam3.mp4', name: 'sam3.mp4', title: 'SAM3 成品' } };
@@ -179,7 +182,7 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
     saveProjectFile: async (storageId, file, rev) => { uploads.push([file.name, rev]); return { asset: { path: `assets/${'f'.repeat(64)}.mp4` }, revision: rev + 1 }; },
     persistProject: async () => { persisted += 1; } });
   const started = await runner.run('e9');
-  assert.deepEqual(started, { ok: true, jobId });
+  assert.deepEqual(started, { ok: true, jobId, status: 'queued', execution: 'accepted' });
   assert.deepEqual(uploads, [['sam3.mp4', 7]], '生成结果经页面通道导入一次');
   const submit = calls.find(([url]) => url === '/api/video-edit/jobs')[2];
   assert.deepEqual(submit.inputs, { v1: `assets/${'f'.repeat(64)}.mp4` });
@@ -217,8 +220,9 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
   const cancelled = [];
   let jobId;
   globalThis.fetch = async (url, options) => {
-    if (url === '/api/video-edit/jobs') { const { projectId, nodeId, requestId } = JSON.parse(options.body); jobId = `ved_${requestId}`; submitted = true; await new Promise(resolve => { response = resolve; }); return { ok: true, json: async () => ({ id: jobId, projectId, nodeId }) }; }
+    if (url === '/api/video-edit/jobs') { const { projectId, nodeId, requestId } = JSON.parse(options.body); jobId = `ved_${requestId}`; submitted = true; await new Promise(resolve => { response = resolve; }); return { ok: true, json: async () => ({ id: jobId, projectId, nodeId, status: 'queued' }) }; }
     if (url.endsWith('/cancel')) { cancelled.push(JSON.parse(options.body)); return { ok: true, json: async () => ({}) }; }
+    if (url.endsWith(jobId)) return { ok: true, json: async () => ({ id: jobId, projectId: 'prj_race', nodeId: 'edit', status: 'cancelled' }) };
     throw new Error(`Unexpected mocked request: ${url}`);
   };
   const source = { id: 'source', type: 'media', data: { kind: 'video', assetPath: `assets/${'a'.repeat(64)}.mp4` } };
@@ -230,8 +234,10 @@ assert.deepEqual(NODE_PRESETS.video_edit, ['videoEdit', { title: '视频编辑' 
   const pending = runner.run(edit.id);
   while (!submitted) await new Promise(resolve => setTimeout(resolve, 1));
   runner.cancel(edit.id); response();
-  assert.equal((await pending).ok, false);
+  assert.equal((await pending).ok, true);
   assert.deepEqual(cancelled, [{ projectId: 'prj_race' }]);
+  for (let i = 0; jobs.size && i < 100; i += 1) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(edit.data.status, 'cancelled');
   assert.equal(jobs.size, 0);
   writeable = false;
   assert.equal((await runner.run(edit.id)).ok, false);

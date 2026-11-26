@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from project_store import ProjectStore
+from test_video_prepared_fixture import submit_fixture
 from video_edit_ffmpeg import Runner, find_ffmpeg, probe
 from video_plate_document import PlateDocumentError, normalize_plate_document
 from video_plate_ffmpeg import render_plate
@@ -235,7 +236,7 @@ class PlateJobTest(unittest.TestCase):
         video = write_rgb(media / "scene.mp4", scene_frames(8), audio=True)
         fake = FakeMask(mask_frame(), 7)
         jobs = VideoPlateJobs(self.jobs_root, self.store, segmenter=fake)
-        job = jobs.submit({
+        job = submit_fixture(jobs, {
             "projectId": self.project, "nodeId": "videoWhitePlate-test", "video": self._asset(video),
             "settings": {"schemaVersion": 1, "keepPrompts": "person, pole", "maskGrow": 0, "maskFeather": 0, "shadeMode": "flat", "greenColor": "#00ff00"},
         })
@@ -266,7 +267,7 @@ class PlateJobTest(unittest.TestCase):
         mask[8:20, 8:20] = 255
         fake = FakeMask(mask, 174)
         jobs = VideoPlateJobs(self.jobs_root, self.store, segmenter=fake)
-        job = jobs.submit({
+        job = submit_fixture(jobs, {
             "projectId": self.project, "nodeId": "videoWhitePlate-count", "video": self._asset(video),
             "settings": {"maskGrow": 0, "maskFeather": 0},
         })

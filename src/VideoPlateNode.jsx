@@ -1,3 +1,4 @@
+import VideoJobStatus, { videoExportLabel } from './VideoJobStatus';
 import React, { useEffect, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { ArrowDownToLine, Box, LoaderCircle, Square } from 'lucide-react';
@@ -60,10 +61,10 @@ export default function VideoPlateNode({ id, data, actions, title, toolbar }) {
     {data.plateResult && <div className="video-plate-meta"><span>{data.plateResult.width}×{data.plateResult.height}</span><span>{data.plateResult.frames} 帧</span><span>{data.plateResult.shadeMode === 'shaded' ? '明暗白' : '平涂白'}</span></div>}
     {data.error && <p className="video-plate-error" role="alert">{data.error}</p>}
     <footer>
-      <span>{running ? `${data.stage || '导出中'} ${Math.round((data.progress || 0) * 100)}%` : stale ? '参数已更新 · 待导出' : data.plateResultAssetPath ? '成片已登记' : '未导出'}</span>
+      <VideoJobStatus data={data} running={running} fallback={stale ? '参数已更新 · 待导出' : data.plateResultAssetPath ? '成片已登记' : '未导出'} />
       {running
         ? <button type="button" disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoPlate(id); }}><Square size={12} />取消</button>
-        : <button type="button" className="video-plate-export" disabled={disabled} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />导出</button>}
+        : <button type="button" className="video-plate-export" disabled={disabled} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />{videoExportLabel(id, data, '导出')}</button>}
       {running && <LoaderCircle className="video-plate-spin" size={14} />}
     </footer>
   </div>;

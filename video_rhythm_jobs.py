@@ -90,7 +90,7 @@ class VideoRhythmJobs:
             raise StoreError("RHYTHM_DOCUMENT_INVALID", str(error), 400) from error
         raise StoreError("RHYTHM_DOCUMENT_INVALID", "operation 必须是 speed 或 remap。", 400)
 
-    def submit(self, payload):
+    def submit(self, payload, *, page=None):
         # Bind source resolution and admission to one project-store epoch.
         with self.lock:
             if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "input", "operation", "settings", "requestId"}:
@@ -101,10 +101,9 @@ class VideoRhythmJobs:
             self.root.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
                 raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vry', ('videoSpeed', 'videoTimeRemap'))
+            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vry', ('videoSpeed',) if payload['operation'] == 'speed' else ('videoTimeRemap',), page=page)
             if existing:
                 return self.get(job_id)
-            job_id = job_id or f"vry_{uuid.uuid4().hex}"
             job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
                    "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
                    "operation": document["operation"], "input": payload.get("input")}

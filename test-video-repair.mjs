@@ -33,12 +33,25 @@ const tools = new Map(), latest = { current: { nodesRef: { current: nodes }, edg
 const dispose = registerCanvasMcp(latest, { context: { registerTool: tool => tools.set(tool.name, tool) }, startPage: () => () => {} });
 try { const response = JSON.parse(await tools.get('canvas_update_node').execute({ nodeId: 'repair', settings: { repairSettings: settings, previewTime: .5 } })); assert.equal(response.ok, true, response.error); } finally { dispose(); }
 // Late submit cancellation and readonly guards: no backend/global interrupt.
-let release, sent = false; const cancelled = []; const fetchBefore = globalThis.fetch;
-globalThis.fetch = async (url, options) => { if (url.endsWith('/jobs')) { const { projectId, nodeId, requestId } = JSON.parse(options.body); sent = true; await new Promise(resolve => { release = resolve; }); return { ok: true, json: async () => ({ id: `vrp_${requestId}`, projectId, nodeId }) }; } if (url.endsWith('/cancel')) { cancelled.push(JSON.parse(options.body)); return { ok: true, json: async () => ({}) }; } throw new Error('Unexpected request'); };
+let release, receipt; const cancelled = []; const fetchBefore = globalThis.fetch;
+globalThis.fetch = async (url, options) => {
+  if (url.endsWith('/jobs')) {
+    const { projectId, nodeId, requestId } = JSON.parse(options.body);
+    receipt = { id: `vrp_${requestId}`, projectId, nodeId, status: 'queued' };
+    await new Promise(resolve => { release = resolve; });
+  } else if (url.endsWith('/cancel')) {
+    cancelled.push(JSON.parse(options.body));
+    receipt.status = 'cancelled';
+  } else assert.ok(url.endsWith(receipt.id), url);
+  return { ok: true, json: async () => ({ ...receipt }) };
+};
 const jobs = new Map(); let writable = true;
-const runner = createVideoRepairRunner({ getProjectId: () => 'prj_test', getNodes: () => nodes, getEdges: () => edges, canWrite: () => writable, jobs, persistProject: async () => {}, updateNode: (_id, patch) => Object.assign(repair.data, patch) });
-const pending = runner.run('repair'); while (!sent) await new Promise(resolve => setTimeout(resolve, 1)); await runner.cancel('repair'); release();
-assert.equal((await pending).ok, false); assert.deepEqual(cancelled, [{ projectId: 'prj_test' }]); assert.equal(jobs.size, 0);
+const runner = createVideoRepairRunner({ getProjectId: () => 'prj_test', getNodes: () => nodes, getEdges: () => edges, canWrite: () => writable, jobs, pollInterval: 1, persistProject: async () => {}, updateNode: (_id, patch) => Object.assign(repair.data, patch) });
+const pending = runner.run('repair'); while (!release) await new Promise(resolve => setTimeout(resolve, 1)); await runner.cancel('repair'); release();
+assert.equal((await pending).ok, true);
+assert.deepEqual(cancelled, [{ projectId: 'prj_test' }]);
+for (let i = 0; jobs.size && i < 50; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+assert.equal(repair.data.status, 'cancelled'); assert.equal(jobs.size, 0);
 writable = false; assert.equal((await runner.run('repair')).ok, false); assert.equal((await runner.preview('repair')).ok, false); assert.equal(runner.resume('repair'), false); globalThis.fetch = fetchBefore;
 console.log('VIDEO_REPAIR_OK schema parity graph stale-source blocking MCP settings late-cancel readonly');
 

@@ -5,6 +5,7 @@ import json
 import re
 
 from project_store import StoreError
+from video_job_submission import submit_video_from_page
 
 PREFIX = "/api/video-repair/"
 
@@ -33,7 +34,7 @@ class VideoRepairAPI:
         try:
             match = re.fullmatch(r"/api/video-repair/jobs/(vrp_[a-f0-9]{32})(?:/(cancel|commit))?", path)
             if post and path == PREFIX + "jobs":
-                handler.send_json(201, self.jobs.submit(self._json(handler)))
+                handler.send_json(201, submit_video_from_page(handler, self.jobs, self._json(handler)))
             elif post and path == PREFIX + "preview":
                 handler.send_json(200, self.jobs.preview(self._json(handler)))
             elif match and not post and match[2] is None:

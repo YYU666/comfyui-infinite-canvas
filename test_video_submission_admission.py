@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase, mock
 
 from project_store import StoreError
+from video_job_submission import VIDEO_JOB_FIELDS
 
 
 class VideoSubmissionAdmissionTests(TestCase):
@@ -13,6 +14,7 @@ class VideoSubmissionAdmissionTests(TestCase):
         cases = (
             ('edit', 'Edit', 'videoEdit', 'ved', {'inputs': {'v1': 'synthetic'}, 'document': {}}),
             ('rhythm', 'Rhythm', 'videoSpeed', 'vry', {'operation': 'speed', 'input': 'synthetic', 'settings': {}}),
+            ('rhythm', 'Rhythm', 'videoTimeRemap', 'vry', {'operation': 'remap', 'input': 'synthetic', 'settings': {}}),
             ('chroma', 'Chroma', 'videoChromaKey', 'vck', {'foreground': 'fg', 'background': 'bg', 'settings': {}}),
             ('plate', 'Plate', 'videoWhitePlate', 'vwp', {'video': 'synthetic', 'settings': {}}),
             ('repair', 'Repair', 'videoLocalRepair', 'vrp', {'source': 'synthetic', 'settings': {}}),
@@ -41,7 +43,7 @@ class VideoSubmissionAdmissionTests(TestCase):
                             'clips': [{'inputSlot': 'v1'}], 'outputProfile': {'audio': 'clips'},
                         }))
                     elif feature == 'rhythm':
-                        stack.enter_context(mock.patch.object(manager, '_document', return_value={'operation': 'speed'}))
+                        stack.enter_context(mock.patch.object(manager, '_document', return_value={'operation': fields['operation']}))
                     else:
                         stack.enter_context(mock.patch.object(manager, '_settings', return_value={}))
                     if feature == 'chroma':
@@ -49,13 +51,25 @@ class VideoSubmissionAdmissionTests(TestCase):
                     else:
                         stack.enter_context(mock.patch.object(manager, '_asset', return_value=Path('synthetic')))
                     executor = stack.enter_context(mock.patch.object(module.threading, 'Thread'))
+                with self.assertRaises(StoreError) as legacy:
+                    manager.submit(intent)
+                self.assertEqual(legacy.exception.code, 'VIDEO_PREPARATION_REQUIRED')
                 with self.assertRaises(StoreError) as unprepared:
                     manager.submit(payload)
                 self.assertEqual(unprepared.exception.code, 'VIDEO_PREPARATION_REQUIRED')
                 executor.assert_not_called()
                 self.assertEqual(manager.jobs, {})
                 node['data']['videoSubmission'] = {'id': expected, 'phase': 'prepared', 'intent': intent, 'requestId': request_id}
-                accepted = manager.submit(payload)
+                with self.assertRaises(StoreError) as no_visible_id:
+                    manager.submit(payload)
+                self.assertEqual(no_visible_id.exception.code, 'VIDEO_PREPARATION_REQUIRED')
+                node['data'][VIDEO_JOB_FIELDS[prefix]] = expected
+                page = {"epoch": "original", "sessionId": "saved-page"}
+                node['data']['videoSubmission']['page'] = page
+                with self.assertRaises(StoreError) as mismatched_page:
+                    manager.submit(payload, page={**page, "sessionId": "other-page"})
+                self.assertEqual(mismatched_page.exception.code, 'VIDEO_PREPARATION_REQUIRED')
+                accepted = manager.submit(payload, page=page)
                 self.assertEqual(accepted['id'], expected)
                 self.assertEqual(accepted['projectId'], 'prj_fixture')
                 self.assertNotIn('_submission', accepted)

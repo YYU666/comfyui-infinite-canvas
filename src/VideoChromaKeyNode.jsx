@@ -1,3 +1,4 @@
+import VideoJobStatus, { videoExportLabel } from './VideoJobStatus';
 import React, { useEffect, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { Aperture, ArrowDownToLine, LoaderCircle, Pipette, Square } from 'lucide-react';
@@ -141,10 +142,10 @@ export default function VideoChromaKeyNode({ id, data, actions, title, toolbar }
     {preview?.frame != null && previewing === false && <p className="video-chroma-note" style={{ margin: '6px 14px 0' }}>{sampling ? '点击预览中的绿幕取色。' : `预览第 ${preview.frame} 帧。`}</p>}
     {(previewError || data.error) && <p className="video-chroma-error" role="alert">{previewError || data.error}</p>}
     <footer>
-      <span>{running ? `${data.stage || '导出中'} ${Math.round((data.progress || 0) * 100)}%` : stale ? '参数已更新 · 待导出' : data.chromaResultAssetPath ? '结果已导出' : '未导出'}</span>
+      <VideoJobStatus data={data} running={running} fallback={stale ? '参数已更新 · 待导出' : data.chromaResultAssetPath ? '结果已导出' : '未导出'} />
       {running
         ? <button type="button" disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoChroma(id); }}><Square size={12} />取消</button>
-        : <button type="button" className="video-chroma-export" disabled={disabled} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />导出</button>}
+        : <button type="button" className="video-chroma-export" disabled={disabled} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />{videoExportLabel(id, data, '导出')}</button>}
       {(running || previewing) && <LoaderCircle className="video-chroma-spin" size={14} />}
     </footer>
   </div>;

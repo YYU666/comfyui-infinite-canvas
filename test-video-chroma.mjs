@@ -136,6 +136,7 @@ assert.equal(NODE_PRESETS.video_chroma_key[0], 'videoChromaKey');
 {
   const calls = [];
   let jobId;
+  let identity;
   let polls = 0;
   globalThis.fetch = async (url, options = {}) => {
     calls.push([url, options.method || 'GET', options.body ? JSON.parse(options.body) : null]);
@@ -143,9 +144,10 @@ assert.equal(NODE_PRESETS.video_chroma_key[0], 'videoChromaKey');
     if (url === '/api/video-chroma/jobs') {
       const { projectId, nodeId, requestId } = JSON.parse(options.body);
       jobId = `vck_${requestId}`;
+      identity = { id: jobId, projectId, nodeId };
       return json(201, { id: jobId, projectId, nodeId, status: 'queued', stage: '排队中', progress: 0 });
     }
-    if (url === `/api/video-chroma/jobs/${jobId}`) return json(200, ++polls < 2 ? { id: jobId, status: 'running', stage: '正在抠像合成', progress: 0.4 } : { id: jobId, status: 'completed', stage: '已导出', progress: 1, result: { frames: 12, width: 720, height: 1280, audio: 'preserve' } });
+    if (url === `/api/video-chroma/jobs/${jobId}`) return json(200, ++polls < 2 ? { ...identity, status: 'running', stage: '正在抠像合成', progress: 0.4 } : { ...identity, status: 'completed', stage: '已导出', progress: 1, result: { frames: 12, width: 720, height: 1280, audio: 'preserve' } });
     if (url === `/api/video-chroma/jobs/${jobId}/commit`) return json(201, { asset: { path: hash('e', 'mp4') }, revision: 4 });
     if (url === '/api/video-chroma/preview') return json(200, { width: 720, height: 1280, frame: 0, time: 0, mode: 'composite', pngBase64: 'iVBORw0KGgo=' });
     return json(404, { message: 'nope' });

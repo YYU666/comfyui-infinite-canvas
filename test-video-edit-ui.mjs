@@ -25,8 +25,8 @@ async function fixture(readOnly = false, active = false) {
   let motionRendered = false;
   let motionVersionIndex = 0;
   const motionRenderAttempts = [];
-  const cutJobId = `ved_${'a'.repeat(32)}`;
-  const speechJobId = `ved_${'b'.repeat(32)}`;
+  let cutJobId, speechJobId;
+  const cancelledIds = new Set();
   let project = { id: 'prj_editor_fixture', name: 'Synthetic editor', revision: 1, readOnly, shots: [], canvas: {
     viewport: { x: 10, y: 20, zoom: 0.9 },
     nodes: [
@@ -99,37 +99,50 @@ async function fixture(readOnly = false, active = false) {
       return json({ asset: { path: motionAsset }, revision: project.revision });
     }
     if (url.pathname === '/api/video-edit/auto-cut') {
-      const payload = request.postDataJSON();
+      const { requestId, page, ...payload } = request.postDataJSON();
       assert.ok(['transcript', 'black'].includes(payload.mode));
       assert.deepEqual(payload, { projectId: project.id, nodeId: 'edit', slot: 'v1', assetPath: sourceAsset, mode: payload.mode });
-      return json({ id: payload.mode === 'transcript' ? speechJobId : cutJobId, status: 'queued' }, 201);
+      assert.equal(page.epoch, 'video-editor-fixture-epoch');
+      const id = `ved_${requestId}`;
+      const saved = project.canvas.nodes.find(node => node.id === 'edit').data;
+      assert.equal(saved.videoAnalysisJobId, id);
+      assert.deepEqual(saved.videoAnalysisSubmission, { id, phase: 'prepared', intent: payload, page, requestId });
+      if (payload.mode === 'transcript') speechJobId = id;
+      else cutJobId = id;
+      return json({ id, projectId: project.id, nodeId: 'edit', status: 'queued' }, 201);
     }
     if (url.pathname === `/api/video-edit/jobs/${speechJobId}`) return json({ id: speechJobId, projectId: project.id, nodeId: 'edit', mode: 'transcript',
       inputs: { v1: sourceAsset }, status: 'completed', result: { language: 'zh', durationMs: 4000,
         source: { frameCount: 96 }, segments: [{ startMs: 250, endMs: 1250, text: '先检查场景',
           words: [{ startMs: 400, endMs: 800, text: '检查' }] }, { startMs: 1500, endMs: 2000, text: '预览并导出' }] } });
     if (url.pathname === `/api/video-edit/jobs/${cutJobId}`) return json({
-      id: cutJobId, status: 'completed', result: {
+      id: cutJobId, projectId: project.id, nodeId: 'edit', status: 'completed', result: {
         removedFrames: 48, frameCount: 96, cuts: [[8, 32], [64, 88]], document: defaultVideoEditDocument(),
       },
     });
     if (url.pathname === '/api/video-edit/jobs') {
       const payload = request.postDataJSON();
-      const { requestId, ...intent } = payload;
+      const { requestId, page, ...intent } = payload;
       const record = project.canvas.nodes.find((node) => node.id === intent.nodeId)?.data.videoSubmission;
-      assert.deepEqual(record, { id: `ved_${requestId}`, requestId, intent, phase: 'prepared' });
+      assert.equal(page.epoch, 'video-editor-fixture-epoch');
+      assert.deepEqual(record, { id: `ved_${requestId}`, requestId, intent, page, phase: 'prepared' });
       queued.push(payload);
       if (loseReceipt) return route.abort('failed');
       return json({ id: record.id, projectId: intent.projectId, nodeId: intent.nodeId, status: 'queued', stage: '排队中', progress: 0 }, 201);
     }
-    if (/\/api\/video-edit\/jobs\/ved_[a-f0-9]{32}\/cancel$/.test(url.pathname)) { cancels.push(request.postDataJSON()); hold = false; return json({ status: 'cancelled' }); }
+    if (/\/api\/video-edit\/jobs\/ved_[a-f0-9]{32}\/cancel$/.test(url.pathname)) {
+      cancelledIds.add(url.pathname.split('/').at(-2));
+      cancels.push(request.postDataJSON()); hold = false;
+      return json({ status: 'cancelled' });
+    }
     if (/\/api\/video-edit\/jobs\/ved_[a-f0-9]{32}\/commit$/.test(url.pathname)) {
       commits.push(request.postDataJSON()); project.revision++;
       return json({ asset: { path: resultAsset }, revision: project.revision }, 201);
     }
     if (/\/api\/video-edit\/jobs\/ved_[a-f0-9]{32}$/.test(url.pathname)) {
       if (loseReceipt) return json({ message: 'fixture lookup unavailable' }, 404);
-      return json({ id: url.pathname.split('/').at(-1), projectId: project.id, nodeId: 'edit', status: hold ? 'running' : 'completed', stage: hold ? '模拟导出' : '已导出', progress: hold ? 0.4 : 1, result: { frames: 24, width: 128, height: 72, audio: 'clips' } });
+      const id = url.pathname.split('/').at(-1);
+      return json({ id, projectId: project.id, nodeId: 'edit', status: cancelledIds.has(id) ? 'cancelled' : hold ? 'running' : 'completed', stage: hold ? '模拟导出' : '已导出', progress: hold ? 0.4 : 1, result: { frames: 24, width: 128, height: 72, audio: 'clips' } });
     }
     if (url.pathname.startsWith('/api/projects/') && url.pathname.includes('/assets/')) return route.fulfill({ contentType: 'video/mp4', body: Buffer.from('synthetic encoded video') });
     if (url.pathname === '/api/agent/canvas/heartbeat') return json({ epoch: 'video-editor-fixture-epoch' });
@@ -166,7 +179,7 @@ try {
   edited = (await f.state()).nodes.find(n => n.id === 'edit').editDocument;
   assert.deepEqual(edited, defaultVideoEditDocument());
   const started = await f.call('canvas_start_video_analysis', { nodeId: 'edit', slot: 'v1', mode: 'transcript' });
-  assert.equal(started.jobId, `ved_${'b'.repeat(32)}`);
+  assert.match(started.jobId, /^ved_[a-f0-9]{32}$/);
   const transcript = await f.call('canvas_get_video_analysis', { nodeId: 'edit', jobId: started.jobId, limit: 1 });
   assert.equal(transcript.result.segments[0].text, '先检查场景');
   assert.equal(transcript.result.nextOffset, 1);

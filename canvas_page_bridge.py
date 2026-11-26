@@ -13,7 +13,7 @@ from project_store import StoreError
 TOOLS = frozenset({"canvas_native3d_sync_task", "canvas_native3d_retry_lod", "canvas_native3d_repair_lod", "canvas_native3d_create_resolution", "canvas_native3d_next_step", "canvas_native3d_retry_stage", "canvas_native3d_diagnostic_preview", "canvas_link_native3d_process", "canvas_link_native3d_diagnostic", "canvas_native3d_uv_preview", "canvas_recover_native3d", "canvas_native3d_capabilities", "canvas_native3d_stage", "canvas_move_nodes", "canvas_retry_save", "canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
                    "canvas_generate_node", "canvas_retry_generation", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset", "canvas_download_video",
                    "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
-                   "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node",
+                   "canvas_create_extension", "canvas_wait_for_node", "canvas_cancel_node", "canvas_cancel_video",
                    "canvas_image_compact", "canvas_publish_extension", "canvas_get_extension_publish_status",
                    "canvas_start_video_analysis", "canvas_get_video_analysis", "canvas_cancel_video_analysis",
                    "canvas_set_video_presentation", "canvas_set_motion_canvas_preview", "canvas_native3d_plan_review", "canvas_native3d_plan_confirm", "canvas_native3d_viewer_close", "canvas_native3d_create_resolution", "canvas_native3d_capabilities"})
@@ -107,6 +107,10 @@ class CanvasPageBridge:
                 raise StoreError("BAD_REQUEST", "当前页通道只提交生成（wait:false），请用 canvas_get_state 或完成事件查询结果。")
             if tool == "canvas_wait_for_node":
                 args = self._bounded_wait_args(args)
+            if tool == "canvas_cancel_video" and (set(args) != {"nodeId", "jobId"}
+                    or not isinstance(args.get("nodeId"), str) or not IDENTIFIER.fullmatch(args["nodeId"])
+                    or not isinstance(args.get("jobId"), str) or not re.fullmatch(r"(?:ved|vry|vck|vwp|vrp)_[a-f0-9]{32}", args["jobId"])):
+                raise StoreError("BAD_REQUEST", "必须提供节点和要取消的视频作业 ID。")
             if tool == "canvas_image_compact":
                 ids = args.get("nodeIds")
                 if (set(args) - {"nodeIds", "dryRun"} or not isinstance(ids, list) or not 1 <= len(ids) <= 100
@@ -208,8 +212,8 @@ class CanvasPageBridge:
         if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1000 or timeout > PAGE_BRIDGE_WAIT_MS:
             raise StoreError("BAD_REQUEST", f"当前页通道的 canvas_wait_for_node 等待时间须在 1000–{PAGE_BRIDGE_WAIT_MS} 毫秒之间，避免占住页面命令。未结束时页面返回 pending，不会重新提交。")
         job_id = args.get("jobId")
-        if "jobId" in args and (not isinstance(job_id, str) or not re.fullmatch(r"(?:n3d|job)_[a-f0-9]{32}", job_id)):
-            raise StoreError("BAD_REQUEST", "Invalid queue or Native3D jobId.")
+        if "jobId" in args and (not isinstance(job_id, str) or not re.fullmatch(r"(?:n3d|job|ved|vry|vck|vwp|vrp)_[a-f0-9]{32}", job_id)):
+            raise StoreError("BAD_REQUEST", "Invalid jobId.")
         bounded = dict(args)
         bounded["timeoutMs"] = timeout
         return bounded

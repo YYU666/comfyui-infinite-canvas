@@ -144,7 +144,7 @@ export function startCurrentCanvasPage({ tools, getPage, fetchImpl = fetch, inte
       validateCanvasArgs(command.args, tool.inputSchema);
       if (command.tool === 'canvas_generate_node' && command.args.wait) throw new Error('Use wait:false and read canvas_get_state.');
       const options = { deferPageSwitch: true };
-      if (['canvas_generate_node', 'canvas_retry_generation', 'canvas_native3d_retry_stage',
+      if (['canvas_generate_node', 'canvas_retry_generation', 'canvas_start_video_analysis', 'canvas_native3d_retry_stage',
         'canvas_native3d_retry_lod', 'canvas_native3d_repair_lod'].includes(command.tool)) {
         options.generation = {
           requestId: command.opId,

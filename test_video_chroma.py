@@ -11,6 +11,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from project_store import ProjectStore, StoreError
+from test_video_prepared_fixture import submit_fixture
 from video_chroma_document import (
     ChromaDocumentError,
     normalize_chroma_document,
@@ -205,7 +206,7 @@ class FfmpegChromaTests(unittest.TestCase):
         cls.temporary.cleanup()
 
     def export(self, foreground, background, settings, node="videoChromaKey-test"):
-        job = self.jobs.submit({
+        job = submit_fixture(self.jobs, {
             "projectId": self.project, "nodeId": node, "foreground": self.assets[foreground],
             "background": self.assets[background], "settings": settings,
         })
@@ -248,7 +249,7 @@ class FfmpegChromaTests(unittest.TestCase):
             foreground_asset = self.store.put_asset(self.project, foreground_path.name, stream, "video/mp4")["asset"]["path"]
         with background_path.open("rb") as stream:
             background_asset = self.store.put_asset(self.project, background_path.name, stream, "video/mp4")["asset"]["path"]
-        job = self.jobs.submit({
+        job = submit_fixture(self.jobs, {
             "projectId": self.project, "nodeId": "videoChromaKey-count",
             "foreground": foreground_asset, "background": background_asset, "settings": {"schemaVersion": 1},
         })
@@ -275,7 +276,7 @@ class FfmpegChromaTests(unittest.TestCase):
             background_asset = self.store.put_asset(self.project, background_path.name, stream, "video/mp4")["asset"]["path"]
 
         def run(settings, node):
-            job = self.jobs.submit({
+            job = submit_fixture(self.jobs, {
                 "projectId": self.project, "nodeId": node,
                 "foreground": foreground_asset, "background": background_asset, "settings": settings,
             })
@@ -346,7 +347,7 @@ class FfmpegChromaTests(unittest.TestCase):
             {**payload, "foreground": self.assets["night"]},
         ):
             with self.assertRaises(StoreError):
-                self.jobs.submit(bad)
+                submit_fixture(self.jobs, bad)
 
 
 if __name__ == "__main__":

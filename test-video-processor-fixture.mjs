@@ -10,6 +10,8 @@ export async function runVideoProcessorFixture(config) {
   const input = `assets/${'a'.repeat(64)}.mp4`, output = `assets/${'b'.repeat(64)}.mp4`;
   const browser = await chromium.launch({ headless: true });
   const errors = [], submitted = [], committed = [], cancelled = [], snapshots = [];
+  const jobs = new Map();
+  let transientReads = config.transientRead ? 1 : 0;
   let hold = false;
   let project = { id: 'prj_processor_fixture', name: 'Synthetic processor', revision: 1, shots: [], canvas: { viewport: { x: 0, y: 0, zoom: 0.8 },
     nodes: [{ id: 'source', type: 'media', position: { x: 0, y: 80 }, data: { kind: 'video', title: 'Synthetic source', localFile: true, assetPath: input } },
@@ -38,11 +40,31 @@ export async function runVideoProcessorFixture(config) {
       if (url.pathname === '/api/health') return json({ ok: true, comfy: { state: 'ready' } });
       if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
       if (url.pathname === '/api/queue') return json({ jobs: [] });
-      if (url.pathname === `/api/${config.api}/jobs`) { const payload = request.postDataJSON(); const { requestId, ...intent } = payload; const record = project.canvas.nodes.find((node) => node.id === intent.nodeId)?.data.videoSubmission; assert.deepEqual(record, { id: `${config.prefix}_${requestId}`, requestId, intent, phase: 'prepared' }); submitted.push(payload); return json({ id: record.id, projectId: intent.projectId, nodeId: intent.nodeId, status: 'queued', progress: 0 }, 201); }
+      if (url.pathname === `/api/${config.api}/jobs`) {
+        const payload = request.postDataJSON();
+        const { requestId, page, ...intent } = payload;
+        const record = project.canvas.nodes.find((node) => node.id === intent.nodeId)?.data.videoSubmission;
+        assert.equal(page.epoch, 'video-processor-fixture-epoch');
+        assert.ok(page.sessionId);
+        assert.deepEqual(record, { id: `${config.prefix}_${requestId}`, requestId, intent, page, phase: 'prepared' });
+        const receipt = { id: record.id, projectId: intent.projectId, nodeId: intent.nodeId, status: 'queued', progress: 0 };
+        jobs.set(record.id, receipt);
+        submitted.push(payload);
+        return json(receipt, 201);
+      }
       if (url.pathname.startsWith(`/api/${config.api}/jobs/`)) {
-        if (url.pathname.endsWith('/cancel')) { cancelled.push(request.postDataJSON()); return json({ status: 'cancelled' }); }
+        if (url.pathname.endsWith('/cancel')) {
+          const receipt = jobs.get(url.pathname.split('/').at(-2));
+          receipt.status = 'cancelled';
+          cancelled.push(request.postDataJSON());
+          return json(receipt);
+        }
         if (url.pathname.endsWith('/commit')) { committed.push(request.postDataJSON()); return json({ asset: { path: output }, revision: ++project.revision }, 201); }
-        return json({ id: url.pathname.split('/').at(-1), status: hold ? 'running' : 'completed', progress: hold ? 0.4 : 1, result: { frames: 24, width: 128, height: 72, audio: 'preserve', ...config.result } });
+        if (transientReads > 0) { transientReads -= 1; return json({ message: 'fixture temporarily disconnected' }, 503); }
+        const receipt = jobs.get(url.pathname.split('/').at(-1));
+        if (!receipt) return json({ message: 'unknown prepared job' }, 404);
+        const status = receipt.status === 'cancelled' ? 'cancelled' : hold ? 'running' : 'completed';
+        return json({ ...receipt, status, progress: hold ? 0.4 : 1, result: { frames: 24, width: 128, height: 72, audio: 'preserve', ...config.result } });
       }
       if (url.pathname.includes('/assets/') && url.pathname.startsWith('/api/projects/')) return route.fulfill({ contentType: 'video/mp4', body: Buffer.from('synthetic encoded video') });
       if (url.pathname === '/api/agent/canvas/heartbeat') return json({ epoch: 'video-processor-fixture-epoch' });
@@ -59,6 +81,7 @@ export async function runVideoProcessorFixture(config) {
     const savedProcessor = () => project.canvas.nodes.find(n => n.id === 'processor')?.data;
     const updated = await call('canvas_update_node', { nodeId: 'processor', settings: config.settings }); assert.equal(updated.ok, true, updated.error);
     const start = await call('canvas_generate_node', { nodeId: 'processor', wait: false }); assert.equal(start.ok, true, start.error);
+    if (config.transientRead) await page.getByRole('status').filter({ hasText: '连接波动' }).waitFor();
     const done = await until(s => s.nodes.find(n => n.id === 'processor')?.status === 'done');
     assert.equal(done.nodes.find(n => n.id === 'processor')[config.resultKey], output);
     assert.equal(submitted.length, 1); assert.equal(committed.length, 1);

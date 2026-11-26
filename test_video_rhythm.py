@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from project_store import ProjectStore
+from test_video_prepared_fixture import submit_fixture
 from video_edit_testmedia import has_audio, make_video, read_indices
 from video_rhythm_document import (
     RhythmDocumentError,
@@ -126,7 +127,7 @@ class FfmpegRhythmTests(unittest.TestCase):
         cls.temporary.cleanup()
 
     def export(self, name, operation, settings):
-        job = self.jobs.submit({"projectId": self.project, "nodeId": "videoSpeed-test", "input": self.assets[name], "operation": operation, "settings": settings})
+        job = submit_fixture(self.jobs, {"projectId": self.project, "nodeId": "videoSpeed-test", "input": self.assets[name], "operation": operation, "settings": settings})
         done = self.jobs.wait(job["id"], 180)
         self.assertEqual(done["status"], "completed", done.get("error"))
         return done, self.jobs.output_file(job["id"])

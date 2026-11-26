@@ -1,8 +1,9 @@
+import VideoJobStatus, { videoExportLabel } from './VideoJobStatus';
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Plus, Trash2, ArrowUp, ArrowDown, Scissors, Undo2, Redo2, ArrowDownToLine, Square } from 'lucide-react';
 import { normalizeVideoEditDocument, defaultVideoEditDocument, VIDEO_EDIT_VIDEO_PORTS, VIDEO_EDIT_PORTS, VIDEO_EDIT_MAX_CLIPS, framesOf, timecode, ptsToSeconds } from './video-edit-document';
-import { probeVideoAsset, analyzeVideoInput } from './video-edit-runtime';
+import { probeVideoAsset } from './video-edit-runtime';
 import VideoPresentationEditor from './VideoPresentationEditor';
 import OpenMotionPanel from './OpenMotionPanel';
 import { normalizeMotionCanvasPreview } from './motion-canvas-pilot';
@@ -38,8 +39,16 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
   const history = useRef({ past: [], future: [] });
   const running = ['running', 'queued'].includes(data.status) || state.busy;
   const locked = running || analyzing || actions.readOnly;
+  const analysisJob = data.videoAnalysisSubmission;
+  const analysisActive = ['prepared', 'accepted'].includes(analysisJob?.phase);
 
   useEffect(() => () => analysis.current?.abort(), []);
+  useEffect(() => {
+    if (actions.readOnly) return;
+    const controller = new AbortController();
+    void actions.resumeVideoAnalysis(id, controller.signal);
+    return () => controller.abort();
+  }, [actions.readOnly, actions.resumeVideoAnalysis, id]);
   useEffect(() => {
     if (data.editDocument === localCommit.current) return;
     history.current = { past: [], future: [] };
@@ -147,7 +156,7 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
     setSkippedCuts([]);
     setAnalysisError('');
     try {
-      const result = await analyzeVideoInput({ projectId: actions.projectId, nodeId: id, slot, assetPath, mode: cutMode }, controller.signal);
+      const result = await actions.analyzeVideoEdit(id, { slot, assetPath, mode: cutMode }, controller.signal);
       if (!controller.signal.aborted) setSuggestion({ ...result, slot, assetPath });
     } catch (reason) {
       if (!controller.signal.aborted) setAnalysisError(reason.message);
@@ -305,7 +314,13 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
               silence: '检测至少 1.2 秒的静音，每侧保留约 0.2 秒。',
               transcript: '本地转写讲解，供 Agent 按源时间码初剪及安排演示页。',
             }[cutMode]}</small>
-            {analyzing && <div role="status">正在分析素材… <button onClick={() => analysis.current?.abort()}>取消分析</button></div>}
+            {(analyzing || analysisActive) && <div className="video-edit-analysis-status">
+              <VideoJobStatus data={{ status: 'running', stage: analysisJob?.stage || '正在分析素材', progress: analysisJob?.progress }} running />
+              <button disabled={actions.readOnly} onClick={() => {
+                if (!analysisJob || analysisJob.phase === 'prepared') analysis.current?.abort();
+                else actions.cancelVideoAnalysis(id).catch(reason => setAnalysisError(reason.message));
+              }}>取消分析</button>
+            </div>}
             {analysisError && <p className="video-edit-error" role="alert">{analysisError}</p>}
             {currentSuggestion?.segments && <div className="video-edit-cut-suggestion">
               <p role="status">{currentSuggestion.segments.length ? `已转写 ${currentSuggestion.segments.length} 段讲解` : '没有检测到讲解。'}</p>
@@ -388,9 +403,9 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
       </div>}
       {(error || data.error) && <p className="video-edit-error" role="alert">{error || data.error}</p>}
       {view !== 'openmotion' && <footer>
-        <span>{running ? `${data.stage || '导出中'} ${Math.round((data.progress || 0) * 100)}%` : data.editResultAssetPath ? '已有导出结果；再次导出会替换节点内结果（旧文件保留在项目素材中）' : '尚未导出'}</span>
+        <VideoJobStatus data={data} running={running} fallback={data.editResultAssetPath ? '已有导出结果；再次导出会替换节点内结果（旧文件保留在项目素材中）' : '尚未导出'} />
         {running ? <button disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoEdit(id); }}><Square size={12} />取消导出</button>
-          : view !== 'motion-canvas' && <button className="video-edit-export" disabled={locked || Boolean(error)} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />导出 MP4</button>}
+          : view !== 'motion-canvas' && <button className="video-edit-export" disabled={locked || Boolean(error)} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />{videoExportLabel(id, data, '导出 MP4')}</button>}
       </footer>}
     </section>
   </div>, document.body);

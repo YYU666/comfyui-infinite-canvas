@@ -1,3 +1,4 @@
+import VideoJobStatus, { videoExportLabel } from './VideoJobStatus';
 import React, { useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { defaultRepairSettings, videoRepairSummary } from './video-repair-document';
@@ -58,8 +59,8 @@ export default function VideoRepairNode({ id, data, actions, title, toolbar }) {
       {data.repairResult && <p className="video-repair-note">{data.repairResult.width}×{data.repairResult.height} · {data.repairResult.frames ?? data.repairResult.frameCount} 帧</p>}
       {(error || data.error) && <p role="alert" className="video-repair-error">{error || data.error}</p>}
     </div>
-    <footer><span>{previewing ? '正在预览' : busy ? `${data.stage || '处理中'} ${Math.round((data.progress || 0) * 100)}%` : stale ? '输入或参数已变更 · 待修补' : data.stage || '未修补'}</span>
-      {busy ? <button disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoRepair(id); }}>取消</button> : data.repairPendingResult ? <button disabled={disabled || !state.sourceTitle} onClick={() => actions.resumeVideoRepair(id)}>继续保存结果</button> : <button disabled={disabled || !state.sourceTitle} onClick={() => actions.generateNode(id)}>修补并保存</button>}
+    <footer><VideoJobStatus data={data} running={busy} fallback={previewing ? '正在预览' : stale ? '输入或参数已变更 · 待修补' : data.stage || '未修补'} />
+      {busy ? <button disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoRepair(id); }}>取消</button> : data.repairPendingResult ? <button disabled={disabled || !state.sourceTitle} onClick={() => actions.resumeVideoRepair(id)}>继续保存结果</button> : <button disabled={disabled || !state.sourceTitle} onClick={() => actions.generateNode(id)}>{videoExportLabel(id, data, '修补并保存')}</button>}
     </footer>
   </div>;
 }

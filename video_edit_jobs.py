@@ -102,7 +102,7 @@ class VideoEditJobs:
             raise StoreError("VIDEO_PROBE_FAILED", str(error)[:400], 422) from error
 
     # ------------------------------------------------------------ lifecycle
-    def submit(self, payload):
+    def submit(self, payload, *, page=None):
         # Bind source resolution and admission to one project-store epoch.
         with self.lock:
             if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "inputs", "document", "signature", "requestId"}:
@@ -125,22 +125,29 @@ class VideoEditJobs:
             self.root.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
                 raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'ved', ('videoEdit',))
+            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'ved', ('videoEdit',), page=page)
             if existing:
                 return self.get(job_id)
             return self._submit(project_id, node_id, job_id=job_id, **video_submission_fields(payload), inputs={slot: inputs[slot] for slot in files},
                                 signature=signature, _document=document, _files=files)
 
-    def submit_auto_cut(self, payload):
-        if not isinstance(payload, dict) or set(payload) != {"projectId", "nodeId", "slot", "assetPath", "mode"}:
+    def submit_auto_cut(self, payload, *, page=None):
+        if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "slot", "assetPath", "mode", "requestId"}:
             raise _bad("自动剪辑需要 projectId、nodeId、slot、assetPath 与 mode。")
         project_id, node_id = self._identity(payload)
-        slot, mode = payload["slot"], payload["mode"]
+        slot, mode = payload.get("slot"), payload.get("mode")
         if slot not in VIDEO_SLOTS or mode not in ("black", "silence", "transcript"):
             raise _bad("视频分析只支持视频端口上的黑场检测、静音检测或语音转写。")
         with self.lock:
-            file = self._asset(project_id, payload["assetPath"])
-            return self._submit(project_id, node_id, mode=mode, inputs={slot: payload["assetPath"]},
+            job_id, existing = prepared_video_submission(
+                self.store, self.jobs, payload, "ved", ("videoEdit",), page=page,
+                job_field="videoAnalysisJobId", record_field="videoAnalysisSubmission",
+            )
+            if existing:
+                return self.get(job_id)
+            file = self._asset(project_id, payload.get("assetPath"))
+            return self._submit(project_id, node_id, job_id=job_id, mode=mode,
+                                **video_submission_fields(payload), inputs={slot: payload["assetPath"]},
                                 _files={slot: file})
 
     def _submit(self, project_id, node_id, job_id=None, **fields):

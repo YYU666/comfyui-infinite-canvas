@@ -5,6 +5,7 @@ import json
 import re
 
 from project_store import StoreError
+from video_job_submission import submit_video_from_page
 
 PREFIX = "/api/video-plate/"
 
@@ -50,7 +51,7 @@ class VideoPlateAPI:
             return False
         try:
             if path == "/api/video-plate/jobs":
-                handler.send_json(201, self.jobs.submit(self._json(handler)))
+                handler.send_json(201, submit_video_from_page(handler, self.jobs, self._json(handler)))
             elif match := re.fullmatch(r"/api/video-plate/jobs/(vwp_[a-f0-9]{32})/cancel", path):
                 payload = self._json(handler, 4096)
                 if set(payload) != {"projectId"}:

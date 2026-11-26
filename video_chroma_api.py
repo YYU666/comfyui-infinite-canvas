@@ -5,6 +5,7 @@ import json
 import re
 
 from project_store import StoreError
+from video_job_submission import submit_video_from_page
 
 PREFIX = "/api/video-chroma/"
 
@@ -50,7 +51,7 @@ class VideoChromaAPI:
             return False
         try:
             if path == "/api/video-chroma/jobs":
-                handler.send_json(201, self.jobs.submit(self._json(handler)))
+                handler.send_json(201, submit_video_from_page(handler, self.jobs, self._json(handler)))
             elif path == "/api/video-chroma/preview":
                 handler.send_json(200, self.jobs.preview(self._json(handler)))
             elif match := re.fullmatch(r"/api/video-chroma/jobs/(vck_[a-f0-9]{32})/cancel", path):

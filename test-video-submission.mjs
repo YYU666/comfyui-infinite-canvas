@@ -5,13 +5,14 @@ import { createVideoRhythmRunner } from './src/video-rhythm-runtime.js';
 import { createVideoChromaRunner } from './src/video-chroma-runtime.js';
 import { createVideoPlateRunner } from './src/video-plate-runtime.js';
 import { defaultVideoEditDocument } from './src/video-edit-document.js';
-import { defaultSpeedSettings } from './src/video-rhythm-document.js';
+import { defaultRemapKeyframes, defaultSpeedSettings } from './src/video-rhythm-document.js';
 import { defaultChromaSettings } from './src/video-chroma-document.js';
 import { defaultPlateSettings } from './src/video-plate-document.js';
 
 const kinds = [
   ['edit', 'videoEdit', 'videoEditJobId', 'v1', { editDocument: defaultVideoEditDocument() }, createVideoEditRunner],
   ['rhythm', 'videoSpeed', 'rhythmJobId', 'v1', defaultSpeedSettings(), createVideoRhythmRunner],
+  ['rhythm', 'videoTimeRemap', 'rhythmJobId', 'v1', { remapKeyframes: defaultRemapKeyframes() }, createVideoRhythmRunner],
   ['chroma', 'videoChromaKey', 'chromaJobId', 'fg', defaultChromaSettings(), createVideoChromaRunner],
   ['plate', 'videoWhitePlate', 'plateJobId', 'v1', defaultPlateSettings(), createVideoPlateRunner],
 ];
@@ -30,11 +31,13 @@ const until = async (predicate) => {
 const assetPath = `assets/${'a'.repeat(64)}.mp4`;
 const bgPath = `assets/${'b'.repeat(64)}.png`;
 const resultPath = `assets/${'c'.repeat(64)}.mp4`;
+const proof = { epoch: 'fixture-epoch', sessionId: 'fixture-session' };
+const generation = { page: { ...proof, projectId: 'prj_video_test' } };
 const prefixes = { edit: 'ved', rhythm: 'vry', chroma: 'vck', plate: 'vwp', repair: 'vrp' };
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status });
 
 for (const [kind, type, jobKey, handle, initial, createRunner] of kinds) {
-  let edit, saved, receipt, posts, getRequests, failSave, hideReceipt, terminal, cancels, commits, gate;
+  let edit, saved, receipt, posts, getRequests, failSave, hideReceipt, terminal, cancels, commits, gate, responseGate, loseCancel;
   const source = { id: 'source', type: 'media', data: { kind: 'video', assetPath } };
   const bg = { id: 'bg', type: 'media', data: { kind: 'image', assetPath: bgPath } };
   const edges = [{ source: source.id, target: 'edit', targetHandle: handle }];
@@ -42,7 +45,7 @@ for (const [kind, type, jobKey, handle, initial, createRunner] of kinds) {
   const reset = () => {
     edit = { id: 'edit', type, data: { ...structuredClone(initial), status: 'idle' } };
     saved = null; receipt = null; posts = 0; getRequests = 0; failSave = false; hideReceipt = false;
-    terminal = 'queued'; cancels = 0; commits = 0; gate = null;
+    terminal = 'queued'; cancels = 0; commits = 0; gate = null; responseGate = null; loseCancel = false;
   };
   const deps = () => ({ getProjectId: () => 'prj_video_test', getNodes: () => [source, bg, edit], getEdges: () => edges,
     jobs: new Map(), pollInterval: 10, updateNode: (_, patch) => Object.assign(edit.data, patch),
@@ -62,15 +65,21 @@ for (const [kind, type, jobKey, handle, initial, createRunner] of kinds) {
     if (url === '/api/projects/prj_video_test') return json({ id: 'prj_video_test', canvas: { nodes: [saved] } });
     if (url === `/api/video-${kind}/jobs` && method === 'POST') {
       posts++;
-      const { requestId, ...intent } = JSON.parse(options.body);
-      try { assert.deepEqual(saved.data.videoSubmission.intent, intent); assert.equal(saved.data.videoSubmission.phase, 'prepared'); }
+      const { requestId, page, ...intent } = JSON.parse(options.body);
+      try { assert.deepEqual(page, proof); assert.deepEqual(saved.data.videoSubmission.page, proof); assert.deepEqual(saved.data.videoSubmission.intent, intent); assert.equal(saved.data.videoSubmission.phase, 'prepared'); }
       catch (error) { mockError = error; throw error; }
       receipt = { id: `${prefixes[kind]}_${requestId}`, projectId: intent.projectId, nodeId: intent.nodeId,
         stage: 'fixture', progress: .2, result: { width: 64, height: 48 } };
+      if (responseGate) await responseGate;
       throw new TypeError('simulated lost POST response after backend accepted');
     }
     assert.ok(receipt && url.startsWith(`/api/video-${kind}/jobs/${receipt.id}`), url);
-    if (url.endsWith('/cancel')) { cancels++; terminal = 'cancelled'; return json({ ...receipt, status: terminal }); }
+    if (url.endsWith('/cancel')) {
+      cancels++;
+      if (loseCancel) throw new TypeError('fixture lost cancel before arrival');
+      terminal = 'cancelled';
+      return json({ ...receipt, status: terminal, stage: '已取消' });
+    }
     if (url.endsWith('/commit')) { commits++; assert.equal(terminal, 'completed'); return json({ asset: { path: resultPath } }); }
     getRequests++;
     return hideReceipt ? json({ message: 'fixture offline' }, 404) : json({ ...receipt, status: terminal, error: terminal === 'failed' ? 'fixture worker failed' : undefined });
@@ -78,14 +87,14 @@ for (const [kind, type, jobKey, handle, initial, createRunner] of kinds) {
 
   reset();
   failSave = true;
-  assert.equal((await createRunner(deps()).run(edit.id)).ok, false);
+  assert.equal((await createRunner(deps()).run(edit.id, generation)).ok, false);
   assert.equal(posts, 0, `${kind}: save failure must admit zero jobs`);
 
   reset();
   let release;
   gate = new Promise((resolve) => { release = resolve; });
   const pre = createRunner(deps());
-  const interrupted = pre.run(edit.id);
+  const interrupted = pre.run(edit.id, generation);
   await until(() => edit.data.videoSubmission?.phase === 'prepared');
   await pre.cancel(edit.id);
   release();
@@ -94,7 +103,7 @@ for (const [kind, type, jobKey, handle, initial, createRunner] of kinds) {
 
   reset();
   hideReceipt = true;
-  const original = await createRunner(deps()).run(edit.id);
+  const original = await createRunner(deps()).run(edit.id, generation);
   assert.equal(original.code, 'VIDEO_SUBMISSION_UNKNOWN');
   assert.equal(posts, 1);
   assert.equal(saved.data.videoSubmission.phase, 'unconfirmed');
@@ -110,19 +119,45 @@ for (const [kind, type, jobKey, handle, initial, createRunner] of kinds) {
 
   reset();
   const failing = createRunner(deps());
-  assert.equal((await failing.run(edit.id)).ok, true, `${kind}: recover immediately by original ID`);
+  assert.equal((await failing.run(edit.id, generation)).ok, true, `${kind}: recover immediately by original ID`);
   terminal = 'failed';
   await until(() => saved.data.status === 'error' && saved.data.videoSubmission.phase === 'failed');
   assert.equal(commits, 0);
 
   reset();
   const running = createRunner(deps());
-  assert.equal((await running.run(edit.id)).ok, true);
+  assert.equal((await running.run(edit.id, generation)).ok, true);
   await running.cancel(edit.id);
   await until(() => cancels === 1);
   assert.equal(posts, 1);
   assert.equal(terminal, 'cancelled');
+  await until(() => saved.data.status === 'cancelled');
+
+  reset();
+  let releaseReceipt;
+  responseGate = new Promise(resolve => { releaseReceipt = resolve; });
+  const late = createRunner(deps());
+  const pending = late.run(edit.id, generation);
+  await until(() => Boolean(receipt));
+  await late.cancel(edit.id);
+  releaseReceipt();
+  assert.equal((await pending).ok, true);
+  await until(() => saved.data.status === 'cancelled');
+  assert.equal(posts, 1);
+  assert.equal(cancels, 1);
+
+  reset();
+  const disconnected = createRunner(deps());
+  assert.equal((await disconnected.run(edit.id, generation)).ok, true);
+  loseCancel = true;
+  await disconnected.cancel(edit.id);
+  assert.notEqual(edit.data.status, 'cancelled');
+  assert.match(edit.data.stage, /取消未确认/);
+  loseCancel = false;
+  await disconnected.cancel(edit.id);
+  await until(() => saved.data.status === 'cancelled');
+  assert.equal(cancels, 2);
   assert.equal(mockError, undefined);
   assert.ok(getRequests >= 1);
-  console.log(`${kind}: save barrier, pre-send cancel, lost receipt, reopen, commit, failure and running cancel passed`);
+  console.log(`${kind}: save barrier, pre-send cancel, lost receipt, reopen, commit, failure, confirmation-only cancel, late receipt and retry after lost cancellation passed`);
 }

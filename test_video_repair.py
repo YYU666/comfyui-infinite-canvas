@@ -10,6 +10,7 @@ from video_edit_testmedia import make_video
 from video_repair_document import RepairDocumentError, normalize_repair_document, plan_repair
 from video_repair_ffmpeg import render_export, render_preview
 from video_repair_jobs import VideoRepairJobs
+from test_video_prepared_fixture import submit_fixture
 
 SETTINGS = {'schemaVersion': 1, 'rect': {'x': .4, 'y': .4, 'width': .2, 'height': .2}, 'start': 0, 'end': 1}
 
@@ -40,10 +41,10 @@ class RepairTests(TestCase):
             with source.open('rb') as stream: saved = store.put_asset(project['id'], source.name, stream, 'video/mp4')
             jobs = VideoRepairJobs(root / 'jobs', store)
             try:
-                job = jobs.submit({'projectId': project['id'], 'nodeId': 'repair', 'source': saved['asset']['path'], 'settings': SETTINGS})
+                job = submit_fixture(jobs, {'projectId': project['id'], 'nodeId': 'repair', 'source': saved['asset']['path'], 'settings': SETTINGS})
                 self.assertEqual(jobs.wait(job['id'], 15)['status'], 'completed')
                 with self.assertRaises(StoreError): jobs.commit(job['id'], {'projectId': project['id'], 'revision': 999})
-                committed = jobs.commit(job['id'], {'projectId': project['id'], 'revision': saved['revision']})
+                committed = jobs.commit(job['id'], {'projectId': project['id'], 'revision': store.get(project['id'])['revision']})
                 self.assertTrue(committed['asset']['path'].startswith('assets/'))
                 jobs.replace_store(store)
                 with self.assertRaises(StoreError): jobs.get(job['id'])

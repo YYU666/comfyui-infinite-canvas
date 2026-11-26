@@ -5,6 +5,7 @@ import json
 import re
 
 from project_store import StoreError
+from video_job_submission import submit_video_from_page
 from video_openmotion import OpenMotionBridge
 
 PREFIX = "/api/video-edit/"
@@ -54,9 +55,10 @@ class VideoEditAPI:
             if path == "/api/video-edit/probe":
                 handler.send_json(200, self.jobs.probe_asset(self._json(handler, 4096)))
             elif path == "/api/video-edit/auto-cut":
-                handler.send_json(201, self.jobs.submit_auto_cut(self._json(handler, 4096)))
+                handler.send_json(201, submit_video_from_page(handler, self.jobs, self._json(handler, 4096),
+                    submit=self.jobs.submit_auto_cut, tool="canvas_start_video_analysis"))
             elif path == "/api/video-edit/jobs":
-                handler.send_json(201, self.jobs.submit(self._json(handler, 128 * 1024)))
+                handler.send_json(201, submit_video_from_page(handler, self.jobs, self._json(handler, 128 * 1024)))
             elif match := re.fullmatch(r"/api/video-edit/openmotion/(create|link|inspect|render|import)", path):
                 handler.send_json(200, self.openmotion.handle(match[1], self._json(handler, 4096)))
             elif match := re.fullmatch(r"/api/video-edit/jobs/(ved_[a-f0-9]{32})/cancel", path):

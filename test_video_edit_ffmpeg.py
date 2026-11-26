@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from project_store import ProjectStore, StoreError
+from test_video_prepared_fixture import submit_fixture
 from video_edit_api import VideoEditAPI
 from video_edit_jobs import VideoEditJobs
 from video_edit_testmedia import MARK_EVERY, audio_marks, dimensions, has_audio, make_video, read_indices
@@ -49,7 +50,7 @@ class VideoEditRenderTests(unittest.TestCase):
 
     def export(self, clips, inputs, **profile):
         document = {"schemaVersion": 1, "outputProfile": {"fps": {"num": 24, "den": 1}, **profile}, "clips": clips}
-        job = self.jobs.submit({"projectId": self.project, "nodeId": "videoEdit-test", "inputs": {slot: self.assets[name] for slot, name in inputs.items()}, "document": document})
+        job = submit_fixture(self.jobs, {"projectId": self.project, "nodeId": "videoEdit-test", "inputs": {slot: self.assets[name] for slot, name in inputs.items()}, "document": document})
         done = self.jobs.wait(job["id"], 300)
         self.assertEqual(done["status"], "completed", done.get("error"))
         return done, self.jobs.output_file(job["id"])
@@ -155,7 +156,7 @@ class VideoEditRenderTests(unittest.TestCase):
         clips = [{"id": "a", "inputSlot": "v1", "sourceInPts": 0, "sourceOutPts": 10, "timebase": F24},
                  {"id": "b", "inputSlot": "v2", "sourceInPts": 0, "sourceOutPts": 10, "timebase": F24}]
         document = {"schemaVersion": 1, "outputProfile": {"fps": {"num": 24, "den": 1}}, "clips": clips}
-        job = self.jobs.submit({"projectId": self.project, "nodeId": "videoEdit-res", "inputs": {"v1": self.assets["v24"], "v2": self.assets["big"]}, "document": document})
+        job = submit_fixture(self.jobs, {"projectId": self.project, "nodeId": "videoEdit-res", "inputs": {"v1": self.assets["v24"], "v2": self.assets["big"]}, "document": document})
         failed = self.jobs.wait(job["id"], 120)
         self.assertEqual(failed["status"], "failed")
         self.assertIn("width", failed["error"])
@@ -175,7 +176,7 @@ class VideoEditRenderTests(unittest.TestCase):
             if flag:
                 self.assertTrue(any(marks[max(0, position - 1):position + 2]))
         mismatch = {"inputSlot": "v1", "sourceInPts": 0, "sourceOutPts": 30, "timebase": F24}
-        job = self.jobs.submit({"projectId": self.project, "nodeId": "videoEdit-ext", "inputs": {"v1": self.assets["v24"]},
+        job = submit_fixture(self.jobs, {"projectId": self.project, "nodeId": "videoEdit-ext", "inputs": {"v1": self.assets["v24"]},
                                 "document": {"schemaVersion": 1, "outputProfile": {"audio": "external", "audioFrom": mismatch}, "clips": clips}})
         result = self.jobs.wait(job["id"], 120)
         self.assertEqual(result["status"], "failed")
@@ -187,17 +188,17 @@ class VideoEditRenderTests(unittest.TestCase):
                       "assets/" + "0" * 64 + ".mp4", "/etc/passwd", "assets/" + "a" * 64 + ".exe"]
         for value in bad_inputs:
             with self.subTest(value=value), self.assertRaises(StoreError):
-                self.jobs.submit({"projectId": self.project, "nodeId": "videoEdit-x", "inputs": {"v1": value}, "document": good})
+                submit_fixture(self.jobs, {"projectId": self.project, "nodeId": "videoEdit-x", "inputs": {"v1": value}, "document": good})
         for document in ({**good, "outputProfile": {"filter": "movie=/etc/passwd"}},
                          {**good, "clips": [{**good["clips"][0], "inputSlot": "v1;del"}]},
                          {**good, "clips": [{**good["clips"][0], "sourceOutPts": -3}]}):
             with self.subTest(document=document), self.assertRaises(StoreError):
-                self.jobs.submit({"projectId": self.project, "nodeId": "videoEdit-x", "inputs": {"v1": self.assets["v24"]}, "document": document})
+                submit_fixture(self.jobs, {"projectId": self.project, "nodeId": "videoEdit-x", "inputs": {"v1": self.assets["v24"]}, "document": document})
         with self.assertRaises(StoreError):
-            self.jobs.submit({"projectId": "prj_../../x", "nodeId": "n", "inputs": {"v1": self.assets["v24"]}, "document": good})
+            submit_fixture(self.jobs, {"projectId": "prj_../../x", "nodeId": "n", "inputs": {"v1": self.assets["v24"]}, "document": good})
         with self.assertRaises(StoreError):
-            self.jobs.submit({"projectId": self.project, "nodeId": "n", "inputs": {"v9": self.assets["v24"]}, "document": good})
-        job = self.jobs.submit({"projectId": self.project, "nodeId": "videoEdit-oob", "inputs": {"v1": self.assets["v24"]},
+            submit_fixture(self.jobs, {"projectId": self.project, "nodeId": "n", "inputs": {"v9": self.assets["v24"]}, "document": good})
+        job = submit_fixture(self.jobs, {"projectId": self.project, "nodeId": "videoEdit-oob", "inputs": {"v1": self.assets["v24"]},
                                 "document": {**good, "clips": [{**good["clips"][0], "sourceOutPts": 121}]}})
         result = self.jobs.wait(job["id"], 120)
         self.assertEqual(result["status"], "failed")
@@ -213,7 +214,7 @@ class VideoEditRenderTests(unittest.TestCase):
         self.assertEqual(read_indices(self.store.asset_file(self.project, saved["asset"]["path"])), list(range(12)))
         with self.assertRaises(StoreError):
             self.jobs.commit(done["id"], {"projectId": "prj_other", "revision": saved["revision"]})
-        job = self.jobs.submit({"projectId": self.project, "nodeId": "videoEdit-cancel", "inputs": {"v1": self.assets["v24"]},
+        job = submit_fixture(self.jobs, {"projectId": self.project, "nodeId": "videoEdit-cancel", "inputs": {"v1": self.assets["v24"]},
                                 "document": {"schemaVersion": 1, "clips": [{"id": "a", "inputSlot": "v1", "sourceInPts": 0, "sourceOutPts": 120, "timebase": F24}]}})
         self.jobs.cancel(job["id"], self.project)
         self.assertIn(self.jobs.wait(job["id"], 120)["status"], {"cancelled", "completed"})
@@ -240,7 +241,8 @@ class VideoEditAPITests(unittest.TestCase):
         self.assertFalse(api.handle_get(FakeHandler(), "/api/projects"))
         handler = FakeHandler(json.dumps({"projectId": "prj_a"}).encode())
         api.handle_post(handler, "/api/video-edit/jobs")
-        self.assertEqual(handler.sent[0], 201)
+        self.assertEqual(handler.sent[0], 403)
+        self.assertEqual(handler.sent[1]["code"], "VIDEO_PAGE_REQUIRED")
         handler = FakeHandler(b"NaN")
         api.handle_post(handler, "/api/video-edit/jobs")
         self.assertEqual(handler.sent[0], 400)

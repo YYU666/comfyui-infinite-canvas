@@ -1,4 +1,5 @@
-import { hasUnconfirmedVideoSubmission, makeVideoSubmission, postVideoSubmission, videoSubmissionError, videoSubmissionPhase } from './video-submission.js';
+import { getVisibleGenerationPage } from './canvas-current-page.js';
+import { cancelVideoRun, observeVideoCancellation, readVideoJob, hasUnconfirmedVideoSubmission, makeVideoSubmission, postVideoSubmission, videoSubmissionError, videoSubmissionPhase } from './video-submission.js';
 // Page-side runtime for the video edit node: talks to /api/video-edit, uploads
 // non-project inputs through the page's normal asset channel, and writes the
 // result back onto the same node. The backend never edits project.json.
@@ -34,24 +35,6 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
 });
 
 export const submitVideoAnalysis = (payload) => request('/auto-cut', payload);
-
-export async function analyzeVideoInput(payload, signal) {
-  signal.throwIfAborted();
-  // Read the submission receipt even if the panel closes during the POST,
-  // so cancellation can still target the newly queued job.
-  const submitted = await submitVideoAnalysis(payload);
-  try {
-    for (;;) {
-      await sleep(500, signal);
-      const job = await getVideoEditJob(submitted.id, { signal });
-      if (ACTIVE.includes(job.status)) continue;
-      if (job.status === 'completed') return job.result;
-      throw new Error(job.error || job.stage || '素材分析失败。');
-    }
-  } finally {
-    if (signal.aborted) await cancelVideoEditJob(submitted.id, payload.projectId).catch(() => {});
-  }
-}
 
 /**
  * deps: { getProjectId, getNodes, getEdges, updateNode, saveCanvasMedia, persistProject, jobs (Map id->AbortController), onJobsChange }
@@ -91,17 +74,22 @@ export function createVideoEditRunner(deps) {
 
   async function follow(id, jobId, controller) {
     const projectId = deps.getProjectId();
+    const isCurrent = () => currentProject(projectId) && node(id)?.data.videoEditJobId === jobId;
+    const identity = { id: jobId, intent: { projectId, nodeId: id } };
     try {
       for (;;) {
         await sleep(700, controller.signal);
-        const job = await getVideoEditJob(jobId, { signal: controller.signal });
-        if (!currentProject(projectId) || node(id)?.data.videoEditJobId !== jobId) return; // superseded or deleted
+        if (!isCurrent()) return;
+        const job = await readVideoJob(getVideoEditJob, identity, controller.signal, () => {
+          if (isCurrent()) deps.updateNode(id, { stage: '连接波动 · 正在查询原作业' });
+        });
+        if (controller.signal.aborted || !isCurrent()) return;
         const receipt = videoSubmissionPhase(node(id), jobId, 'accepted');
         if (receipt.videoSubmission) {
           deps.updateNode(id, receipt);
           await deps.persistProject?.().catch(() => {});
         }
-        if (ACTIVE.includes(job.status)) { deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress }); continue; }
+        if (ACTIVE.includes(job.status)) { deps.updateNode(id, { status: job.status, stage: job.stage, progress: job.progress, error: null }); continue; }
         if (job.status !== 'completed') {
           deps.updateNode(id, { status: job.status === 'cancelled' ? 'cancelled' : 'error', stage: job.stage, error: job.status === 'cancelled' ? null : job.error || '导出失败。', ...videoSubmissionPhase(node(id), jobId, job.status === 'cancelled' ? 'cancelled' : 'failed') });
           await deps.persistProject?.().catch(() => {});
@@ -111,30 +99,114 @@ export function createVideoEditRunner(deps) {
         const saved = await deps.saveCanvasMedia((revision) => commitVideoEditJob(jobId, projectId, revision), (result) => ({ ok: true, assetPath: result.asset.path }));
         if (!saved?.ok) throw new Error(saved?.error?.message || '成片保存失败。');
         if (controller.signal.aborted || !currentProject(projectId) || node(id)?.data.videoEditJobId !== jobId) return;
-        deps.updateNode(id, { status: 'done', stage: '已导出', progress: 1, error: null, editResultAssetPath: saved.assetPath, editResult: job.result, editResultDocument: node(id)?.data.editSubmittedDocument ?? null, editResultJobId: jobId });
+        deps.updateNode(id, { status: 'done', stage: '已导出', progress: 1, error: null, ...videoSubmissionPhase(node(id), jobId, 'completed'), editResultAssetPath: saved.assetPath, editResult: job.result, editResultDocument: node(id)?.data.editSubmittedDocument ?? null, editResultJobId: jobId });
         await deps.persistProject?.();
         return;
       }
     } catch (error) {
-      if (error?.name === 'AbortError' || controller.signal.aborted) {
-        if (currentProject(projectId) && node(id)?.data.videoEditJobId === jobId) deps.updateNode(id, { status: 'cancelled', stage: '已取消', error: null });
-        return;
-      }
-      if (currentProject(projectId) && node(id)?.data.videoEditJobId === jobId) deps.updateNode(id, { status: 'error', stage: '导出失败', error: error.status === 404 ? '后台导出任务已不存在（工作台可能已重启），请重新导出。' : error.message, ...videoSubmissionError(node(id), jobId, error) });
+      if (!isCurrent() || controller.signal.aborted) return;
+      deps.updateNode(id, { status: 'error', stage: '导出失败', error: error.message, ...videoSubmissionError(node(id), jobId, error) });
+      await deps.persistProject?.().catch(() => {});
     } finally { unregister(id, controller); }
   }
 
   function attach(id, jobId) {
     const projectId = deps.getProjectId();
     const controller = new AbortController();
-    controller.signal.addEventListener('abort', () => { cancelVideoEditJob(jobId, projectId).catch(() => {}); }, { once: true });
+    observeVideoCancellation(controller, {
+      cancel: () => cancelVideoEditJob(jobId, projectId),
+      isCurrent: () => currentProject(projectId) && node(id)?.data.videoEditJobId === jobId,
+      update: (patch) => deps.updateNode(id, patch),
+    });
     register(id, controller);
     follow(id, jobId, controller);
     return controller;
   }
 
+  async function setAnalysisPhase(id, record, phase, job) {
+    const saved = node(id)?.data.videoAnalysisSubmission;
+    if (!currentProject(record.intent.projectId) || saved?.id !== record.id) return;
+    const next = { ...saved, phase, ...(job && { stage: job.stage, progress: job.progress }) };
+    if (saved.phase === next.phase && saved.stage === next.stage && saved.progress === next.progress) return;
+    deps.updateNode(id, { videoAnalysisSubmission: next });
+    if (saved.phase !== phase) await deps.persistProject?.().catch(() => {});
+  }
+
+  async function startAnalysis(id, inputs, signal, generation = {}) {
+    const projectId = deps.getProjectId();
+    if (!currentProject(projectId) || !isVideoEdit(node(id)) || deps.jobs.has(id)) throw new Error('当前视频节点不可分析。');
+    const intent = { slot: inputs.slot, assetPath: inputs.assetPath, mode: inputs.mode, projectId, nodeId: id };
+    const saved = node(id).data.videoAnalysisSubmission;
+    if (['prepared', 'accepted', 'unconfirmed'].includes(saved?.phase)) {
+      if (Object.keys(intent).some(key => saved.intent?.[key] !== intent[key])) throw new Error('请先核对原素材的分析任务。');
+      const job = await readVideoJob(getVideoEditJob, saved, signal, () => {});
+      return { record: saved, job };
+    }
+    const record = makeVideoSubmission('ved', intent, generation.page || getVisibleGenerationPage(projectId));
+    deps.updateNode(id, { videoAnalysisJobId: record.id, videoAnalysisSubmission: record });
+    try {
+      const job = await postVideoSubmission(record, { persistProject: deps.persistProject, signal,
+        current: () => {
+          generation.assertActive?.();
+          return currentProject(projectId) && node(id)?.data.videoAnalysisJobId === record.id;
+        }, submit: submitVideoAnalysis, lookup: getVideoEditJob });
+      await setAnalysisPhase(id, record, 'accepted', job);
+      return { record, job };
+    } catch (error) {
+      await setAnalysisPhase(id, record, error.code === 'VIDEO_SUBMISSION_UNKNOWN' ? 'unconfirmed' : signal.aborted ? 'cancelled' : 'rejected');
+      throw error;
+    }
+  }
+
   return {
     isBusy: (id) => deps.jobs.has(id),
+    startAnalysis,
+    updateAnalysisPhase(id, job) {
+      const record = node(id)?.data.videoAnalysisSubmission;
+      if (record?.id !== job.id) return;
+      return setAnalysisPhase(id, record, ACTIVE.includes(job.status) ? 'accepted' : job.status === 'completed' ? 'completed' : job.status === 'cancelled' ? 'cancelled' : 'failed', job);
+    },
+    async cancelAnalysis(id) {
+      const record = node(id)?.data.videoAnalysisSubmission;
+      if (!record || !currentProject(record.intent.projectId)) return;
+      await cancelVideoEditJob(record.id, record.intent.projectId);
+    },
+    async resumeAnalysis(id, signal) {
+      const record = node(id)?.data.videoAnalysisSubmission;
+      if (!record || !['prepared', 'accepted', 'unconfirmed'].includes(record.phase)) return;
+      try {
+        while (currentProject(record.intent.projectId) && node(id)?.data.videoAnalysisJobId === record.id) {
+          const job = await readVideoJob(getVideoEditJob, record, signal, () => {});
+          const active = ACTIVE.includes(job.status);
+          await setAnalysisPhase(id, record, active ? 'accepted' : job.status === 'completed' ? 'completed' : job.status === 'cancelled' ? 'cancelled' : 'failed', job);
+          if (!active) return;
+          await sleep(700, signal);
+        }
+      } catch (error) {
+        if (!signal.aborted) await setAnalysisPhase(id, record, 'unconfirmed');
+      }
+    },
+    async analyze(id, inputs, signal) {
+      const { record, job: accepted } = await startAnalysis(id, inputs, signal);
+      const current = () => currentProject(record.intent.projectId) && node(id)?.data.videoAnalysisJobId === record.id;
+      try {
+        let job = accepted;
+        while (ACTIVE.includes(job.status)) {
+          await sleep(500, signal);
+          job = await readVideoJob(getVideoEditJob, record, signal, () => {});
+          if (!current()) throw new Error('当前画布已改变。');
+          if (ACTIVE.includes(job.status)) await setAnalysisPhase(id, record, 'accepted', job);
+        }
+        await setAnalysisPhase(id, record, job.status === 'completed' ? 'completed' : job.status === 'cancelled' ? 'cancelled' : 'failed', job);
+        if (job.status === 'completed') return job.result;
+        throw new Error(job.error || job.stage || '素材分析失败。');
+      } catch (error) {
+        if (!signal.aborted && (error.status === 404 || error.status >= 500)) {
+          await setAnalysisPhase(id, record, 'unconfirmed');
+        }
+        throw error;
+      }
+    },
     async openMotion(id, action, options) {
       const projectId = deps.getProjectId();
       const current = node(id);
@@ -177,7 +249,7 @@ export function createVideoEditRunner(deps) {
         return result;
       } finally { unregister(id, controller); }
     },
-    async run(id) {
+    async run(id, generation = {}) {
       if (!canWrite()) return { ok: false, error: '当前画布不可编辑。' };
       const projectId = deps.getProjectId();
       const current = node(id);
@@ -199,24 +271,23 @@ export function createVideoEditRunner(deps) {
         const inputs = await resolveInputs(id, usedVideoEditSlots(document), preparing.signal);
         preparing.signal.throwIfAborted();
         if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。');
-        preparation = makeVideoSubmission('ved', { projectId, nodeId: id, inputs, document });
+        preparation = makeVideoSubmission('ved', { projectId, nodeId: id, inputs, document }, generation.page);
         deps.updateNode(id, { stage: '待提交 · 正在保存作业准备记录', videoSubmission: preparation,
           videoEditJobId: preparation.id, editSubmittedDocument: JSON.stringify(document) });
         const job = await postVideoSubmission(preparation, { persistProject: deps.persistProject,
-          current: () => deps.getProjectId() === projectId && canWrite() && node(id)?.data.videoSubmission?.id === preparation.id,
+          current: () => {
+            generation.assertActive?.();
+            return deps.getProjectId() === projectId && canWrite() && node(id)?.data.videoSubmission?.id === preparation.id;
+          },
           signal: preparing.signal, submit: submitVideoEditJob, lookup: getVideoEditJob });
         submittedJobId = job.id;
-        if (preparing.signal.aborted || !currentProject(projectId) || !node(id)) {
-          preparing.signal.throwIfAborted();
-          throw new Error('当前画布已改变，已取消本次导出。');
-        }
-        deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress, ...videoSubmissionPhase(node(id), job.id, 'accepted') });
-        await deps.persistProject?.().catch(() => {});
-        preparing.signal.throwIfAborted();
-        if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变，已取消本次导出。');
+        if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。');
         unregister(id, preparing);
-        attach(id, job.id);
-        return { ok: true, jobId: job.id };
+        deps.updateNode(id, { status: job.status, stage: job.stage, progress: job.progress, ...videoSubmissionPhase(node(id), job.id, 'accepted') });
+        const attached = attach(id, job.id);
+        if (preparing.signal.aborted) await cancelVideoRun(attached);
+        await deps.persistProject?.().catch(() => {});
+        return { ok: true, jobId: job.id, status: job.status, execution: 'accepted' };
       } catch (error) {
         if (submittedJobId) await cancelVideoEditJob(submittedJobId, projectId).catch(() => {});
         unregister(id, preparing);
@@ -231,7 +302,7 @@ export function createVideoEditRunner(deps) {
         return { ok: false, ...(pending && { code: error.code, jobId: preparation.id }), error: cancelled ? '已取消。' : error.message };
       }
     },
-    cancel(id) { deps.jobs.get(id)?.abort(); },
+    cancel(id) { return cancelVideoRun(deps.jobs.get(id)); },
     async prepare(id) {
       if (!canWrite()) throw new Error('当前画布不可编辑。');
       // Import every connected generated result into project assets (no export).

@@ -10,7 +10,7 @@ import { CHROMA_FIELDS, chromaDocumentFromNode, defaultChromaHandle, defaultChro
 import { REPAIR_FIELDS, defaultRepairSettings, isVideoRepair, normalizeRepairDocument, normalizeRepairPreviewTime, videoRepairSummary } from './video-repair-document.js';
 import { PLATE_FIELDS, PLATE_PORT, defaultPlateSettings, isVideoPlate, plateDocumentFromNode, videoPlateSummary } from './video-plate-document.js';
 import { isVideoEdit, normalizeVideoEditDocument, nextVideoEditPort, videoEditSummary, videoEditInputView, VIDEO_EDIT_VIDEO_PORTS } from './video-edit-document.js';
-import { submitVideoAnalysis, getVideoEditJob, cancelVideoEditJob } from './video-edit-runtime.js';
+import { getVideoEditJob, cancelVideoEditJob } from './video-edit-runtime.js';
 import { MOTION_CANVAS_MAX_CUES, normalizeMotionCanvasPreview } from './motion-canvas-pilot.js';
 import { validateWorkflowParameters } from './workflow-extensions.js';
 import { startCurrentCanvasPage, createProjectPageTools } from './canvas-current-page.js';
@@ -459,8 +459,8 @@ export async function generateNodeForMcp(latest, { nodeId, wait = false, timeout
   if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial) || isVideoPlate(initial)) {
     const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : isVideoRepair(initial) ? 'repairJobId' : 'plateJobId';
     const result = await latest.current.actions.generateNode(nodeId, options);
-    if (!result?.ok) throw new Error(result?.error || '视频导出提交失败。');
-    if (!wait) return { node: nodeSummary(mcpNode(latest, nodeId)), jobId: result.jobId };
+    if (!result?.ok) throw agentReceiptError(result?.code || 'VIDEO_EXPORT_FAILED', result?.error || '视频导出提交失败。', result?.jobId ? { jobId: result.jobId } : {});
+    if (!wait) return { ...result, node: nodeSummary(mcpNode(latest, nodeId)) };
     const finished = await waitForVideoJob(latest, nodeId, jobKey, result.jobId, timeoutMs, waitImpl);
     if (finished.node.status !== 'done') throw new Error(finished.node.error || '视频编辑未交付。');
     return finished;
@@ -519,6 +519,7 @@ export async function waitForNodeForMcp(latest, { nodeId, jobId, attempt, timeou
   const initial = mcpNode(latest, nodeId);
   if (isVideoEdit(initial) || isVideoRhythm(initial) || isVideoChroma(initial) || isVideoRepair(initial) || isVideoPlate(initial)) {
     const jobKey = isVideoEdit(initial) ? 'videoEditJobId' : isVideoRhythm(initial) ? 'rhythmJobId' : isVideoChroma(initial) ? 'chromaJobId' : isVideoRepair(initial) ? 'repairJobId' : 'plateJobId';
+    if (jobId && initial.data[jobKey] !== jobId) throw agentReceiptError('JOB_CHANGED', '该节点当前视频任务与原 jobId 不同。');
     try {
       return { pending: false, ...await waitForVideoJob(latest, nodeId, jobKey, initial.data[jobKey], timeoutMs, waitImpl) };
     } catch (error) {
@@ -724,7 +725,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
       if (cancel) cancelVideoEditJob(jobId, owner.projectId, { keepalive: true }).catch(() => {});
     };
     const cancelOwnedAnalyses = () => {
-      for (const jobId of ownedAnalyses.keys()) releaseAnalysis(jobId, true);
+      for (const jobId of ownedAnalyses.keys()) releaseAnalysis(jobId);
     };
     function watchAnalysis(jobId, owner) {
       owner.timer = setTimeout(async () => {
@@ -732,6 +733,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         try {
           const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]);
           const job = await getVideoEditJob(jobId, { signal });
+          await latest.current.actions.updateVideoAnalysisPhase?.(owner.nodeId, job);
           if (!['queued', 'running'].includes(job.status)) { releaseAnalysis(jobId); return; }
         } catch (error) {
           if (error.status === 404) { releaseAnalysis(jobId); return; }
@@ -922,19 +924,21 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         description: '分析当前视频编辑节点已连线的项目视频。transcript 本地转写旁白并返回源时间码，black 和 silence 提议剪口。先取得 jobId，再调用 canvas_get_video_analysis 获取结果。',
         inputSchema: schema({ nodeId: nodeIdProperty, slot: { type: 'string', enum: VIDEO_EDIT_VIDEO_PORTS },
           mode: { type: 'string', enum: ['black', 'silence', 'transcript'] } }, ['nodeId', 'slot', 'mode']),
-        execute: respond(async ({ nodeId, slot, mode }) => {
+        execute: respond(async ({ nodeId, slot, mode }, options) => {
           if (!VIDEO_EDIT_VIDEO_PORTS.includes(slot) || !['black', 'silence', 'transcript'].includes(mode)) throw new Error('分析端口或方式无效。');
           const { projectId, inputs } = analysisSource(nodeId);
           const assetPath = inputs[slot]?.assetPath;
           if (!assetPath) throw new Error('请先将该端口的视频导入项目素材。');
           const owner = { projectId, nodeId, slot, assetPath };
-          const job = await submitVideoAnalysis({ ...owner, mode });
+          const { job } = await latest.current.actions.startVideoAnalysis(nodeId, { slot, assetPath, mode }, controller.signal, options.generation);
           if (!ownsAnalysis(owner)) {
             await cancelVideoEditJob(job.id, projectId, { keepalive: true }).catch(() => {});
             throw new Error('当前画布或素材已更换，分析已取消。');
           }
-          ownedAnalyses.set(job.id, owner);
-          watchAnalysis(job.id, owner);
+          if (['queued', 'running'].includes(job.status) && !ownedAnalyses.has(job.id)) {
+            ownedAnalyses.set(job.id, owner);
+            watchAnalysis(job.id, owner);
+          }
           return { jobId: job.id, status: job.status, mode, slot };
         }),
       },
@@ -976,6 +980,7 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         execute: respond(async ({ nodeId, jobId }) => {
           const job = await readAnalysis(nodeId, jobId);
           const cancelled = await cancelVideoEditJob(jobId, job.projectId);
+          await latest.current.actions.updateVideoAnalysisPhase?.(nodeId, cancelled);
           releaseAnalysis(jobId);
           return { jobId, status: cancelled.status, stage: cancelled.stage };
         }),
@@ -1235,6 +1240,21 @@ export function registerCanvasMcp(latest, { context = document.modelContext, sta
         }, ['nodeId']),
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         execute: respond(async ({ nodeId, jobId, attempt, timeoutMs = 300000 }) => waitForNodeForMcp(latest, { nodeId, jobId, attempt, timeoutMs })),
+      },
+      {
+        name: 'canvas_cancel_video',
+        description: '请求取消当前节点上指定的视频作业，保留已有成片。通过画布状态核对后台终态。',
+        inputSchema: schema({ nodeId: nodeIdProperty, jobId: { type: 'string', pattern: '^(?:ved|vry|vck|vwp|vrp)_[a-f0-9]{32}$' } }, ['nodeId', 'jobId']),
+        execute: respond(async ({ nodeId, jobId }) => {
+          const node = getNode(nodeId);
+          const key = isVideoEdit(node) ? 'videoEditJobId' : isVideoRhythm(node) ? 'rhythmJobId'
+            : isVideoChroma(node) ? 'chromaJobId' : isVideoPlate(node) ? 'plateJobId' : isVideoRepair(node) ? 'repairJobId' : null;
+          if (!key || node.data[key] !== jobId || !['queued', 'running'].includes(node.data.status)) {
+            throw agentReceiptError('JOB_CHANGED', '该节点当前没有此视频任务在运行。');
+          }
+          await latest.current.actions.cancelNode(nodeId);
+          return { nodeId, jobId, status: 'checking' };
+        }),
       },
       {
         name: 'canvas_cancel_node',

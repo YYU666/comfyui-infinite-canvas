@@ -99,6 +99,7 @@ assert.equal(NODE_PRESETS.video_time_remap[0], 'videoTimeRemap');
 {
   const calls = [];
   let jobId;
+  let identity;
   let polls = 0;
   globalThis.fetch = async (url, options = {}) => {
     calls.push([url, options.method || 'GET', options.body ? JSON.parse(options.body) : null]);
@@ -106,9 +107,10 @@ assert.equal(NODE_PRESETS.video_time_remap[0], 'videoTimeRemap');
     if (url === '/api/video-rhythm/jobs') {
       const { projectId, nodeId, requestId } = JSON.parse(options.body);
       jobId = `vry_${requestId}`;
+      identity = { id: jobId, projectId, nodeId };
       return json(201, { id: jobId, projectId, nodeId, status: 'queued', stage: '排队中', progress: 0 });
     }
-    if (url === `/api/video-rhythm/jobs/${jobId}`) return json(200, ++polls < 2 ? { id: jobId, status: 'running', stage: '正在逐帧导出', progress: 0.4 } : { id: jobId, status: 'completed', stage: '已导出', progress: 1, result: { frames: 48, audio: 'preserve' } });
+    if (url === `/api/video-rhythm/jobs/${jobId}`) return json(200, ++polls < 2 ? { ...identity, status: 'running', stage: '正在逐帧导出', progress: 0.4 } : { ...identity, status: 'completed', stage: '已导出', progress: 1, result: { frames: 48, audio: 'preserve' } });
     if (url === `/api/video-rhythm/jobs/${jobId}/commit`) return json(201, { asset: { path: `assets/${'e'.repeat(64)}.mp4` }, revision: 4 });
     return json(404, { message: 'nope' });
   };

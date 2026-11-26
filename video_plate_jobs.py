@@ -99,7 +99,7 @@ class VideoPlateJobs:
         except PlateDocumentError as error:
             raise _document_error(error) from error
 
-    def submit(self, payload):
+    def submit(self, payload, *, page=None):
         with self.lock:
             if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "video", "settings", "requestId"}:
                 raise _bad("绿幕白模作业字段无效。")
@@ -109,10 +109,9 @@ class VideoPlateJobs:
             self.root.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
                 raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vwp', ('videoWhitePlate',))
+            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vwp', ('videoWhitePlate',), page=page)
             if existing:
                 return self.get(job_id)
-            job_id = job_id or f"vwp_{uuid.uuid4().hex}"
             job = {
                 "id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
                 "stage": "排队中", "error": None, "result": None, "createdAt": time.time(), "video": payload.get("video"),

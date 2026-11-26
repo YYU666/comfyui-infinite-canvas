@@ -1,4 +1,4 @@
-import { hasUnconfirmedVideoSubmission, makeVideoSubmission, postVideoSubmission, videoSubmissionError, videoSubmissionPhase } from './video-submission.js';
+import { cancelVideoRun, observeVideoCancellation, readVideoJob, hasUnconfirmedVideoSubmission, makeVideoSubmission, postVideoSubmission, videoSubmissionError, videoSubmissionPhase } from './video-submission.js';
 // Page-side runtime for the white-model plate.
 // SAM3 runs on local ComfyUI inside the workbench job. The page commits the
 // file through the versioned asset channel and registers it as a video asset.
@@ -85,17 +85,22 @@ export function createVideoPlateRunner(deps) {
 
   async function follow(id, jobId, controller) {
     const projectId = deps.getProjectId();
+    const isCurrent = () => currentProject(projectId) && node(id)?.data.plateJobId === jobId;
+    const identity = { id: jobId, intent: { projectId, nodeId: id } };
     try {
       for (;;) {
         await sleep(700, controller.signal);
-        const job = await getVideoPlateJob(jobId, { signal: controller.signal });
-        if (controller.signal.aborted || !currentProject(projectId) || node(id)?.data.plateJobId !== jobId) return;
+        if (!isCurrent()) return;
+        const job = await readVideoJob(getVideoPlateJob, identity, controller.signal, () => {
+          if (isCurrent()) deps.updateNode(id, { stage: '连接波动 · 正在查询原作业' });
+        });
+        if (controller.signal.aborted || !isCurrent()) return;
         const receipt = videoSubmissionPhase(node(id), jobId, 'accepted');
         if (receipt.videoSubmission) {
           deps.updateNode(id, receipt);
           await deps.persistProject?.().catch(() => {});
         }
-        if (ACTIVE.includes(job.status)) { deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress }); continue; }
+        if (ACTIVE.includes(job.status)) { deps.updateNode(id, { status: job.status, stage: job.stage, progress: job.progress, error: null }); continue; }
         if (job.status !== 'completed') {
           deps.updateNode(id, { status: job.status === 'cancelled' ? 'cancelled' : 'error', stage: job.stage, error: job.status === 'cancelled' ? null : job.error || '导出失败。', ...videoSubmissionPhase(node(id), jobId, job.status === 'cancelled' ? 'cancelled' : 'failed') });
           await deps.persistProject?.().catch(() => {});
@@ -107,7 +112,7 @@ export function createVideoPlateRunner(deps) {
         if (controller.signal.aborted || !currentProject(projectId) || node(id)?.data.plateJobId !== jobId) return;
         const mediaId = deps.placeResult?.(id, saved.assetPath) || null;
         deps.updateNode(id, {
-          status: 'done', stage: '已导出', progress: 1, error: null,
+          status: 'done', stage: '已导出', progress: 1, error: null, ...videoSubmissionPhase(node(id), jobId, 'completed'),
           plateResultAssetPath: saved.assetPath, plateResultNodeId: mediaId, plateResult: job.result,
           plateSubmittedSettings: node(id)?.data.plateSubmittedSettings ?? null, plateResultJobId: jobId,
         });
@@ -115,25 +120,27 @@ export function createVideoPlateRunner(deps) {
         return;
       }
     } catch (error) {
-      if (error?.name === 'AbortError' || controller.signal.aborted) {
-        if (currentProject(projectId) && node(id)?.data.plateJobId === jobId) deps.updateNode(id, { status: 'cancelled', stage: '已取消', error: null });
-        return;
-      }
-      if (currentProject(projectId) && node(id)?.data.plateJobId === jobId) deps.updateNode(id, { status: 'error', stage: '导出失败', error: error.status === 404 ? '后台导出任务已不存在（工作台可能已重启），请重新导出。' : error.message, ...videoSubmissionError(node(id), jobId, error) });
+      if (!isCurrent() || controller.signal.aborted) return;
+      deps.updateNode(id, { status: 'error', stage: '导出失败', error: error.message, ...videoSubmissionError(node(id), jobId, error) });
+      await deps.persistProject?.().catch(() => {});
     } finally { unregister(id, controller); }
   }
 
   function attach(id, jobId) {
     const projectId = deps.getProjectId();
     const controller = new AbortController();
-    controller.signal.addEventListener('abort', () => { cancelVideoPlateJob(jobId, projectId).catch(() => {}); }, { once: true });
+    observeVideoCancellation(controller, {
+      cancel: () => cancelVideoPlateJob(jobId, projectId),
+      isCurrent: () => currentProject(projectId) && node(id)?.data.plateJobId === jobId,
+      update: (patch) => deps.updateNode(id, patch),
+    });
     register(id, controller);
     follow(id, jobId, controller);
     return controller;
   }
 
   return {
-    async run(id) {
+    async run(id, generation = {}) {
       if (!canWrite()) return { ok: false, error: '当前画布不可编辑。' };
       const projectId = deps.getProjectId();
       if (!canWrite()) return { ok: false, error: '当前画布不可编辑。' };
@@ -157,22 +164,23 @@ export function createVideoPlateRunner(deps) {
         preparing.signal.throwIfAborted();
         preparation = makeVideoSubmission('vwp', {
           projectId, nodeId: id, video, settings: settingsPayload(document),
-        });
+        }, generation.page);
         deps.updateNode(id, { stage: '待提交 · 正在保存作业准备记录', videoSubmission: preparation,
           plateJobId: preparation.id, plateSubmittedSettings: JSON.stringify(document) });
         const job = await postVideoSubmission(preparation, { persistProject: deps.persistProject,
-          current: () => deps.getProjectId() === projectId && canWrite() && node(id)?.data.videoSubmission?.id === preparation.id,
+          current: () => {
+            generation.assertActive?.();
+            return deps.getProjectId() === projectId && canWrite() && node(id)?.data.videoSubmission?.id === preparation.id;
+          },
           signal: preparing.signal, submit: submitVideoPlateJob, lookup: getVideoPlateJob });
         submittedJobId = job.id;
-        preparing.signal.throwIfAborted();
-        if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。');
-        deps.updateNode(id, { status: 'running', stage: job.stage, progress: job.progress, ...videoSubmissionPhase(node(id), job.id, 'accepted') });
-        await deps.persistProject?.().catch(() => {});
-        preparing.signal.throwIfAborted();
         if (!currentProject(projectId) || !node(id)) throw new Error('当前画布已改变。');
         unregister(id, preparing);
-        attach(id, job.id);
-        return { ok: true, jobId: job.id };
+        deps.updateNode(id, { status: job.status, stage: job.stage, progress: job.progress, ...videoSubmissionPhase(node(id), job.id, 'accepted') });
+        const attached = attach(id, job.id);
+        if (preparing.signal.aborted) await cancelVideoRun(attached);
+        await deps.persistProject?.().catch(() => {});
+        return { ok: true, jobId: job.id, status: job.status, execution: 'accepted' };
       } catch (error) {
         if (submittedJobId) await cancelVideoPlateJob(submittedJobId, projectId).catch(() => {});
         unregister(id, preparing);
@@ -187,7 +195,7 @@ export function createVideoPlateRunner(deps) {
         return { ok: false, ...(pending && { code: error.code, jobId: preparation.id }), error: cancelled ? '已取消。' : error.message };
       }
     },
-    cancel(id) { deps.jobs.get(id)?.abort(); },
+    cancel(id) { return cancelVideoRun(deps.jobs.get(id)); },
     resume(id) {
       if (!canWrite()) return false;
       const current = node(id);

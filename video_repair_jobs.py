@@ -109,12 +109,12 @@ class VideoRepairJobs:
         if used + reserve > MAX_ROOT_BYTES or shutil.disk_usage(self.root).free < MIN_FREE_BYTES + reserve:
             raise StoreError("DISK_FULL", "局部修复缓存配额或磁盘空间不足。", 507)
 
-    def submit(self, payload):
+    def submit(self, payload, *, page=None):
         # Bind source resolution and admission to one project-store epoch.
         with self.lock:
             document, source, _ = self._request(payload)
             with self.lock:
-                job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vrp', ('videoLocalRepair',))
+                job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vrp', ('videoLocalRepair',), page=page)
                 if existing:
                     return self.get(job_id)
                 if self.closed: raise StoreError("VIDEO_REPAIR_CLOSED", "视频修补服务正在关闭。", 503)

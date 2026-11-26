@@ -120,6 +120,7 @@ import { defaultPlateSettings } from './video-plate-document';
 import VideoEditorNode from './VideoEditorNode';
 import { defaultVideoEditDocument, videoEditInputView } from './video-edit-document';
 import { createVideoEditRunner } from './video-edit-runtime';
+import { cancelVideoRun } from './video-submission.js';
 import { assetUrl } from './project-store-http';
 import { useLocalConnection } from './use-local-connection';
 import { localConnectionPresentation } from './local-connection';
@@ -1028,7 +1029,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         updateNode(generator.id, { imageReview: { accepted: false, model: record.model, taskType: record.taskType, time: record.time, resultKey } });
       }
     }
-    localImageJobsRef.current.get(id)?.abort();
+    cancelVideoRun(localImageJobsRef.current.get(id));
     if ((node?.data.queueJobId || node?.data.promptId) && ['uploading', 'queued', 'running', 'finishing'].includes(node.data.status)) cancelGeneration(node.data).catch(() => {});
     setNodes((items) => items.filter((item) => item.id !== id));
     setEdges((items) => items.filter((edge) => edge.source !== id && edge.target !== id));
@@ -1691,11 +1692,11 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }, [project.id]);
   const generationFlightsRef = useRef(new Set());
   const executeGeneration = useCallback(async (id, generation) => {
-    if (['videoSpeed', 'videoTimeRemap'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoRhythmRunnerRef.current.run(id);
-    if (['videoChromaKey'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoChromaRunnerRef.current.run(id);
-    if (['videoLocalRepair'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoRepairRunnerRef.current.run(id);
-    if (['videoWhitePlate'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoPlateRunnerRef.current.run(id);
-    if (nodesRef.current.find(node => node.id === id)?.type === 'videoEdit') return videoEditRunnerRef.current.run(id);
+    if (['videoSpeed', 'videoTimeRemap'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoRhythmRunnerRef.current.run(id, generation);
+    if (['videoChromaKey'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoChromaRunnerRef.current.run(id, generation);
+    if (['videoLocalRepair'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoRepairRunnerRef.current.run(id, generation);
+    if (['videoWhitePlate'].includes(nodesRef.current.find(node => node.id === id)?.type)) return videoPlateRunnerRef.current.run(id, generation);
+    if (nodesRef.current.find(node => node.id === id)?.type === 'videoEdit') return videoEditRunnerRef.current.run(id, generation);
     if (nodesRef.current.find(n => n.id === id)?.type === 'spriteAtlas') return spriteRunRef.current?.runSpriteAtlas(id, generation);
     if (nodesRef.current.find(n => n.id === id)?.type === 'artDirector') return artRunRef.current?.(id, generation);
     if (nodesRef.current.find(n => n.id === id)?.type === 'native3d') {
@@ -1987,6 +1988,10 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const cancelNode = useCallback(async (id) => {
     if (nodesRef.current.find(node => node.id === id)?.type === 'videoLocalRepair') return videoRepairRunnerRef.current.cancel(id);
     const node = nodesRef.current.find((item) => item.id === id);
+    if (node?.type === 'videoEdit') return videoEditRunnerRef.current.cancel(id);
+    if (['videoSpeed', 'videoTimeRemap'].includes(node?.type)) return videoRhythmRunnerRef.current.cancel(id);
+    if (node?.type === 'videoChromaKey') return videoChromaRunnerRef.current.cancel(id);
+    if (node?.type === 'videoWhitePlate') return videoPlateRunnerRef.current.cancel(id);
     if (node?.type === 'native3d') return nativeRunRef.current?.cancel(id);
     if (node?.type === 'spriteAtlas') return spriteRunRef.current?.cancelSpriteAtlas(id);
     if (nodesRef.current.find(node => node.id === id)?.type === 'spriteAtlas') return spriteRunRef.current?.cancelSpriteAtlas(id);
@@ -2632,7 +2637,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     }
   }, [project.id, project.readOnly]);
 
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const resumeVideoAnalysis = useCallback((id, signal) => videoEditRunnerRef.current.resumeAnalysis(id, signal), []);
+  const cancelVideoAnalysis = useCallback((id) => videoEditRunnerRef.current.cancelAnalysis(id), []);
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -2729,6 +2736,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       if (switchingRef.current || project.readOnly) throw new Error('当前画布不可写。');
       return addNode('generator', extensionNodeData(bundle, nodeDefinitionId), position, focus);
     }, updateNode, removeNode, reviewImageNode, onConnect, generateNode, retryGeneration, cancelNode, tidyCanvas, focusNode: id => focusNode(id, { duration: 0 }), inspectNode, openReferenceLibrary, persistProject, retryProjectSave,
+    startVideoAnalysis: (...args) => videoEditRunnerRef.current.startAnalysis(...args),
+    updateVideoAnalysisPhase: (...args) => videoEditRunnerRef.current.updateAnalysisPhase(...args),
       getImageModelHistory: () => imageHistoryRef.current,
       prepareProjectSwitch, commitProjectSwitch, abandonProjectSwitch,
       importAsset: async (nodeId, assetPath, name, sourceProjectId) => {

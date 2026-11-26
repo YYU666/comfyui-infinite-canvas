@@ -142,6 +142,7 @@ assert.equal(fresh.plateStale, false);
 {
   const calls = [];
   let jobId;
+  let identity;
   let polls = 0;
   globalThis.fetch = async (url, options = {}) => {
     calls.push([url, options.method || 'GET', options.body ? JSON.parse(options.body) : null]);
@@ -149,9 +150,10 @@ assert.equal(fresh.plateStale, false);
     if (url === '/api/video-plate/jobs') {
       const { projectId, nodeId, requestId } = JSON.parse(options.body);
       jobId = `vwp_${requestId}`;
+      identity = { id: jobId, projectId, nodeId };
       return json(201, { id: jobId, projectId, nodeId, status: 'queued', stage: '排队中', progress: 0 });
     }
-    if (url === `/api/video-plate/jobs/${jobId}`) return json(200, ++polls < 2 ? { id: jobId, status: 'running', stage: 'SAM3 正在跟踪人物和杆子', progress: 0.4 } : { id: jobId, status: 'completed', stage: '已导出', progress: 1, result: { frames: 8, width: 64, height: 100, fps: { num: 24, den: 1 }, greenColor: '#00FF00' } });
+    if (url === `/api/video-plate/jobs/${jobId}`) return json(200, ++polls < 2 ? { ...identity, status: 'running', stage: 'SAM3 正在跟踪人物和杆子', progress: 0.4 } : { ...identity, status: 'completed', stage: '已导出', progress: 1, result: { frames: 8, width: 64, height: 100, fps: { num: 24, den: 1 }, greenColor: '#00FF00' } });
     if (url === `/api/video-plate/jobs/${jobId}/commit`) return json(201, { asset: { path: hash('e', 'mp4') }, revision: 4 });
     return json(404, { message: 'nope' });
   };

@@ -103,7 +103,7 @@ class VideoChromaJobs:
         background = self._asset(project_id, background_path, BACKGROUND_PATH, "背景")
         return foreground, background, PurePosixPath(str(background_path)).suffix.lower() in IMAGE_SUFFIXES
 
-    def submit(self, payload):
+    def submit(self, payload, *, page=None):
         # Bind source resolution and admission to one project-store epoch.
         with self.lock:
             if not isinstance(payload, dict) or set(payload) - {"projectId", "nodeId", "foreground", "background", "settings", "requestId"}:
@@ -114,10 +114,9 @@ class VideoChromaJobs:
             self.root.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
                 raise StoreError("DISK_FULL", "作业目录可用空间不足 1 GB，未开始导出。", 507)
-            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vck', ('videoChromaKey',))
+            job_id, existing = prepared_video_submission(self.store, self.jobs, payload, 'vck', ('videoChromaKey',), page=page)
             if existing:
                 return self.get(job_id)
-            job_id = job_id or f"vck_{uuid.uuid4().hex}"
             job = {"id": job_id, "projectId": project_id, "nodeId": node_id, "status": "queued", "progress": 0.0,
                    "stage": "排队中", "error": None, "result": None, "createdAt": time.time(),
                    "foreground": payload.get("foreground"), "background": payload.get("background")}

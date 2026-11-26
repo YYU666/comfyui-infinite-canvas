@@ -123,7 +123,7 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
     if (source.type === 'videoWhitePlate') { Object.assign(data, { status: 'idle', stage: '', progress: 0 }); ['plateJobId', 'plateSubmittedSettings', 'plateResultAssetPath', 'plateResultNodeId', 'plateResultUrl', 'plateResult', 'plateResultJobId', 'plateInputCache', 'error'].forEach(key => delete data[key]); }
     if (source.type === 'videoEdit') {
       Object.assign(data, { status: 'idle', stage: '', progress: 0 });
-      ['videoEditJobId', 'editResultAssetPath', 'editResult', 'editResultDocument', 'editSubmittedDocument', 'editResultJobId', 'editInputCache', 'openMotion', 'error'].forEach(key => delete data[key]);
+      ['videoAnalysisJobId', 'videoAnalysisSubmission', 'videoEditJobId', 'editResultAssetPath', 'editResult', 'editResultDocument', 'editSubmittedDocument', 'editResultJobId', 'editInputCache', 'openMotion', 'error'].forEach(key => delete data[key]);
     }
     if (source.type === 'generator' || source.type === 'imageProcess') {
       Object.assign(data, { status: 'idle', progress: 0, stage: '', runs: [] });
