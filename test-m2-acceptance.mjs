@@ -213,8 +213,9 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(base);
   await openProject('M2-后台队列');
-  await page.locator('.media-shell img').waitFor({ timeout: 10000 });
-  assert.equal(await page.locator('.media-shell img').count(), 1, 'completed job materializes its result after reopening');
+  await page.locator('.generator-preview img').waitFor({ timeout: 10000 });
+  assert.equal(await page.locator('.media-shell').count(), 0, 'a single image result stays on the generating node');
+  assert.equal(await page.locator('.generator-preview img').count(), 1, 'completed job shows its result on the generating node after reopening');
   await stopBackend();
   await startBackend(comfyUrl);
   const recovered = await api(`/api/queue/${jobId}`);
