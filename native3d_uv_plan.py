@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import numpy as np
-from native3d_partfield import canonical,sha,high_evidence,cluster_features,COMMIT,CHECKPOINT_SHA,LICENSE
+from native3d_partfield import canonical,sha,high_evidence,cluster_features,feature_cache_path,COMMIT,CHECKPOINT_SHA,LICENSE
 from native3d_uv_structure import MODE as STRUCTURE_MODE, DEFAULTS as STRUCTURE_DEFAULTS
 from native3d_uv_macro_plan import PLANNER_VERSION as STRUCTURE_PLANNER_VERSION
 COARSE_MODE='ai_coarse_harmonic_v3'
@@ -212,15 +212,15 @@ def _binary(path,arrays):
     if offset>64*1024**2:raise ValueError('UV plan overlay exceeds 64MiB')
     return {'name':path.name,'sha256':sha(path),'byteLength':offset,'arrays':descriptions}
 
-def build_plan(low,high,out,parameters,*,low_sha256,high_sha256,config=None,progress=None):
+def build_plan(low,high,out,parameters,*,low_sha256,high_sha256,config=None,progress=None,worker_lease=None):
     config=config or {};p=settings(parameters);validate_mesh(low,p['orientationConfirmed'])
     out=Path(out);out.mkdir(parents=True,exist_ok=True)
     if not all(isinstance(h,str) and len(h)==64 and all(c in '0123456789abcdef' for c in h) for h in (low_sha256,high_sha256)):raise ValueError('Source SHA256 required')
     if progress:progress('verify_sources',5)
     cache_root=Path(config.get('cacheRoot',out.parent/'uv-plan-cache'))
-    cache=cache_root/digest({'high':high_sha256,'sample':'area-weighted-high-100k-32768-seed01-v1','checkpoint':CHECKPOINT_SHA})
+    cache=feature_cache_path(cache_root, high_sha256)
     data,features,receipt=high_evidence(high,high_sha256,cache,gpu_authorized=config.get('gpuAuthorized') is True,
-        verified_cache=config.get('verifiedHighCache'),progress=progress,config=config)
+        verified_cache=config.get('verifiedHighCache'),progress=progress,config=config,worker_lease=worker_lease)
     if progress:progress('cluster_high_queries',45)
     # CPU estimator runs in its configured independent runtime; native3D's
     # environment does not need sklearn or the GPU runtime's torch imports.

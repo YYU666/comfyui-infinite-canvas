@@ -9,7 +9,6 @@ import json
 import subprocess
 import sys
 import os
-from contextlib import contextmanager
 import numpy as np
 
 CHECKPOINT_SHA='463efc8a3afd3913142aa025e0125c00f16ef452b8de6a132ebe32bbe7877ee4'
@@ -85,8 +84,41 @@ def verify_samples(high,path,receipt,high_sha):
     if not all(np.isfinite(data[key]).all() for key in data.files):raise ValueError('Nonfinite high sample cache')
     return {key:data[key].copy() for key in data.files}
 
-def infer_features(samples,output,*,gpu_authorized=False,config=None):
-    if not gpu_authorized:raise ValueError('PartField GPU resource reservation required')
+def feature_cache_path(root, high_sha):
+    key = {'high': high_sha, 'sample': SAMPLE_VERSION, 'checkpoint': CHECKPOINT_SHA}
+    return Path(root) / hashlib.sha256(canonical(key).encode()).hexdigest()
+
+
+def has_feature_candidate(config, high_sha):
+    # Queue classification reads receipts and file sizes only. The worker
+    # still verifies samples, feature hashes and tensor contents before reuse.
+    if not high_sha or not config.get('cacheRoot'):
+        return False
+    if config.get('verifiedHighCache'):
+        candidates = [Path(config['verifiedHighCache']), feature_cache_path(config['cacheRoot'], high_sha)]
+    else:
+        candidates = [feature_cache_path(config['cacheRoot'], high_sha)]
+    for folder in candidates:
+        try:
+            receipt = folder / 'high-inference.json'
+            if not 0 < receipt.stat().st_size <= 16384:
+                continue
+            record = json.loads(receipt.read_text(encoding='utf-8'))
+            if (record.get('sourceSha256') == high_sha and record.get('checkpointSha256') == CHECKPOINT_SHA
+                    and record.get('officialCommit') == COMMIT
+                    and all((folder / name).stat().st_size > 0 for name in (
+                        'high-input.json', 'high-samples.npz', 'high-query-features.npy'))):
+                return True
+        except (OSError, ValueError, AttributeError):
+            continue
+    return False
+
+
+def infer_features(samples,output,*,gpu_authorized=False,config=None,worker_lease=None):
+    from gpu_lease import WORKER_LEASE_ENV
+
+    if not gpu_authorized or not worker_lease:
+        raise ValueError('PartField shared GPU resource reservation required; resubmit if the verified cache was removed')
     ready=readiness(config)
     if not ready['ready']:raise ValueError(ready['reason'])
     paths=_paths(config)
@@ -94,8 +126,10 @@ def infer_features(samples,output,*,gpu_authorized=False,config=None):
     runtime_config=Path(output).parent/'partfield-runtime.json'
     runtime_config.write_text(canonical({k:str(v) for k,v in paths.items()}),encoding='utf-8')
     command=[str(paths['pythonExecutable']),'-u',str(Path(__file__).resolve()),'--infer',str(Path(samples).resolve()),str(Path(output).resolve()),str(runtime_config.resolve())]
-    with _gpu_reservation(),(Path(output).parent/'partfield-worker.log').open('w',encoding='utf-8') as log:
-        result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,timeout=900,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    environment = {**os.environ, WORKER_LEASE_ENV: worker_lease}
+    with (Path(output).parent/'partfield-worker.log').open('w',encoding='utf-8') as log:
+        result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,timeout=900,env=environment,
+                              creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     if result.returncode:raise RuntimeError('PartField worker failed; private job log retained')
 
 def _check_gpu_idle():
@@ -165,35 +199,6 @@ def _check_gpu_idle():
     if not np.isfinite(first_free) or first_free<2048:raise ValueError('PartField requires 2GiB free GPU memory with bounded sampled profile')
     return {'mode':'no_external_compute_reported','exclusiveGPU':False,'freeMiB':first_free,'comfyQueue':'empty_or_connection_refused'}
 
-@contextmanager
-def _gpu_reservation():
-    """Cross-process PartField lock; native queue serializes its other adapters.
-
-    ComfyUI/other services do not share this lock. Their idle check has a race;
-    callers must not claim a launcher-wide resource scheduler exists.
-    """
-    import tempfile
-    lock=Path(os.environ.get('LOCALAPPDATA',tempfile.gettempdir()))/'H3Workbench/partfield-gpu.lock'
-    lock.parent.mkdir(parents=True,exist_ok=True)
-    with lock.open('a+b') as stream:
-        stream.seek(0,2)
-        if stream.tell()==0:stream.write(b'0');stream.flush()
-        stream.seek(0)
-        try:
-            if os.name=='nt':
-                import msvcrt
-                msvcrt.locking(stream.fileno(),msvcrt.LK_NBLCK,1)
-            else:
-                import fcntl
-                fcntl.flock(stream.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except OSError as exc:raise ValueError('PartField GPU reservation busy') from exc
-        try:
-            _check_gpu_idle();yield
-        finally:
-            stream.seek(0)
-            if os.name=='nt':msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
-            else:fcntl.flock(stream.fileno(),fcntl.LOCK_UN)
-
 def cluster_features(features,output,count,config):
     if count not in (4,8,12):raise ValueError('Unsupported partition count')
     paths=_paths(config)
@@ -205,7 +210,7 @@ def cluster_features(features,output,count,config):
     if labels.shape!=(32768,) or not np.issubdtype(labels.dtype,np.integer) or labels.min()<0 or labels.max()>=count:raise ValueError('Invalid high partition cache')
     return labels.astype(np.int32)
 
-def high_evidence(high,high_sha,cache_root,*,gpu_authorized=False,verified_cache=None,progress=None,config=None):
+def high_evidence(high,high_sha,cache_root,*,gpu_authorized=False,verified_cache=None,progress=None,config=None,worker_lease=None):
     """Return verified samples/features. verified_cache is trusted server config only."""
     cache=Path(cache_root);cache.mkdir(parents=True,exist_ok=True)
     samples=cache/'high-samples.npz';features=cache/'high-query-features.npy';receipt_path=cache/'high-input.json'
@@ -217,7 +222,7 @@ def high_evidence(high,high_sha,cache_root,*,gpu_authorized=False,verified_cache
         import shutil
         previous=Path(verified_cache);r=json.loads((previous/'high-input.json').read_text());f=json.loads((previous/'high-inference.json').read_text())
         if r.get('sourceSha256')!=high_sha:
-            return high_evidence(high,high_sha,cache_root,gpu_authorized=gpu_authorized,progress=progress,config=config)
+            return high_evidence(high,high_sha,cache_root,gpu_authorized=gpu_authorized,progress=progress,config=config,worker_lease=worker_lease)
         verify_samples(high,previous/'high-samples.npz',r,high_sha)
         if f.get('sourceSha256')!=high_sha or f.get('checkpointSha256')!=CHECKPOINT_SHA or f.get('officialCommit')!=COMMIT or f.get('sampleCacheSha256')!=r['sampleCacheSha256'] or f.get('featuresSha256')!=sha(previous/'high-query-features.npy'):raise ValueError('Unverified PartField cache provenance')
         for name in ('high-samples.npz','high-query-features.npy'):shutil.copyfile(previous/name,cache/name)
@@ -234,7 +239,7 @@ def high_evidence(high,high_sha,cache_root,*,gpu_authorized=False,verified_cache
         if not valid_features:raise ValueError('PartField feature cache changed')
     if not valid_features:
         if progress:progress('partfield_features',25)
-        infer_features(samples,features,gpu_authorized=gpu_authorized,config=config)
+        infer_features(samples,features,gpu_authorized=gpu_authorized,config=config,worker_lease=worker_lease)
         r={**receipt,'checkpointSha256':CHECKPOINT_SHA,'officialCommit':COMMIT,'featuresSha256':sha(features)}
         feature_receipt.write_text(canonical(r))
     values=np.load(features,allow_pickle=False)
@@ -284,4 +289,8 @@ if __name__=='__main__':
         labels=MiniBatchKMeans(n_clusters=count,random_state=0,batch_size=4096,n_init=3,max_iter=100,reassignment_ratio=0).fit_predict(normalized)
         np.save(sys.argv[3],labels.astype('i4'),allow_pickle=False);raise SystemExit(0)
     if len(sys.argv)!=5 or sys.argv[1]!='--infer':raise SystemExit('Fixed inference worker arguments required')
+    from gpu_lease import WORKER_LEASE_ENV, adopt_worker_lease
+    if not os.environ.get(WORKER_LEASE_ENV):
+        raise SystemExit('PartField shared GPU resource reservation required')
+    adopt_worker_lease()
     _worker(sys.argv[2],sys.argv[3],sys.argv[4])

@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import shutil
 from pathlib import Path
 import struct
@@ -74,11 +75,15 @@ def prepare_ai_points(points, normals):
     return pc, center, radius
 
 
-def run_owned_worker(executable, script, reqpath, out, timeout=600):
+def run_owned_worker(executable, script, reqpath, out, timeout=600, *, worker_lease=None):
     executable = Path(executable)
     if not executable.is_absolute() or not executable.is_file():
         raise ValueError('Configured absolute worker executable is required')
-    child = subprocess.Popen([str(executable), '-B', str(Path(__file__).with_name(script)), '--request', str(reqpath), '--output', str(out)])
+    environment = None
+    if worker_lease:
+        from gpu_lease import WORKER_LEASE_ENV
+        environment = {**os.environ, WORKER_LEASE_ENV: worker_lease}
+    child = subprocess.Popen([str(executable), '-B', str(Path(__file__).with_name(script)), '--request', str(reqpath), '--output', str(out)], env=environment)
     try:
         code = child.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -779,7 +784,7 @@ def bake(low, high, out, params, progress_callback=None):
             'dilation': {'pixels':settings['padding'],'requestedPixels':settings['paddingRequested'],'automatic':settings['paddingRequested']==0, 'changedTexels': int(dilated.sum()), 'outsideIslandCoverageOnly': True}}
 
 
-def run(request, output):
+def run(request, output, *, worker_lease=None):
     started = time.monotonic()
     out = Path(output).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -834,6 +839,8 @@ def run(request, output):
         for name in ('basecolor','roughness','metallic','normal','ao','curvature','metallic-roughness','edge-wear'):
             files.append({'name':name+'.png', 'role':'texture', 'mime':'image/png'})
     elif operation == 'ai_lowpoly':
+        if not worker_lease:
+            raise ValueError('MeshAnything shared GPU resource reservation required')
         cfg = request.get('adapterConfig') or {}
         if request.get('adapterId', 'meshanything-v2-local') != 'meshanything-v2-local':
             raise ValueError('Unsupported AI adapter')
@@ -850,7 +857,7 @@ def run(request, output):
         reqpath.write_text(json.dumps(request), encoding='utf-8')
         metadata['mc'] = prepare_official_mc(mesh, cfg, reqpath, out, input_seed, params)
         source_mesh = mesh
-        run_owned_worker(exe, 'native3d_meshanything.py', reqpath, out)
+        run_owned_worker(exe, 'native3d_meshanything.py', reqpath, out, worker_lease=worker_lease)
         data = np.load(out / 'ai_output.npz', allow_pickle=False)
         raw_count = len(data['faces'])
         mesh = trimesh.Trimesh(data['vertices'], data['faces'], process=True)
@@ -918,7 +925,7 @@ def run(request, output):
             raise ValueError('High source snapshot SHA256 changed')
         planned=build_plan(mesh,high,out,{k:v for k,v in params.items() if k!='externalGeometryReviewed'},
             low_sha256=metadata['sourceSha256'],high_sha256=metadata['highSourceSha256'],
-            config=request.get('partfieldConfig',{}),progress=progress)
+            config=request.get('partfieldConfig',{}),progress=progress,worker_lease=worker_lease)
         metadata.update(planned['metadata'])
         metadata['wallSeconds']=time.monotonic()-started
         report={'metadata':metadata,'quality':{'status':'needs_review','unwrapExecuted':False},
@@ -1118,9 +1125,10 @@ if __name__ == '__main__':
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     try:
-        from gpu_lease import adopt_worker_lease
+        from gpu_lease import WORKER_LEASE_ENV, adopt_worker_lease
+        worker_lease = os.environ.get(WORKER_LEASE_ENV)
         adopt_worker_lease()
-        run(json.loads(Path(args.request).read_text(encoding='utf-8-sig')), args.output)
+        run(json.loads(Path(args.request).read_text(encoding='utf-8-sig')), args.output, worker_lease=worker_lease)
     except Exception as exc:
         print(json.dumps({'stage': 'failed', 'error': str(exc)}), file=sys.stderr, flush=True)
         raise SystemExit(1)

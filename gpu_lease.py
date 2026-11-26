@@ -245,6 +245,21 @@ class GpuLeases:
                 return self.claim(device, owner, recovery=recovery)
         return None, row["owner"]
 
+    def reconcile_worker_release(self, device, owner, *, token=None):
+        """Confirm native ownership is gone or retire an exited native worker.
+
+        An empty record or a different token/owner means the caller's lease
+        has already ended. Never clear another owner or a live worker.
+        """
+        with self._row(device) as (state, row):
+            if row is None or row['owner'] != owner or (token is not None and row['token'] != token):
+                return True
+            phase = row['phase']
+            if (phase == 'worker' and not alive(row.get('worker'))) or (phase == 'reserved' and not alive(row.get('host'))):
+                state.unlink()
+                return True
+            return False
+
     def recover_comfy(self, device, owner, origin):
         """Reattach an exact retained dispatch without creating a fresh lease."""
         with self._row(device) as (state, row):

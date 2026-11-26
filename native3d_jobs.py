@@ -256,6 +256,10 @@ class Native3DJobs:
                 if not all(isinstance(job.get(key), str) for key in ('projectId','nodeId','opId','fingerprint','status')) or not isinstance(job.get('source'), dict) or not isinstance(job.get('parameters'), dict):
                     raise ValueError('Invalid job manifest')
                 if job['status'] not in TERMINAL:
+                    if job.get('gpu', {}).get('state') == 'held':
+                        job['gpu']['state'] = 'reconciling'
+                    elif job.get('gpu', {}).get('state') == 'waiting':
+                        job.pop('gpu')
                     job.update(status='failed', stage='interrupted', error='Service restarted; explicitly resubmit interrupted job with a new opId.')
                     atomic(manifest, job)
                 self.jobs[job['id']] = job
@@ -1067,23 +1071,55 @@ class Native3DJobs:
             fail('Invalid worker output')
         return file
 
+    def _uses_gpu(self, job):
+        operation = job['operation']
+        if operation in ('image_to_3d', 'ai_lowpoly'):
+            return True
+        if operation == 'uv_plan':
+            from native3d_partfield import has_feature_candidate
+            request = json.loads((self.root / job['id'] / 'request.json').read_text(encoding='utf-8'))
+            return not has_feature_candidate(request['partfieldConfig'], job['source']['highSha256'])
+        # UV application uses the frozen plan or a CPU unwrapper, never PartField.
+        return False
+
+    def _reconcile_gpu_releases(self):
+        with self.lock:
+            pending = [(job, job['gpu']['device']) for job in self.jobs.values()
+                       if job.get('gpu', {}).get('state') == 'reconciling']
+        for job, device in pending:
+            try:
+                if self.gpu_leases is None:
+                    self.gpu_leases = GpuLeases()
+                owner = job_owner('native3d', job)
+                if self.gpu_leases.reconcile_worker_release(device, owner):
+                    with self.lock:
+                        job['gpu'] = gpu_status(device, 'released', owner)
+                        self._persist(job)
+            except (OSError, ValueError, RuntimeError, KeyError):
+                # Keep the conservative receipt and retry as the broker recovers.
+                continue
+
     def _loop(self):
         while not self.stopping:
+            self._reconcile_gpu_releases()
             with self.lock:
                 queued = [job for job in self.jobs.values() if job['status'] == 'queued']
             for job in queued:
-                if job['operation'] != 'image_to_3d':
-                    self._run(job)
-                    break
                 try:
+                    if not self._uses_gpu(job):
+                        with self.lock:
+                            if job.get('gpu', {}).get('state') == 'waiting':
+                                job.pop('gpu')
+                        self._run(job)
+                        break
                     device = self.gpu_device()
                     if self.gpu_leases is None:
                         self.gpu_leases = GpuLeases()
                     grant, blocker = self.gpu_leases.claim(device, job_owner('native3d', job))
-                except (OSError, ValueError, RuntimeError) as exc:
+                except (OSError, ValueError, RuntimeError, KeyError) as exc:
                     with self.lock:
                         if job['status'] == 'queued':
-                            job.update(status='failed', stage='gpu_unavailable', error=str(exc))
+                            job.update(status='failed', stage='gpu_unavailable', error=str(exc)[:1000])
                             self._persist(job)
                     continue
                 if grant:
@@ -1128,22 +1164,34 @@ class Native3DJobs:
             self.jobs[job_id].update(status='failed', stage='timeout', error='Native3D worker exceeded configured execution timeout')
             self._persist(self.jobs[job_id])
 
+    def _release_gpu(self, job, grant):
+        if grant is None or job.get('gpu', {}).get('state') in ('released', 'reconciling'):
+            return
+        try:
+            released = grant.release() or grant.manager.reconcile_worker_release(
+                grant.device, grant.owner, token=grant.token)
+        except (OSError, ValueError, RuntimeError):
+            released = False
+        with self.lock:
+            job['gpu'] = gpu_status(grant.device, 'released' if released else 'reconciling', grant.owner)
+            self._persist(job)
+
     def _run(self, job, grant=None):
         timer = None
         directory = self.root / job['id']
         output = directory / 'output'
-        output.mkdir(exist_ok=True)
         try:
             with self.lock:
                 if self.stopping or job['status'] != 'queued':
                     return
+                output.mkdir(exist_ok=True)
                 config = json.loads((directory / 'runtime.json').read_text(encoding='utf-8'))
                 command = [config['pythonExecutable'], '-u', str(self.engine_path), '--request', str(directory / 'request.json'), '--output', str(output)]
-                log = (directory / 'worker.log').open('w', encoding='utf-8')
                 env = worker_env(config['imageTo3D']) if job['operation'] == 'image_to_3d' else None
                 if grant:
-                    env = grant.worker_environment(env)
-                self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True, encoding='utf-8', errors='replace', cwd=directory, env=env, creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                    env = grant.worker_environment(env if env is not None else os.environ.copy())
+                with (directory / 'worker.log').open('w', encoding='utf-8') as log:
+                    self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True, encoding='utf-8', errors='replace', cwd=directory, env=env, creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 self.active = job['id']
                 timeout = max(1, min(3600, int(config.get('timeoutSeconds', 900))))
                 timer = threading.Timer(timeout, self._timeout, args=(job['id'],))
@@ -1161,15 +1209,10 @@ class Native3DJobs:
                             self._persist(job)
                 returncode = self.process.wait()
             finally:
-                log.close()
                 self.process.stdout.close()
-            if grant:
-                # The child has exited. A contender may already have reclaimed
-                # this token before the owning workbench saves the receipt.
-                grant.release()
-                with self.lock:
-                    job['gpu'] = gpu_status(grant.device, 'released', grant.owner)
-                    self._persist(job)
+            # A compute child may still hold the identity after an abnormal
+            # engine exit. The broker then refuses to clear its live lease.
+            self._release_gpu(job, grant)
             with self.lock:
                 if job['status'] == 'cancelled':
                     return
@@ -1186,6 +1229,7 @@ class Native3DJobs:
                 if self.process and self.process.poll() is None:
                     self._terminate_owned(self.process)
                     self.process.wait(timeout=5)
+                self._release_gpu(job, grant)
                 if job['status'] != 'cancelled':
                     job.update(status='failed', stage='failed', error=str(exc)[:1000])
                     self._persist(job)
@@ -1193,12 +1237,7 @@ class Native3DJobs:
             if timer:
                 timer.cancel()
             try:
-                if grant and job.get('gpu', {}).get('state') != 'released':
-                    grant.release()
-                    if self.process is None or self.process.poll() is not None:
-                        with self.lock:
-                            job['gpu'] = gpu_status(grant.device, 'released', grant.owner)
-                            self._persist(job)
+                self._release_gpu(job, grant)
             finally:
                 with self.lock:
                     self.active = None

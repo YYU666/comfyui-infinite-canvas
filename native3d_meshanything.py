@@ -97,6 +97,10 @@ def main():
     p.add_argument('--output', required=True)
     args = p.parse_args()
     request = json.loads(Path(args.request).read_text(encoding='utf-8-sig'))
+    from gpu_lease import WORKER_LEASE_ENV, adopt_worker_lease
+    if not os.environ.get(WORKER_LEASE_ENV):
+        raise ValueError('MeshAnything shared GPU resource reservation required')
+    adopt_worker_lease()
     cfg = request['adapterConfig']
     for key in ('meshanythingRuntime', 'checkpoint'):
         if not Path(cfg[key]).is_absolute() or not Path(cfg[key]).exists():
