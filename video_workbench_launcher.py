@@ -646,6 +646,34 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return False
         return True
 
+    def handle_comfy_proxy(self, path):
+        """Check the same path that the proxy will send to Comfy."""
+        if not is_comfy_path(path):
+            return False
+        raw_path = self.path.partition("?")[0]
+        suffix = path.removeprefix("/api/comfy")
+        parts = suffix[1:].split("/") if suffix not in {"", "/"} else []
+        try:
+            decoded = [urllib.parse.unquote(part, errors="strict") for part in parts]
+        except UnicodeError:
+            decoded = []
+        if (raw_path != path or "#" in self.path
+                or any(ord(char) <= 32 or ord(char) == 127 for char in self.path)
+                or len(decoded) != len(parts)
+                or any(not part or part in {".", ".."} or not part.isprintable()
+                       or any(char in part for char in "/\\%;?#") for part in decoded)):
+            self.send_json(400, {"code": "INVALID_COMFY_PATH", "message": "ComfyUI 代理需要规范的请求路径。"})
+            return True
+        route = tuple(part.lower() for part in decoded)
+        if self.command != "GET" and route in {("prompt",), ("api", "prompt")}:
+            self.send_json(409, {"code": "VISIBLE_CANVAS_REQUIRED", "message": "画布生成使用当前页，简易模式使用人工入口。"})
+        elif not self.reject_disabled_comfy():
+            if self.command == "GET" and is_websocket_request(self):
+                proxy_websocket(self)
+            else:
+                proxy_http(self)
+        return True
+
     def do_GET(self):
         if not self.guard_request():
             return
@@ -666,13 +694,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if path == "/api/thumbnails":
             self.server.thumbnail_cache.handle_get(self)
             return
-        if is_comfy_path(path):
-            if self.reject_disabled_comfy():
-                return
-            if is_websocket_request(self):
-                proxy_websocket(self)
-            else:
-                proxy_http(self)
+        if self.handle_comfy_proxy(path):
             return
         if path == "/api/health":
             manager = getattr(self.server, "comfy_lifecycle", None)
@@ -806,14 +828,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "POST", path):
             return
-        if is_comfy_path(path):
-            comfy_path = urllib.parse.unquote(path).rstrip("/")
-            if comfy_path in ("/api/comfy/prompt", "/api/comfy/api/prompt"):
-                self.send_json(409, {"code": "VISIBLE_CANVAS_REQUIRED", "message": "画布生成使用当前页，简易模式使用人工入口。"})
-                return
-            if self.reject_disabled_comfy():
-                return
-            proxy_http(self)
+        if self.handle_comfy_proxy(path):
             return
         if path == "/api/ui-ready":
             self.mark_ui_ready()
@@ -944,10 +959,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "PUT", path):
             return
-        if is_comfy_path(path):
-            if self.reject_disabled_comfy():
-                return
-            proxy_http(self)
+        if self.handle_comfy_proxy(path):
             return
         if path == "/api/settings":
             try:
@@ -981,10 +993,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "DELETE", path):
             return
-        if is_comfy_path(path):
-            if self.reject_disabled_comfy():
-                return
-            proxy_http(self)
+        if self.handle_comfy_proxy(path):
             return
         if not self.server.project_api.handle_delete(self, path):
             self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
