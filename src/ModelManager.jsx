@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle, ArrowDownToLine, Check, ChevronDown, ChevronRight,
-  HardDrive, Layers, LayoutGrid, List, LoaderCircle, Lock, LockOpen,
-  RefreshCw, Search, ShieldCheck, Trash2, X,
+  Copy, Cpu, HardDrive, ImagePlus, Layers, LayoutGrid, List,
+  LoaderCircle, Lock, LockOpen, RefreshCw, Search, ShieldCheck, Trash2, X,
 } from 'lucide-react';
-import ModelCardIllustration from './ModelCardIllustration';
+import ModelCardIllustration, { ModelBrandBadge } from './ModelCardIllustration';
 import {
-  CAPABILITY_CATEGORIES, buildCapabilityCards, canDeleteModel,
-  canDownloadOrUpdateModel, filterAndSortCards, filterAndSortModels,
+  CAPABILITY_CATEGORIES, buildAuxiliaryComponents, buildCapabilityCards,
+  canDeleteModel, canDownloadOrUpdateModel, filterAndSortCards, filterAndSortModels,
   formatModelBytes, recommendationMeta, summarizeModels, usageTierMeta,
 } from './model-manager';
 import {
@@ -23,6 +23,7 @@ const STATUS_FILTERS = [
   ['locked', '已锁定保护'],
   ['updates', '有可用更新'],
   ['missing', '未下载'],
+  ['needs_cover', '待生图封面'],
 ];
 
 const formatShortDate = (value) => {
@@ -34,6 +35,62 @@ const formatShortDate = (value) => {
   }
 };
 
+function CardCover({ card, statusLabel }) {
+  const [imgFailed, setImgFailed] = useState(false);
+
+  useEffect(() => {
+    setImgFailed(false);
+  }, [card.coverUrl]);
+
+  const showImg = Boolean(card.coverUrl) && !imgFailed;
+
+  return (
+    <div className={`mm-card-cover ${showImg ? 'has-photo' : 'has-fallback'}`}>
+      {showImg ? (
+        <img
+          src={card.coverUrl}
+          alt={card.title}
+          loading="lazy"
+          decoding="async"
+          onError={() => setImgFailed(true)}
+        />
+      ) : (
+        <ModelCardIllustration
+          kind={card.illustration}
+          title={card.title}
+          specTag={card.specTag}
+          needsCover={card.needsCover}
+          active={card.installed}
+        />
+      )}
+      <div className="mm-cover-scrim" />
+
+      <div className="mm-cover-top">
+        <ModelBrandBadge brand={card.brand} label={card.brandLabel || card.specTag} />
+        <div className="mm-cover-badges">
+          {card.locked && (
+            <span className="mm-lock-stamp" title="已锁定保护">
+              <Lock size={10} />
+              <span>已锁</span>
+            </span>
+          )}
+          <span className={`mm-stamp ${card.fullyInstalled ? 'ready' : card.installed ? 'partial' : 'missing'}`}>
+            {statusLabel}
+          </span>
+        </div>
+      </div>
+
+      <div className="mm-cover-bottom">
+        <div className="mm-cover-kicker">
+          <span>{card.categoryLabel}</span>
+          {card.specTag && card.specTag !== card.categoryLabel && <span>{card.specTag}</span>}
+        </div>
+        <h3 title={card.title}>{card.title}</h3>
+      </div>
+    </div>
+  );
+}
+
 export default function ModelManager() {
   const [open, setOpen] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
@@ -43,7 +100,7 @@ export default function ModelManager() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
-  const [viewMode, setViewMode] = useState('cards'); // 'cards' | 'files'
+  const [viewMode, setViewMode] = useState('cards'); // 'cards' | 'aux' | 'files'
   const [category, setCategory] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [sort, setSort] = useState('size_desc');
@@ -97,6 +154,7 @@ export default function ModelManager() {
   const models = snapshot?.models || [];
   const summary = useMemo(() => snapshot?.summary || summarizeModels(models), [models, snapshot]);
   const allCards = useMemo(() => buildCapabilityCards(models), [models]);
+  const auxComponents = useMemo(() => buildAuxiliaryComponents(models), [models]);
 
   const categoryCounts = useMemo(() => {
     const counts = { all: allCards.length };
@@ -106,13 +164,43 @@ export default function ModelManager() {
     return counts;
   }, [allCards]);
 
+  const visibleCategories = useMemo(
+    () => CAPABILITY_CATEGORIES.filter((cat) => cat.id !== 'other' || (categoryCounts.other || 0) > 0),
+    [categoryCounts],
+  );
+
+  const loraStats = useMemo(() => {
+    const loraCards = allCards.filter((c) => c.category === 'lora');
+    const missing = loraCards.filter((c) => c.needsCover);
+    return {
+      total: loraCards.length,
+      withCover: loraCards.length - missing.length,
+      missingCount: missing.length,
+      missingCards: missing,
+    };
+  }, [allCards]);
+
   const visibleCards = useMemo(
     () => filterAndSortCards(allCards, { query, category, statusFilter, sort }),
     [allCards, query, category, statusFilter, sort],
   );
 
+  const visibleAux = useMemo(() => {
+    const needle = String(query || '').trim().toLowerCase();
+    return auxComponents.filter((item) => {
+      if (statusFilter === 'installed' && !item.installed) return false;
+      if (statusFilter === 'idle' && !(item.installed && item.usageTier === 'idle')) return false;
+      if (statusFilter === 'locked' && !item.locked) return false;
+      if (statusFilter === 'updates' && !item.updateAvailable) return false;
+      if (statusFilter === 'missing' && item.installed) return false;
+      if (!needle) return true;
+      return [item.title, item.name, item.path, item.roleLabel, ...item.usedByWorkflows]
+        .some((t) => String(t || '').toLowerCase().includes(needle));
+    });
+  }, [auxComponents, query, statusFilter]);
+
   const visibleRawFiles = useMemo(
-    () => filterAndSortModels(models, { query, filter: statusFilter, sort }),
+    () => filterAndSortModels(models, { query, filter: statusFilter === 'needs_cover' ? 'all' : statusFilter, sort }),
     [models, query, statusFilter, sort],
   );
 
@@ -157,6 +245,21 @@ export default function ModelManager() {
       setError(err.message || '批量锁定失败。');
     } finally {
       setBulkBusy(false);
+    }
+  };
+
+  const copyMissingLoraCovers = async () => {
+    if (!loraStats.missingCards.length) return;
+    const lines = loraStats.missingCards.map((c) => {
+      const target = c.primaryPath.replace(/\.[^.]+$/, '.jpg');
+      return `${c.title}  ->  ${target}`;
+    });
+    const text = `待夜间本地生图补封面清单（共 ${lines.length} 个 LoRA，生成同名 .jpg/.png 放到同目录即可自动显示）：\n${lines.join('\n')}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setNotice(`已复制 ${lines.length} 条待生图 LoRA 清单到剪贴板，生成后放回同目录即自动显示。`);
+    } catch {
+      setError('未能写入剪贴板，请手动筛出「待生图封面」查看路径。');
     }
   };
 
@@ -224,24 +327,24 @@ export default function ModelManager() {
       onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}
     >
       <section className="mm-shell" role="dialog" aria-modal="true" aria-labelledby="mm-title">
-        {/* Left Navigation Rail (ComfyUI Category Browser + Refmuse Industrial) */}
+        {/* Left Navigation Rail */}
         <aside className="mm-rail">
           <div className="mm-brand">
-            <img src="/favicon.svg?v=refmuse" alt="" width="30" height="30" />
+            <img src="/favicon.svg?v=refmuse" alt="Refmuse" width="32" height="32" />
             <div>
               <strong id="mm-title">模型仓库</strong>
-              <small>MODEL VAULT</small>
+              <small>REFMUSE VAULT</small>
             </div>
           </div>
 
           <div className="mm-rail-section">
-            <span className="mm-rail-label">按用途分类</span>
+            <span className="mm-rail-label">核心能力与风格</span>
             <nav className="mm-cat-nav" aria-label="模型用途分类">
-              {CAPABILITY_CATEGORIES.map((cat) => (
+              {visibleCategories.map((cat) => (
                 <button
                   key={cat.id}
                   type="button"
-                  className={category === cat.id ? 'active' : ''}
+                  className={viewMode === 'cards' && category === cat.id ? 'active' : ''}
                   onClick={() => { setCategory(cat.id); setViewMode('cards'); }}
                 >
                   <span className="mm-cat-code">{cat.code}</span>
@@ -253,7 +356,33 @@ export default function ModelManager() {
           </div>
 
           <div className="mm-rail-section">
-            <span className="mm-rail-label">按状态与使用率筛选</span>
+            <span className="mm-rail-label">工作流底座与文件</span>
+            <div className="mm-cat-nav">
+              <button
+                type="button"
+                className={viewMode === 'aux' ? 'active' : ''}
+                onClick={() => setViewMode('aux')}
+                title="查看 VAE、文本编码器、视觉编码器及其对应的工作流"
+              >
+                <Cpu size={12} className="mm-cat-icon" />
+                <span className="mm-cat-name">辅助组件 (VAE/编码)</span>
+                <small>{auxComponents.length}</small>
+              </button>
+              <button
+                type="button"
+                className={viewMode === 'files' ? 'active' : ''}
+                onClick={() => setViewMode('files')}
+                title="查看全部原始权重文件名与校验哈希（高级）"
+              >
+                <List size={12} className="mm-cat-icon" />
+                <span className="mm-cat-name">全部底层文件</span>
+                <small>{models.length}</small>
+              </button>
+            </div>
+          </div>
+
+          <div className="mm-rail-section">
+            <span className="mm-rail-label">状态筛选</span>
             <div className="mm-status-nav">
               {STATUS_FILTERS.map(([key, label]) => (
                 <button
@@ -300,7 +429,13 @@ export default function ModelManager() {
               <Search size={14} />
               <input
                 type="search"
-                placeholder={viewMode === 'cards' ? '搜索功能名称、用途或模型文件…' : '搜索底层文件名、目录路径或开源协议…'}
+                placeholder={
+                  viewMode === 'aux'
+                    ? '搜索 VAE、编码器名称或所属工作流…'
+                    : viewMode === 'cards'
+                      ? '搜索模型名称、品牌、风格 LoRA 或用途…'
+                      : '搜索底层文件名、目录路径或开源协议…'
+                }
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 aria-label="搜索模型"
@@ -308,28 +443,36 @@ export default function ModelManager() {
             </div>
 
             <div className="mm-topbar-controls">
-              <select aria-label="排序方式" value={sort} onChange={(event) => setSort(event.target.value)}>
-                <option value="size_desc">占用空间从大到小</option>
-                <option value="usage_asc">最少使用优先（清理）</option>
-                <option value="usage_desc">高频使用优先</option>
-                <option value="name">按名称排序</option>
-              </select>
+              {viewMode !== 'aux' && (
+                <select aria-label="排序方式" value={sort} onChange={(event) => setSort(event.target.value)}>
+                  <option value="size_desc">占用空间从大到小</option>
+                  <option value="usage_asc">最少使用优先（清理）</option>
+                  <option value="usage_desc">高频使用优先</option>
+                  <option value="name">按名称排序</option>
+                </select>
+              )}
 
               <div className="mm-view-switch" role="group" aria-label="视图切换">
                 <button
                   type="button"
                   className={viewMode === 'cards' ? 'active' : ''}
                   onClick={() => setViewMode('cards')}
-                  title="给普通用户看的清晰能力卡片（带示意图与用途说明）"
                 >
                   <LayoutGrid size={13} />
-                  <span>能力卡片</span>
+                  <span>模型卡片</span>
+                </button>
+                <button
+                  type="button"
+                  className={viewMode === 'aux' ? 'active' : ''}
+                  onClick={() => setViewMode('aux')}
+                >
+                  <Cpu size={13} />
+                  <span>辅助组件 ({auxComponents.length})</span>
                 </button>
                 <button
                   type="button"
                   className={viewMode === 'files' ? 'active' : ''}
                   onClick={() => setViewMode('files')}
-                  title="查看所有原始权重文件名与校验哈希（高级）"
                 >
                   <List size={13} />
                   <span>底层文件 ({models.length})</span>
@@ -349,19 +492,48 @@ export default function ModelManager() {
             <ShieldCheck size={14} />
             <span>
               <strong>ComfyUI 本体采用官方版本锁定（当前画布 {snapshot?.runtimePolicy?.workbenchVersion || '1.1.0'}）</strong>
-              {` — 不滚动拉取上游不兼容改动；删除模型仅移除权重文件，已生成的作品与画布节点安全保留。`}
+              {` — 不自动覆盖兼容环境；删除模型仅清理权重文件，作品与画布连线不受影响。`}
             </span>
           </div>
+
+          {viewMode === 'cards' && category === 'lora' && loraStats.total > 0 && (
+            <div className="mm-lora-banner">
+              <div className="mm-lora-banner-info">
+                <ImagePlus size={14} />
+                <span>
+                  风格/功能 LoRA 封面情况：已自动接入本机配图 <strong>{loraStats.withCover}</strong> 张
+                  {loraStats.missingCount > 0 && (
+                    <> · 尚缺封面 <strong>{loraStats.missingCount}</strong> 张（可夜间批量生图放到同目录自动识别）</>
+                  )}
+                </span>
+              </div>
+              {loraStats.missingCount > 0 && (
+                <div className="mm-lora-banner-actions">
+                  <button
+                    type="button"
+                    className={statusFilter === 'needs_cover' ? 'active' : ''}
+                    onClick={() => setStatusFilter((prev) => (prev === 'needs_cover' ? 'all' : 'needs_cover'))}
+                  >
+                    {statusFilter === 'needs_cover' ? '显示全部 LoRA' : `仅看待补封面 (${loraStats.missingCount})`}
+                  </button>
+                  <button type="button" onClick={() => void copyMissingLoraCovers()}>
+                    <Copy size={12} />
+                    <span>复制待生图名单</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {error && <div className="mm-alert error" role="alert"><AlertCircle size={14} /><span>{error}</span></div>}
           {notice && <div className="mm-alert success" role="status"><Check size={14} /><span>{notice}</span></div>}
 
           <div className="mm-content">
             {loading && !snapshot ? (
-              <div className="mm-empty"><LoaderCircle className="spin" size={18} /><span>正在扫描本机模型目录并计算使用率…</span></div>
+              <div className="mm-empty"><LoaderCircle className="spin" size={18} /><span>正在扫描本机模型目录并加载封面预览…</span></div>
             ) : viewMode === 'cards' ? (
               !visibleCards.length ? (
-                <div className="mm-empty"><span>当前分类或筛选条件下没有匹配的模型能力。</span></div>
+                <div className="mm-empty"><span>当前分类或筛选条件下没有匹配的模型。</span></div>
               ) : (
                 <div className="mm-card-grid">
                   {visibleCards.map((card) => {
@@ -377,7 +549,7 @@ export default function ModelManager() {
                         : card.fullyInstalled
                           ? '已就绪'
                           : card.installed
-                            ? `部分已装 ${card.installedCount}/${card.totalCount}`
+                            ? `部分 ${card.installedCount}/${card.totalCount}`
                             : '未安装';
 
                     return (
@@ -385,48 +557,27 @@ export default function ModelManager() {
                         key={card.id}
                         className={`mm-card ${card.installed ? 'is-installed' : 'is-missing'} ${card.locked ? 'is-locked' : ''}`}
                       >
-                        <div className="mm-card-media">
-                          <ModelCardIllustration kind={card.illustration} specTag={card.specTag} active={card.installed} />
-                          <span className={`mm-stamp ${card.fullyInstalled ? 'ready' : card.installed ? 'partial' : 'missing'}`}>
-                            {statusLabel}
-                          </span>
-                          {card.locked && (
-                            <span className="mm-lock-stamp" title="已锁定保护"><Lock size={11} /> 已锁定</span>
-                          )}
-                        </div>
+                        <CardCover card={card} statusLabel={statusLabel} />
 
                         <div className="mm-card-body">
-                          <div className="mm-card-kicker">
-                            <span>{card.categoryLabel}</span>
-                            <span>{card.totalCount > 1 ? `组合 ${card.installedCount}/${card.totalCount} 权重` : '单模型权重'}</span>
-                          </div>
-                          <h3>{card.title}</h3>
                           <p className="mm-card-desc">{card.subtitle}</p>
 
-                          <div className="mm-card-metrics">
-                            <div>
-                              <small>占用空间</small>
-                              <strong>{sizeBytes ? formatModelBytes(sizeBytes) : '未知'}</strong>
-                            </div>
-                            <div>
-                              <small>使用频率</small>
-                              <strong className={`tone-${tier.tone}`}>{tier.label}{card.usage30d > 0 ? ` · ${card.usage30d}次` : ''}</strong>
-                            </div>
-                            <div>
-                              <small>上次使用</small>
-                              <strong>{formatShortDate(card.lastUsedAt)}</strong>
-                            </div>
+                          <div className="mm-card-specbar">
+                            <span className="mm-spec-size">{sizeBytes ? formatModelBytes(sizeBytes) : '未知体积'}</span>
+                            <span className={`mm-spec-usage tone-${tier.tone}`}>
+                              {tier.label}{card.usage30d > 0 ? ` · ${card.usage30d}次` : ''}
+                            </span>
+                            <button
+                              type="button"
+                              className="mm-files-toggle"
+                              onClick={() => toggleExpand(card.id)}
+                              title="展开查看底层权重路径"
+                            >
+                              <Layers size={11} />
+                              <span>{card.totalCount} 文件</span>
+                              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                            </button>
                           </div>
-
-                          <button
-                            type="button"
-                            className="mm-files-toggle"
-                            onClick={() => toggleExpand(card.id)}
-                          >
-                            {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                            <Layers size={12} />
-                            <span>查看底层文件明细 ({card.totalCount})</span>
-                          </button>
 
                           {expanded && (
                             <div className="mm-card-files">
@@ -445,7 +596,7 @@ export default function ModelManager() {
                             <p>
                               将删除 <strong>{card.exclusiveDeletableFiles.length}</strong> 个独占文件并释放{' '}
                               <strong>{formatModelBytes(card.reclaimableBytes)}</strong>。
-                              {card.sharedInstalledCount > 0 ? `（另 ${card.sharedInstalledCount} 个共享编码器因其他已装功能仍在使用，将自动保留）` : ''}
+                              {card.sharedInstalledCount > 0 ? `（另 ${card.sharedInstalledCount} 个共享编码器因其他在用功能仍需依赖，将保留）` : ''}
                             </p>
                             <div>
                               <button type="button" className="danger" disabled={isBusy} onClick={() => handleCardDelete(card)}>确认删除</button>
@@ -460,7 +611,7 @@ export default function ModelManager() {
                                 className={card.locked ? 'is-locked-btn' : ''}
                                 disabled={isBusy || card.downloading}
                                 onClick={() => handleCardLockToggle(card)}
-                                title={card.locked ? '解锁模型' : '锁定当前版本，禁止删除与覆盖更新'}
+                                title={card.locked ? '解锁模型' : '锁定当前版本，禁止误删与覆盖更新'}
                               >
                                 {card.locked ? <Lock size={12} /> : <LockOpen size={12} />}
                                 <span>{card.locked ? '已锁定' : '锁定'}</span>
@@ -481,14 +632,14 @@ export default function ModelManager() {
 
                             <button
                               type="button"
-                              className="danger-outline"
+                              className="danger-outline mm-del-btn"
                               disabled={isBusy || card.downloading || !card.exclusiveDeletableFiles.length}
                               onClick={() => setConfirmKey(card.id)}
                               title={
                                 card.locked
                                   ? '已锁定，请先解锁再删除'
                                   : card.installed && !card.exclusiveDeletableFiles.length
-                                    ? '包含与其他在用功能共享的文件，请先解锁对应项或切到「底层文件」单独管理'
+                                    ? '与其它已装功能共享组件，请切到「辅助组件」单独管理'
                                     : '删除独占权重释放硬盘空间'
                               }
                             >
@@ -502,6 +653,94 @@ export default function ModelManager() {
                   })}
                 </div>
               )
+            ) : viewMode === 'aux' ? (
+              /* Dedicated Auxiliary Components Workflow-Dependency List */
+              <div className="mm-aux-wrap">
+                <div className="mm-aux-intro">
+                  <strong>辅助组件工作流对照表（VAE 解码器 / 文本与视觉编码器）</strong>
+                  <span>这些底层组件不单独作为生成模型出现，只为特定画布工作流服务。确认某个工作流不再使用后再解锁删除即可。</span>
+                </div>
+                {!visibleAux.length ? (
+                  <div className="mm-empty"><span>没有匹配的 VAE 或编码器辅助文件。</span></div>
+                ) : (
+                  <div className="mm-aux-table">
+                    <div className="mm-aux-thead">
+                      <span>组件名称与目录</span>
+                      <span>所属工作流 / 使用引擎</span>
+                      <span>占用与使用率</span>
+                      <span>操作</span>
+                    </div>
+                    {visibleAux.map((item) => {
+                      const tier = usageTierMeta(item.usageTier, item.usage30d, item.installed);
+                      const rowBusy = busyKey === item.path;
+                      const sizeBytes = item.installed ? item.actualBytes : item.expectedBytes;
+                      const confirming = confirmKey === item.path;
+
+                      return (
+                        <div className={`mm-aux-row ${item.locked ? 'is-locked' : ''} ${item.installed ? '' : 'is-missing'}`} key={item.path}>
+                          <div className="mm-aux-col-name">
+                            <div className="mm-aux-title-line">
+                              <strong>{item.title}</strong>
+                              <span className="mm-tag">{item.roleLabel}</span>
+                              {item.locked && <span className="mm-tag tone-locked">已锁定</span>}
+                              {!item.installed && <span className="mm-tag">未安装</span>}
+                            </div>
+                            <code>{item.path}</code>
+                          </div>
+
+                          <div className="mm-aux-col-workflows">
+                            {item.usedByWorkflows.map((wf) => (
+                              <span className="mm-wf-pill" key={wf}>{wf}</span>
+                            ))}
+                          </div>
+
+                          <div className="mm-aux-col-meta">
+                            <strong>{sizeBytes ? formatModelBytes(sizeBytes) : '未知大小'}</strong>
+                            <span className={`mm-aux-usage tone-${tier.tone}`}>
+                              {tier.label}{item.usage30d > 0 ? ` · ${item.usage30d}次` : ''}
+                            </span>
+                          </div>
+
+                          <div className="mm-file-actions">
+                            {(item.installed || item.locked) && (
+                              <button
+                                type="button"
+                                className={item.locked ? 'is-locked-btn' : ''}
+                                disabled={rowBusy}
+                                onClick={() => void runAction(item.path, () => setModelLock(item.path, !item.locked), !item.locked ? `已锁定 ${item.name}` : `已解锁 ${item.name}`)}
+                              >
+                                {item.locked ? <Lock size={12} /> : <LockOpen size={12} />}
+                                <span>{item.locked ? '已锁' : '锁定'}</span>
+                              </button>
+                            )}
+                            {item.installed && (
+                              <button
+                                type="button"
+                                disabled={rowBusy}
+                                onClick={() => void runAction(item.path, () => verifyInstalledModel(item.path), (r) => r?.matched ? `${item.name} 校验一致` : `${item.name} 哈希与清单不一致`)}
+                              >
+                                <ShieldCheck size={12} />
+                                <span>校验</span>
+                              </button>
+                            )}
+                            {confirming ? (
+                              <>
+                                <button type="button" className="danger" disabled={rowBusy} onClick={() => { setConfirmKey(''); void runAction(item.path, () => deleteInstalledModel(item.path), `已删除 ${item.name}`); }}>确认</button>
+                                <button type="button" onClick={() => setConfirmKey('')}>取消</button>
+                              </>
+                            ) : (
+                              <button type="button" className="danger-outline" disabled={rowBusy || !canDeleteModel(item)} onClick={() => setConfirmKey(item.path)}>
+                                <Trash2 size={12} />
+                                <span>删除</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             ) : (
               /* Expert View: Raw Files List */
               !visibleRawFiles.length ? (
@@ -584,7 +823,13 @@ export default function ModelManager() {
 
           <footer className="mm-footer">
             <span>目录：<code>{summary.modelsDir || 'ComfyUI/models'}</code></span>
-            <span>{viewMode === 'cards' ? `显示 ${visibleCards.length} / ${allCards.length} 项能力` : `显示 ${visibleRawFiles.length} / ${models.length} 个文件`}</span>
+            <span>
+              {viewMode === 'cards'
+                ? `显示 ${visibleCards.length} / ${allCards.length} 项模型（VAE/编码器已归入辅助组件表）`
+                : viewMode === 'aux'
+                  ? `显示 ${visibleAux.length} / ${auxComponents.length} 个辅助组件`
+                  : `显示 ${visibleRawFiles.length} / ${models.length} 个底层文件`}
+            </span>
           </footer>
         </main>
       </section>

@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -13,11 +14,14 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from PIL import Image, ImageOps
+
 from extension_dependencies import _ModelRedirect
 from model_sources import locked_sources, model_license
 from workbench_lifecycle import APP_VERSION, atomic_write_json, utc_now
 
 ALLOWED_MODEL_EXTENSIONS = frozenset({".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".onnx", ".gguf"})
+PREVIEW_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 SCAN_SUBDIRS = (
     "checkpoints",
     "diffusion_models",
@@ -137,6 +141,23 @@ def _friendly_title(filename: str) -> str:
         "krea2_identity_edit_v2": "Krea2 身份编辑 V2 LoRA",
         "h3_character_swap_v1.5": "H3 角色替换 v1.5 LoRA",
         "sam3.1_multiplex_fp16": "SAM 3.1 分割与遮罩模型 (FP16)",
+        "pixal3d_int8_convrot": "Pixal3D 图生 3D 主模型 (INT8)",
+        "trellis_2_shape_vae_bf16": "Trellis 2 形状 VAE (BF16)",
+        "trellis_2_texture_vae_bf16": "Trellis 2 贴图 VAE (BF16)",
+        "dino_v3_L_naf_fp32": "DINOv3 视觉编码器 (FP32)",
+        "wan_2.1_vae": "Wan 2.1 视频 VAE",
+        "krea2RealVae_v10": "Krea2 写实 VAE v1.0",
+        "flux2-vae": "FLUX.2 图像 VAE",
+        "flux2-vae_small": "FLUX.2 轻量图像 VAE",
+        "qwen_image_vae": "千问 Image 图像 VAE",
+        "qwen_image_2.1_vae_bf16": "千问 2.1 图像 VAE (BF16)",
+        "qwen_2.5_vl_7b_fp8_scaled": "Qwen 2.5 VL 7B 文本编码器 (FP8)",
+        "qwen3vl_4b_fp8_scaled": "Qwen3-VL 4B 文本编码器 (FP8)",
+        "qwen3vl_4b_int8_convrot": "Qwen3-VL 4B 文本编码器 (INT8)",
+        "qwen3.5_9b_flux3_prompt_upsampler_int8_convrot": "Qwen3.5 9B 提示词增强编码器 (INT8)",
+        "clip_vision_h": "CLIP Vision H 视觉编码器",
+        "MiniMax-H3-FL2VA-Q3_K_M": "MiniMax H3 首尾帧视频 (GGUF Q3)",
+        "MiniMax-H3-Ref2VA-Q3_K_M": "MiniMax H3 全能参考视频 (GGUF Q3)",
     }
     return replacements.get(stem, stem.replace("_", " "))
 
@@ -249,11 +270,13 @@ class ModelManager:
         active_jobs_check=None,
         workbench_version: str = APP_VERSION,
         comfy_root: Path | None = None,
+        preview_cache_dir: Path | None = None,
         opener=None,
     ):
         self.repo_root = Path(repo_root).resolve()
         self.models_dir = Path(models_dir)
         self.state_path = Path(state_path)
+        self.preview_cache_dir = Path(preview_cache_dir) if preview_cache_dir else (self.state_path.parent / "model-previews")
         self.active_jobs_check = active_jobs_check or (lambda: False)
         self.workbench_version = workbench_version or APP_VERSION
         self.comfy_root = Path(comfy_root).resolve() if comfy_root else None
@@ -319,6 +342,114 @@ class ModelManager:
                 break
         return raw_path
 
+    def _is_safe_model_subpath(self, candidate_path: Path) -> bool:
+        try:
+            root = self.models_dir.resolve()
+            resolved = candidate_path.resolve()
+            common = os.path.commonpath([str(root), str(resolved)])
+        except (OSError, ValueError):
+            return False
+        if os.path.normcase(common) != os.path.normcase(str(root)):
+            return False
+        for parent in (candidate_path, *candidate_path.parents):
+            if parent.is_symlink():
+                return False
+            if parent == self.models_dir:
+                break
+        return True
+
+    def _scan_sidecar_previews_locked(self) -> dict[tuple[str, str], Path]:
+        previews: dict[tuple[str, str], tuple[tuple[int, int], Path]] = {}
+        if not self.models_dir.is_dir():
+            return {}
+        ext_rank = {ext: idx for idx, ext in enumerate(PREVIEW_IMAGE_EXTENSIONS)}
+        for subdir_name in SCAN_SUBDIRS:
+            subdir = self.models_dir / subdir_name
+            if not subdir.is_dir() or subdir.is_symlink():
+                continue
+            for file_path in subdir.rglob("*"):
+                if file_path.is_symlink() or not file_path.is_file():
+                    continue
+                ext = file_path.suffix.lower()
+                if ext not in ext_rank or not self._is_safe_model_subpath(file_path):
+                    continue
+                try:
+                    rel = file_path.relative_to(self.models_dir).as_posix()
+                except ValueError:
+                    continue
+                parent_key = Path(rel).parent.as_posix().casefold()
+                stem = file_path.stem.strip().casefold()
+                candidates = [((0, ext_rank[ext]), (parent_key, stem))]
+                if stem.endswith(".preview") and len(stem) > 8:
+                    candidates.append(((1, ext_rank[ext]), (parent_key, stem[:-8].strip())))
+                for rank, key in candidates:
+                    prev = previews.get(key)
+                    if prev is None or rank < prev[0]:
+                        previews[key] = (rank, file_path)
+        return {key: pair[1] for key, pair in previews.items()}
+
+    def _find_sidecar_preview_locked(self, rel_path: str) -> Path | None:
+        parent_rel = Path(rel_path).parent
+        parent_dir = self.models_dir / parent_rel
+        if not parent_dir.is_dir() or not self._is_safe_model_subpath(parent_dir):
+            return None
+        target_stem = Path(rel_path).stem.strip().casefold()
+        ext_rank = {ext: idx for idx, ext in enumerate(PREVIEW_IMAGE_EXTENSIONS)}
+        best: tuple[tuple[int, int], Path] | None = None
+        for file_path in parent_dir.iterdir():
+            if file_path.is_symlink() or not file_path.is_file():
+                continue
+            ext = file_path.suffix.lower()
+            if ext not in ext_rank or not self._is_safe_model_subpath(file_path):
+                continue
+            stem = file_path.stem.strip().casefold()
+            if stem == target_stem:
+                rank = (0, ext_rank[ext])
+            elif stem.endswith(".preview") and stem[:-8].strip() == target_stem:
+                rank = (1, ext_rank[ext])
+            else:
+                continue
+            if best is None or rank < best[0]:
+                best = (rank, file_path)
+        return best[1] if best else None
+
+    def get_preview_thumbnail(self, rel_path: str) -> tuple[bytes, str]:
+        normalized = normalize_model_relpath(rel_path)
+        self._resolve_target_path(normalized)
+        with self._lock:
+            img_path = self._find_sidecar_preview_locked(normalized)
+        if img_path is None or not img_path.is_file() or img_path.is_symlink() or not self._is_safe_model_subpath(img_path):
+            raise ModelManagerError("该模型暂无本地封面图。", status=404, code="PREVIEW_NOT_FOUND")
+        stat = img_path.stat()
+        cache_key = hashlib.sha256(f"{img_path}|{stat.st_mtime_ns}|{stat.st_size}".encode("utf-8")).hexdigest()[:24]
+        cache_file = self.preview_cache_dir / f"{cache_key}.jpg"
+        if cache_file.is_file():
+            try:
+                return cache_file.read_bytes(), "image/jpeg"
+            except OSError:
+                pass
+        with Image.open(img_path) as raw_img:
+            img = ImageOps.exif_transpose(raw_img)
+            img.thumbnail((640, 640), Image.Resampling.LANCZOS)
+            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                rgba = img.convert("RGBA")
+                bg = Image.new("RGB", rgba.size, (12, 12, 14))
+                bg.paste(rgba, mask=rgba.split()[3])
+                rgb = bg
+            else:
+                rgb = img.convert("RGB")
+            buf = io.BytesIO()
+            rgb.save(buf, format="JPEG", quality=82, optimize=True)
+            payload = buf.getvalue()
+        try:
+            self.preview_cache_dir.mkdir(parents=True, exist_ok=True)
+            tmp_file = self.preview_cache_dir / f".{cache_key}.{uuid.uuid4().hex[:8]}.part"
+            tmp_file.write_bytes(payload)
+            os.replace(tmp_file, cache_file)
+        except OSError:
+            pass
+        return payload, "image/jpeg"
+
     def _discover_installed_paths_locked(self) -> set[str]:
         discovered: set[str] = set()
         if not self.models_dir.is_dir():
@@ -339,7 +470,14 @@ class ModelManager:
                     continue
         return discovered
 
-    def _build_item_locked(self, rel_path: str, *, installed_on_disk: set[str], now: dt.datetime) -> dict:
+    def _build_item_locked(
+        self,
+        rel_path: str,
+        *,
+        installed_on_disk: set[str],
+        now: dt.datetime,
+        sidecar_previews: dict[tuple[str, str], Path] | None = None,
+    ) -> dict:
         meta = self._catalog.get(rel_path)
         if meta is None:
             category = rel_path.split("/", 1)[0]
@@ -411,6 +549,11 @@ class ModelManager:
         else:
             recommendation = "keep"
 
+        if sidecar_previews is not None:
+            has_local_preview = (Path(rel_path).parent.as_posix().casefold(), Path(rel_path).stem.strip().casefold()) in sidecar_previews
+        else:
+            has_local_preview = self._find_sidecar_preview_locked(rel_path) is not None
+
         return {
             "path": rel_path,
             "name": meta["name"],
@@ -423,6 +566,8 @@ class ModelManager:
             "licenseUrl": meta.get("licenseUrl"),
             "restrictions": meta.get("restrictions"),
             "hasDownloadUrl": bool(meta["hasDownloadUrl"]),
+            "hasLocalPreview": has_local_preview,
+            "previewUrl": f"/api/models/preview?path={urllib.parse.quote(rel_path, safe='/')}" if has_local_preview else None,
             "installed": installed,
             "actualBytes": actual_bytes,
             "expectedBytes": expected_bytes,
@@ -447,8 +592,17 @@ class ModelManager:
         current = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
         with self._lock:
             installed_on_disk = self._discover_installed_paths_locked()
+            sidecar_previews = self._scan_sidecar_previews_locked()
             all_paths = sorted(set(self._catalog) | installed_on_disk)
-            items = [self._build_item_locked(rel, installed_on_disk=installed_on_disk, now=current) for rel in all_paths]
+            items = [
+                self._build_item_locked(
+                    rel,
+                    installed_on_disk=installed_on_disk,
+                    sidecar_previews=sidecar_previews,
+                    now=current,
+                )
+                for rel in all_paths
+            ]
 
         installed_items = [item for item in items if item["installed"]]
         idle_reclaimable = [item for item in installed_items if item["usageTier"] == "idle" and not item["locked"]]

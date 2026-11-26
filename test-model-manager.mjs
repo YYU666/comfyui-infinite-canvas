@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildAuxiliaryComponents,
   buildCapabilityCards,
   canDeleteModel,
   canDownloadOrUpdateModel,
@@ -135,4 +136,81 @@ test('summarizeModels and raw file filters behave cleanly', () => {
 
   const byUsageAsc = filterAndSortModels(lockedSample, { sort: 'usage_asc' });
   assert.equal(byUsageAsc.at(-1).name, 'seedvr2_3b_int8_convrot.safetensors');
+});
+
+test('auxiliary files stay out of capability cards and list their workflows cleanly', () => {
+  const extended = [
+    ...SAMPLE,
+    {
+      path: 'vae/wan_2.1_vae.safetensors',
+      name: 'wan_2.1_vae.safetensors',
+      title: 'Wan 2.1 视频 VAE',
+      category: 'vae',
+      group: 'VAE 解码器',
+      installed: true,
+      actualBytes: 250 * 1024 ** 2,
+      usageTier: 'idle',
+      usage30d: 0,
+    },
+    {
+      path: 'diffusion_models/pixal3d_int8_convrot.safetensors',
+      name: 'pixal3d_int8_convrot.safetensors',
+      title: 'Pixal3D 图生 3D 主模型 (INT8)',
+      category: 'diffusion_models',
+      installed: true,
+      actualBytes: 5 * 1024 ** 3,
+      usageTier: 'normal',
+      usage30d: 2,
+    },
+    {
+      path: 'loras/Krea2-风格/krea2_ink.safetensors',
+      name: 'krea2_ink.safetensors',
+      title: 'krea2 ink',
+      category: 'loras',
+      installed: true,
+      actualBytes: 400 * 1024 ** 2,
+      usageTier: 'idle',
+      usage30d: 0,
+      hasLocalPreview: true,
+      previewUrl: '/api/models/preview?path=loras/Krea2-%E9%A3%8E%E6%A0%BC/krea2_ink.safetensors',
+    },
+    {
+      path: 'loras/Krea2-风格/krea2_no_img.safetensors',
+      name: 'krea2_no_img.safetensors',
+      title: 'krea2 no img',
+      category: 'loras',
+      installed: true,
+      actualBytes: 300 * 1024 ** 2,
+      usageTier: 'idle',
+      usage30d: 0,
+      hasLocalPreview: false,
+      previewUrl: null,
+    },
+  ];
+
+  const cards = buildCapabilityCards(extended);
+  // Standalone VAE files must never show up as separate cards
+  assert.equal(cards.some((c) => c.id === 'single:vae/wan_2.1_vae.safetensors'), false);
+  // Pixal3D should be grouped under the 3d category with bundled cover
+  const pixal = cards.find((c) => c.id === 'pixal3d');
+  assert.ok(pixal);
+  assert.equal(pixal.category, '3d');
+  assert.equal(pixal.coverUrl, '/model-covers/pixal3d.jpg');
+
+  // Auxiliary components table includes both qwen3vl_32b (preset) and wan_2.1_vae (standalone) with workflow tags
+  const aux = buildAuxiliaryComponents(extended);
+  const wanVae = aux.find((a) => a.name === 'wan_2.1_vae.safetensors');
+  assert.ok(wanVae);
+  assert.equal(wanVae.roleLabel, 'VAE 解码器');
+  assert.deepEqual(wanVae.usedByWorkflows, ['Wan 2.1 视频工作流']);
+
+  const qwenEnc = aux.find((a) => a.name === 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors');
+  assert.ok(qwenEnc);
+  assert.ok(qwenEnc.usedByWorkflows.includes('MiniMax H3 视频引擎'));
+  assert.ok(qwenEnc.usedByWorkflows.includes('H3-Image 高精生图'));
+
+  // LoRA cover filter tracks which LoRAs need generated covers
+  const needCover = filterAndSortCards(cards, { category: 'lora', statusFilter: 'needs_cover' });
+  assert.equal(needCover.length, 1);
+  assert.equal(needCover[0].primaryPath, 'loras/Krea2-风格/krea2_no_img.safetensors');
 });

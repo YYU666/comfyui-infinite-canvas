@@ -33,6 +33,17 @@ class _FakeHandler:
         self.status_code = status
         self.payload = payload
 
+    def send_response(self, status):
+        self.status_code = status
+        self.resp_headers = {}
+        self.wfile = io.BytesIO()
+
+    def send_header(self, key, value):
+        self.resp_headers[key] = value
+
+    def end_headers(self):
+        return
+
 
 class WorkbenchModelsTests(unittest.TestCase):
     def setUp(self):
@@ -195,6 +206,59 @@ class WorkbenchModelsTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_sidecar_preview_discovery_thumbnail_and_security(self):
+        from PIL import Image
+
+        (self.models_dir / "loras" / "Krea2-风格").mkdir(parents=True)
+        exact_model = "loras/Krea2-风格/foo_style.safetensors"
+        spaced_model = "loras/Krea2-风格/darkbrush.safetensors"
+        no_cover_model = "loras/Krea2-风格/no_cover.safetensors"
+        for rel in (exact_model, spaced_model, no_cover_model):
+            (self.models_dir / rel).write_bytes(b"W" * 16)
+
+        img_exact = self.models_dir / "loras" / "Krea2-风格" / "foo_style.png"
+        img_spaced = self.models_dir / "loras" / "Krea2-风格" / "darkbrush .png"
+        Image.new("RGBA", (1200, 900), (40, 120, 90, 220)).save(img_exact, format="PNG")
+        Image.new("RGB", (800, 800), (180, 90, 40)).save(img_spaced, format="PNG")
+
+        mgr = ModelManager(REPO_ROOT, self.models_dir, self.state_path)
+        api = ModelManagerAPI(mgr)
+        snap = mgr.snapshot()
+        by_path = {m["path"]: m for m in snap["models"]}
+
+        self.assertTrue(by_path[exact_model]["hasLocalPreview"])
+        self.assertTrue(by_path[spaced_model]["hasLocalPreview"])
+        self.assertFalse(by_path[no_cover_model]["hasLocalPreview"])
+        self.assertIsNone(by_path[no_cover_model]["previewUrl"])
+
+        # Thumbnail resizing + cache generation via API
+        req = _FakeHandler("GET", by_path[spaced_model]["previewUrl"])
+        self.assertTrue(api.handle_get(req, "/api/models/preview"))
+        self.assertEqual(req.status_code, 200)
+        self.assertEqual(req.resp_headers["Content-Type"], "image/jpeg")
+        thumb_bytes = req.wfile.getvalue()
+        with Image.open(io.BytesIO(thumb_bytes)) as thumb:
+            self.assertLessEqual(max(thumb.size), 640)
+            self.assertEqual(thumb.format, "JPEG")
+
+        # Second call hits disk cache
+        cached_files = list(mgr.preview_cache_dir.glob("*.jpg"))
+        self.assertEqual(len(cached_files), 1)
+        data2, mime2 = mgr.get_preview_thumbnail(spaced_model)
+        self.assertEqual(mime2, "image/jpeg")
+        self.assertEqual(data2, thumb_bytes)
+
+        # Traversal & missing preview error codes
+        bad_req = _FakeHandler("GET", "/api/models/preview?path=../secret.safetensors")
+        api.handle_get(bad_req, "/api/models/preview")
+        self.assertEqual(bad_req.status_code, 400)
+        self.assertEqual(bad_req.payload["code"], "INVALID_MODEL_PATH")
+
+        miss_req = _FakeHandler("GET", f"/api/models/preview?path={no_cover_model}")
+        api.handle_get(miss_req, "/api/models/preview")
+        self.assertEqual(miss_req.status_code, 404)
+        self.assertEqual(miss_req.payload["code"], "PREVIEW_NOT_FOUND")
 
 
 if __name__ == "__main__":

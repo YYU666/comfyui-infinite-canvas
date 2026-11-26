@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 
 from workbench_models import ModelManager, ModelManagerError
 
@@ -40,13 +41,28 @@ class ModelManagerAPI:
         handler.send_json(exc.status, {"ok": False, "code": exc.code, "message": exc.message, "details": exc.details})
 
     def handle_get(self, handler, path: str) -> bool:
-        if path != "/api/models":
-            return False
-        try:
-            handler.send_json(200, self.manager.snapshot())
-        except ModelManagerError as exc:
-            self._send_error(handler, exc)
-        return True
+        if path == "/api/models":
+            try:
+                handler.send_json(200, self.manager.snapshot())
+            except ModelManagerError as exc:
+                self._send_error(handler, exc)
+            return True
+        if path == "/api/models/preview":
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+                rel_path = (query.get("path") or [""])[0]
+                payload, content_type = self.manager.get_preview_thumbnail(rel_path)
+                handler.send_response(200)
+                handler.send_header("Content-Type", content_type)
+                handler.send_header("Content-Length", str(len(payload)))
+                handler.send_header("Cache-Control", "private, max-age=3600")
+                handler.send_header("X-Content-Type-Options", "nosniff")
+                handler.end_headers()
+                handler.wfile.write(payload)
+            except ModelManagerError as exc:
+                self._send_error(handler, exc)
+            return True
+        return False
 
     def handle_post(self, handler, path: str) -> bool:
         if path not in {
