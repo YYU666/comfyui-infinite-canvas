@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { deflateSync } from 'node:zlib';
-import { chromium } from './test-browser.mjs';
+import { chromium, fixturePageEpoch, fixtureQueueExecution } from './test-browser.mjs';
 import { FLUX3_KLEIN_MODEL as model } from './src/flux3-klein.js';
 import { PROJECT_SESSION_KEY } from './src/project-session.js';
 
 // Synthetic origin only: no live project, service, GPU, or user media is accessed.
-const origin = 'http://thumbnail-fixture.test';
+const origin = 'https://thumbnail-fixture.test';
 const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 function png(width, height) {
   const crc = (buffer) => { let n = 0xffffffff; for (const byte of buffer) { n ^= byte; for (let bit = 0; bit < 8; bit++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1; } return (n ^ 0xffffffff) >>> 0; };
@@ -67,7 +67,7 @@ await context.route('**/*', async (route) => {
     return json({ name: `reference-${uploads.length}.png`, subfolder: 'workbench' });
   }
   if (url.pathname === '/api/queue') {
-    if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: 'synthetic-job', status: 'queued' }); }
+    if (request.method() === 'POST') { queued.push(fixtureQueueExecution(request.postDataJSON(), project)); return json({ id: 'synthetic-job', status: 'queued' }); }
     return json({ jobs: [] });
   }
   if (url.pathname.includes('/object_info/')) {
@@ -78,6 +78,7 @@ await context.route('**/*', async (route) => {
   if (url.pathname === '/api/health') return json({ ok: true });
   if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
   if (url.pathname === '/api/settings') return json({ notifications: false, updates: { autoCheck: false } });
+  if (url.pathname === '/api/agent/canvas/heartbeat') return json({ epoch: fixturePageEpoch });
   if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'fixture native tools only' }, 503);
   if (url.pathname.startsWith('/api/')) return json({});
   const file = path.resolve(dist, `.${url.pathname === '/' ? '/index.html' : url.pathname}`);
