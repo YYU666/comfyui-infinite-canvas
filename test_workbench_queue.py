@@ -356,9 +356,10 @@ class QueueTests(unittest.TestCase):
 
                 adapter._request = request
                 adapter.cancel("target")
-                self.assertEqual(calls[0], ("/queue", None))
-                self.assertEqual(calls[1], ("/queue", {"delete": ["target"]}))
-                self.assertEqual(any(path == "/interrupt" for path, _ in calls), expected_interrupt)
+                expected = [("/queue", {"delete": ["target"]}), ("/queue", None)]
+                if expected_interrupt:
+                    expected.append(("/interrupt", {"prompt_id": "target"}))
+                self.assertEqual(calls, expected)
 
     def test_comfy_empty_success_response_is_accepted(self):
         class EmptyResponse:

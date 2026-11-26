@@ -67,11 +67,12 @@ class LeaseTests(unittest.TestCase):
         self.leases = GpuLeases(self.root / "physical")
 
     def test_process_exit_hands_the_same_uuid_to_next_project(self):
-        script = ("import json, sys, time; from gpu_lease import GpuLeases; "
+        script = ("import json, sys, time; sys.path.insert(0, sys.argv[4]); from gpu_lease import GpuLeases; "
                   "grant,_=GpuLeases(sys.argv[1]).claim(sys.argv[2],json.loads(sys.argv[3])); "
                   "print(bool(grant),flush=True); time.sleep(20)")
         child = subprocess.Popen([sys.executable, "-u", "-c", script, str(self.leases.root), DEVICE,
-                                  json.dumps(FIRST)], stdout=subprocess.PIPE, text=True)
+                                  json.dumps(FIRST), str(Path(__file__).resolve().parent)],
+                                 stdout=subprocess.PIPE, text=True)
         try:
             self.assertEqual(child.stdout.readline().strip(), "True")
             self.assertEqual(self.leases.claim(DEVICE, SECOND), (None, FIRST))
@@ -90,16 +91,18 @@ class LeaseTests(unittest.TestCase):
     def test_worker_adoption_keeps_lease_after_host_exit(self):
         host = """
 import json, os, subprocess, sys, time
+sys.path.insert(0, sys.argv[4])
 from gpu_lease import GpuLeases
 grant, _ = GpuLeases(sys.argv[1]).claim(sys.argv[2], json.loads(sys.argv[3]))
 worker = subprocess.Popen([sys.executable, '-u', '-c',
-    'from gpu_lease import adopt_worker_lease; import time; adopt_worker_lease(); time.sleep(30)'],
-    env=grant.worker_environment(os.environ))
+    'import sys, time; sys.path.insert(0, sys.argv[1]); from gpu_lease import adopt_worker_lease; '
+    'adopt_worker_lease(); time.sleep(30)', sys.argv[4]], env=grant.worker_environment(os.environ))
 print(worker.pid, flush=True)
 time.sleep(30)
 """
         parent = subprocess.Popen([sys.executable, "-u", "-c", host, str(self.leases.root), DEVICE,
-                                   json.dumps(FIRST)], stdout=subprocess.PIPE, text=True)
+                                   json.dumps(FIRST), str(Path(__file__).resolve().parent)],
+                                 stdout=subprocess.PIPE, text=True)
         try:
             pid = int(parent.stdout.readline())
             until(lambda: any('"phase": "worker"' in file.read_text(encoding="utf-8")
@@ -243,6 +246,81 @@ print(json.dumps({'stage':'fixture', 'progress':0.5}), flush=True)
             self.assertEqual(job["gpu"]["state"], "released")
             self.assertEqual(job["gpu"]["owner"]["jobId"], gpu_id)
             self.assertEqual(job["result"]["files"][0]["bytes"], 9)
+
+    def test_legacy_manual_waits_and_cancels_in_the_shared_gpu_queue(self):
+        blocker, _ = self.leases.claim(DEVICE, FIRST)
+        self.assertIsNotNone(blocker)
+        adapter = FixtureComfy()
+        queue = QueueManager(self.root / "queue.json", adapter, gpu_leases=self.leases, poll_interval=.02)
+        queue.start()
+        self.addCleanup(queue.stop)
+        with patch("gpu_lease._reconcile_comfy", side_effect=lambda _row: adapter.finished):
+            cancel_before_dispatch = queue.enqueue({"workflow": WORKFLOW, "clientId": "legacy:cancel"}, legacy_manual=True)
+            waiting = until(lambda: queue.get(cancel_before_dispatch["id"])["gpu"]
+                            if queue.get(cancel_before_dispatch["id"]).get("gpu") else None)
+            self.assertEqual(waiting["state"], "waiting")
+            self.assertEqual(waiting["owner"], FIRST)
+            self.assertFalse(adapter.dispatched.is_set())
+            self.assertEqual(queue.cancel(cancel_before_dispatch["id"])["status"], "cancelled")
+            job = queue.enqueue({"workflow": WORKFLOW, "clientId": "legacy:run"}, legacy_manual=True)
+            self.assertEqual((job["origin"], job["canvasOwned"]), ("legacy-manual", False))
+            self.assertIsNone(job["projectId"])
+            self.assertIsNone(job["nodeId"])
+            until(lambda: queue.get(job["id"]).get("gpu", {}).get("state") == "waiting")
+            self.assertTrue(blocker.release())
+            self.assertTrue(adapter.dispatched.wait(5))
+            until(lambda: queue.get(job["id"]).get("comfyPromptId") == "fixture-prompt")
+            occupied = queue.get(job["id"])["gpu"]
+            self.assertEqual(occupied["state"], "held")
+            self.assertEqual(occupied["owner"]["jobId"], job["id"])
+            self.assertEqual(occupied["owner"]["origin"], "legacy-manual")
+            self.assertEqual(queue.cancel(job["id"])["gpu"]["state"], "reconciling")
+            self.assertTrue(adapter.cancelled.is_set())
+            self.assertEqual(self.leases.claim(DEVICE, FIRST), (None, occupied["owner"]))
+            adapter.finished = True
+            until(lambda: queue.get(job["id"]).get("gpu", {}).get("state") == "released")
+            following, _ = self.leases.claim(DEVICE, FIRST)
+            self.assertTrue(following.release())
+
+    def test_cancelled_lost_ack_recovers_original_prompt_after_scheduler_restart(self):
+        adapter = FixtureComfy()
+        sent, drop_ack = threading.Event(), threading.Event()
+        submissions = []
+
+        def dropped(workflow, client_id, *, gpu_dispatch):
+            submissions.append(gpu_dispatch)
+            sent.set()
+            if drop_ack.wait(5):
+                raise TimeoutError("acknowledgement lost")
+            raise AssertionError("fixture failed to control response")
+
+        adapter.submit = dropped
+        adapter.find_gpu_dispatch = lambda dispatch: None
+        path = self.root / "queue.json"
+        queue = QueueManager(path, adapter, gpu_leases=self.leases, poll_interval=.02)
+        queue.start()
+        self.addCleanup(queue.stop)
+        with patch("gpu_lease._reconcile_comfy", side_effect=lambda _row: adapter.finished):
+            job = queue.enqueue({"workflow": WORKFLOW, "clientId": "legacy:lost-ack"}, legacy_manual=True)
+            self.assertTrue(sent.wait(5))
+            self.assertEqual(queue.cancel(job["id"])["gpu"]["state"], "reconciling")
+            drop_ack.set()
+            queue.stop()
+            owner = queue.get(job["id"])["gpu"]["owner"]
+            self.assertEqual(self.leases.claim(DEVICE, FIRST), (None, owner))
+            adapter.find_gpu_dispatch = lambda dispatch: "original-prompt" if submissions == [dispatch] else None
+            recovered = QueueManager(path, adapter, gpu_leases=self.leases, poll_interval=.02)
+            recovered.start()
+            try:
+                self.assertTrue(adapter.cancelled.wait(5))
+                until(lambda: recovered.get(job["id"]).get("comfyPromptId") == "original-prompt")
+                self.assertEqual(recovered.get(job["id"])["status"], "cancelled")
+                self.assertEqual(len(submissions), 1)
+                self.assertEqual(self.leases.claim(DEVICE, FIRST), (None, owner))
+                adapter.finished = True
+                until(lambda: recovered.get(job["id"]).get("gpu", {}).get("state") == "released")
+            finally:
+                recovered.stop()
 
     def test_worker_progress_and_host_artifact_identity(self):
         self.assertEqual(list(worker_progress(io.StringIO('debug\n{"stage":"sample","progress":0.5}\n{"progress":true}\n'))),

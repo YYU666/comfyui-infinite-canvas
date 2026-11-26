@@ -142,6 +142,8 @@ def job_owner(kind, job):
     owner = {"kind": kind, "projectId": job["projectId"], "nodeId": job["nodeId"], "jobId": job["id"]}
     if kind == "comfy":
         owner["attempt"] = job["attempts"]
+        if job.get("origin") == "legacy-manual":
+            owner["origin"] = job["origin"]
     return owner
 
 
@@ -242,6 +244,20 @@ class GpuLeases:
             if self._clear(device, row["token"], previous=row):
                 return self.claim(device, owner, recovery=recovery)
         return None, row["owner"]
+
+    def recover_comfy(self, device, owner, origin):
+        """Reattach an exact retained dispatch without creating a fresh lease."""
+        with self._row(device) as (state, row):
+            if (not row or row["owner"] != owner or row["phase"] != "comfy"
+                    or row.get("origin") != origin):
+                return None
+            host = process_identity()
+            if row["host"] != host and alive(row["host"]):
+                return None
+            if row["host"] != host:
+                row["host"] = host
+                atomic_write_json(state, row)
+            return GpuGrant(self, device, row["token"], owner), row["backend"]
 
     def _change(self, device, token, **changes):
         with self._row(device) as (state, row):

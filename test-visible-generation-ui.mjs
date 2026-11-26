@@ -276,8 +276,19 @@ try {
   const legacyResult = await (await legacyResponse).json();
   assert.equal(legacyResult.origin, 'legacy-manual', JSON.stringify(legacyResult));
   assert.equal(legacyResult.canvasOwned, false);
-  assert.match(prompts.get(legacyResult.prompt_id).client_id, /^legacy:/);
-  assert.equal((await api('/api/queue')).jobs.length, 2, 'simple mode is not part of the canvas queue');
+  const pausedLegacy = await api('/api/queue/' + legacyResult.jobId);
+  assert.equal(pausedLegacy.status, 'queued');
+  assert.equal(pausedLegacy.comfyPromptId, null);
+  await api('/api/queue', { action: 'resume' });
+  const legacyJob = await until('legacy queue dispatch', async () => {
+    const job = await api('/api/queue/' + legacyResult.jobId);
+    return job.comfyPromptId ? job : null;
+  });
+  assert.match(prompts.get(legacyJob.comfyPromptId).client_id, /^legacy:/);
+  assert.equal(legacyJob.projectId, null);
+  assert.equal(legacyJob.nodeId, null);
+  assert.equal((await api('/api/queue')).jobs.filter((job) => job.canvasOwned !== false).length, 2,
+    'simple mode shares the scheduler without claiming canvas ownership');
   await legacyContext.close();
   console.log(JSON.stringify({ legacyManualIdentified: true, humanSameGate: true, directProxyRejected: true, retryAttempt: retry.attempt, customWorkflow: true, realExtensionCompile: true, staleRevisionRejected: true, saveFailureNoJob: true,
     noVisiblePageNoJob: true, persistedBeforeEnqueue: true, accepted: accepted.jobId, closedPageTerminal: terminal.status,

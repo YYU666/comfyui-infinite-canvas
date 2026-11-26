@@ -84,11 +84,8 @@ class QueueAPI:
             bridge._epoch(proof)
             if bridge.current("legacy")["sessionId"] != bridge._id(proof, "sessionId"):
                 raise StoreError("LEGACY_MANUAL_REQUIRED", "原简易模式页面已关闭或切换。", 409)
-        try:
-            prompt_id = self.manager.adapter.submit(workflow, client_id)
-        except OSError as exc:
-            raise StoreError("LEGACY_SUBMISSION_UNKNOWN", "未能确认简易模式提交，请查看原执行器历史。", 502) from exc
-        return {"prompt_id": prompt_id, "origin": "legacy-manual", "canvasOwned": False}
+            job = self.manager.enqueue({"workflow": workflow, "clientId": client_id}, legacy_manual=True)
+        return {"jobId": job["id"], "origin": job["origin"], "canvasOwned": job["canvasOwned"]}
 
     def _retry(self, job_id, payload):
         if self.canvas_context is None:

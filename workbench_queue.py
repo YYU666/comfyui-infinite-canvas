@@ -133,14 +133,11 @@ class ComfyQueueAdapter:
         return {"nodes": len(workflow), "models": checked}
 
     def cancel(self, prompt_id):
-        current = self._request("/queue")
-
-        def prompt_ids(key):
-            return {str(item[1]) for item in current.get(key, []) if isinstance(item, (list, tuple)) and len(item) > 1}
-
         self._request("/queue", {"delete": [prompt_id]})
-        if str(prompt_id) in prompt_ids("queue_running"):
-            self._request("/interrupt", {})
+        current = self._request("/queue")
+        if any(isinstance(item, (list, tuple)) and len(item) > 1 and item[1] == prompt_id
+               for item in current.get("queue_running", [])):
+            self._request("/interrupt", {"prompt_id": prompt_id})
 
     def poll(self, prompt_id):
         history = self._request(f"/history/{prompt_id}")
@@ -207,6 +204,7 @@ class QueueManager:
         self.gpu_leases = gpu_leases
         self._gpu_grants = {}
         self._load()
+        self._restore_terminal_gpu()
 
     @staticmethod
     def _concurrency(value):
@@ -275,7 +273,7 @@ class QueueManager:
             job = self._find_locked(job_id)
             return _public(job)
 
-    def enqueue(self, payload):
+    def enqueue(self, payload, *, legacy_manual=False):
         workflow = payload.get("workflow")
         plan = payload.get("plan")
         if plan is not None:
@@ -288,6 +286,7 @@ class QueueManager:
             "id": f"job_{uuid.uuid4().hex}",
             "projectId": payload.get("projectId"),
             "nodeId": payload.get("nodeId"),
+            **({"origin": "legacy-manual", "canvasOwned": False} if legacy_manual else {}),
             **({"requestId": payload["requestId"]} if payload.get("requestId") else {}),
             **({"canvasAdmission": payload["canvasAdmission"]} if payload.get("canvasAdmission") else {}),
             "shotId": payload.get("shotId"),
@@ -449,7 +448,10 @@ class QueueManager:
                 return _public(job)
             if job.get("gpu", {}).get("state") == "waiting":
                 job.pop("gpu")
+            elif job.get("gpu", {}).get("state") == "held":
+                job["gpu"]["state"] = "reconciling"
             job["status"] = "cancelled"
+            job["stage"] = "已取消生成"
             job["finishedAt"] = utc_now()
             job["error"] = None
             self._changed_locked("job.cancelled", job)
@@ -487,7 +489,8 @@ class QueueManager:
 
     def clear_completed(self):
         with self._lock:
-            retained = [job for job in self.jobs if job["status"] not in TERMINAL]
+            retained = [job for job in self.jobs if job["status"] not in TERMINAL
+                        or job.get("gpu", {}).get("state") in {"held", "reconciling"}]
             removed = len(self.jobs) - len(retained)
             self.jobs = retained
             if removed:
@@ -576,7 +579,7 @@ class QueueManager:
             owner = job_owner("comfy", job)
             grant, blocker = self.gpu_leases.claim(device, owner, recovery=self.adapter.origin if job.get("comfyPromptId") else None)
             if grant:
-                self._gpu_grants[key] = (grant, backend)
+                self._gpu_grants[key] = (grant, job.get("gpuBackend") or backend)
                 if job.get("comfyPromptId"):
                     grant.restore_prompt(self.adapter.origin, backend, job["comfyPromptId"])
             with self._lock:
@@ -599,36 +602,67 @@ class QueueManager:
                     self._changed_locked("job.error", job)
             return False
 
+    def _restore_terminal_gpu(self):
+        if self.gpu_leases is None:
+            return
+        for job in self.jobs:
+            gpu = job.get("gpu") or {}
+            if job["status"] not in TERMINAL or gpu.get("state") not in {"held", "reconciling"}:
+                continue
+            device, owner = gpu["device"], job_owner("comfy", job)
+            recovered = self.gpu_leases.recover_comfy(device, owner, self.adapter.origin)
+            if recovered:
+                self._gpu_grants[(job["id"], job["attempts"])] = recovered
+            else:
+                job["gpu"] = gpu_status(device, "released", owner)
+
     def _recover_gpu_dispatches(self):
         with self._lock:
             unresolved = [(job, job["attempts"], job["gpuDispatch"], job.get("gpuBackend"))
                           for job in self.jobs if job.get("gpuDispatch") and job.get("submissionPending")
-                          and not job.get("comfyPromptId") and job["status"] in ACTIVE]
+                          and not job.get("comfyPromptId")
+                          and (job["status"] in ACTIVE
+                               or (job.get("cancelRequested") and (job["id"], job["attempts"]) in self._gpu_grants))]
         for job, attempt, dispatch, backend in unresolved:
             try:
                 prompt = self.adapter.find_gpu_dispatch(dispatch)
             except (OSError, ValueError, RuntimeError):
                 prompt = None
             with self._lock:
-                if job["attempts"] != attempt or job["status"] not in ACTIVE:
+                if job["attempts"] != attempt:
+                    continue
+                cancel = job.get("cancelRequested")
+            if prompt and cancel:
+                try:
+                    self.adapter.cancel(prompt)
+                except (OSError, ValueError, RuntimeError):
+                    continue
+            with self._lock:
+                if job["attempts"] != attempt:
                     continue
                 if prompt:
                     target = self._gpu_grants.get((job["id"], attempt))
                     if target:
-                        job["gpu"] = gpu_status(target[0].device, "held", target[0].owner)
+                        job["gpu"] = gpu_status(target[0].device, "reconciling" if cancel else "held", target[0].owner)
                         # A foreign runtime may already have retired a proven terminal row.
                         try:
                             target[0].acknowledge(prompt)
                         except RuntimeError:
                             self._gpu_grants.pop((job["id"], attempt), None)
-                    job.update(comfyPromptId=prompt, submissionPending=False, stage="已查回原 ComfyUI 任务")
+                    job.update(comfyPromptId=prompt, submissionPending=False)
+                    if not cancel:
+                        job["stage"] = "已查回原 ComfyUI 任务"
                     if job.get("plan"):
                         job["planState"]["promptIds"].append(prompt)
                     self._changed_locked("job.submitted", job)
                 elif backend and not alive(backend):
-                    job.update(status="error", stage="ComfyUI 已退出", finishedAt=utc_now(),
-                               error=_error("COMFY_EXITED", "提交失联后原 ComfyUI 进程已退出。"))
-                    self._changed_locked("job.error", job)
+                    job["submissionPending"] = False
+                    if cancel:
+                        self._changed_locked("job.progress", job)
+                    else:
+                        job.update(status="error", stage="ComfyUI 已退出", finishedAt=utc_now(),
+                                   error=_error("COMFY_EXITED", "提交失联后原 ComfyUI 进程已退出。"))
+                        self._changed_locked("job.error", job)
 
     def _retire_gpu(self):
         for key, (grant, _) in list(self._gpu_grants.items()):
