@@ -10,6 +10,14 @@ from video_job_submission import submit_video_from_page
 PREFIX = "/api/video-rhythm/"
 
 
+def _send_jpeg(handler, body):
+    handler.send_response(200)
+    handler.send_header("Content-Type", "image/jpeg")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 class VideoRhythmAPI:
     def __init__(self, jobs):
         self.jobs = jobs
@@ -38,7 +46,9 @@ class VideoRhythmAPI:
         if not path.startswith(PREFIX):
             return False
         try:
-            if match := re.fullmatch(r"/api/video-rhythm/jobs/(vry_[a-f0-9]{32})", path):
+            if match := re.fullmatch(r"/api/video-rhythm/jobs/(vry_[a-f0-9]{32})/preview", path):
+                _send_jpeg(handler, self.jobs.preview_jpeg(match[1]))
+            elif match := re.fullmatch(r"/api/video-rhythm/jobs/(vry_[a-f0-9]{32})", path):
                 handler.send_json(200, self.jobs.get(match[1]))
             else:
                 handler.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})

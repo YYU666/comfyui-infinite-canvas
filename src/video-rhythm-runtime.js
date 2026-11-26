@@ -1,3 +1,4 @@
+import { videoExportPreviewPatch } from './video-export-preview.js';
 import { cancelVideoRun, observeVideoCancellation, readVideoJob, hasUnconfirmedVideoSubmission, makeVideoSubmission, postVideoSubmission, videoSubmissionError, videoSubmissionPhase } from './video-submission.js';
 // Page-side runtime for constant-speed and time-remap nodes.
 // Jobs stay on /api/video-rhythm inside the workbench process. The page commits
@@ -93,13 +94,13 @@ export function createVideoRhythmRunner(deps) {
           deps.updateNode(id, receipt);
           await deps.persistProject?.().catch(() => {});
         }
-        if (ACTIVE.includes(job.status)) { deps.updateNode(id, { status: job.status, stage: job.stage, progress: job.progress, error: null }); continue; }
+        if (ACTIVE.includes(job.status)) { deps.updateNode(id, { status: job.status, stage: job.stage, progress: job.progress, error: null, ...videoExportPreviewPatch(job) }); continue; }
         if (job.status !== 'completed') {
           deps.updateNode(id, { status: job.status === 'cancelled' ? 'cancelled' : 'error', stage: job.stage, error: job.status === 'cancelled' ? null : job.error || '导出失败。', ...videoSubmissionPhase(node(id), jobId, job.status === 'cancelled' ? 'cancelled' : 'failed') });
           await deps.persistProject?.().catch(() => {});
           return;
         }
-        deps.updateNode(id, { status: 'running', stage: '正在保存到项目素材', progress: 0.99 });
+        deps.updateNode(id, { status: 'running', stage: '正在保存到项目素材', progress: 0.99, previewFrame: null });
         const saved = await deps.saveCanvasMedia((revision) => commitVideoRhythmJob(jobId, projectId, revision), (result) => ({ ok: true, assetPath: result.asset.path }));
         if (!saved?.ok) throw new Error(saved?.error?.message || '成片保存失败。');
         if (controller.signal.aborted || !currentProject(projectId) || node(id)?.data.rhythmJobId !== jobId) return;

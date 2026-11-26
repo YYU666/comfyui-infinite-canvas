@@ -1,4 +1,5 @@
 import VideoJobStatus, { videoExportLabel } from './VideoJobStatus';
+import { videoExportPreviewSrc } from './video-export-preview.js';
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Plus, Trash2, ArrowUp, ArrowDown, Scissors, Undo2, Redo2, ArrowDownToLine, Square } from 'lucide-react';
@@ -403,7 +404,7 @@ export default function VideoEditorPanel({ id, data, state, actions, onClose }) 
       </div>}
       {(error || data.error) && <p className="video-edit-error" role="alert">{error || data.error}</p>}
       {view !== 'openmotion' && <footer>
-        <VideoJobStatus data={data} running={running} fallback={data.editResultAssetPath ? '已有导出结果；再次导出会替换节点内结果（旧文件保留在项目素材中）' : '尚未导出'} />
+        <VideoJobStatus data={data} running={running} previewSrc={running ? videoExportPreviewSrc('edit', data.videoEditJobId, data.previewFrame) : null} fallback={data.editResultAssetPath ? '已有导出结果；再次导出会替换节点内结果（旧文件保留在项目素材中）' : '尚未导出'} />
         {running ? <button disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoEdit(id); }}><Square size={12} />取消导出</button>
           : view !== 'motion-canvas' && <button className="video-edit-export" disabled={locked || Boolean(error)} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />{videoExportLabel(id, data, '导出 MP4')}</button>}
       </footer>}

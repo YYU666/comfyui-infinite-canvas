@@ -1,4 +1,5 @@
 import VideoJobStatus, { videoExportLabel } from './VideoJobStatus';
+import { videoExportPreviewSrc } from './video-export-preview.js';
 import React, { useEffect } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { ArrowDownToLine, Gauge, LoaderCircle, Plus, Square, Spline, Trash2 } from 'lucide-react';
@@ -73,7 +74,7 @@ export default function VideoRhythmNode({ id, type, data, actions, title, toolba
     {data.rhythmResult && <div className="video-rhythm-meta"><span>{data.rhythmResult.frames} 帧</span><span>{data.rhythmResult.audio === 'mute' ? '无声' : data.rhythmResult.audio === 'stretch' ? '拉长变调' : '保持音高'}</span></div>}
     {data.error && <p className="video-rhythm-error" role="alert">{data.error}</p>}
     <footer>
-      <VideoJobStatus data={data} running={running} fallback={stale ? '参数已更新 · 待导出' : data.rhythmResultAssetPath ? '结果已导出' : '未导出'} />
+      <VideoJobStatus data={data} running={running} previewSrc={running ? videoExportPreviewSrc('rhythm', data.rhythmJobId, data.previewFrame) : null} fallback={stale ? '参数已更新 · 待导出' : data.rhythmResultAssetPath ? '结果已导出' : '未导出'} />
       {running
         ? <button type="button" className="video-rhythm-cancel" disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoRhythm(id); }}><Square size={12} />取消</button>
         : <button type="button" className="video-rhythm-export" disabled={disabled} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />{videoExportLabel(id, data, '导出')}</button>}

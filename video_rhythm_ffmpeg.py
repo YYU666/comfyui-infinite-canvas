@@ -5,8 +5,6 @@ fractions, never from user strings. Runs in the workbench process.
 """
 from __future__ import annotations
 
-import subprocess
-import threading
 from fractions import Fraction
 from pathlib import Path
 
@@ -79,7 +77,12 @@ def _write_audio(runner, source, document, indices, fps, probe, workdir):
     return target
 
 
-def render(runner, document, probe, source, target, workdir, progress=lambda value, stage: None):
+def render(runner, document, probe, source, target, workdir, progress=lambda value, stage, preview=None: None):
+    import hashlib
+    import json
+
+    from video_frame_export import FrameExporter, mux_mp4
+
     width, height = probe["width"], probe["height"]
     if width % 2 or height % 2 or width < 16 or height < 16:
         raise FFmpegError("素材宽高必须是不小于 16 的偶数。")
@@ -94,48 +97,21 @@ def render(runner, document, probe, source, target, workdir, progress=lambda val
     audio_file = _write_audio(runner, source, document, indices, fps, probe, workdir) if audio_mode != "mute" else None
     if audio_file is None:
         audio_mode = "mute"
-    args = ["-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", f"{width}x{height}",
-            "-framerate", f"{fps.numerator}/{fps.denominator}", "-i", "pipe:0"]
-    if audio_file:
-        args += ["-f", "f32le", "-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CHANNELS), "-i", str(audio_file)]
-    args += ["-map", "0:v:0"] + (["-map", "1:a:0"] if audio_file else [])
-    args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p",
-             "-video_track_timescale", str(fps.numerator), "-fps_mode", "passthrough"]
-    if audio_file:
-        args += ["-c:a", "aac", "-b:a", "192k"]
-    args += ["-movflags", "+faststart", "-y", str(target)]
-    encoder = runner.popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    stderr = []
-    reader = threading.Thread(target=lambda: stderr.append(encoder.stderr.read()), daemon=True)
-    reader.start()
-    written = 0
-    try:
-        for chunk in _indexed_frames(runner, source, indices, width, height, workdir):
-            encoder.stdin.write(chunk)
-            written += 1
-            if written % 12 == 0:
-                progress(0.1 + 0.85 * written / len(indices), "正在逐帧导出")
-        encoder.stdin.close()
-        encoder.wait()
-        reader.join(5)
-        runner.check()
-        if encoder.returncode != 0:
-            raise FFmpegError("FFmpeg 编码失败：" + b"".join(stderr).decode("utf-8", "replace")[-400:])
-    except (BrokenPipeError, OSError) as error:
-        runner.check()
-        raise FFmpegError("FFmpeg 编码进程提前退出。") from error
-    finally:
-        if encoder.poll() is None:
-            encoder.kill()
-            encoder.wait()
-        reader.join(5)
-        encoder.stderr.close()
-        runner.release(encoder)
-    if written != len(indices):
-        raise FFmpegError("写入帧数与节奏计划不一致。")
+    identity = hashlib.sha256(json.dumps({
+        "document": document, "frames": indices, "width": width, "height": height,
+        "fps": [fps.numerator, fps.denominator], "preset": "veryfast", "crf": 14, "audio": audio_mode,
+    }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+    exporter = FrameExporter(runner, workdir, width=width, height=height, fps=fps, preset="veryfast",
+                             crf=14, total=len(indices), identity=identity, progress=progress)
+    if exporter.resume_from:
+        progress(0.1 + 0.85 * exporter.resume_from / len(indices), f"从第 {exporter.resume_from} 帧继续导出")
+    for chunk in _indexed_frames(runner, source, indices[exporter.resume_from:], width, height, workdir):
+        exporter.write(chunk)
+    video = exporter.finish()
+    mux_mp4(runner, video, audio_file, target, timescale=fps.numerator, audio_rate=AUDIO_RATE, audio_channels=AUDIO_CHANNELS)
     progress(0.98, "正在校验")
     return {
-        "frames": written,
+        "frames": len(indices),
         "width": width,
         "height": height,
         "fps": {"num": fps.numerator, "den": fps.denominator},
@@ -143,4 +119,5 @@ def render(runner, document, probe, source, target, workdir, progress=lambda val
         "operation": document["operation"],
         "firstSourceFrame": indices[0],
         "lastSourceFrame": indices[-1],
+        "resumedFrames": exporter.resume_from,
     }

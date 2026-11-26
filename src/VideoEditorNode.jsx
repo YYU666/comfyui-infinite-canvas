@@ -1,4 +1,5 @@
 import VideoJobStatus, { videoExportLabel } from './VideoJobStatus';
+import { videoExportPreviewSrc } from './video-export-preview.js';
 import React, { useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { Clapperboard, ArrowDownToLine, LoaderCircle, Square, SlidersHorizontal } from 'lucide-react';
@@ -44,7 +45,7 @@ export default function VideoEditorNode({ id, data, actions, title, toolbar }) {
     </div>
     <footer className="video-edit-footer nodrag">
       <button ref={openButton} type="button" data-video-edit-open aria-haspopup="dialog" aria-expanded={open} title="打开时间线" disabled={actions.readOnly} onClick={() => setOpen(true)}><SlidersHorizontal size={13} />编辑视频</button>
-      <VideoJobStatus data={data} running={running} fallback={stale ? '参数已更新 · 待导出' : data.editResultAssetPath ? '结果已导出' : '未导出'} />
+      <VideoJobStatus data={data} running={running} previewSrc={running ? videoExportPreviewSrc('edit', data.videoEditJobId, data.previewFrame) : null} fallback={stale ? '参数已更新 · 待导出' : data.editResultAssetPath ? '结果已导出' : '未导出'} />
       {running
         ? <button className="video-edit-cancel" disabled={actions.readOnly} onClick={() => { if (!actions.readOnly) actions.cancelVideoEdit(id); }}><Square size={12} />取消</button>
         : <button className="video-edit-export" disabled={disabled} onClick={() => actions.generateNode(id)}><ArrowDownToLine size={14} />{videoExportLabel(id, data, '导出')}</button>}

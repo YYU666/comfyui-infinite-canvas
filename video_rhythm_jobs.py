@@ -12,6 +12,7 @@ from pathlib import Path
 from project_store import StoreError
 from video_job_submission import prepared_video_submission, video_submission_fields
 from video_edit_ffmpeg import Cancelled, FFmpegError, Runner, probe, public_probe
+from video_frame_export import cleanup_workdir, load_export_record, write_job_record
 from video_rhythm_document import RhythmDocumentError, normalize_remap_document, normalize_speed_document
 from video_rhythm_ffmpeg import render
 
@@ -38,6 +39,7 @@ class VideoRhythmJobs:
         self.wake = threading.Condition(self.lock)
         self.worker = None
         self.closed = False
+        self._recover()
 
     def replace_store(self, store):
         with self.lock:
@@ -56,6 +58,7 @@ class VideoRhythmJobs:
             for job in self.jobs.values():
                 if job["status"] == "queued":
                     job.update(status="cancelled", stage="已取消")
+                    cleanup_workdir(self.root / job["id"], "cancelled")
             for runner in self.runners.values():
                 runner.cancel()
             self.wake.notify_all()
@@ -150,6 +153,7 @@ class VideoRhythmJobs:
                 raise StoreError("FORBIDDEN", "作业不属于此项目。", 403)
             if job["status"] == "queued":
                 job.update(status="cancelled", stage="已取消")
+                cleanup_workdir(self.root / job["id"], "cancelled")
             elif job["status"] == "running":
                 job["stage"] = "正在取消"
                 runner = self.runners.get(job_id)
@@ -182,6 +186,20 @@ class VideoRhythmJobs:
                 raise StoreError("VIDEO_RHYTHM_NOT_READY", "导出尚未完成。", 409)
             return self.root / job_id / "output.mp4"
 
+    def preview_jpeg(self, job_id):
+        with self.lock:
+            job = self._job(job_id)
+            if job["status"] not in {"queued", "running"}:
+                raise StoreError("NOT_FOUND", "导出完成后不再提供逐帧预览。", 404)
+            path = self.root / job_id / "preview.jpg"
+            try:
+                data = path.read_bytes() if path.is_file() else b""
+            except OSError:
+                data = b""
+        if not data.startswith(b"\xff\xd8") or len(data) > 1_500_000:
+            raise StoreError("NOT_FOUND", "当前还没有可显示的导出帧。", 404)
+        return data
+
     def _next(self):
         with self.lock:
             while True:
@@ -212,13 +230,64 @@ class VideoRhythmJobs:
             self._run(job, runner)
 
     def _progress(self, job):
-        def update(value, stage):
+        def update(value, stage, preview=None):
             with self.lock:
                 if job["status"] == "running":
                     job["progress"] = round(min(max(value, 0), 1), 4)
                     if job["stage"] != "正在取消":
                         job["stage"] = stage
+                    frame = preview.get("frame") if isinstance(preview, dict) else None
+                    if isinstance(frame, int):
+                        job["previewFrame"] = frame
+                        job["previewWidth"] = preview.get("width")
+                        job["previewHeight"] = preview.get("height")
         return update
+
+    def _record(self, job, status, result=None):
+        submission = job.get("_submission")
+        if not isinstance(submission, dict):
+            return
+        write_job_record(self.root / job["id"], {
+            "version": 1, "id": job["id"], "status": status, "projectId": job["projectId"],
+            "nodeId": job["nodeId"], "createdAt": job["createdAt"], "submission": submission,
+            "result": result,
+        })
+
+    def _recover(self):
+        if not self.root.is_dir():
+            return
+        restored = False
+        records = []
+        for directory in self.root.glob("vry_*"):
+            if not directory.is_dir():
+                continue
+            record = load_export_record(directory, JOB_ID)
+            if record is not None:
+                records.append(record)
+        records.sort(key=lambda record: (record["status"] != "running", record.get("createdAt") or 0))
+        for record in records:
+            if record["id"] in self.jobs or len(self.jobs) >= self.max_jobs:
+                continue
+            try:
+                payload = record["submission"]
+                document = self._document(payload)
+                source = self._asset(record["projectId"], payload.get("input"))
+            except (RhythmDocumentError, StoreError, OSError, KeyError, TypeError):
+                cleanup_workdir(self.root / record["id"], "failed")
+                continue
+            job = {"id": record["id"], "projectId": record["projectId"], "nodeId": record["nodeId"],
+                   "progress": 1.0 if record["status"] == "completed" else 0.0, "error": None,
+                   "createdAt": record.get("createdAt") or time.time(), "operation": document["operation"],
+                   "input": payload.get("input"), "_submission": payload, "_document": document, "_source": source}
+            if record["status"] == "completed":
+                job.update(status="completed", stage="已导出", result=record.get("result"))
+            else:
+                job.update(status="queued", stage="正在恢复导出", result=None)
+                restored = True
+            self.jobs[record["id"]] = job
+        if restored and not self.closed:
+            self.worker = threading.Thread(target=self._loop, name="video-rhythm-jobs", daemon=True)
+            self.worker.start()
 
     def _run(self, job, runner):
         workdir = self.root / job["id"]
@@ -226,6 +295,7 @@ class VideoRhythmJobs:
         try:
             info = probe(runner, job["_source"])
             public = public_probe(info)
+            self._record(job, "running")
             target = workdir / "output.part.mp4"
             result = render(runner, job["_document"], info, job["_source"], target, workdir, self._progress(job))
             final = workdir / "output.mp4"
@@ -235,24 +305,27 @@ class VideoRhythmJobs:
                 raise FFmpegError(f"成片校验失败：期望 {result['frames']} 帧，实际 {check['frameCount']} 帧。")
             result["bytes"] = final.stat().st_size
             result["source"] = {"frameCount": public["frameCount"], "fps": public["fps"], "duration": public["duration"]}
+            self._record(job, "completed", result)
             with self.lock:
                 job.update(status="completed", progress=1.0, stage="已导出", result=result)
         except Cancelled:
+            self._record(job, "cancelled")
             with self.lock:
                 job.update(status="cancelled", stage="已取消")
         except (RhythmDocumentError, FFmpegError) as error:
+            self._record(job, "failed")
             with self.lock:
                 job.update(status="failed", stage="导出失败", error=str(error)[:600])
         except Exception as error:
             traceback.print_exc()
+            self._record(job, "failed")
             with self.lock:
                 job.update(status="failed", stage="导出失败", error=f"内部错误：{type(error).__name__}")
         finally:
             with self.lock:
                 self.runners.pop(job["id"], None)
-            for leftover in workdir.glob("*"):
-                if leftover.name != "output.mp4":
-                    leftover.unlink(missing_ok=True)
+                status = job["status"]
+            cleanup_workdir(workdir, status)
 
     def wait(self, job_id, timeout=120):
         deadline = time.time() + timeout
