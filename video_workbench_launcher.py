@@ -50,6 +50,8 @@ from native3d_api import Native3DAPI
 from native3d_jobs import Native3DJobs
 from project_store import ProjectStore
 from queue_api import QueueAPI
+from workbench_models import ModelManager
+from workbench_models_api import ModelManagerAPI
 from workbench_doctor import WorkbenchDoctor
 from workbench_comfy_lifecycle import ComfyLifecycle
 from gpu_lease import GpuLeases
@@ -757,6 +759,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         native3d_api = getattr(self.server, "native3d_api", None)
         if native3d_api and native3d_api.handle_get(self, path):
             return
+        model_api = getattr(self.server, "model_api", None)
+        if model_api and model_api.handle_get(self, path):
+            return
         if self.server.project_api.handle_get(self, path):
             return
         if path != "/api/hardware-metrics":
@@ -930,6 +935,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         native3d_api = getattr(self.server, "native3d_api", None)
         if native3d_api and native3d_api.handle_post(self, path):
             return
+        model_api = getattr(self.server, "model_api", None)
+        if model_api and model_api.handle_post(self, path):
+            return
         if self.server.project_api.handle_post(self, path):
             return
         if path not in {"/api/import-video", "/api/optimize-prompt", "/api/open-file-location"}:
@@ -1005,6 +1013,28 @@ def native3d_busy(server):
         return False
     with jobs.lock:
         return bool(jobs.active) or any(job["status"] in {"queued", "running"} for job in jobs.jobs.values())
+
+
+def resolve_models_dir(root):
+    override = os.environ.get("H3_MODELS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    root_path = Path(root).resolve()
+    comfy_models = root_path / "ComfyUI" / "models"
+    if comfy_models.is_dir() or (root_path / "ComfyUI").is_dir():
+        return comfy_models
+    return root_path / "models"
+
+
+def has_active_model_work(server):
+    if video_busy(server) or native3d_busy(server):
+        return True
+    if getattr(server, "sprite_atlas_api", None) and server.sprite_atlas_api.active_count():
+        return True
+    qm = getattr(server, "queue_manager", None)
+    if qm:
+        return any(job.get("status") in {"queued", "running", "finishing"} for job in qm.snapshot()["jobs"])
+    return False
 
 
 def video_busy(server):
@@ -1122,6 +1152,8 @@ def apply_server_settings(server):
     else:
         server.project_store.defaults = dict(defaults)
     ROOT = Path(config["comfyRoot"]).resolve()
+    if getattr(server, "model_manager", None):
+        server.model_manager.set_models_dir(resolve_models_dir(ROOT), comfy_root=ROOT)
     server.queue_manager.set_concurrency(config["queue"]["concurrency"])
     server.doctor = WorkbenchDoctor(
         HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
@@ -1208,8 +1240,22 @@ def main(argv=None):
                 model_roots=server.settings.data["modelRoots"] or None,
                 secret_provider=lambda: server.art_director_api.redaction_secrets(),
             )
+            server.model_manager = ModelManager(
+                HERE,
+                resolve_models_dir(ROOT),
+                runtime_dir() / "model-manager-state.json",
+                active_jobs_check=lambda: has_active_model_work(server),
+                workbench_version=APP_VERSION,
+                comfy_root=ROOT,
+            )
+            server.model_api = ModelManagerAPI(server.model_manager)
             queue_adapter = ComfyQueueAdapter(COMFY_URL) if enabled else _ComfyDisabled()
-            server.queue_manager = QueueManager(adapter=queue_adapter, concurrency=server.settings.data["queue"]["concurrency"], gpu_leases=gpu_leases)
+            server.queue_manager = QueueManager(
+                adapter=queue_adapter,
+                concurrency=server.settings.data["queue"]["concurrency"],
+                gpu_leases=gpu_leases,
+                on_workflow_used=server.model_manager.record_workflow_usage,
+            )
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
             server.agent_api = AgentAPI(server.project_store, server.queue_manager)
             server.queue_api = QueueAPI(server.queue_manager, lambda: (server.project_store, server.agent_api.canvas))

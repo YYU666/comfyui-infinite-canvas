@@ -187,7 +187,7 @@ class ComfyQueueAdapter:
 
 
 class QueueManager:
-    def __init__(self, path=None, adapter=None, concurrency=1, poll_interval=0.5, job_timeout=60 * 60, gpu_leases=None):
+    def __init__(self, path=None, adapter=None, concurrency=1, poll_interval=0.5, job_timeout=60 * 60, gpu_leases=None, on_workflow_used=None):
         self.path = Path(path or runtime_dir() / "queue.json")
         self.adapter = adapter or ComfyQueueAdapter()
         self.concurrency = self._concurrency(concurrency)
@@ -203,6 +203,7 @@ class QueueManager:
         self._completions = []
         self.gpu_leases = gpu_leases
         self._gpu_grants = {}
+        self.on_workflow_used = on_workflow_used
         self._load()
         self._restore_terminal_gpu()
 
@@ -747,6 +748,11 @@ class QueueManager:
                         grant.acknowledge(prompt_id)
                     else:
                         prompt_id = self.adapter.submit(workflow, job["clientId"])
+                    if self.on_workflow_used and isinstance(workflow, dict):
+                        try:
+                            self.on_workflow_used(workflow)
+                        except Exception:
+                            pass
                     with self._lock:
                         same_attempt = job["attempts"] == submit_attempt
                         needs_cancel = bool(job.get("cancelRequested") or job["status"] in TERMINAL or not same_attempt)
