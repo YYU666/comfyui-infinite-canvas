@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium, samePath } from './test-browser.mjs';
+import { chromium, fixtureCurrentPageCommand, fixtureMuseObjectInfo, samePath } from './test-browser.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const python = process.env.H3_TEST_PYTHON || process.env.PYTHON || 'python';
@@ -47,6 +47,7 @@ async function startUpstream() {
   upstream = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1');
     if (request.method === 'GET' && url.pathname === '/system_stats') return send(response, 200, { devices: [] });
+    if (request.method === 'GET' && url.pathname.startsWith('/object_info')) return send(response, 200, fixtureMuseObjectInfo(url.pathname));
     if (request.method === 'GET' && url.pathname === '/queue') {
       const running = [...upstreamJobs.values()].filter((job) => Date.now() - job.createdAt < holdMs).map((job) => [1, job.id]);
       return send(response, 200, { queue_running: running, queue_pending: [] });
@@ -192,19 +193,17 @@ try {
   await page.getByLabel('刷新项目').click();
   await openProject('M2-后台队列');
   await page.locator('.generator-shell').waitFor();
-  const job = await api('/api/queue', json('POST', {
-    projectId: lifecycle.id, nodeId: generator.id, clientId: 'm2-acceptance', workflow: { 1: { class_type: 'AcceptanceFake', inputs: { seed: 42 } } },
-  }));
-  await waitFor(async () => (await api(`/api/queue/${job.id}`)).status === 'running');
+  const { jobId } = await fixtureCurrentPageCommand(api, lifecycle.id, 'canvas_generate_node', { nodeId: generator.id, wait: false });
+  await waitFor(async () => (await api(`/api/queue/${jobId}`)).status === 'running');
   await waitFor(async () => {
     const document = await api(`/api/projects/${lifecycle.id}`);
     const current = document.canvas.nodes.find((node) => node.id === generator.id);
-    return current?.data.queueJobId === job.id && current?.data.promptId;
+    return current?.data.queueJobId === jobId && current?.data.promptId;
   }, 7000);
   await page.close();
   page = null;
   const finished = await waitFor(async () => {
-    const current = await api(`/api/queue/${job.id}`);
+    const current = await api(`/api/queue/${jobId}`);
     return current.status === 'done' ? current : null;
   }, holdMs + 10000);
   assert.equal(finished.progress, 100);
@@ -218,7 +217,7 @@ try {
   assert.equal(await page.locator('.media-shell img').count(), 1, 'completed job materializes its result after reopening');
   await stopBackend();
   await startBackend(comfyUrl);
-  const recovered = await api(`/api/queue/${job.id}`);
+  const recovered = await api(`/api/queue/${jobId}`);
   assert.equal(recovered.status, 'done');
   assert.equal(recovered.comfyPromptId, finished.comfyPromptId);
   assert.equal(submissions, 1, 'queue restart does not duplicate a completed prompt');

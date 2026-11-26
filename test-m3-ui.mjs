@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
-import { chromium } from './test-browser.mjs';
+import { chromium, fixtureCurrentPageCommand, fixtureMuseObjectInfo } from './test-browser.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const python = process.env.H3_TEST_PYTHON || process.env.PYTHON || 'python';
@@ -17,6 +17,7 @@ const promptTraffic = { received: 0, complete: 0, responded: 0, aborted: 0 };
 const upstream = createServer((request, response) => {
   const url = new URL(request.url, 'http://127.0.0.1');
   const send = (status, body, type = 'application/json') => { response.writeHead(status, { 'Content-Type': type }); response.end(type === 'application/json' ? JSON.stringify(body) : body); };
+  if (url.pathname.startsWith('/object_info')) return send(200, fixtureMuseObjectInfo(url.pathname));
   if (url.pathname === '/prompt') {
     promptTraffic.received += 1;
     const chunks = [];
@@ -26,7 +27,7 @@ const upstream = createServer((request, response) => {
       // Like ComfyUI, consume and parse the POST before acknowledging it. An
       // early response can close a Windows connection while urllib still sends.
       const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      assert.equal(payload.prompt.simulated.class_type, 'M3Test');
+      assert.equal(payload.prompt.save.class_type, 'SaveImage');
       promptTraffic.complete += 1;
       promptTraffic.responded += 1;
       send(200, { prompt_id: simulatedPromptId });
@@ -149,13 +150,16 @@ try {
   }
   assert.equal(doc.canvas.nodes.find((node) => node.id === doc.shots[1].canvasNodeId).data.shotId, 's2');
   const mediaCount = doc.canvas.nodes.filter((node) => node.type === 'media').length;
-  const generation = await api('/api/queue', { method: 'POST', body: JSON.stringify({ workflow: { simulated: { class_type: 'M3Test', inputs: {} } }, projectId, nodeId: doc.shots[1].canvasNodeId, clientId: 'm3-isolated-test' }) });
+  await page.getByRole('button', { name: '关闭创作层', exact: true }).click();
+  const nodeId = doc.shots[1].canvasNodeId;
+  await fixtureCurrentPageCommand(api, projectId, 'canvas_update_node', { nodeId, prompt: '雨夜中的角色定妆图' });
+  const { jobId } = await fixtureCurrentPageCommand(api, projectId, 'canvas_generate_node', { nodeId, wait: false });
   for (let attempt = 0; attempt < 70; attempt += 1) {
     doc = await document(projectId);
     if (doc.shots[1].takes.length === 1) break;
     await sleep(100);
   }
-  const generationState = (await api('/api/queue')).jobs.find((job) => job.id === generation.id);
+  const generationState = (await api('/api/queue')).jobs.find((job) => job.id === jobId);
   assert.deepEqual(promptTraffic, {received: 1, complete: 1, responded: 1, aborted: 0}, 'one complete synthetic submission');
   assert.equal(doc.shots[1].takes.length, 1, `generated result enters the bound shot take stack: ${JSON.stringify({status:generationState?.status,error:generationState?.error,promptId:generationState?.comfyPromptId,promptTraffic})}`);
   assert.equal(doc.shots[1].takes[0].recipe.output.filename, 'H3_Image_M3_simulated.png');
