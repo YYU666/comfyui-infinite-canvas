@@ -736,6 +736,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   };
   const [nodeMenu, setNodeMenu] = useState(null);
   const [paintEditorId, setPaintEditorId] = useState(null);
+  const [paintLan, setPaintLan] = useState(false);
   const [h3Comparison, setH3Comparison] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const previewCloseRef = useRef(null);
@@ -851,6 +852,15 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       },
     });
   }, [project.readOnly]);
+  const persistPaintProject = useCallback(async () => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try { await persistProject(); return; }
+      catch (error) {
+        if (error?.code !== 'SAVE_DEFERRED' || attempt === 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }, [persistProject]);
   const retryProjectSave = useCallback(() => retryCurrentProjectSave({
     getContext: () => ({ projectId: projectRef.current.id, readOnly: projectRef.current.readOnly,
       switching: switchingRef.current, controller: autoSaveRef.current, revision: revisionRef.current }),
@@ -2672,9 +2682,9 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     };
     data.paintSignature = paintSignature(data);
     flushSync(() => updateNode(nodeId, data));
-    await persistProject();
+    await persistPaintProject();
     return data;
-  }, [persistProject, saveCanvasAsset, updateNode]);
+  }, [persistPaintProject, saveCanvasAsset, updateNode]);
   const extractPaintLayer = useCallback(async (nodeId, { blob, mode, title }) => {
     if (projectRef.current.readOnly || switchingRef.current) throw new Error('当前画布不可编辑。');
     const source = nodesRef.current.find((item) => item.id === nodeId);
@@ -2692,10 +2702,10 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       return { ok: true, assetPath: result.asset.path };
     }, id);
     if (!saved?.ok) throw new Error(saved?.error?.message || '拆出图层失败。');
-    await persistProject();
+    await persistPaintProject();
     return id;
-  }, [addNode, persistProject, saveCanvasAsset, setNodes]);
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, openPaintEditor: setPaintEditorId, savePaintDocument, extractPaintLayer, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly, savePaintDocument, extractPaintLayer]);
+  }, [addNode, persistPaintProject, saveCanvasAsset, setNodes]);
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, openPaintEditor: (id) => { setPaintLan(false); setPaintEditorId(id); }, openPaintLan: (id) => { setPaintEditorId(id); setPaintLan(true); }, savePaintDocument, extractPaintLayer, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly, savePaintDocument, extractPaintLayer]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -3091,7 +3101,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         if (source.type === 'imageProcess' && source.data.processedUrl) return { url: source.data.processedUrl };
         if (source.type === 'media' && source.data.kind === 'image' && source.data.url) return { url: source.data.url };
         return null;
-      })()} readOnly={project.readOnly} onClose={() => setPaintEditorId(null)} onSave={(payload) => context.savePaintDocument(paintEditorId, payload)} onExtract={(payload) => context.extractPaintLayer(paintEditorId, payload)} />}
+      })()} readOnly={project.readOnly} lanRequest={paintLan} onClose={() => { setPaintEditorId(null); setPaintLan(false); }} onSave={(payload) => context.savePaintDocument(paintEditorId, payload)} onExtract={(payload) => context.extractPaintLayer(paintEditorId, payload)} />}
     </div>
   </Native3DContext.Provider></NodeContext.Provider></CanvasPreviewTier.Provider>;
 }

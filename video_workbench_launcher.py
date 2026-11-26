@@ -47,6 +47,7 @@ from art_director import ArtDirectorAPI
 from pureref_sessions import PureRefSessions
 from sprite_atlas import SpriteAtlasAPI
 from paint_brush_api import PaintBrushAPI
+from paint_lan_bridge import LanBridge
 from native3d_api import Native3DAPI
 from native3d_jobs import Native3DJobs
 from project_store import ProjectStore
@@ -255,6 +256,11 @@ def shutdown_workbench(server, *, preserve_comfy=False):
             server.pureref_sessions.close()
         except Exception:
             LOGGER.exception("关闭 PureRef 会话失败。")
+    if server is not None and getattr(server, "paint_lan_bridge", None):
+        try:
+            server.paint_lan_bridge.stop()
+        except Exception:
+            LOGGER.exception("关闭局域网画板失败。")
     if server is not None and hasattr(server, "sprite_atlas_api"):
         try:
             server.sprite_atlas_api.close()
@@ -692,6 +698,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith('/api/paint/') and getattr(self.server, 'paint_brush_api', None) and self.server.paint_brush_api.handle(self, "GET", path):
             return
+        if path.startswith('/api/paint/lan/') and getattr(self.server, 'paint_lan_bridge', None) and self.server.paint_lan_bridge.handle_control(self, "GET", path):
+            return
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "GET", path):
             return
         if path == "/api/thumbnails":
@@ -830,6 +838,8 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if path.startswith('/api/sprite-atlas/') and getattr(self.server, 'sprite_atlas_api', None) and self.server.sprite_atlas_api.handle(self, "POST", path):
             return
         if path.startswith('/api/paint/') and getattr(self.server, 'paint_brush_api', None) and self.server.paint_brush_api.handle(self, "POST", path):
+            return
+        if path.startswith('/api/paint/lan/') and getattr(self.server, 'paint_lan_bridge', None) and self.server.paint_lan_bridge.handle_control(self, "POST", path):
             return
         if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "POST", path):
             return
@@ -1213,6 +1223,7 @@ def main(argv=None):
             server.pureref_sessions = PureRefSessions(server.project_store)
             server.sprite_atlas_api = SpriteAtlasAPI(server.project_store, runtime_dir() / "sprite-atlas")
             server.paint_brush_api = PaintBrushAPI(DATA_DIR / "paint-brushes")
+            server.paint_lan_bridge = LanBridge(dist_dir)
             server.art_director_api = ArtDirectorAPI(server.project_store)
             gpu_leases = GpuLeases() if (os.environ.get("H3_WORKBENCH_TEST_MODE") != "1"
                                                or os.environ.get("H3_GPU_LEASES") == "1") else None

@@ -34,6 +34,7 @@ const suites = {
     'test-paint-selection.mjs',
     'test-paint-connections.mjs',
     'test-paint-abr-parser.mjs',
+    'test-paint-qr.mjs',
     'test-image-process-runtime.mjs',
     'test-api.mjs',
     'test-upload-identity.mjs',

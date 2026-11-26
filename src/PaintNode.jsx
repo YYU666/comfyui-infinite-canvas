@@ -20,7 +20,7 @@ export default function PaintNode({ id, data, actions, title, toolbar }) {
     <p className="paint-summary" data-testid="paint-summary">{width}×{height} · {layers}/12 · {mode}</p>
     <div className="paint-actions nodrag nopan">
       <button type="button" data-testid="paint-open" onClick={() => actions.openPaintEditor(id)}>进入画板</button>
-      <button type="button" data-testid="paint-push" disabled title="局域网伴侣功能待 M3 接入">推到平板</button>
+      <button type="button" data-testid="paint-push" onClick={() => actions.openPaintLan?.(id)} title="连接平板（局域网）">推到平板</button>
     </div>
   </div>;
 }

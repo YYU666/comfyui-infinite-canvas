@@ -14,6 +14,7 @@ import {
   transformBuffer, sampleColor, featherSelection, growSelection,
 } from './paint-engine.js';
 import { parseAbr } from './paint-abr-parser.js';
+import { qrSvg } from './paint-qr.js';
 import { builtinBrushes, brushState, IMPORT_BRUSH_PARAMS } from './paint-brushes.js';
 
 const TOOLS = [
@@ -45,6 +46,14 @@ async function imageToBuffer(url) {
   return buffer;
 }
 
+async function blobToBase64(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let text = '';
+  const chunk = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunk) text += String.fromCharCode(...bytes.subarray(index, index + chunk));
+  return btoa(text);
+}
+
 export function bufferToPngBlob(buffer) {
   const canvas = document.createElement('canvas');
   canvas.width = buffer.width;
@@ -62,7 +71,7 @@ function paintPoint(event, canvas, flip) {
   return { x, y, pressure: event.pointerType === 'mouse' ? 1 : pressure, pointerType: event.pointerType || 'mouse', tiltX: event.tiltX || 0, tiltY: event.tiltY || 0 };
 }
 
-export default function PaintEditor({ node, baseImage, swatches = [], onClose, onSave, onExtract, readOnly = false }) {
+export default function PaintEditor({ node, baseImage, swatches = [], onClose, onSave, onExtract, readOnly = false, lanRequest = false }) {
   const initial = normalizePaintData(node.data);
   const [doc, setDoc] = useState(initial);
   const [tool, setTool] = useState('brush');
@@ -70,6 +79,9 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
   const [brush, setBrush] = useState(() => brushState(builtinBrushes()[0]));
   const [library, setLibrary] = useState(() => builtinBrushes());
   const abrRef = useRef(null);
+  const [lan, setLan] = useState(null);
+  const [lanHost, setLanHost] = useState('');
+  const lanStarted = useRef(false);
   const [color, setColor] = useState('#111111');
   const [background, setBackground] = useState('#ffffff');
   const [selection, setSelection] = useState(null);
@@ -375,7 +387,7 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
   const onPointerDown = (event) => {
     if (readOnly) return;
     const canvas = canvasRef.current;
-    canvas.setPointerCapture?.(event.pointerId);
+    try { canvas.setPointerCapture?.(event.pointerId); } catch { /* synthetic pointer events */ }
     pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pointersRef.current.size >= 2 || spaceRef.current) {
       drawRef.current = { kind: 'pan', x: event.clientX, y: event.clientY, pan: { ...pan } };
@@ -522,12 +534,76 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
     } finally { setSaving(false); }
   };
 
+  const applyRemoteStroke = (stroke) => {
+    const buffer = buffersRef.current.get(stroke.layerId);
+    if (!buffer || !stroke.points?.length) return;
+    const preset = library.find((item) => item.id === stroke.brushId);
+    const remoteBrush = { ...(preset ? brushState(preset) : brushRef.current), ...(stroke.params || {}), stamp: preset?.stamp || brushRef.current.stamp || null };
+    const entry = stroke.tool === 'eraser'
+      ? eraseStroke(buffer, stroke.points, remoteBrush, { layerId: stroke.layerId })
+      : applyStroke(buffer, stroke.points, remoteBrush, stroke.color || '#111111', { layerId: stroke.layerId, blendMode: remoteBrush.blendMode || 'normal' });
+    commitPixels(entry);
+  };
+
+  const connectLan = async () => {
+    if (readOnly) return;
+    const layers = [];
+    for (const layer of docRef.current.layers) {
+      const buffer = buffersRef.current.get(layer.id);
+      layers.push({ id: layer.id, name: layer.name, visible: layer.visible, opacity: layer.opacity, pngBase64: buffer ? await blobToBase64(await bufferToPngBlob(buffer)) : '' });
+    }
+    const response = await fetch('/api/paint/lan/start', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodeId: node.id, paper: docRef.current.paper, activeLayerId: docRef.current.activeLayerId, layers, brushes: library.map((item) => ({ id: item.id, name: item.name })), bindHost: '0.0.0.0' }),
+    });
+    const payload = await response.json();
+    if (!response.ok) { setMessage(payload.message || '无法开启局域网画板。'); return; }
+    setLan(payload);
+    setLanHost(payload.hosts?.[0]?.address || '127.0.0.1');
+    setMessage('局域网画板已开启，等待平板配对。');
+  };
+
+  useEffect(() => {
+    if (!lanRequest || lanStarted.current) return;
+    lanStarted.current = true;
+    connectLan();
+  }, [lanRequest]);
+
+  useEffect(() => {
+    if (!lan?.running) return undefined;
+    let stop = false;
+    const timer = setInterval(async () => {
+      try {
+        const response = await fetch('/api/paint/lan/poll', { credentials: 'same-origin' });
+        if (!response.ok || stop) return;
+        const payload = await response.json();
+        for (const stroke of payload.strokes || []) applyRemoteStroke(stroke);
+        for (const command of payload.commands || []) {
+          if (command.type === 'undo') undo();
+          else if (command.type === 'redo') redo();
+        }
+        if ((payload.strokes || []).length) {
+          clearTimeout(saveTimer.current);
+          saveTimer.current = setTimeout(() => save(), 700);
+        }
+      } catch { /* the companion can reconnect on the next poll */ }
+    }, 400);
+    return () => { stop = true; clearInterval(timer); };
+  }, [lan?.running]);
+
+  const saveTimer = useRef(null);
+  const lanUrl = lan?.running ? `http://${lanHost || '127.0.0.1'}:${lan.port}/companion?code=${lan.code}` : '';
+
   const extract = async (mode) => {
-    const layer = activeLayer();
-    const buffer = buffersRef.current.get(layer.id);
-    const blob = await bufferToPngBlob(mode === 'mask' ? toMask(buffer) : buffer);
-    await onExtract({ blob, mode, title: layer.name });
-    setMessage(mode === 'mask' ? '已拆出黑白遮罩节点' : '已拆出透明图层节点');
+    try {
+      const layer = activeLayer();
+      const buffer = buffersRef.current.get(layer.id);
+      const blob = await bufferToPngBlob(mode === 'mask' ? toMask(buffer) : buffer);
+      await onExtract({ blob, mode, title: layer.name });
+      setMessage(mode === 'mask' ? '已拆出黑白遮罩节点' : '已拆出透明图层节点');
+    } catch (error) {
+      setMessage(error.message || '拆出图层失败');
+    }
   };
 
   const hsv = rgbToHsv(...parseColor(color));
@@ -631,7 +707,19 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       <button type="button" data-testid="paint-extract-mask" onClick={() => extract('mask')}>拆出为黑白遮罩</button>
       <button type="button" data-testid="paint-fill-mask" onClick={() => selection && commitPixels(fillColor(activeBuffer(), '#ffffff', selection, false))}>当前选区一键填白生成遮罩</button>
       <button type="button" data-testid="paint-transform-flip" onClick={() => commitPixels(transformBuffer(activeBuffer(), selectionRef.current, { flipH: true }))}>水平翻转像素</button>
-      <button type="button" data-testid="paint-push" disabled title="局域网伴侣功能待 M3 接入">推到平板</button>
+      <button type="button" data-testid="paint-lan-open" onClick={connectLan}>连接平板（局域网）</button>
+      {lan?.running && <aside className="paint-lan" data-testid="paint-lan-card">
+        <strong>局域网配对</strong>
+        <div data-testid="paint-lan-qr" dangerouslySetInnerHTML={{ __html: qrSvg(lanUrl, 3) }} />
+        <b data-testid="paint-lan-code">{lan.code}</b>
+        <a data-testid="paint-lan-link" href={lanUrl}>{lanUrl}</a>
+        <label>网卡<select data-testid="paint-lan-host" value={lanHost} onChange={(event) => setLanHost(event.target.value)}>
+          {(lan.hosts?.length ? lan.hosts : [{ name: '本机预览', address: '127.0.0.1' }]).map((item) => <option key={item.address} value={item.address}>{item.name} · {item.address}</option>)}
+        </select></label>
+        <p>若平板打不开，请在 Windows 防火墙允许这个本地端口，或把网络改成专用网络。主工作台仍然只监听 127.0.0.1。</p>
+        <button type="button" data-testid="paint-lan-save" onClick={save}>同步保存到画布</button>
+        <button type="button" data-testid="paint-lan-stop" onClick={async () => { await fetch('/api/paint/lan/stop', { method: 'POST', credentials: 'same-origin' }); setLan(null); }}>断开平板连接</button>
+      </aside>}
     </aside>
   </div>, document.body);
 }
