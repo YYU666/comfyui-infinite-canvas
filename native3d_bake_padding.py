@@ -38,7 +38,10 @@ def freeze_padding_reuse(manager,job,directory):
     for prior in candidates:
         entries={e.get('name'):e for e in prior.get('result',{}).get('files',[])}
         if not all(name in entries and entries[name].get('sha256') for name in FILES):continue
-        names = FILES + (('curvature.png',) if entries.get('curvature.png',{}).get('sha256') else ())
+        curvature = entries.get('curvature.png', {}).get('sha256')
+        if prior['result']['metadata']['bake'].get('curvature') and not curvature:
+            continue  # A modern receipt must retain its declared curvature or run a fresh bake.
+        names = FILES + (('curvature.png',) if curvature else ())
         paths={name:manager._safe_file(prior['id'],name) for name in names}
         if any(digest(paths[n])!=entries[n]['sha256'] for n in names):raise ValueError('Prior bake artifact changed; padding reuse refused')
         folder=Path(directory)/'bake-padding-source';folder.mkdir()
@@ -80,22 +83,82 @@ def repad_arrays(channels,coverage,hits,padding):
         result[name]=out
     return result,int(changed.sum())
 
-def replace_glb_images(source,target,replacements):
-    """Repack buffer views; all non-image bytes and all accessor data exact."""
+def _material_image_replacements(document, slot_bytes):
+    # A glTF texture/image can be shared by several material slots. Preserve
+    # unmodified slots and clone only when those sharing it need different bytes.
+    material, = document['materials']
+    pbr = material['pbrMetallicRoughness']
+    slots = {'baseColorTexture': pbr.get('baseColorTexture'),
+             'metallicRoughnessTexture': pbr.get('metallicRoughnessTexture'),
+             'occlusionTexture': material.get('occlusionTexture'),
+             'normalTexture': material.get('normalTexture'),
+             'emissiveTexture': material.get('emissiveTexture')}
+    if any(name not in slots or not isinstance(slots[name], dict) for name in slot_bytes):
+        raise ValueError('Cached bake PBR channel missing')
+    textures, images = document['textures'], document['images']
+    groups = {}
+    for name, texture in slots.items():
+        if isinstance(texture, dict):
+            index = texture['index']
+            image = textures[index]['source']
+            groups.setdefault(image, {}).setdefault(slot_bytes.get(name), []).append((texture,index))
+    replacements = {}
+    for image, data_groups in groups.items():
+        for number, data in enumerate(sorted(data_groups, key=lambda blob: blob is not None)):
+            destination = image
+            if number:
+                destination = len(images)
+                images.append(dict(images[image]))
+                texture_ids = {}
+                for info, original in data_groups[data]:
+                    replacement = texture_ids.get(original)
+                    if replacement is None:
+                        replacement = texture_ids[original] = len(textures)
+                        textures.append({**textures[original], 'source': destination})
+                    info['index'] = replacement
+            if data is not None:
+                replacements[destination] = data
+    return replacements
+
+
+def replace_glb_images(source,target,replacements=None,*,material_slots=None):
+    """Repack embedded images without changing any original non-image accessor data."""
     raw=Path(source).read_bytes()
     if raw[:4]!=b'glTF' or struct.unpack_from('<I',raw,4)[0]!=2:raise ValueError('Expected GLB2')
     jslen,jstype=struct.unpack_from('<II',raw,12);doc=json.loads(raw[20:20+jslen]);offset=20+jslen
     binlen,bintype=struct.unpack_from('<II',raw,offset)
     if jstype!=0x4e4f534a or bintype!=0x004e4942 or len(doc.get('buffers',[]))!=1:raise ValueError('Unsupported cached GLB chunks')
     binary=raw[offset+8:offset+8+binlen];views=doc.get('bufferViews',[]);replace_views={}
-    for image_index,data in replacements.items():
-        item=doc['images'][image_index]
-        if 'bufferView' not in item:raise ValueError('Cached image is not embedded')
-        view=int(item['bufferView'])
-        if view in replace_views and replace_views[view]!=data:raise ValueError('Conflicting shared image replacements')
-        replace_views[view]=data;item['mimeType']='image/png'
-    for accessor in doc.get('accessors',[]):
-        if accessor.get('bufferView') in replace_views:raise ValueError('Image buffer aliases geometry')
+    if material_slots is not None:
+        if replacements is not None:
+            raise ValueError('Use either material slots or image indices')
+        replacements = _material_image_replacements(doc, material_slots)
+    images = doc.get('images', [])
+    original_views = set()
+    for index in replacements:
+        if 'bufferView' not in images[index]:
+            raise ValueError('Cached image is not embedded')
+        original_views.add(images[index]['bufferView'])
+    if any(accessor.get('bufferView') in original_views for accessor in doc.get('accessors', [])):
+        raise ValueError('Image buffer aliases geometry')
+
+    groups = {}
+    for index, image in enumerate(images):
+        view = image.get('bufferView')
+        if view in original_views:
+            groups.setdefault(view, {}).setdefault(replacements.get(index), []).append(image)
+    for view, data_groups in groups.items():
+        for number, data in enumerate(sorted(data_groups, key=lambda blob: blob is not None)):
+            target_view = view
+            if number:
+                target_view = len(views)
+                views.append(dict(views[view]))
+            if data is not None:
+                replace_views[target_view] = data
+            for image in data_groups[data]:
+                image['bufferView'] = target_view
+                if data is not None:
+                    image['mimeType'] = 'image/png'
     parts=[];cursor=0;preserved=[]
     for index,view in enumerate(views):
         if view.get('buffer',0)!=0:raise ValueError('External GLB buffer unsupported')
@@ -128,17 +191,19 @@ def derive_padding(context,request,output):
     if invalid!=prior['sourceMaterialTransfer'].get('projectedNormalInvalidTexels'):raise ValueError('Padding normal-valid mask disagrees with shading evidence')
     channels,changed=repad_arrays(channels,masks['coverage'],masks['hits'],request['parameters']['padding'])
     for name,pixel in {**channels,**masks}.items():Image.fromarray(pixel).save(out/(name+'.png'))
-    mr=np.zeros((resolution,resolution,3),np.uint8);mr[:,:,1]=channels['roughness'];mr[:,:,2]=channels['metallic'];Image.fromarray(mr).save(out/'metallic-roughness.png')
-    raw=Path(context['files']['model.glb']['path']).read_bytes();length=struct.unpack_from('<I',raw,12)[0];doc=json.loads(raw[20:20+length]);materials=doc.get('materials',[])
-    if len(materials)!=1:raise ValueError('Padding reuse requires one exported bake PBR material')
-    mat=materials[0];mapping={'basecolor':mat.get('pbrMetallicRoughness',{}).get('baseColorTexture'),'metallic-roughness':mat.get('pbrMetallicRoughness',{}).get('metallicRoughnessTexture'),'normal':mat.get('normalTexture'),'ao':mat.get('occlusionTexture')}
-    replacements={}
-    for name,texture in mapping.items():
-        if not isinstance(texture,dict):raise ValueError('Cached bake PBR channel missing')
-        index=doc['textures'][texture['index']]['source'];data=(out/(name+'.png')).read_bytes()
-        if index in replacements and replacements[index]!=data:raise ValueError('Cached bake shared images are incompatible')
-        replacements[index]=data
-    proof=replace_glb_images(context['files']['model.glb']['path'],out/'model.glb',replacements);shutil.copyfile(out/'model.glb',out/'proxy.glb')
+    from native3d_material_atlas import shares_orm_storage, write_packed_maps
+    from native3d_glb_layout import read_glb_document
+    write_packed_maps(out, channels['ao'], channels['roughness'], channels['metallic'])
+    source = Path(context['files']['model.glb']['path'])
+    doc = read_glb_document(source)
+    material, = doc['materials']
+    combined = shares_orm_storage(doc, material)
+    names = {'baseColorTexture':'basecolor', 'normalTexture':'normal',
+             'occlusionTexture':'orm' if combined else 'ao',
+             'metallicRoughnessTexture':'orm' if combined else 'metallic-roughness'}
+    outputs = {name: (out / (name+'.png')).read_bytes() for name in set(names.values())}
+    proof = replace_glb_images(source, out/'model.glb', material_slots={slot: outputs[name] for slot, name in names.items()})
+    shutil.copyfile(out/'model.glb',out/'proxy.glb')
     report=copy.deepcopy(prior);report['padding']=request['parameters']['padding']
     report['bakeSettings'].update(padding=report['padding'],paddingRequested=report['padding'])
     report['dilation']={**report.get('dilation',{}),'pixels':report['padding'],'requestedPixels':report['padding'],

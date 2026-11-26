@@ -9,6 +9,7 @@ No Blender, ComfyUI, network or shell is involved in conversion.
 from pathlib import Path
 import json
 import os
+import re
 import subprocess
 import hashlib
 import shutil
@@ -127,12 +128,20 @@ int main(int argc,char** argv) { try {
  }
  scene=importer.ApplyPostProcessing(aiProcess_PreTransformVertices);
  require(scene!=nullptr,"Transform baking failed");
- // FBX global metadata is explicit: metre geometry, Y up, right handed.
+ // After PreTransformVertices the mesh already contains the baked world
+ // transforms. Emit both the coordinates and the metadata in centimetres:
+ // importers assuming default Unreal units receive the correct physical size.
  if(!fromFbx) {
+  aiMesh* baked=scene->mMeshes[0];
+  for(unsigned i=0;i<baked->mNumVertices;i++) {
+   auto& p=baked->mVertices[i]; p*=ai_real(100);
+   require(std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z),"Centimetre conversion overflow");
+  }
+  unit=.01;
   aiScene* writable=const_cast<aiScene*>(scene);
   delete writable->mMetaData; writable->mMetaData=new aiMetadata();
-  writable->mMetaData->Add("UnitScaleFactor",100.0);
-  writable->mMetaData->Add("OriginalUnitScaleFactor",100.0);
+  writable->mMetaData->Add("UnitScaleFactor",1.0);
+  writable->mMetaData->Add("OriginalUnitScaleFactor",1.0);
   writable->mMetaData->Add("UpAxis",1); writable->mMetaData->Add("UpAxisSign",1);
   writable->mMetaData->Add("CoordAxis",0); writable->mMetaData->Add("CoordAxisSign",1);
   writable->mMetaData->Add("FrontAxis",2); writable->mMetaData->Add("FrontAxisSign",1);
@@ -146,6 +155,9 @@ int main(int argc,char** argv) { try {
 '''
 
 
+ADAPTER_SOURCE_SHA256 = hashlib.sha256(CXX_SOURCE.encode('utf-8')).hexdigest()
+
+
 def converter_path():
     configured = os.environ.get('NATIVE3D_FBX_CONVERTER')
     if configured:
@@ -156,14 +168,56 @@ def converter_path():
     return CACHE / 'tool/build/Release/native3d_fbx_tool.exe'
 
 
-def capabilities():
+def _binary_digest(path):
+    h = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def verified_converter():
     tool = converter_path()
-    available = tool.is_file() and (tool.parent / 'assimp-vc143-mt.dll').is_file()
+    dependencies = (tool, tool.parent / 'assimp-vc143-mt.dll')
+    if not all(path.is_file() and 0 < path.stat().st_size <= 64 * 1024**2 for path in dependencies):
+        raise RuntimeError('Pinned local FBX converter executable or Assimp DLL is missing')
+    receipt = tool.parent / 'receipt.json'
+    if not receipt.is_file() and tool.parent.name == 'Release' and tool.parents[1].name == 'build' and tool.parents[2].name == 'tool':
+        # Existing pinned builds wrote the installer receipt at the cache root.
+        receipt = tool.parents[3] / 'receipt.json'
+    try:
+        if not 0 < receipt.stat().st_size <= 65536:
+            raise ValueError('Missing or oversized FBX provisioning receipt')
+        record = json.loads(receipt.read_text(encoding='utf-8'))
+        declared = record['binaries']
+        if ((record.get('sourceURL'), record.get('sourceSHA256'), record.get('version'), record.get('license'))
+                != (SOURCE_URL, SOURCE_SHA256, '5.4.3', 'BSD-3-Clause')):
+            raise ValueError('Unexpected FBX build source, version or license')
+        if record.get('adapterSourceSHA256') != ADAPTER_SOURCE_SHA256:
+            raise ValueError('FBX adapter revision changed; provision the signed-off centimetre build')
+        for binary in dependencies:
+            digest = declared.get(binary.name)
+            if not isinstance(digest, str) or not re.fullmatch(r'[a-f0-9]{64}', digest) or _binary_digest(binary) != digest:
+                raise ValueError('FBX dependency digest mismatch: ' + binary.name)
+    except (OSError, ValueError, AttributeError, KeyError, TypeError) as exc:
+        raise RuntimeError('Pinned FBX dependency validation failed: ' + str(exc)) from exc
+    return tool, {name: declared[name] for name in (dependencies[0].name, dependencies[1].name)}
+
+
+def capabilities():
+    try:
+        _, binaries = verified_converter()
+        reason = ''
+    except (OSError, RuntimeError, ValueError) as exc:
+        binaries, reason = {}, str(exc)
+    available = not reason
     return {'available': available, 'ready': available,
-            'reason': '' if available else 'Pinned local FBX converter executable or Assimp DLL is missing',
+            'reason': reason, 'sourceSHA256': SOURCE_SHA256, 'binarySHA256': binaries,
             'converter': 'Assimp 5.4.3',
             'license': 'BSD-3-Clause', 'scope': 'static single mesh, one material, one UV channel; embedded PNG/JPEG base color and normal maps; no external/PBR texture channels',
-            'units': 'metres', 'axes': 'right handed Y up', 'transforms': 'baked',
+            'units': 'metres in GLB; centimetre coordinates and UnitScaleFactor=1 in newly exported FBX',
+            'axes': 'right handed Y up', 'transforms': 'baked',
+            'adapterSourceSHA256': ADAPTER_SOURCE_SHA256,
             'fullMaterialFidelity': False, 'defaultMaterialPolicy': 'reject_lossy',
             'materialLimitation': 'FBX material scalar/shader semantics are not preserved. Default export rejects materials; geometry_only explicitly strips them.'}
 
@@ -217,10 +271,12 @@ target_link_libraries(native3d_fbx_tool PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../
     shutil.copy2(build / 'bin/Release/assimp-vc143-mt.dll', output)
     shutil.copy2(source / 'LICENSE', CACHE / 'ASSIMP-LICENSE.txt')
     receipt = {'sourceURL': SOURCE_URL, 'sourceSHA256': SOURCE_SHA256, 'version': '5.4.3',
-               'license': 'BSD-3-Clause', 'commands': commands,
+               'license': 'BSD-3-Clause', 'commands': commands, 'adapterSourceSHA256': ADAPTER_SOURCE_SHA256,
                'binaries': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in
                             [output / 'native3d_fbx_tool.exe', output / 'assimp-vc143-mt.dll']}}
-    (CACHE / 'receipt.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
+    encoded = json.dumps(receipt, indent=2)
+    (CACHE / 'receipt.json').write_text(encoded, encoding='utf-8')
+    (output / 'receipt.json').write_text(encoded, encoding='utf-8')
     return receipt
 
 
@@ -235,9 +291,7 @@ def _convert(source, destination, mode, timeout=120):
         raise ValueError('Unexpected conversion output extension')
     if not source.is_file() or not 0 < source.stat().st_size <= MAX_BYTES:
         raise ValueError('FBX conversion input missing, empty or above 512 MiB')
-    tool = converter_path()
-    if not tool.is_file():
-        raise RuntimeError('Pinned local Assimp FBX converter is not provisioned; FBX unavailable')
+    tool, binary_digests = verified_converter()
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Restrict plugin/DLL lookup to the pinned local converter and Windows.
     env = dict(os.environ)
@@ -275,6 +329,7 @@ def _convert(source, destination, mode, timeout=120):
         finally:
             publication.unlink(missing_ok=True)
         receipt['pathHandling']='Unicode-safe Python staging; ASCII relative converter filenames; atomic no-overwrite publication'
+        receipt['dependencySHA256'] = binary_digests
         return receipt
 
 

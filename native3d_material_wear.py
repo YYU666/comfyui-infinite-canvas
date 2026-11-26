@@ -120,26 +120,26 @@ def apply_wear(source, output, snapshot, parameters):
     result_color = np.rint(np.clip(rgb, 0, 1)*255).astype('uint8')
     roughness = read('roughness', 'L')
     metallic = read('metallic', 'L')
-    orm = read('metallic-roughness', 'RGB')
+    ao = read('ao', 'L')
     edge_roughness = parameters['edgeRoughness']*255
-    orm[:, :, 1] = np.rint(roughness+mask*(edge_roughness-roughness)).astype('uint8')
-    orm[:, :, 2] = np.rint(metallic+mask*parameters['metalExposure']*(255-metallic)).astype('uint8')
-    for name, data in {'basecolor': result_color, 'roughness': orm[:, :, 1], 'metallic': orm[:, :, 2],
-                       'metallic-roughness': orm, 'edge-wear': np.rint(mask*255).astype('uint8')}.items():
+    roughness = np.rint(roughness+mask*(edge_roughness-roughness)).astype('uint8')
+    metallic = np.rint(metallic+mask*parameters['metalExposure']*(255-metallic)).astype('uint8')
+    from native3d_material_atlas import shares_orm_storage, write_packed_maps
+    write_packed_maps(output, ao, roughness, metallic)
+    for name, data in {'basecolor': result_color, 'roughness': roughness, 'metallic': metallic,
+                       'edge-wear': np.rint(mask*255).astype('uint8')}.items():
         Image.fromarray(data).save(output/(name+'.png'))
     for name in ('normal', 'ao', 'curvature'):
         read(name, 'RGB' if name=='normal' else 'L')
         shutil.copyfile(channels[name]['file'], output/(name+'.png'))
     doc = read_glb_document(source)
     mat, = doc['materials']
-    pbr = mat['pbrMetallicRoughness']
-    replacements = {
-        doc['textures'][pbr[slot]['index']]['source']: (output/(name+'.png')).read_bytes()
-        for slot, name in (('baseColorTexture', 'basecolor'), ('metallicRoughnessTexture', 'metallic-roughness'))
-    }
-    if len(replacements) != 2:
-        raise ValueError('烘焙模型的底色与粗糙度/金属度必须使用独立图像。')
-    proof = replace_glb_images(source, output/'model.glb', replacements)
+    combined = shares_orm_storage(doc, mat)
+    mr = (output/('orm.png' if combined else 'metallic-roughness.png')).read_bytes()
+    replacements = {'baseColorTexture': (output/'basecolor.png').read_bytes(), 'metallicRoughnessTexture': mr}
+    if combined:
+        replacements['occlusionTexture'] = mr
+    proof = replace_glb_images(source, output/'model.glb', material_slots=replacements)
     shutil.copyfile(output/'model.glb', output/'proxy.glb')
     hits = read('hits', 'L') > 0
     return {'bakeJobId': snapshot['bakeJobId'], 'bakedModelSha256':snapshot['modelSha256'],

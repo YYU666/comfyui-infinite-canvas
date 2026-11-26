@@ -361,8 +361,20 @@ def read_mesh(path):
             for primitive in mesh.get('primitives', []):
                 if primitive.get('mode', 4) != 4 or primitive.get('targets'):
                     raise ValueError('Only static triangle primitives supported')
-                source_colors |= 'COLOR_0' in primitive.get('attributes', {})
-                source_uv |= 'TEXCOORD_0' in primitive.get('attributes', {})
+                attributes = primitive.get('attributes', {})
+                if 'COLOR_0' in attributes:
+                    accessors = doc.get('accessors', [])
+                    index = attributes['COLOR_0']
+                    if type(index) is not int or not 0 <= index < len(accessors):
+                        raise ValueError('GLB COLOR_0 has an invalid accessor.')
+                    colors = accessors[index]
+                    if (colors.get('type') not in ('VEC3', 'VEC4') or colors.get('componentType') != 5121
+                            or colors.get('normalized') is not True or 'sparse' in colors):
+                        raise ValueError('GLB COLOR_0 requires dense normalized unsigned-byte RGB or RGBA.')
+                    if 'material' in primitive:
+                        raise ValueError('GLB COLOR_0 combined with a material is outside the vertex-color pilot.')
+                    source_colors = True
+                source_uv |= 'TEXCOORD_0' in attributes
                 source_tangents |= 'TANGENT' in primitive.get('attributes', {})
                 source_normals |= 'NORMAL' in primitive.get('attributes', {})
     scene = trimesh.load(path, force='scene', process=False)
@@ -713,18 +725,17 @@ def bake(low, high, out, params, progress_callback=None):
     Image.fromarray(basecolor).save(out / 'basecolor.png')
     Image.fromarray(roughness).save(out / 'roughness.png')
     Image.fromarray(metallic).save(out / 'metallic.png')
-    metalrough = np.zeros((resolution, resolution, 3), dtype=np.uint8)
-    metalrough[:, :, 1] = roughness
-    metalrough[:, :, 2] = metallic
-    Image.fromarray(metalrough).save(out / 'metallic-roughness.png')
+    from native3d_material_atlas import write_packed_maps
+    write_packed_maps(out, ao, roughness, metallic)
     def loaded_image(name):
         with Image.open(out / name) as image:
             return image.copy()
+    orm = loaded_image('orm.png')
     low.visual.material = trimesh.visual.material.PBRMaterial(
         baseColorTexture=loaded_image('basecolor.png'),
         normalTexture=loaded_image('normal.png'),
-        occlusionTexture=loaded_image('ao.png'),
-        metallicRoughnessTexture=loaded_image('metallic-roughness.png'),
+        occlusionTexture=orm,
+        metallicRoughnessTexture=orm,
         metallicFactor=1., roughnessFactor=1.)
     # Mirror-only index splits preserve every original corner position/UV and
     # source shading normal. Export precisely the frames used by texel encoding.
@@ -779,7 +790,8 @@ def bake(low, high, out, params, progress_callback=None):
                                  'neutral matte: linear baseColor0.5,roughness0.8,metallic0; no original high material') if not materials else 'none; original material factors/textures preserved',
             'curvature': {'kind':'convex-edge-dihedral','radius':curvature_radius},
             'sourceMaterialTransfer': source_material.report,
-            'pbrTransfer': {'baseColor': 'embedded texture times original factor' if base_pixels is not None else 'original/default scalar factor',
+            'pbrTransfer': {'baseColor': ('embedded texture times original factor' if base_pixels is not None else
+                                          'linear vertex-color projection encoded to sRGB' if vertex_rgb is not None else 'original/default scalar factor'),
                             'metallicRoughness': 'embedded texture times original factors' if mr_pixels is not None else 'original/default scalar factors'},
             'dilation': {'pixels':settings['padding'],'requestedPixels':settings['paddingRequested'],'automatic':settings['paddingRequested']==0, 'changedTexels': int(dilated.sum()), 'outsideIslandCoverageOnly': True}}
 
@@ -817,7 +829,8 @@ def run(request, output, *, worker_lease=None):
     original = quality(mesh)
     warnings = ['Quality requires user review; self-intersection has not been exhaustively checked.']
     metadata = {'operation': operation, 'sourceSha256': hashlib.sha256(source.read_bytes()).hexdigest(),
-                'sourceUV': bool(mesh.metadata.get('nativeSourceUV')), 'sourceMaterials': len(mesh.metadata.get('nativeMaterials', [])),
+                'sourceUV': bool(mesh.metadata.get('nativeSourceUV')),
+                'sourceVertexColor': bool(mesh.metadata.get('nativeSourceVertexColor')), 'sourceMaterials': len(mesh.metadata.get('nativeMaterials', [])),
                 'sourceTransform': 'scene instance transform applied to world geometry', 'source': original, 'ramGate': ram}
     files = []
     review=request.get('geometryReview')
@@ -836,7 +849,7 @@ def run(request, output, *, worker_lease=None):
     elif operation == 'material_wear':
         from native3d_material_wear import apply_wear
         metadata['materialWear'] = apply_wear(source, out, request['materialWear'], params)
-        for name in ('basecolor','roughness','metallic','normal','ao','curvature','metallic-roughness','edge-wear'):
+        for name in ('basecolor','roughness','metallic','normal','ao','curvature','metallic-roughness','orm','edge-wear'):
             files.append({'name':name+'.png', 'role':'texture', 'mime':'image/png'})
     elif operation == 'ai_lowpoly':
         if not worker_lease:
@@ -1053,7 +1066,8 @@ def run(request, output, *, worker_lease=None):
         else:
             progress('project_and_bake', 25)
             metadata['bake'] = bake(mesh, high, out, params, progress_callback=progress)
-        for name in ('normal', 'ao', 'coverage', 'hits', 'normal-valid', 'basecolor', 'roughness', 'metallic', 'metallic-roughness', 'curvature'):
+        from native3d_material_atlas import BAKE_TEXTURES
+        for name in BAKE_TEXTURES:
             if name == 'curvature' and not (out/'curvature.png').is_file():
                 continue
             files.append({'name': name + '.png', 'role': 'texture', 'mime': 'image/png'})
@@ -1099,8 +1113,13 @@ def run(request, output, *, worker_lease=None):
     from native3d_fbx import capabilities as fbx_capabilities, export_fbx
     if fbx_capabilities().get('available'):
         try:
-            metadata['fbxExport'] = export_fbx(out / 'model.glb', out / 'model.fbx')
-            files.append({'name': 'model.fbx', 'role': 'export', 'mime': 'application/octet-stream'})
+            # Bake/wear deliver PBR through the GLB and named texture sidecars.
+            # Their FBX explicitly delivers geometry, UVs and normals only.
+            material_stage = operation in ('bake', 'material_wear')
+            filename = 'model.geometry-only.fbx' if material_stage else 'model.fbx'
+            policy = 'geometry_only' if material_stage else 'reject_lossy'
+            metadata['fbxExport'] = export_fbx(out / 'model.glb', out / filename, material_policy=policy)
+            files.append({'name': filename, 'role': 'export', 'mime': 'application/octet-stream'})
         except (ValueError, RuntimeError) as exc:
             metadata['fbxExport'] = {'status': 'unsupported', 'reason': str(exc)}
             warnings.append('FBX export not delivered: ' + str(exc))
