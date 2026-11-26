@@ -58,7 +58,13 @@ try {
           : name === 'CLIPLoader' ? { clip_name: [[model.clip, model.upsampler]], type: [['flux3']] }
             : { vae_name: [[model.vae]] } } } });
       }
-      if (url.pathname === '/api/agent/canvas/heartbeat') return json({ epoch: fixturePageEpoch });
+      if (url.pathname === '/api/agent/canvas/heartbeat') {
+        const { sessionId, projectId } = request.postDataJSON();
+        const command = projectId === project.id ? { tool: 'canvas_get_state', args: {}, projectId, sessionId,
+          epoch: fixturePageEpoch, opId: `inspect-${sessionId}` } : undefined;
+        return json({ epoch: fixturePageEpoch, command });
+      }
+      if (url.pathname === '/api/agent/canvas/result') return json({ ok: true });
       if (url.pathname.startsWith('/api/agent/canvas/')) return route.fulfill({ status: 503, contentType: 'application/json', body: '{"message":"native fixture only"}' });
       if (url.pathname.startsWith('/api/')) return json({});
       const file = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
@@ -66,7 +72,12 @@ try {
     });
     const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
+    const activePage = () => page.waitForResponse(response => response.ok()
+      && new URL(response.url()).pathname === '/api/agent/canvas/result'
+      && response.request().postDataJSON().projectId === project.id);
+    const opened = activePage();
     await page.goto(origin); await page.locator('.project-open').click();
+    assert.equal((await opened).request().postDataJSON().result.ok, true);
     const selector = page.getByLabel(mode === 'image' ? '生图模型' : 'Qwen 模型版本');
     await selector.waitFor();
     assert.equal(await selector.locator('option[value="flux3_klein"]').textContent(), 'FLUX 3 Image Klein INT8');
@@ -92,8 +103,9 @@ try {
     const saved = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_retry_save').execute({})));
     assert.equal(saved.ok, true, saved.error);
     missingNode = undefined;
+    const resumed = activePage();
     await page.reload();
-    await page.waitForFunction(() => window.fixtureTools.has('canvas_generate_node'));
+    assert.equal((await resumed).request().postDataJSON().result.ok, true);
     const restored = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_get_state').execute({ nodeId: 'generator' })));
     assert.equal(restored.nodes[0][mode === 'image' ? 'imageModel' : 'qwenModel'], 'flux3_klein');
     const result = await page.evaluate(async () => JSON.parse(await window.fixtureTools.get('canvas_generate_node').execute({ nodeId: 'generator', wait: false })));
