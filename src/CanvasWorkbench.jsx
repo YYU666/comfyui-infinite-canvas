@@ -2621,12 +2621,14 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     }
   };
   saveGeneratedFileRef.current = saveNativeFile;
-  const persistGeneratedModel = async (nodeId, record, { generator = false } = {}) => {
+  const persistGeneratedModel = useCallback(async (nodeId, record, { generator = false } = {}) => {
+    const save = saveGeneratedFileRef.current;
+    if (!save) throw new Error('模型保存尚未就绪。');
     const file = await readGeneratedModelFile(record.url, record.name || record.filename || 'model.glb');
-    const fields = persistedModelFields(await saveNativeFile(file), file.size);
+    const fields = persistedModelFields(await save(file), file.size);
     updateNode(nodeId, generator ? { resultAssetPath: fields.assetPath, resultBytes: fields.bytes, resultFilename: file.name } : fields);
     return fields;
-  };
+  }, [updateNode]);
   const nativePatch = (id, patch) => {
     if (switchingRef.current || project.readOnly) throw new Error('当前画布不可编辑。');
     const next = nodesRef.current.map(n => n.id === id ? { ...n, data: { ...n.data, ...patch } } : n);
