@@ -13,6 +13,7 @@ import wave
 from project_store import StoreError
 from video_edit_ffmpeg import Cancelled, Runner, probe
 from video_edit_jobs import VideoEditJobs
+from test_video_prepared_fixture import prepare_fixture
 from video_transcript import TranscriptError, _source_segments, _speech_process, _worker, transcribe_video
 
 
@@ -155,7 +156,7 @@ class VideoTranscriptTests(TestCase):
                       mock.patch("video_edit_jobs.transcribe_video", return_value=result)):
                     with self.assertRaises(StoreError):
                         jobs.submit_auto_cut({**payload, "assetPath": str(source)})
-                    job = jobs.submit_auto_cut(payload)
+                    job = jobs.submit_auto_cut(prepare_fixture(jobs, payload, analysis=True, mock_store=True))
                     done = jobs.wait(job["id"], 2)
                 self.assertEqual(done["status"], "completed")
                 self.assertEqual(done["inputs"], {"v1": payload["assetPath"]})

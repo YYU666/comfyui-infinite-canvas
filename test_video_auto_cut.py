@@ -9,6 +9,7 @@ from video_auto_cut import _cut_ranges, _keep_ranges, suggest_cuts
 from video_edit_document import MAX_CLIPS, EditDocumentError
 from video_edit_ffmpeg import Runner, probe
 from video_edit_jobs import VideoEditJobs
+from test_video_prepared_fixture import prepare_fixture
 
 
 class AutoCutTests(unittest.TestCase):
@@ -45,7 +46,9 @@ class AutoCutTests(unittest.TestCase):
                 with self.assertRaises(StoreError):
                     jobs.submit_auto_cut({**payload, "assetPath": str(source)})
                 for mode, cuts in (("black", [(60, 120)]), ("silence", [(36, 84)])):
-                    job = jobs.submit_auto_cut({**payload, "mode": mode})
+                    request = prepare_fixture(jobs, {**payload, "mode": mode}, analysis=True)
+                    prepared_revision = store.get(project_id)["revision"]
+                    job = jobs.submit_auto_cut(request)
                     result = jobs.wait(job["id"], 15)
                     self.assertEqual(result["status"], "completed", result["error"])
                     self.assertEqual(result["result"]["cuts"], cuts)
@@ -55,8 +58,8 @@ class AutoCutTests(unittest.TestCase):
                         [(0, cuts[0][0]), (cuts[0][1], 180)],
                     )
                     with self.assertRaises(StoreError):
-                        jobs.commit(job["id"], {"projectId": project_id, "revision": saved["revision"]})
-                self.assertEqual(store.get(project_id)["revision"], saved["revision"])
+                        jobs.commit(job["id"], {"projectId": project_id, "revision": prepared_revision})
+                    self.assertEqual(store.get(project_id)["revision"], prepared_revision)
             finally:
                 jobs.close()
                 store.close()

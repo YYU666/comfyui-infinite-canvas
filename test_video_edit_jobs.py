@@ -11,6 +11,7 @@ from project_store import StoreError
 from video_edit_api import VideoEditAPI
 from video_edit_document import normalize_document
 from video_edit_jobs import VideoEditJobs
+from test_video_prepared_fixture import submit_fixture
 from video_edit_ffmpeg import FFmpegError, Runner, probe, public_probe
 from video_workbench_launcher import WorkbenchHandler, validate_update_ready, validate_settings_change
 from workbench_settings import SettingsError
@@ -75,7 +76,7 @@ class ExportTests(TestCase):
             jobs = VideoEditJobs(Path(temporary), store, runner_factory=mock.Mock(side_effect=FFmpegError('找不到 FFmpeg。')))
             try:
                 with mock.patch('video_edit_jobs.shutil.disk_usage', return_value=SimpleNamespace(free=2**40)):
-                    started = jobs.submit({'projectId': 'prj_test', 'nodeId': 'edit', 'inputs': {'v1': f"assets/{'a'*64}.mp4"}, 'document': {'schemaVersion': 1, 'clips': [{'id': 'clip', 'inputSlot': 'v1', 'sourceInPts': 0, 'sourceOutPts': 24}]}})
+                    started = submit_fixture(jobs, {'projectId': 'prj_test', 'nodeId': 'edit', 'inputs': {'v1': f"assets/{'a'*64}.mp4"}, 'document': {'schemaVersion': 1, 'clips': [{'id': 'clip', 'inputSlot': 'v1', 'sourceInPts': 0, 'sourceOutPts': 24}]}}, mock_store=True)
                     failed = jobs.wait(started['id'], 2)
                     self.assertEqual(failed['status'], 'failed')
                     self.assertEqual(failed['error'], '找不到 FFmpeg。')
@@ -109,7 +110,7 @@ class ExportTests(TestCase):
                 return {'frames': 24, 'width': 128, 'height': 72, 'audio': 'clips'}
             try:
                 with mock.patch('video_edit_jobs.probe', return_value=info), mock.patch('video_edit_jobs.render', side_effect=render), mock.patch('video_edit_jobs.shutil.disk_usage', return_value=SimpleNamespace(free=2**40)):
-                    started = jobs.submit({'projectId': 'prj_test', 'nodeId': 'edit', 'inputs': {'v1': f"assets/{'a'*64}.mp4"}, 'document': document})
+                    started = submit_fixture(jobs, {'projectId': 'prj_test', 'nodeId': 'edit', 'inputs': {'v1': f"assets/{'a'*64}.mp4"}, 'document': document}, mock_store=True)
                     self.assertEqual(jobs.wait(started['id'], 2)['status'], 'completed')
                     with self.assertRaises(StoreError): jobs.commit(started['id'], {'projectId': 'prj_other', 'revision': 7})
                     with self.assertRaises(StoreError): jobs.commit(started['id'], {'projectId': 'prj_test', 'revision': True})

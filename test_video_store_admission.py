@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase, mock
 from project_store import StoreError
+from test_video_prepared_fixture import prepare_fixture
 
 
 class StoreAdmissionTests(TestCase):
@@ -23,12 +24,13 @@ class StoreAdmissionTests(TestCase):
                 if key=='chroma': payload.update(foreground='fixture',background='fixture')
                 if key=='repair': payload.update(source='fixture')
                 if key=='plate': payload.update(video='fixture')
+                request = prepare_fixture(jobs, payload, mock_store=True)
                 def resolve(*args,**kwargs):
                     entered.set()
                     if not release.wait(3): raise TimeoutError('fixture resolution')
                     return ({},Path('fixture'),{}) if key=='repair' else (Path('fg'),Path('bg'),True) if key=='chroma' else Path('fixture')
                 def submit():
-                    try: jobs.submit(payload)
+                    try: jobs.submit(request)
                     except Exception as error: errors.append(error)
                 def replace():
                     attempted.set()
