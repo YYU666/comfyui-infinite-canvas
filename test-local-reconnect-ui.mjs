@@ -133,6 +133,9 @@ try {
   await check(); await page.waitForTimeout(150);
   assert.equal(await page.locator('.local-connection-notice').count(), 0, 'dismissed diagnostic is not reopened by identical polling');
   comfy = true; comfyState = null; await check(); await connected();
+  await page.waitForFunction(() => document.querySelector('.save-indicator')?.textContent === '已保存');
+  const writesBeforeOffline = writes.length;
+  const revisionBeforeOffline = project.revision;
 
   available = false; await check(); await offline();
   await note.fill('断线时的未保存修改');
@@ -147,7 +150,7 @@ try {
   assert.equal(await note.inputValue(), '断线时的未保存修改');
   await note.click();
   assert.equal(await note.evaluate((element) => element === document.activeElement), true, 'connection notice leaves canvas editable');
-  assert.equal(writes.length, 0, 'reconnect does not silently replay failed saves');
+  assert.equal(writes.length, writesBeforeOffline, 'reconnect does not silently replay failed saves');
   assert.equal(opens, 1, 'reconnect never reopens or replaces project');
   assert(heartbeats.some((item) => item.epoch === 'epoch-two'));
   assert.equal(new Set(heartbeats.filter((item) => item.projectId === project.id).map((item) => item.sessionId)).size, 1, 'bridge session survives epoch rotation');
@@ -155,7 +158,8 @@ try {
   assert(await page.evaluate(() => window.fixtureSockets) > sockets, 'progress socket reconnects');
   await page.getByRole('button', { name: '重试保存', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.save-indicator')?.textContent === '已保存');
-  assert.deepEqual(writes, [1]); assert.equal(project.canvas.nodes[0].data.text, '断线时的未保存修改');
+  assert.deepEqual(writes.slice(writesBeforeOffline), [revisionBeforeOffline]);
+  assert.equal(project.canvas.nodes[0].data.text, '断线时的未保存修改');
 
   // A different saved revision must remain a conflict, even across another restart.
   available = false; await check(); await offline();
@@ -169,10 +173,10 @@ try {
   await page.waitForFunction(() => document.querySelector('.save-indicator')?.textContent === '保存已暂停');
   assert.equal(externalMappingLost, false, 'current page restores external mapping after authenticated 404');
   assert.equal(opens, 2, 'only missing external mapping needs same-page re-registration');
-  assert.deepEqual(writes, [1, 2], 'original CAS revision retained, never replaced by server revision');
+  assert.deepEqual(writes.slice(writesBeforeOffline), [revisionBeforeOffline, revisionBeforeOffline + 1], 'original CAS revision retained, never replaced by server revision');
   await status.click(); await page.waitForTimeout(200);
   assert.equal(await note.inputValue(), '冲突后也保留的本页修改');
-  assert.equal(writes.length, 2);
+  assert.equal(writes.length, writesBeforeOffline + 2);
   assert.equal(await page.getByRole('button', { name: '重试保存', exact: true }).count(), 0, 'conflict stays paused');
 
   comfy = false; await check(); await offline(); await status.click();
