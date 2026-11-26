@@ -6,11 +6,12 @@ export function videoExportLabel(id, data, label) {
   return hasUnconfirmedVideoSubmission({ id, data }) ? '核对原任务' : label;
 }
 
-export default function VideoJobStatus({ data, running, fallback }) {
+export default function VideoJobStatus({ data, running, fallback, previewSrc }) {
   const terminal = ['cancelled', 'error'].includes(data.status);
   const stage = running || terminal ? data.stage || (running ? '导出中' : data.status === 'cancelled' ? '已取消' : '导出失败') : fallback;
   const progress = Math.round(Math.min(1, Math.max(0, Number(data.progress) || 0)) * 100);
   return <span className="video-job-status" role="status">
+    {running && previewSrc && <img className="video-job-preview" src={previewSrc} alt="正在导出的当前帧" />}
     <span>{stage}{running ? ` ${progress}%` : ''}</span>
     {running && <progress value={progress} max={100} aria-label="视频任务进度" />}
   </span>;

@@ -314,66 +314,81 @@ def build_audio(runner, plan, files, probes, workdir):
     return target
 
 
-def render(runner, document, plan, files, probes, target, workdir, progress=lambda value, stage: None):
-    width, height, fps = plan["width"], plan["height"], plan["fps"]
+def _present(composite, index, frame):
+    return composite(index, frame) if composite else frame
+
+
+def _output_frames(runner, plan, files, workdir, composite, resume):
+    """Yield only frames that are not already stored in a closed export chunk."""
+    width, height = plan["width"], plan["height"]
     frame_bytes = width * height * 3 // 2
+    index = 0
+    for segment in plan["segments"]:
+        frames = segment["frames"]
+        content, pad = len(frames), segment["padFrames"]
+        end = index + content + pad
+        if end <= resume:
+            index = end
+            continue
+        skip = max(0, resume - index)
+        source = files[segment["slot"]]
+        if skip >= content:
+            last = next(_segment_frames(runner, source, {**segment, "frames": [frames[-1]]}, width, height, frame_bytes, workdir))
+            produced = index + content
+            while produced < end:
+                if produced >= resume:
+                    yield _present(composite, produced, last)
+                produced += 1
+            index = end
+            continue
+        produced = index + skip
+        last = None
+        for chunk in _segment_frames(runner, source, {**segment, "frames": frames[skip:]}, width, height, frame_bytes, workdir):
+            last = chunk
+            if produced >= resume:
+                yield _present(composite, produced, chunk)
+            produced += 1
+        while produced < end:
+            runner.check()
+            yield _present(composite, produced, last)
+            produced += 1
+        index = end
+
+
+def render(runner, document, plan, files, probes, target, workdir, progress=lambda value, stage, preview=None: None):
+    import hashlib
+    import json
+
+    from video_frame_export import FrameExporter, mux_mp4
+
+    width, height, fps = plan["width"], plan["height"], plan["fps"]
     composite = None
     if pages := document.get("presentation"):
         from video_presentation import PresentationRenderer
 
         composite = PresentationRenderer(pages, width, height, fps).frame
+    profile = document["outputProfile"]
+    identity = hashlib.sha256(json.dumps({
+        "document": document,
+        "segments": [[segment["frames"], segment["padFrames"]] for segment in plan["segments"]],
+        "width": width, "height": height, "fps": [fps.numerator, fps.denominator],
+        "preset": "medium", "crf": int(profile["crf"]), "audio": plan["audio"],
+    }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+    exporter = FrameExporter(runner, workdir, width=width, height=height, fps=fps, preset="medium",
+                             crf=int(profile["crf"]), total=plan["totalFrames"], identity=identity, progress=progress)
     audio_file = None
     if plan["audio"] != "none":
         progress(0.02, "正在装配原声")
         audio_file = build_audio(runner, plan, files, probes, workdir)
+    if exporter.resume_from:
+        progress(0.05 + 0.9 * exporter.resume_from / plan["totalFrames"], f"从第 {exporter.resume_from} 帧继续导出")
+    for frame in _output_frames(runner, plan, files, workdir, composite, exporter.resume_from):
+        exporter.write(frame)
+    video = exporter.finish()
     timescale = as_fraction(document["timelineTimebase"]).denominator
-    profile = document["outputProfile"]
-    args = ["-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", f"{width}x{height}", "-framerate", f"{fps.numerator}/{fps.denominator}", "-i", "pipe:0"]
-    if audio_file:
-        args += ["-f", "f32le", "-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CHANNELS), "-i", str(audio_file)]
-    args += ["-map", "0:v:0"] + (["-map", "1:a:0"] if audio_file else [])
-    args += ["-c:v", "libx264", "-preset", "medium", "-crf", str(int(profile["crf"])), "-pix_fmt", "yuv420p",
-             "-video_track_timescale", str(timescale), "-fps_mode", "passthrough"]
-    if audio_file:
-        args += ["-c:a", "aac", "-b:a", "192k"]
-    args += ["-movflags", "+faststart", "-y", str(target)]
-    encoder = runner.popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    written = 0
-    stderr = []
-    reader = threading.Thread(target=lambda: stderr.append(encoder.stderr.read()), daemon=True)
-    reader.start()
-    try:
-        for segment in plan["segments"]:
-            last = None
-            for chunk in _segment_frames(runner, files[segment["slot"]], segment, width, height, frame_bytes, workdir):
-                encoder.stdin.write(composite(written, chunk) if composite else chunk)
-                last = chunk
-                written += 1
-                if written % 12 == 0:
-                    progress(0.05 + 0.9 * written / plan["totalFrames"], "正在逐帧导出")
-            for _ in range(segment["padFrames"]):
-                runner.check()
-                encoder.stdin.write(composite(written, last) if composite else last)
-                written += 1
-        encoder.stdin.close()
-        encoder.wait()
-        reader.join(5)
-        runner.check()
-        if encoder.returncode != 0:
-            raise FFmpegError("FFmpeg 编码失败：" + b"".join(stderr).decode("utf-8", "replace")[-400:])
-    except (BrokenPipeError, OSError) as error:
-        runner.check()
-        raise FFmpegError("FFmpeg 编码进程提前退出。") from error
-    finally:
-        if encoder.poll() is None:
-            encoder.kill()
-            encoder.wait()
-        reader.join(5)
-        encoder.stderr.close()
-        runner.release(encoder)
-    if written != plan["totalFrames"]:
-        raise FFmpegError("写入帧数与计划不一致。")
+    mux_mp4(runner, video, audio_file, target, timescale=timescale, audio_rate=AUDIO_RATE, audio_channels=AUDIO_CHANNELS)
     progress(0.98, "正在校验")
-    return {"frames": written, "width": width, "height": height, "fps": {"num": fps.numerator, "den": fps.denominator},
+    return {"frames": plan["totalFrames"], "width": width, "height": height, "fps": {"num": fps.numerator, "den": fps.denominator},
             "durationPts": plan["totalFrames"] * int(1 / (fps * as_fraction(document["timelineTimebase"]))),
-            "timelineTimebase": document["timelineTimebase"], "audio": plan["audio"]}
+            "timelineTimebase": document["timelineTimebase"], "audio": plan["audio"],
+            "resumedFrames": exporter.resume_from}

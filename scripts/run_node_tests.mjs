@@ -40,6 +40,7 @@ const suites = {
     'test-video-chroma.mjs',
     'test-video-rhythm.mjs',
     'test-video-edit.mjs',
+    'test-video-export-preview.mjs',
     'test-video-submission.mjs',
     'test-browser-public-network.mjs',
     'test-auto-save.mjs',
