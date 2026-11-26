@@ -4,6 +4,7 @@ import CanvasWorkbench from './CanvasWorkbench';
 import ProjectLauncher from './ProjectLauncher';
 import QueueNotificationCenter from './QueueNotificationCenter';
 import UpdateCenter from './UpdateCenter';
+import ModelManager from './ModelManager';
 import { openProject } from './project-store-http';
 import { projectSession } from './project-session';
 
@@ -42,5 +43,5 @@ export default function App() {
     : !project ? <>{notice && <div className="launcher-notice error" role="alert">{notice}</div>}<ProjectLauncher onOpen={acceptProject} /></> : mode === 'canvas'
     ? <CanvasWorkbench initialProject={project} onActiveProjectChange={acceptProject} onLauncher={returnToLauncher} onSimpleMode={() => changeMode('simple')} />
     : <LegacyWorkbench onCanvasMode={() => changeMode('canvas')} />;
-  return <><QueueNotificationCenter /><UpdateCenter projectOpen={Boolean(project)} />{content}</>;
+  return <><QueueNotificationCenter /><UpdateCenter projectOpen={Boolean(project)} /><ModelManager />{content}</>;
 }

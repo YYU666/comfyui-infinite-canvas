@@ -25,7 +25,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   ArrowDownToLine, ArrowUp, AudioLines, Check, ChevronDown, CircleHelp, Clock3,
-  Cpu, Crosshair, Film, FolderOpen, Grid2X2, History, Image as ImageIcon, Layers3,
+  Cpu, Crosshair, Film, FolderOpen, Grid2X2, HardDrive, History, Image as ImageIcon, Layers3,
   Library, Link2, LoaderCircle, Magnet, Map as MapIcon, Maximize2, MemoryStick, Minus, MoreHorizontal, MousePointer2,
   Music2, Pin, Plus, Redo2, RefreshCw, Search, Settings2, Sparkles, Square, Trash2,
   Type, Undo2, Upload, Video, WandSparkles, X, Zap,
@@ -2787,6 +2787,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           onRefresh={refreshProjects} onOpen={(id) => changeProject(id)} onCreate={(name) => changeProject(null, name)} />
         <div className="neo-header-right">
           <div className="neo-header-actions">
+            <button aria-label="模型管理" title="模型管理 · 锁定、使用率与更新" onClick={() => window.dispatchEvent(new CustomEvent('refmuse-open-models'))}><HardDrive size={15} /><span>模型</span></button>
             <button aria-label="Refmuse参考库" title="Refmuse参考库" onClick={() => openReferenceLibrary(referenceLibraryTab || 'refmuse')}><Library size={15} /><span>Refmuse参考库</span></button>
             <button aria-label="节点库" title="节点库" onClick={() => {
               if (referenceImportBusyRef.current || catalogBusyRef.current || switchingRef.current) return;

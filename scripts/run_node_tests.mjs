@@ -86,6 +86,7 @@ const suites = {
     'test-resolution.mjs',
     'test-update-check-scheduler.mjs',
     'test-update-offer.mjs',
+    'test-model-manager.mjs',
   ],
   browser: [
     'test-native3d-release-ui.mjs',
