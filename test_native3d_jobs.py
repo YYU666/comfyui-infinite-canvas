@@ -10,6 +10,88 @@ from unittest.mock import patch
 from native3d_jobs import Native3DJobs, validate_parameters
 from project_store import ProjectStore, StoreError
 
+class Native3DConfigPathTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        self.local_app_data = root / 'LocalAppData'
+        self.logical_jobs = self.local_app_data / 'H3Workbench/native3d-jobs'
+        self.logical_jobs.parent.mkdir(parents=True)
+        self.physical_jobs = root / 'relocated/runtime/native3d-jobs'
+        self.physical_jobs.mkdir(parents=True)
+        self.physical_config = self.physical_jobs.parent / 'native3d-config.json'
+        self.physical_config.write_text('{}', encoding='utf-8')
+        self.logical_config = self.logical_jobs.parent / 'native3d-config.json'
+
+        python = root / 'independent-python.exe'
+        python.touch()
+        sources = root / 'triposr-source'
+        (sources / 'tsr').mkdir(parents=True)
+        (sources / 'tsr/system.py').touch()
+        models = root / 'triposr-model'
+        models.mkdir()
+        for file in ('config.yaml', 'dino-config.json', 'model.ckpt'):
+            (models / file).touch()
+        self.ready_config = {'pythonExecutable': str(python), 'timeoutSeconds': 301,
+                             'imageTo3D': {'pythonExecutable': str(python),
+                                           'sourceDirectory': str(sources), 'modelDirectory': str(models)}}
+        self.logical_config.write_text(json.dumps(self.ready_config), encoding='utf-8')
+
+    def open_jobs(self, **kwargs):
+        from workbench_lifecycle import runtime_dir
+
+        # Reproduce what Path.resolve() does with a native directory junction;
+        # this test needs no symlink permission and works outside Windows.
+        original_resolve = Path.resolve
+
+        def follow_jobs_junction(path, *args, **inner_kwargs):
+            if path == self.logical_jobs:
+                return self.physical_jobs
+            return original_resolve(path, *args, **inner_kwargs)
+
+        with patch.dict(os.environ, LOCALAPPDATA=str(self.local_app_data)):
+            os.environ.pop('H3_WORKBENCH_RUNTIME_DIR', None)
+            os.environ.pop('H3_NATIVE3D_PYTHON', None)
+            with patch.object(Path, 'resolve', follow_jobs_junction):
+                jobs = Native3DJobs(runtime_dir() / 'native3d-jobs', None, autostart=False, **kwargs)
+        self.addCleanup(jobs.close)
+        return jobs
+
+    def test_desktop_config_survives_relocated_jobs_and_recovers_history(self):
+        historic_id = 'n3d_' + 'a' * 32
+        historic = {'id': historic_id, 'projectId': 'fixture', 'nodeId': 'model',
+                    'opId': 'original', 'fingerprint': 'fixture', 'status': 'succeeded',
+                    'source': {}, 'parameters': {}}
+        saved = self.physical_jobs / historic_id / 'manifest.json'
+        saved.parent.mkdir()
+        saved.write_text(json.dumps(historic), encoding='utf-8')
+        original_bytes = saved.read_bytes()
+
+        jobs = self.open_jobs()
+        self.assertEqual(jobs.config_path, self.logical_config)
+        self.assertEqual(jobs.root, self.physical_jobs)
+        self.assertFalse(self.logical_jobs.exists())
+        self.assertEqual(jobs.get(historic_id), historic)
+        self.assertEqual(saved.read_bytes(), original_bytes)
+        self.assertEqual(self.physical_config.read_text(encoding='utf-8'), '{}')
+        with patch.dict(os.environ):
+            os.environ.pop('H3_NATIVE3D_PYTHON', None)
+            with patch.object(jobs, '_probe', return_value=[]):
+                self.assertEqual(jobs.config()['timeoutSeconds'], 301)
+                operations = jobs.capabilities()['operations']
+        self.assertTrue(operations['image_to_3d']['ready'])
+        self.assertTrue(operations['material_wear']['ready'])
+
+    def test_explicit_config_overrides_logical_default_and_physical_sibling(self):
+        explicit = self.physical_jobs.parent / 'operator-config.json'
+        explicit.write_text(json.dumps({**self.ready_config, 'timeoutSeconds': 147}), encoding='utf-8')
+        jobs = self.open_jobs(config_path=explicit)
+        self.assertEqual(jobs.config_path, explicit)
+        self.assertEqual(jobs.config()['timeoutSeconds'], 147)
+        self.assertEqual(jobs.root, self.physical_jobs)
+
+
 class Native3DJobsTests(unittest.TestCase):
     def test_failed_uv_diagnostic_png_whitelist_and_identity(self):
         import base64

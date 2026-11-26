@@ -230,10 +230,12 @@ def accepted_source_lod_stage(record):
 
 class Native3DJobs:
     def __init__(self, root, store, config_path=None, engine_path=None, autostart=True, gpu_leases=None, gpu_device=physical_device):
-        self.root = Path(root).resolve()
+        logical_root = Path(root).absolute()
+        # Configuration belongs to the desktop runtime even when jobs are relocated.
+        self.config_path = Path(config_path) if config_path is not None else logical_root.parent / 'native3d-config.json'
+        self.root = logical_root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.store = store
-        self.config_path = Path(config_path or self.root.parent / 'native3d-config.json')
         self.engine_path = Path(engine_path or Path(__file__).with_name('native3d_engine.py')).resolve()
         self.lock = threading.RLock()
         self.preview_lock = threading.Lock()
