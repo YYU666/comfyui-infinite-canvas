@@ -6,7 +6,7 @@ import { chromium } from './test-browser.mjs';
 import { PROJECT_SESSION_KEY } from './src/project-session.js';
 
 export async function runVideoProcessorFixture(config) {
-  const origin = 'http://video-processor-fixture.test', dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
+  const origin = 'https://video-processor-fixture.test', dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
   const input = `assets/${'a'.repeat(64)}.mp4`, output = `assets/${'b'.repeat(64)}.mp4`;
   const browser = await chromium.launch({ headless: true });
   const errors = [], submitted = [], committed = [], cancelled = [], snapshots = [];
@@ -45,6 +45,7 @@ export async function runVideoProcessorFixture(config) {
         return json({ id: url.pathname.split('/').at(-1), status: hold ? 'running' : 'completed', progress: hold ? 0.4 : 1, result: { frames: 24, width: 128, height: 72, audio: 'preserve', ...config.result } });
       }
       if (url.pathname.includes('/assets/') && url.pathname.startsWith('/api/projects/')) return route.fulfill({ contentType: 'video/mp4', body: Buffer.from('synthetic encoded video') });
+      if (url.pathname === '/api/agent/canvas/heartbeat') return json({ epoch: 'video-processor-fixture-epoch' });
       if (url.pathname.startsWith('/api/agent/canvas/')) return json({}, 503);
       if (url.pathname.startsWith('/api/')) return json({});
       const file = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));

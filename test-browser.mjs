@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { existsSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { chromium as playwrightChromium } from 'playwright-core';
@@ -17,6 +18,18 @@ const canonicalPath = (target) => {
   return resolve(realpathSync.native(ancestor), ...missing);
 };
 export const samePath = (left, right) => canonicalPath(left) === canonicalPath(right);
+
+export const fixturePageEpoch = 'browser-fixture-page';
+
+export function fixtureQueueExecution(submission, project) {
+  const node = project.canvas.nodes.find(item => item.id === submission.nodeId);
+  assert.equal(submission.projectId, project.id);
+  assert.equal(submission.revision, project.revision);
+  assert.equal(submission.page.epoch, fixturePageEpoch);
+  assert.ok(submission.page.sessionId);
+  assert.equal(node?.data.visibleRun?.requestId, submission.requestId);
+  return JSON.parse(submission.executionJson);
+}
 
 // Tests use Playwright's managed Chromium by default. CHROME_PATH is an
 // explicit escape hatch for a locally installed browser; no machine-specific

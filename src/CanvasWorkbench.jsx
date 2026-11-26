@@ -1922,9 +1922,13 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         releaseVisibleExecutionPreview(requestId);
       }
     } catch (error) {
+      if (origin === 'human' && error.code === 'NO_VISIBLE_CANVAS' && projectRef.current.id === project.id
+          && !projectRef.current.readOnly && !switchingRef.current) {
+        updateNode(id, { error: error.message });
+      }
       return visibleGenerationFailure(error, requestId);
     }
-  }, [executeGeneration, project.id]);
+  }, [executeGeneration, project.id, updateNode]);
 
   const retryGeneration = useCallback(async (id, options) => {
     const { jobId, expectedAttempt, expectedRevision } = options;

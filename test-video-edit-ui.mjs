@@ -132,6 +132,7 @@ async function fixture(readOnly = false, active = false) {
       return json({ id: url.pathname.split('/').at(-1), projectId: project.id, nodeId: 'edit', status: hold ? 'running' : 'completed', stage: hold ? '模拟导出' : '已导出', progress: hold ? 0.4 : 1, result: { frames: 24, width: 128, height: 72, audio: 'clips' } });
     }
     if (url.pathname.startsWith('/api/projects/') && url.pathname.includes('/assets/')) return route.fulfill({ contentType: 'video/mp4', body: Buffer.from('synthetic encoded video') });
+    if (url.pathname === '/api/agent/canvas/heartbeat') return json({ epoch: 'video-editor-fixture-epoch' });
     if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'native mocks only' }, 503);
     if (url.pathname.startsWith('/api/')) return json({});
     const file = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));

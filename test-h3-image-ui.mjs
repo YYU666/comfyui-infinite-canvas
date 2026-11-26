@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { H3_IMAGE_MODEL } from './src/h3-image.js';
-import { chromium } from './test-browser.mjs';
+import { chromium, fixturePageEpoch, fixtureQueueExecution } from './test-browser.mjs';
 
 // Synthetic browser fixture: every request is intercepted; no live inference/service.
 const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
@@ -47,12 +47,16 @@ async function fixture(readOnly = false, textOnly = false) {
       if (request.method() === 'PUT') project = { ...project, ...request.postDataJSON(), revision: project.revision + 1 };
       return json(project);
     }
-    if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'native fixture only' }, 503);
+    if (url.pathname === '/api/agent/canvas/heartbeat') return json({ epoch: fixturePageEpoch });
+    if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'fixture has no queued commands' }, 503);
     if (url.pathname === '/api/import-video') return json({ name: 'download-fixture.mp4', title: '下载测试视频', sourceUrl: request.postDataJSON().url });
     if (url.pathname === '/api/health') return json({ok:true,comfy:{state:'ready'}});
     if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
     if (url.pathname === '/api/queue') {
-      if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: 'job-fixture', status: 'queued' }); }
+      if (request.method() === 'POST') {
+        queued.push(fixtureQueueExecution(request.postDataJSON(), project));
+        return json({ id: 'job-fixture', status: 'queued' });
+      }
       return json({ jobs: [] });
     }
     if (url.pathname.startsWith('/api/comfy/object_info/')) {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from './test-browser.mjs';
+import { chromium, fixturePageEpoch, fixtureQueueExecution } from './test-browser.mjs';
 import { FLUX3_KLEIN_MODEL as model } from './src/flux3-klein.js';
 
 // Every request is intercepted. This never connects to a live project or GPU.
@@ -48,7 +48,7 @@ try {
       if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
       if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
       if (url.pathname === '/api/queue') {
-        if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: 'fixture-job', status: 'queued' }); }
+        if (request.method() === 'POST') { queued.push(fixtureQueueExecution(request.postDataJSON(), project)); return json({ id: 'fixture-job', status: 'queued' }); }
         return json({ jobs: [] });
       }
       if (url.pathname.includes('/object_info/')) {
@@ -58,6 +58,7 @@ try {
           : name === 'CLIPLoader' ? { clip_name: [[model.clip, model.upsampler]], type: [['flux3']] }
             : { vae_name: [[model.vae]] } } } });
       }
+      if (url.pathname === '/api/agent/canvas/heartbeat') return json({ epoch: fixturePageEpoch });
       if (url.pathname.startsWith('/api/agent/canvas/')) return route.fulfill({ status: 503, contentType: 'application/json', body: '{"message":"native fixture only"}' });
       if (url.pathname.startsWith('/api/')) return json({});
       const file = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));

@@ -12,6 +12,7 @@ let project = { id: 'prj_moss_fixture', name: 'Synthetic pose QA', revision: 1, 
 ], edges: [{ id: 'e1', source: 'input', target: 'pose', sourceHandle: 'ref', targetHandle: 'guide' }] } };
 const browser = await chromium.launch({ headless: true });
 const errors = [], queued = [];
+let bridgeReady = false;
 try {
   const context = await browser.newContext({ viewport: { width: 1360, height: 1040 } });
   await context.addInitScript(() => {
@@ -40,6 +41,7 @@ try {
       return json({ jobs: [] });
     }
     if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
+    if (url.pathname === '/api/agent/canvas/heartbeat' && bridgeReady) return json({ epoch: 'moss-fixture-epoch' });
     if (url.pathname.startsWith('/api/agent/canvas/')) return json({}, 503);
     if (url.pathname.startsWith('/api/')) return json({});
     const file = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
@@ -62,9 +64,19 @@ try {
   assert.equal(await node.locator('[data-handleid="identity"]').count(), 1);
   await node.getByLabel('MOSS 步数').fill('31');
   await node.getByLabel('种子', { exact: true }).fill('123');
-  await node.getByRole('button', { name: '生成姿势', exact: true }).click();
-  await node.getByRole('alert').waitFor();
-  assert.match(await node.getByRole('alert').innerText(), /H3CheckedDWPose/);
+  const generate = node.getByRole('button', { name: '生成姿势', exact: true });
+  const alert = node.getByRole('alert');
+  await generate.click();
+  await alert.waitFor();
+  assert.match(await alert.innerText(), /没有连接到当前可写画布/);
+  assert.equal(queued.length, 0, 'a disconnected canvas cannot enqueue a generation');
+  const activeHeartbeat = page.waitForResponse(response => response.ok()
+    && new URL(response.url()).pathname === '/api/agent/canvas/heartbeat'
+    && response.request().postDataJSON().projectId === project.id);
+  bridgeReady = true;
+  await activeHeartbeat;
+  await generate.click();
+  await alert.filter({ hasText: 'H3CheckedDWPose' }).waitFor();
   assert.equal(queued.length, 0, 'missing node cannot enqueue a generation');
   await node.locator('.model-license-notice summary').click();
   assert.match(await node.innerText(), /Apache-2.0/);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from './test-browser.mjs';
+import { chromium, fixturePageEpoch, fixtureQueueExecution } from './test-browser.mjs';
 import { installedImageModelDefinitions } from './test-image-model-fixture.mjs';
 
 // Synthetic browser fixture: every request is intercepted; no live inference/service.
@@ -42,10 +42,11 @@ async function fixture(readOnly = false, completed = false) {
       if (request.method() === 'PUT') project = { ...project, ...request.postDataJSON(), revision: project.revision + 1 };
       return json(project);
     }
+    if (url.pathname === '/api/agent/canvas/heartbeat') return json({ epoch: fixturePageEpoch });
     if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'native fixture only' }, 503);
     if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
     if (url.pathname === '/api/queue') {
-      if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: 'job-fixture', status: 'queued' }); }
+      if (request.method() === 'POST') { queued.push(fixtureQueueExecution(request.postDataJSON(), project)); return json({ id: 'job-fixture', status: 'queued' }); }
       return json({ jobs: [] });
     }
     if (url.pathname.startsWith('/api/comfy/object_info/')) {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from './test-browser.mjs';
+import { chromium, fixturePageEpoch, fixtureQueueExecution } from './test-browser.mjs';
 import { extensionNodeData, customInput, extensionMedia } from './src/workflow-extensions.js';
 import { buildCharacterSheetQueuePlan } from './src/workbench-api.js';
 
@@ -63,10 +63,18 @@ try {
       if (request.method() === 'PUT') project = { ...request.postDataJSON(), revision: project.revision + 1 };
       return json(project);
     }
+    if (url.pathname === '/api/agent/canvas/heartbeat') return json({ epoch: fixturePageEpoch });
     if (url.pathname.startsWith('/api/agent/canvas/')) return json({ message: 'native fixture only' }, 503);
     if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
     if (url.pathname === '/api/health') return json({ ok: true });
-    if (url.pathname === '/api/queue') { if (request.method() === 'POST') { queued.push(request.postDataJSON()); return json({ id: stagedRun ? 'job_sheet' : 'job_fixture' }); } return json({ jobs: [] }); }
+    if (url.pathname === '/api/queue') {
+      if (request.method() === 'POST') {
+        queued.push(fixtureQueueExecution(request.postDataJSON(), project));
+        const id = stagedRun ? 'job_sheet' : queued.length === 1 ? 'job_fixture' : 'job_model';
+        return json({ id, status: 'queued', stage: '已加入后台队列' });
+      }
+      return json({ jobs: [] });
+    }
     if (url.pathname === '/api/comfy/system_stats') return json({ devices: [] });
     if (url.pathname === '/api/comfy/view') return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=', 'base64') });
     if (url.pathname === '/api/hardware-metrics') return json({});
@@ -170,7 +178,7 @@ try {
   await page.waitForFunction((id) => document.querySelector(`.react-flow__node[data-id="${id}"] .custom-workflow-footer`).textContent.includes('已加入后台队列'), modelNode.id);
   await page.evaluate(({ nodeId, projectId, history }) => {
     const source = window.fixtureSources.findLast((item) => item.url === '/api/queue/events' && !item.closed);
-    source.listeners['job.done']({ data: JSON.stringify({ job: { id: 'job_fixture', nodeId, projectId, status: 'done', comfyPromptId: 'prompt_model', history } }) });
+    source.listeners['job.done']({ data: JSON.stringify({ job: { id: 'job_model', nodeId, projectId, status: 'done', comfyPromptId: 'prompt_model', history } }) });
   }, { nodeId: modelNode.id, projectId: project.id, history: modelHistory });
   await page.waitForFunction(async () => {
     const result = JSON.parse(await window.fixtureTools.get('canvas_get_state').execute({}));
