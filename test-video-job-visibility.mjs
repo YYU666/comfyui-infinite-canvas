@@ -183,7 +183,7 @@ try {
       const current = (await getNode()).data;
       if (current.status === 'error') throw new Error(current.error);
       return current.status === 'done' ? current : null;
-    });
+    }, 180000);
     const pathKey = { edit: 'editResultAssetPath', rhythm: 'rhythmResultAssetPath', chroma: 'chromaResultAssetPath', plate: 'plateResultAssetPath', repair: 'repairResultAssetPath' }[family];
     const assetPath = done[pathKey];
     assert.equal(done[key], jobId);

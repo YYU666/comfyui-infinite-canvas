@@ -32,6 +32,23 @@ class PreviewFrameTests(unittest.TestCase):
             with Image.open(path) as image:
                 self.assertLess(image.getpixel((2, 2))[0], 40)
 
+    def test_locked_preview_is_skipped_and_the_export_keeps_the_previous_jpeg(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "preview.jpg"
+            write_preview_jpeg(_frame(0, 128, 72), 128, 72, path)
+            original = path.read_bytes()
+            real_replace = Path.replace
+
+            def locked(self, target):
+                if self.name == "preview.jpg.tmp":
+                    raise PermissionError("sharing violation")
+                return real_replace(self, target)
+
+            with mock.patch.object(Path, "replace", locked):
+                write_preview_jpeg(_frame(1, 128, 72), 128, 72, path)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertFalse((path.parent / "preview.jpg.tmp").exists())
+
     def test_changed_plan_discards_saved_chunks(self):
         with tempfile.TemporaryDirectory() as temporary:
             workdir = Path(temporary)

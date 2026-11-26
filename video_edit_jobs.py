@@ -244,10 +244,10 @@ class VideoEditJobs:
             if job["status"] not in {"queued", "running"}:
                 raise StoreError("NOT_FOUND", "导出完成后不再提供逐帧预览。", 404)
             path = self.root / job_id / "preview.jpg"
-            try:
-                data = path.read_bytes() if path.is_file() else b""
-            except OSError:
-                data = b""
+        try:
+            data = path.read_bytes() if path.is_file() else b""
+        except OSError:
+            data = b""
         if not data.startswith(b"\xff\xd8") or len(data) > 1_500_000:
             raise StoreError("NOT_FOUND", "当前还没有可显示的导出帧。", 404)
         return data

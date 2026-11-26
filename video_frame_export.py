@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -121,7 +122,20 @@ def write_preview_jpeg(frame, width, height, path):
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
     image.save(temporary, "JPEG", quality=80)
-    temporary.replace(path)
+    # The browser may still have the previous JPEG open. On Windows that makes
+    # the replace raise; skip this frame instead of stalling the export.
+    replaced = False
+    try:
+        for _ in range(6):
+            try:
+                temporary.replace(path)
+                replaced = True
+                break
+            except PermissionError:
+                time.sleep(0.02)
+    finally:
+        if not replaced:
+            temporary.unlink(missing_ok=True)
     return image.size
 
 
