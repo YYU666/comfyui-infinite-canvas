@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from './test-browser.mjs';
+import { chromium, fixturePageEpoch } from './test-browser.mjs';
 
 // All network traffic is intercepted. Never open a second live project writer.
 const origin = 'http://127.0.0.1:8799';
@@ -41,7 +41,13 @@ try {
       return json({ jobs: [] });
     }
     if (url.pathname === '/api/settings') return json({ notifications: false, checkUpdatesOnLaunch: false });
-    if (url.pathname === '/api/agent/canvas/heartbeat' && bridgeReady) return json({ epoch: 'moss-fixture-epoch' });
+    if (url.pathname === '/api/agent/canvas/heartbeat' && bridgeReady) {
+      const { sessionId, projectId } = request.postDataJSON();
+      return json({ epoch: fixturePageEpoch, ...(projectId === project.id ? { command: {
+        epoch: fixturePageEpoch, sessionId, projectId, opId: 'moss-fixture-read', tool: 'canvas_get_state', args: {},
+      } } : {}) });
+    }
+    if (url.pathname === '/api/agent/canvas/result') return json({ ok: true });
     if (url.pathname.startsWith('/api/agent/canvas/')) return json({}, 503);
     if (url.pathname.startsWith('/api/')) return json({});
     const file = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
@@ -70,11 +76,11 @@ try {
   await alert.waitFor();
   assert.match(await alert.innerText(), /没有连接到当前可写画布/);
   assert.equal(queued.length, 0, 'a disconnected canvas cannot enqueue a generation');
-  const activeHeartbeat = page.waitForResponse(response => response.ok()
-    && new URL(response.url()).pathname === '/api/agent/canvas/heartbeat'
+  const currentPageReceipt = page.waitForResponse(response => response.ok()
+    && new URL(response.url()).pathname === '/api/agent/canvas/result'
     && response.request().postDataJSON().projectId === project.id);
   bridgeReady = true;
-  await activeHeartbeat;
+  assert.equal((await currentPageReceipt).request().postDataJSON().result.ok, true);
   await generate.click();
   await alert.filter({ hasText: 'H3CheckedDWPose' }).waitFor();
   assert.equal(queued.length, 0, 'missing node cannot enqueue a generation');
