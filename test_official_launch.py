@@ -128,7 +128,7 @@ class IsolationTests(unittest.TestCase):
             for name in OFFICIAL_ISOLATION_ENVS:
                 env.pop(name, None)
             result = subprocess.run(
-                [sys.executable, "-c", "import video_workbench_launcher"],
+                [sys.executable, "-c", "import os, sys; sys.path.insert(0, os.getcwd()); import video_workbench_launcher"],
                 cwd=ROOT, env=env, capture_output=True, text=True, timeout=60,
             )
             combined = result.stdout + result.stderr
@@ -316,12 +316,13 @@ class OfficialProcessTests(unittest.TestCase):
                 LOCALAPPDATA=str(root / "Local"),
                 USERPROFILE=str(root / "profile"),
                 HOME=str(root / "home"),
-                PYTHONPATH=str(guard),
                 PYTHONUTF8="1",
             )
             (root / "managed-runtime").mkdir()
             process = subprocess.Popen(
-                [sys.executable, "-c", "import video_workbench_launcher as launcher; raise SystemExit(launcher.main())"],
+                [sys.executable, "-c", "import os, runpy, sys; sys.path.insert(0, os.getcwd()); "
+                 "runpy.run_path(sys.argv[1]); import video_workbench_launcher as launcher; raise SystemExit(launcher.main())",
+                 str(guard / "sitecustomize.py")],
                 cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
             instance = None
