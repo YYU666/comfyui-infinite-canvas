@@ -24,6 +24,8 @@
 .paint-stage-frame { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .paint-stage { display: block; background: #111; touch-action: none; cursor: crosshair; }
 .paint-stage.is-transparent { background-image: linear-gradient(45deg, #2a2e2b 25%, transparent 25%), linear-gradient(-45deg, #2a2e2b 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #2a2e2b 75%), linear-gradient(-45deg, transparent 75%, #2a2e2b 75%); background-size: 18px 18px; background-position: 0 0, 0 9px, 9px -9px, -9px 0; background-color: #171a18; }
+.paint-brush-library { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.paint-brush-library span { grid-column: 1 / -1; color: var(--obsidian-violet, #9d8bff); font-size: 12px; }
 .paint-swatches { display: flex; flex-wrap: wrap; gap: 6px; }
 .paint-swatch, .paint-fg { width: 22px; height: 22px; border-radius: 6px; border: 1px solid #5c574c; padding: 0; }
 .paint-fg { width: 36px; height: 36px; }

@@ -6,13 +6,15 @@ import {
   undoHistory, redoHistory, initialPaperForBase, normalizePaintData,
 } from './paint-document.js';
 import {
-  BASIC_ROUND_BRUSH, PaintBuffer, applyStroke, eraseStroke, floodFill, smudgeStroke, previewComposite,
+  BASIC_ROUND_BRUSH, PaintBuffer, applyStroke, eraseStroke, floodFill, smudgeStroke, previewComposite, scaleStamp,
   rectSelection, ellipseSelection, lassoSelection, magicWandSelection, combineSelection, invertSelection,
   fillColor, clearSelection, copySelection, moveSelectionPixels, translateBuffer, selectionOutline,
   captureRect, restoreRect, resizeBuffers, createBuffers, compositeLayers, exportPaint, toMask,
   mergeDown, stampVisible, tintBuffer, hsvToRgb, rgbToHsv, colorToHex, parseColor, constrainPoint, rasterShape,
   transformBuffer, sampleColor, featherSelection, growSelection,
 } from './paint-engine.js';
+import { parseAbr } from './paint-abr-parser.js';
+import { builtinBrushes, brushState, IMPORT_BRUSH_PARAMS } from './paint-brushes.js';
 
 const TOOLS = [
   ['brush', '画笔', 'B'], ['eraser', '橡皮', 'E'], ['picker', '吸管', 'I'], ['smudge', '涂抹', 'S'],
@@ -65,7 +67,9 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
   const [doc, setDoc] = useState(initial);
   const [tool, setTool] = useState('brush');
   const [shape, setShape] = useState('line');
-  const [brush, setBrush] = useState({ ...BASIC_ROUND_BRUSH });
+  const [brush, setBrush] = useState(() => brushState(builtinBrushes()[0]));
+  const [library, setLibrary] = useState(() => builtinBrushes());
+  const abrRef = useRef(null);
   const [color, setColor] = useState('#111111');
   const [background, setBackground] = useState('#ffffff');
   const [selection, setSelection] = useState(null);
@@ -321,7 +325,52 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
   const strokeOptions = () => ({
     selection: selectionRef.current, alphaLock: activeLayer().alphaLock, pressureCurve,
     smoothing: brushRef.current.smoothing, layerId: docRef.current.activeLayerId,
+    blendMode: brushRef.current.blendMode || 'normal',
   });
+
+  useEffect(() => {
+    let cancel = false;
+    fetch('/api/paint/brushes', { credentials: 'same-origin' }).then(async (response) => {
+      if (!response.ok) return;
+      const payload = await response.json();
+      const custom = [];
+      for (const item of payload.brushes || []) {
+        if (item.builtin || !item.stampUrl) continue;
+        try {
+          custom.push({ ...item, kind: 'stamp', stamp: scaleStamp(await pngStamp(item.stampUrl), 512), params: { ...IMPORT_BRUSH_PARAMS, ...(item.params || {}) } });
+        } catch { /* keep the rest of the library */ }
+      }
+      if (!cancel) setLibrary([...builtinBrushes(), ...custom]);
+    }).catch(() => {});
+    return () => { cancel = true; };
+  }, []);
+
+  const importBrushFile = async (file) => {
+    if (!file) return;
+    if (file.size > 50 * 1024 * 1024) { setMessage('笔刷文件超过 50 MiB，已拒绝解析。'); return; }
+    try {
+      const parsed = file.name.toLowerCase().endsWith('.png')
+        ? { ok: true, stamps: [{ ...(await pngStamp(URL.createObjectURL(file))), name: file.name.replace(/\.png$/i, '') || '导入笔尖' }], message: '成功导入 1 个笔尖图案，已接入统一压感笔刷引擎；PS 私有双重画笔/湿边参数已忽略' }
+        : parseAbr(new Uint8Array(await file.arrayBuffer()));
+      if (!parsed.ok) { setMessage(parsed.error); return; }
+      const saved = [];
+      for (const stamp of parsed.stamps) {
+        const pngBase64 = await stampPngBase64(stamp);
+        const response = await fetch('/api/paint/brushes', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: stamp.name || '导入笔尖', group: '导入', pngBase64, params: { ...IMPORT_BRUSH_PARAMS, size: Math.max(1, Math.min(500, Math.max(stamp.width, stamp.height))) } }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || '笔刷保存失败。');
+        saved.push({ ...payload, kind: 'stamp', stamp, params: payload.params });
+      }
+      setLibrary((current) => [...current, ...saved]);
+      if (saved[0]) setBrush(brushState({ ...saved[0], stamp: saved[0].stamp }));
+      setMessage(parsed.message);
+    } catch (error) {
+      setMessage(error.message || '笔刷导入失败。');
+    }
+  };
 
   const onPointerDown = (event) => {
     if (readOnly) return;
@@ -504,7 +553,13 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       <label>HEX<input data-testid="paint-hex" value={color} onChange={(event) => setColor(event.target.value)} /></label>
       <div className="paint-swatches">{[...new Set([color, ...doc.swatches, ...swatches])].slice(0, 16).map((swatch) => <button type="button" key={swatch} className="paint-swatch" style={{ background: swatch }} aria-label={swatch} onClick={() => setColor(swatch)} />)}</div>
       <button type="button" onClick={() => setDoc((current) => ({ ...current, swatches: [...new Set([color, ...current.swatches])].slice(0, 24) }))}>加入色板</button>
-      <label>笔刷大小<input data-testid="paint-size" type="range" min="1" max="200" value={brush.size} onChange={(event) => setBrush({ ...brush, size: Number(event.target.value) })} /></label>
+      <div className="paint-brush-library" data-testid="paint-brush-library">
+        <span data-testid="paint-brush-active">{brush.name || '笔刷'}</span>
+        {library.map((entry) => <button type="button" key={entry.id} data-testid={`paint-brush-${entry.id}`} aria-pressed={brush.id === entry.id} onClick={() => setBrush(brushState(entry))}>{entry.name}</button>)}
+        <input ref={abrRef} data-testid="paint-abr-file" type="file" accept=".abr,.png,image/png" hidden onChange={(event) => { importBrushFile(event.target.files?.[0]); event.target.value = ''; }} />
+        <button type="button" data-testid="paint-import-abr" onClick={() => abrRef.current?.click()}>导入 ABR / PNG 笔尖</button>
+      </div>
+      <label>笔刷大小<input data-testid="paint-size" type="range" min="1" max="500" value={brush.size} onChange={(event) => setBrush({ ...brush, size: Number(event.target.value) })} /></label>
       <label>硬度<input type="range" min="0" max="100" value={brush.hardness} onChange={(event) => setBrush({ ...brush, hardness: Number(event.target.value) })} /></label>
       <label>不透明度<input type="range" min="1" max="100" value={brush.opacity} onChange={(event) => setBrush({ ...brush, opacity: Number(event.target.value) })} /></label>
       <label>流量<input type="range" min="1" max="100" value={brush.flow} onChange={(event) => setBrush({ ...brush, flow: Number(event.target.value) })} /></label>
@@ -513,6 +568,13 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       <label>压感曲线<select data-testid="paint-pressure" value={pressureCurve} onChange={(event) => setPressureCurve(event.target.value)}><option value="linear">线性</option><option value="soft">软</option><option value="hard">硬</option></select></label>
       <label><input data-testid="paint-palm" type="checkbox" checked={palmReject} onChange={(event) => setPalmReject(event.target.checked)} />防手掌误触</label>
       <label><input type="checkbox" checked={brush.pressureSize} onChange={(event) => setBrush({ ...brush, pressureSize: event.target.checked })} />压感控制大小</label>
+      <label>最小直径 %<input data-testid="paint-min-diameter" type="range" min="1" max="100" value={brush.minDiameter || 20} onChange={(event) => setBrush({ ...brush, minDiameter: Number(event.target.value) })} /></label>
+      <label><input data-testid="paint-pressure-opacity" type="checkbox" checked={Boolean(brush.pressureOpacity)} onChange={(event) => setBrush({ ...brush, pressureOpacity: event.target.checked })} />压感控制不透明度</label>
+      <label><input data-testid="paint-follow" type="checkbox" checked={Boolean(brush.followDirection)} onChange={(event) => setBrush({ ...brush, followDirection: event.target.checked })} />角度跟随运笔</label>
+      <label>角度<input data-testid="paint-angle" type="range" min="0" max="360" value={brush.angle || 0} onChange={(event) => setBrush({ ...brush, angle: Number(event.target.value) })} /></label>
+      <label>大小抖动<input data-testid="paint-size-jitter" type="range" min="0" max="100" value={brush.sizeJitter || 0} onChange={(event) => setBrush({ ...brush, sizeJitter: Number(event.target.value) })} /></label>
+      <label>角度抖动<input data-testid="paint-angle-jitter" type="range" min="0" max="180" value={brush.angleJitter || 0} onChange={(event) => setBrush({ ...brush, angleJitter: Number(event.target.value) })} /></label>
+      <label>散布<input data-testid="paint-scatter" type="range" min="0" max="100" value={Math.round((brush.scatter || 0) * 50)} onChange={(event) => setBrush({ ...brush, scatter: Number(event.target.value) / 50 })} /></label>
       <label>几何<select data-testid="paint-shape" value={shape} onChange={(event) => setShape(event.target.value)}><option value="line">直线</option><option value="arrow">箭头</option><option value="rect">空心矩形</option><option value="rect-fill">实心矩形</option><option value="ellipse">空心椭圆</option><option value="ellipse-fill">实心椭圆</option></select></label>
       <label>选区<select data-testid="paint-select-mode" value={selectionMode} onChange={(event) => setSelectionMode(event.target.value)}><option value="new">新建</option><option value="add">加选</option><option value="subtract">减选</option></select></label>
       <label>容差<input data-testid="paint-tolerance" type="range" min="0" max="100" value={tolerance} onChange={(event) => setTolerance(Number(event.target.value))} /></label>
@@ -572,4 +634,39 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       <button type="button" data-testid="paint-push" disabled title="局域网伴侣功能待 M3 接入">推到平板</button>
     </aside>
   </div>, document.body);
+}
+
+async function pngStamp(url) {
+  const image = await loadImage(url);
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  context.drawImage(image, 0, 0);
+  const pixels = context.getImageData(0, 0, image.width, image.height).data;
+  const alpha = new Uint8Array(image.width * image.height);
+  for (let index = 0; index < alpha.length; index += 1) alpha[index] = pixels[index * 4 + 3];
+  return { width: image.width, height: image.height, alpha };
+}
+
+function stampPngBase64(stamp) {
+  const canvas = document.createElement('canvas');
+  canvas.width = stamp.width;
+  canvas.height = stamp.height;
+  const context = canvas.getContext('2d');
+  const image = context.createImageData(stamp.width, stamp.height);
+  for (let index = 0; index < stamp.alpha.length; index += 1) {
+    image.data[index * 4] = 255;
+    image.data[index * 4 + 1] = 255;
+    image.data[index * 4 + 2] = 255;
+    image.data[index * 4 + 3] = stamp.alpha[index];
+  }
+  context.putImageData(image, 0, 0);
+  return new Promise((resolve, reject) => canvas.toBlob(async (blob) => {
+    if (!blob) { reject(new Error('笔尖图案无法编码。')); return; }
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let text = '';
+    for (const byte of bytes) text += String.fromCharCode(byte);
+    resolve(btoa(text));
+  }, 'image/png'));
 }
