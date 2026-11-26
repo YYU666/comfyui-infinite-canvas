@@ -32,9 +32,25 @@ from workflow_extensions import ExtensionStore
 from comfy_proxy import is_comfy_path, is_websocket_request, proxy_http, proxy_websocket
 from thumbnail_cache import ThumbnailCache
 from project_api import ProjectAPI
+from native3d_api import Native3DAPI
+from video_edit_api import VideoEditAPI
+from h3_compare import serve_h3_compare
+from video_edit_jobs import VideoEditJobs
+from video_rhythm_api import VideoRhythmAPI
+from video_rhythm_jobs import VideoRhythmJobs
+from video_chroma_api import VideoChromaAPI
+from video_chroma_jobs import VideoChromaJobs
+from video_plate_api import VideoPlateAPI
+from video_plate_jobs import VideoPlateJobs
+from art_director import ArtDirectorAPI
+from native3d_jobs import Native3DJobs
+from hardware_metrics import hardware_metrics
+from pureref_sessions import PureRefSessions
 from project_store import ProjectStore
 from queue_api import QueueAPI
 from workbench_doctor import WorkbenchDoctor
+from workbench_comfy_lifecycle import ComfyLifecycle
+from gpu_lease import GpuLeases
 from workbench_queue import ComfyQueueAdapter, QueueManager
 from workbench_security import session_cookie, valid_content_type, valid_host, valid_origin, valid_token
 from workbench_settings import SettingsError, WorkbenchSettings, read_deepseek_key
@@ -50,6 +66,7 @@ from workbench_lifecycle import (
     startup_guard,
     workbench_ports,
     utc_now,
+    request_comfy_start,
 )
 from workbench_logging import cleanup_legacy_comfy_logs, configure_application_logging
 from workbench_update import UpdateError, WorkbenchUpdateManager, validate_update_request
@@ -124,6 +141,21 @@ LOGGER = logging.getLogger("h3-workbench")
 def api_status():
     with urllib.request.urlopen(COMFY_URL + "/system_stats", timeout=2) as response:
         return response.headers.get("Access-Control-Allow-Origin"), json.load(response)
+
+
+def sync_comfy_ownership(server, status):
+    """Keep advisory instance metadata consistent when an external service replaces our child."""
+    process = server.comfy_lifecycle.process
+    owned = status["owned"]
+    if server.comfy_owned == owned and server.comfy_process is process:
+        return
+    server.comfy_owned, server.comfy_process = owned, process
+    record = read_instance()
+    if record and record.get("pid") == os.getpid():
+        try:
+            atomic_write_json(instance_path(), {**record, "comfyOwned": owned, "comfyPid": process.pid if process else None})
+        except Exception:
+            LOGGER.warning("ComfyUI 归属状态已变化，实例元数据暂未更新。")
 
 
 def queue_summary():
@@ -231,7 +263,7 @@ def import_douyin_with_browser(url, output_dir, stem):
     if not node:
         raise RuntimeError("没有找到 Node.js，无法启用抖音公开页面解析。")
     file_path = (output_dir / f"{stem}.mp4").resolve()
-    command = [node, str(HERE / "browser_video_import.mjs"), "--url", url, "--output", str(file_path)]
+    command = [node, str(HERE / "browser_video_import.mjs"), "--url", url, "--output", str(file_path), "--ffmpeg", imageio_ffmpeg.get_ffmpeg_exe()]
     try:
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     except subprocess.TimeoutExpired as exc:
@@ -432,9 +464,19 @@ def open_file_location(payload):
     return {"opened": True, "path": str(file_path)}
 
 
+VIDEO_JOB_KINDS = ("edit", "rhythm", "chroma", "plate")
+VIDEO_POST_PREFIXES = tuple(f"/api/video-{kind}/" for kind in VIDEO_JOB_KINDS)
+
+
 class WorkbenchServer(ThreadingHTTPServer):
     # Windows SO_REUSEADDR can let two backends bind the same port. Never share.
     allow_reuse_address = False
+
+    def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
+        self.video_lifecycle_lock = threading.Lock()
+        self.video_requests = 0
+        self.video_stopping = False
+        super().__init__(server_address, RequestHandlerClass, bind_and_activate)
 
 
 class WorkbenchHandler(SimpleHTTPRequestHandler):
@@ -451,7 +493,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         ]))
         path = urllib.parse.urlparse(self.path).path
         if self.command == "GET" and path in {"/", "/index.html"}:
-            self.send_header("Set-Cookie", session_cookie(self.server.token))
+            self.send_header("Set-Cookie", session_cookie(self.server.token, self.server.server_port))
         super().end_headers()
 
     def log_message(self, format, *args):
@@ -475,7 +517,7 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not valid_origin(self.headers.get("Origin"), self.server.server_port):
             self.send_json(403, {"code": "ORIGIN_FORBIDDEN", "message": "Origin 不在本地白名单内。"})
             return False
-        if path.startswith("/api/") and path != "/api/health" and not valid_token(self.headers, self.server.token):
+        if path.startswith("/api/") and path != "/api/health" and not valid_token(self.headers, self.server.token, self.server.server_port):
             self.send_json(401, {"code": "UNAUTHORIZED", "message": "本地访问令牌无效或缺失。"})
             return False
         if write and path.startswith("/api/") and not valid_content_type(self.command, path, self.headers):
@@ -487,22 +529,53 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return False
         return True
 
+    def handle_comfy_proxy(self, path):
+        """Check the same path that the proxy will send to Comfy."""
+        if not is_comfy_path(path):
+            return False
+        raw_path = self.path.partition("?")[0]
+        suffix = path.removeprefix("/api/comfy")
+        parts = suffix[1:].split("/") if suffix not in {"", "/"} else []
+        try:
+            decoded = [urllib.parse.unquote(part, errors="strict") for part in parts]
+        except UnicodeError:
+            decoded = []
+        if (raw_path != path or "#" in self.path
+                or any(ord(char) <= 32 or ord(char) == 127 for char in self.path)
+                or len(decoded) != len(parts)
+                or any(not part or part in {".", ".."} or not part.isprintable()
+                       or any(char in part for char in "/\\%;?#") for part in decoded)):
+            self.send_json(400, {"code": "INVALID_COMFY_PATH", "message": "ComfyUI 代理需要规范的请求路径。"})
+            return True
+        route = tuple(part.lower() for part in decoded)
+        if self.command != "GET" and route in {("prompt",), ("api", "prompt")}:
+            self.send_json(409, {"code": "VISIBLE_CANVAS_REQUIRED", "message": "画布生成使用当前页，简易模式使用人工入口。"})
+        elif self.command == "GET" and is_websocket_request(self):
+            proxy_websocket(self)
+        else:
+            proxy_http(self)
+        return True
+
     def do_GET(self):
         if not self.guard_request():
             return
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/h3-compare" and serve_h3_compare(self, path, self.server.project_store, INPUT_DIR, OUTPUT_DIR):
+            return
+        if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "GET", path):
+            return
         if path == "/api/thumbnails":
             self.server.thumbnail_cache.handle_get(self)
             return
-        if is_comfy_path(path):
-            if is_websocket_request(self):
-                proxy_websocket(self)
-            else:
-                proxy_http(self)
+        if self.handle_comfy_proxy(path):
             return
         if path == "/api/health":
-            comfy_process = getattr(self.server, "comfy_process", None)
-            comfy_running = comfy_process.poll() is None if comfy_process else self.comfy_is_running()
+            native_only = getattr(self.server, "native3d_only", False)
+            manager = getattr(self.server, "comfy_lifecycle", None)
+            comfy = manager.status(refresh=True) if manager else {"running": False if native_only else self.comfy_is_running(),
+                "owned": bool(getattr(self.server, "comfy_owned", False)), "enabled": not native_only}
+            if manager:
+                sync_comfy_ownership(self.server, comfy)
             queue_state = self.server.queue_manager.snapshot()
             health = {
                 "ok": True,
@@ -510,7 +583,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 "port": self.server.server_port,
                 "pid": os.getpid(),
                 "startedAt": self.server.started_at,
-                "comfy": {"running": comfy_running, "owned": bool(self.server.comfy_owned)},
+                "native3dOnly": native_only,
+                "native3d": {"service": bool(getattr(self.server, "native3d_jobs", None))},
+                "comfy": comfy,
                 "queue": {
                     "running": sum(job["status"] in {"running", "finishing"} for job in queue_state["jobs"]),
                     "pending": sum(job["status"] == "queued" for job in queue_state["jobs"]),
@@ -541,22 +616,30 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         agent_api = getattr(self.server, "agent_api", None)
         if agent_api and agent_api.handle_get(self, path):
             return
+        native3d_api = getattr(self.server, "native3d_api", None)
+        if native3d_api and native3d_api.handle_get(self, path):
+            return
+        video_edit_api = getattr(self.server, "video_edit_api", None)
+        if video_edit_api and video_edit_api.handle_get(self, path):
+            return
+        video_rhythm_api = getattr(self.server, "video_rhythm_api", None)
+        if video_rhythm_api and video_rhythm_api.handle_get(self, path):
+            return
+        video_chroma_api = getattr(self.server, "video_chroma_api", None)
+        if video_chroma_api and video_chroma_api.handle_get(self, path):
+            return
+        video_plate_api = getattr(self.server, "video_plate_api", None)
+        if video_plate_api and video_plate_api.handle_get(self, path):
+            return
+        art_director_api = getattr(self.server, "art_director_api", None)
+        if art_director_api and art_director_api.handle_get(self, path):
+            return
         if self.server.project_api.handle_get(self, path):
             return
         if path != "/api/hardware-metrics":
             super().do_GET()
             return
-        try:
-            memory = psutil.virtual_memory()
-            self.send_json(200, {
-                "cpuPercent": round(psutil.cpu_percent(interval=None), 1),
-                "ramTotal": memory.total,
-                "ramUsed": memory.total - memory.available,
-                "timestamp": int(time.time() * 1000),
-            })
-        except Exception as exc:
-            LOGGER.exception("硬件状态读取失败：%s", exc)
-            self.send_json(500, {"error": "暂时无法读取 CPU 使用率。"})
+        self.send_json(200, hardware_metrics())
 
     def comfy_is_running(self):
         try:
@@ -569,8 +652,31 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
-        if is_comfy_path(path):
-            proxy_http(self)
+        if not (path.startswith(VIDEO_POST_PREFIXES) or path == "/api/import-video"):
+            return self.handle_post(path)
+
+        with self.server.video_lifecycle_lock:
+            if self.server.video_stopping:
+                self.send_json(409, {"code": "WORKBENCH_STOPPING", "message": "工作台正在关闭，暂不能开始视频任务。"})
+                return
+            self.server.video_requests += 1
+        try:
+            return self.handle_post(path)
+        finally:
+            with self.server.video_lifecycle_lock:
+                self.server.video_requests -= 1
+
+    def handle_post(self, path):
+        if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "POST", path):
+            return
+        if self.handle_comfy_proxy(path):
+            return
+        if path == "/api/local-comfy/start":
+            manager = getattr(self.server, "comfy_lifecycle", None)
+            if not manager:
+                self.send_json(503, {"code": "START_UNAVAILABLE", "message": "当前实例未启用 ComfyUI 启动管理。"})
+            else:
+                self.send_json(202, manager.request_start())
             return
         if path in {"/api/doctor", "/api/doctor/log-bundle"}:
             try:
@@ -599,9 +705,25 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 self.send_json(500, {"code": "INTERNAL", "message": "诊断暂时无法完成，请查看运行日志。", "details": {}})
             return
         if path == "/api/shutdown":
-            self.send_json(200, {"ok": True})
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
-            return
+            lock = self.server.video_lifecycle_lock
+            if not lock.acquire(blocking=False):
+                self.send_json(409, {"code": "WORKBENCH_BUSY", "message": "工作台正在处理设置或升级请求，请稍后再关闭。"})
+                return
+            try:
+                if native3d_busy(self.server):
+                    self.send_json(409, {"code":"NATIVE3D_BUSY", "message":"Cancel or finish native3D jobs before shutdown."})
+                    return
+                if video_busy(self.server):
+                    self.send_json(409, {"code": "QUEUE_BUSY", "message": "仍有活动视频任务，请完成或取消后再关闭工作台。"})
+                    return
+                self.server.video_stopping = True
+                try:
+                    self.send_json(200, {"ok": True})
+                finally:
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
+            finally:
+                lock.release()
         if path == "/api/updates/apply":
             manager = getattr(self.server, "update_manager", None)
             try:
@@ -611,9 +733,15 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 if length <= 0 or length > 1024:
                     raise UpdateError("升级请求内容无效。", code="BAD_REQUEST")
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                result = manager.apply(validate_update_request(payload))
-                self.send_json(200, result)
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                with self.server.video_lifecycle_lock:
+                    if self.server.video_stopping:
+                        raise UpdateError("工作台正在关闭。", status=409, code="WORKBENCH_STOPPING")
+                    result = manager.apply(validate_update_request(payload))
+                    self.server.video_stopping = True
+                    try:
+                        self.send_json(200, result)
+                    finally:
+                        threading.Thread(target=self.server.shutdown, daemon=True).start()
             except UpdateError as exc:
                 self.send_json(exc.status, {"code": exc.code, "message": exc.message, "details": {}})
             except (ValueError, TypeError, json.JSONDecodeError):
@@ -629,6 +757,24 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
             return
         agent_api = getattr(self.server, "agent_api", None)
         if agent_api and agent_api.handle_post(self, path):
+            return
+        native3d_api = getattr(self.server, "native3d_api", None)
+        if native3d_api and native3d_api.handle_post(self, path):
+            return
+        video_edit_api = getattr(self.server, "video_edit_api", None)
+        if video_edit_api and video_edit_api.handle_post(self, path):
+            return
+        video_rhythm_api = getattr(self.server, "video_rhythm_api", None)
+        if video_rhythm_api and video_rhythm_api.handle_post(self, path):
+            return
+        video_chroma_api = getattr(self.server, "video_chroma_api", None)
+        if video_chroma_api and video_chroma_api.handle_post(self, path):
+            return
+        video_plate_api = getattr(self.server, "video_plate_api", None)
+        if video_plate_api and video_plate_api.handle_post(self, path):
+            return
+        art_director_api = getattr(self.server, "art_director_api", None)
+        if art_director_api and art_director_api.handle_post(self, path):
             return
         if self.server.project_api.handle_post(self, path):
             return
@@ -657,8 +803,9 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
-        if is_comfy_path(path):
-            proxy_http(self)
+        if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "PUT", path):
+            return
+        if self.handle_comfy_proxy(path):
             return
         if path == "/api/settings":
             try:
@@ -666,11 +813,14 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
                 if length <= 0 or length > 65536:
                     raise ValueError("设置请求内容无效。")
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                result = self.server.settings.update(
-                    payload,
-                    before_save=lambda candidate: validate_settings_change(self.server, candidate),
-                )
-                apply_server_settings(self.server)
+                with self.server.video_lifecycle_lock:
+                    if self.server.video_stopping:
+                        raise SettingsError("工作台正在关闭。", status=409, code="WORKBENCH_STOPPING")
+                    result = self.server.settings.update(
+                        payload,
+                        before_save=lambda candidate: validate_settings_change(self.server, candidate),
+                    )
+                    apply_server_settings(self.server)
                 self.send_json(200, result)
             except SettingsError as exc:
                 self.send_json(exc.status, {"code": exc.code, "message": exc.message, "details": {}})
@@ -687,14 +837,41 @@ class WorkbenchHandler(SimpleHTTPRequestHandler):
         if not self.guard_request(write=True):
             return
         path = urllib.parse.urlparse(self.path).path
-        if is_comfy_path(path):
-            proxy_http(self)
+        if path.startswith('/api/pureref/') and getattr(self.server, 'pureref_sessions', None) and self.server.pureref_sessions.handle(self, "DELETE", path):
+            return
+        if self.handle_comfy_proxy(path):
             return
         if not self.server.project_api.handle_delete(self, path):
             self.send_json(404, {"code": "NOT_FOUND", "message": "接口不存在。", "details": {}})
 
 
+def native3d_busy(server):
+    jobs = getattr(server, "native3d_jobs", None)
+    if not jobs:
+        return False
+    with jobs.lock:
+        return bool(jobs.active) or any(job["status"] in {"queued", "running"} for job in jobs.jobs.values())
+
+
+def video_busy(server):
+    if getattr(server, "video_requests", 0):
+        return True
+    for kind in VIDEO_JOB_KINDS:
+        api = getattr(server, f"video_{kind}_api", None)
+        if api is None:
+            continue
+        jobs = api.jobs
+        with jobs.lock:
+            if any(job["status"] in {"queued", "running"} for job in jobs.jobs.values()):
+                return True
+    return False
+
+
 def validate_update_ready(server):
+    if native3d_busy(server):
+        raise UpdateError("Native3D queue has active jobs.", status=409, code="NATIVE3D_BUSY")
+    if video_busy(server):
+        raise UpdateError("仍有活动视频任务，请完成或取消后再升级。", status=409, code="QUEUE_BUSY")
     if server.project_store._held:
         raise UpdateError("仍有项目处于打开或编辑状态。请先保存并返回项目启动页，再升级。", status=409, code="PROJECT_OPEN")
     active = [job for job in server.queue_manager.snapshot()["jobs"] if job.get("status") in {"queued", "running", "finishing"}]
@@ -710,8 +887,12 @@ def validate_update_ready(server):
 
 
 def validate_settings_change(server, candidate):
+    if native3d_busy(server):
+        raise SettingsError("Native3D queue has active jobs.", status=409, code="NATIVE3D_BUSY")
     if Path(candidate["projectsRoot"]).resolve() == server.project_store.root:
         return
+    if video_busy(server):
+        raise SettingsError("仍有活动视频任务，请完成或取消后再切换项目根目录。", status=409, code="QUEUE_BUSY")
     if server.project_store._held:
         raise SettingsError("仍有项目处于打开或编辑状态，请关闭项目后再切换项目根目录。", status=409, code="LOCKED")
     active = [job for job in server.queue_manager.snapshot()["jobs"] if job.get("status") in {"queued", "running", "finishing"}]
@@ -730,6 +911,22 @@ def apply_server_settings(server):
         replacement = ProjectStore(projects_root, previous.owner_id, defaults)
         server.project_store = replacement
         server.project_api.store = replacement
+        if getattr(server, "thumbnail_cache", None):
+            server.thumbnail_cache.store = replacement
+        if getattr(server, 'pureref_sessions', None):
+            server.pureref_sessions.store = replacement
+        if getattr(server, "art_director_api", None):
+            server.art_director_api.store = replacement
+        if hasattr(server, "native3d_jobs"):
+            server.native3d_jobs.store = replacement
+        for kind in VIDEO_JOB_KINDS:
+            api = getattr(server, f"video_{kind}_api", None)
+            if api is None:
+                continue
+            with api.jobs.lock:
+                # A completed result must never commit into a different project root.
+                api.jobs.jobs.clear()
+                api.jobs.store = replacement
         server.project_api.domain.store = replacement
         if getattr(server, "agent_api", None):
             server.agent_api.protocol.store = replacement
@@ -742,6 +939,7 @@ def apply_server_settings(server):
     server.doctor = WorkbenchDoctor(
         HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
         model_roots=config["modelRoots"] or None,
+        secret_provider=lambda: server.art_director_api.redaction_secrets() if getattr(server, "art_director_api", None) else (),
     )
     logging.getLogger().setLevel(config["logLevel"])
 
@@ -766,6 +964,8 @@ def main():
                 if health:
                     url = f"http://127.0.0.1:{health['port']}/"
                     LOGGER.info("工作台已在运行：%s", url)
+                    if os.environ.get("H3_WORKBENCH_NATIVE3D_ONLY") != "1":
+                        request_comfy_start(instance, health)
                     if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
                         webbrowser.open(url)
                     return 0
@@ -791,6 +991,7 @@ def main():
             atomic_write_json(runtime_dir() / "workbench-port.json", {"port": server.server_port})
             server.token = secrets.token_urlsafe(32)
             server.started_at = utc_now()
+            server.native3d_only = os.environ.get("H3_WORKBENCH_NATIVE3D_ONLY") == "1"
             server.comfy_owned = False
             server.comfy_process = None
             server.comfy_url = COMFY_URL
@@ -800,37 +1001,50 @@ def main():
             logging.getLogger().setLevel(server.settings.data["logLevel"])
             server.project_store = ProjectStore(server.settings.data["projectsRoot"], defaults=server.settings.data["defaults"])
             server.project_api = ProjectAPI(server.project_store)
+            server.pureref_sessions = PureRefSessions(server.project_store)
+            server.art_director_api = ArtDirectorAPI(server.project_store)
+            gpu_leases = GpuLeases() if (os.environ.get("H3_WORKBENCH_TEST_MODE") != "1"
+                                               or os.environ.get("H3_GPU_LEASES") == "1") else None
+            server.native3d_jobs = Native3DJobs(runtime_dir() / "native3d-jobs", server.project_store, gpu_leases=gpu_leases)
+            server.native3d_api = Native3DAPI(server.native3d_jobs)
+            server.video_edit_api = VideoEditAPI(VideoEditJobs(runtime_dir() / "video-edit-jobs", server.project_store))
+            server.video_rhythm_api = VideoRhythmAPI(VideoRhythmJobs(runtime_dir() / "video-rhythm-jobs", server.project_store))
+            server.video_chroma_api = VideoChromaAPI(VideoChromaJobs(runtime_dir() / "video-chroma-jobs", server.project_store))
+            server.video_plate_api = VideoPlateAPI(VideoPlateJobs(runtime_dir() / "video-plate-jobs", server.project_store, comfy_url=COMFY_URL))
             server.thumbnail_cache = ThumbnailCache(runtime_dir() / "thumbnails", server.project_store, COMFY_URL)
             server.doctor = WorkbenchDoctor(
                 HERE, ROOT, server.project_store.root, comfy_url=COMFY_URL, workbench_port=server.server_port,
                 model_roots=server.settings.data["modelRoots"] or None,
+                secret_provider=lambda: server.art_director_api.redaction_secrets(),
             )
-            server.queue_manager = QueueManager(adapter=ComfyQueueAdapter(COMFY_URL), concurrency=server.settings.data["queue"]["concurrency"])
+            server.queue_manager = QueueManager(adapter=ComfyQueueAdapter(COMFY_URL), concurrency=server.settings.data["queue"]["concurrency"], gpu_leases=gpu_leases)
             server.queue_manager.set_concurrency(server.settings.data["queue"]["concurrency"])
-            server.queue_api = QueueAPI(server.queue_manager)
             server.agent_api = AgentAPI(server.project_store, server.queue_manager)
+            server.queue_api = QueueAPI(server.queue_manager, lambda: (server.project_store, server.agent_api.canvas))
             server.extension_api = ExtensionAPI(ExtensionStore(runtime_dir() / "extensions"), COMFY_URL, comfy_root=ROOT)
             server.update_manager = WorkbenchUpdateManager(HERE, lambda: validate_update_ready(server))
-            server.queue_manager.start()
+            if not server.native3d_only:
+                server.queue_manager.start()
 
-            try:
-                api_status()
-                LOGGER.info("检测到运行中的 ComfyUI，直接连接；停止工作台不会关闭它。")
-            except (urllib.error.URLError, TimeoutError, ConnectionError):
-                if os.environ.get("H3_WORKBENCH_TEST_MODE") == "1":
-                    LOGGER.info("隔离测试模式：不启动或依赖真实 ComfyUI。")
-                else:
-                    command = [
-                        str(ROOT / "python_embeded" / "python.exe"), "-s", str(ROOT / "ComfyUI" / "main.py"),
-                        "--windows-standalone-build", "--output-directory", str(OUTPUT_DIR), "--input-directory", str(INPUT_DIR),
-                        "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch",
-                        "--enable-cors-header", WEB_URL,
-                    ]
-                    comfy_process, comfy_logger_process = start_owned_comfy(command, ROOT, log_dir / "comfyui.log")
-                    server.comfy_owned = True
-                    server.comfy_process = comfy_process
-                    LOGGER.info("已隐藏启动 ComfyUI，PID=%s", comfy_process.pid)
-
+            command = [
+                str(ROOT / "python_embeded" / "python.exe"), "-s", str(ROOT / "ComfyUI" / "main.py"),
+                "--windows-standalone-build", "--output-directory", str(OUTPUT_DIR), "--input-directory", str(INPUT_DIR),
+                "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch", "--enable-cors-header", WEB_URL,
+            ]
+            def spawn_comfy(command, root, log):
+                cleanup_legacy_comfy_logs(log_dir)
+                process, logger = start_owned_comfy(command, root, log)
+                server.comfy_owned, server.comfy_process = True, process
+                record = read_instance()
+                if record and record.get("pid") == os.getpid():
+                    try:
+                        atomic_write_json(instance_path(), {**record, "comfyOwned": True, "comfyPid": process.pid})
+                    except Exception:
+                        LOGGER.warning("ComfyUI 已启动，实例元数据暂未更新。")
+                return process, logger
+            server.comfy_lifecycle = ComfyLifecycle(url=COMFY_URL, root=ROOT, log_dir=log_dir,
+                command=command, spawn=spawn_comfy, enabled=not server.native3d_only,
+                allow_start=os.environ.get("H3_WORKBENCH_TEST_MODE") != "1")
             atomic_write_json(instance_path(), {
                 "port": server.server_port,
                 "token": server.token,
@@ -840,6 +1054,7 @@ def main():
                 "comfyOwned": server.comfy_owned,
                 "comfyPid": comfy_process.pid if comfy_process else None,
             })
+            server.comfy_lifecycle.request_start()
             LOGGER.info("视频工作台已就绪：%s", WEB_URL)
             if not os.environ.get("H3_WORKBENCH_NO_BROWSER"):
                 webbrowser.open(WEB_URL + "/")
@@ -853,8 +1068,16 @@ def main():
             print(f"\n{exc}\n", file=sys.stderr)
         return 1
     finally:
+        if server and hasattr(server, "comfy_lifecycle"):
+            server.comfy_lifecycle.close()
+            comfy_process = server.comfy_lifecycle.process
+            comfy_logger_process = server.comfy_lifecycle.logger
         if server and hasattr(server, "queue_manager"):
             server.queue_manager.stop()
+        if server and hasattr(server, "native3d_jobs"):
+            server.native3d_jobs.close()
+        if server and hasattr(server, "pureref_sessions"):
+            server.pureref_sessions.close()
         if server and hasattr(server, "project_store"):
             server.project_store.close()
         if server:

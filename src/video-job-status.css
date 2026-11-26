@@ -1,0 +1,2 @@
+.video-job-status { display: inline-flex; min-width: 0; flex-direction: column; gap: 3px; }
+.video-job-status progress { width: 100%; min-width: 42px; height: 4px; accent-color: var(--accent, #55a6ee); }
