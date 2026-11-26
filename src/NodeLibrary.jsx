@@ -1,13 +1,14 @@
+import { dispatchRecordedPublication, trustedLibraryMessage } from './node-library-publish.js';
 import React, { useEffect, useRef, useState } from 'react';
 import { FolderOpen, RefreshCw, X } from 'lucide-react';
 import './NodeLibrary.css';
 
 const ORIGIN = 'https://refmuse.cn';
 
-export default function NodeLibrary({ open, onClose, onOpenLocal, onImport, sharePacket, onShareSent }) {
+export default function NodeLibrary({ open, onClose, onOpenLocal, onImport, sharePacket, onShareSent, onShareResult }) {
   const frame = useRef(null);
   const latest = useRef(null);
-  latest.current = { open, onClose, onImport, onShareSent };
+  latest.current = { open, onClose, onImport, onShareSent, onShareResult };
   const [state, setState] = useState('loading');
   const [reloadKey, setReloadKey] = useState(0);
   const [loadEpoch, setLoadEpoch] = useState(0);
@@ -21,11 +22,12 @@ export default function NodeLibrary({ open, onClose, onOpenLocal, onImport, shar
     setState('loading');
     const currentFrame = frame.current;
     const receive = async (event) => {
-      if (event.origin !== ORIGIN || event.source !== frame.current?.contentWindow || event.data?.version !== 1) return;
+      if (!trustedLibraryMessage(event, frame.current?.contentWindow)) return;
       const data = event.data;
       if (data.type === 'refmuse.nodes.ready' && !failed) { if (!ready) init(); ready = true; setState('connected'); }
       if (data.type === 'refmuse.nodes.close' && latest.current.open) latest.current.onClose();
       if (data.type === 'refmuse.nodes.share.result') {
+        Promise.resolve(latest.current.onShareResult?.(data)).catch(() => setError('发布状态记录无法保存，请查询公开状态。'));
         if (data.requestId === shared.current && typeof data.ok === 'boolean') {
           shared.current = null;
           const message = data.status === 'published' ? '上传成功，已发布到节点库。未经 GPU 实测。'
@@ -62,8 +64,8 @@ export default function NodeLibrary({ open, onClose, onOpenLocal, onImport, shar
     shared.current = sharePacket.requestId;
     setError('');
     setShareStatus('正在提交节点包；若提示登录，请先登录，完成后会继续上传。');
-    frame.current?.contentWindow?.postMessage({ type: 'refmuse.nodes.share', version: 1, ...sharePacket }, ORIGIN);
-    latest.current.onShareSent?.(sharePacket.requestId);
+    // Persist dedup intent before crossing the external publication boundary.
+    void dispatchRecordedPublication(sharePacket, latest.current.onShareSent, packet => frame.current?.contentWindow?.postMessage({ type: 'refmuse.nodes.share', version: 1, ...packet }, ORIGIN)).catch(() => setError('发布去重记录无法保存，已停止发送。'));
   }, [open, state, sharePacket]);
   useEffect(() => {
     if (!open) return;

@@ -15,6 +15,19 @@ const comfy = new URL(thumbnailUrl('/api/comfy/view?filename=out.png&subfolder=h
 assert.equal(comfy.searchParams.get('filename'), 'out.png');
 assert.equal(comfy.searchParams.get('type'), 'output');
 assert.equal(comfy.searchParams.has('rand'), false, 'unstable cache-busters do not fragment thumbnail cache');
+for (const type of ['input', 'output', 'temp']) {
+  for (const subfolder of ['H3\\extensions\\fixture', 'H3/extensions\\fixture']) {
+    const source = `/api/comfy/view?${new URLSearchParams({ filename: 'out.png', subfolder, type })}`;
+    const derived = new URL(thumbnailUrl(source), 'http://fixture');
+    assert.equal(derived.searchParams.get('subfolder'), 'H3/extensions/fixture');
+    assert.equal(derived.searchParams.get('type'), type);
+    assert.equal(new URL(source, 'http://fixture').searchParams.get('subfolder'), subfolder, 'original identity unchanged');
+  }
+}
+for (const subfolder of ['H3\\..\\secret', 'H3/..\\secret', '\\root', '\\\\server\\share', 'C:\\folder', 'C:folder', 'H3\\.\\x', 'H3\\\\x', '/root', 'H3/\\x', 'H3\0x']) {
+  assert.equal(thumbnailUrl(`/api/comfy/view?${new URLSearchParams({ filename: 'out.png', subfolder })}`), null, subfolder);
+}
+assert.equal(thumbnailUrl('/api/comfy/view?filename=nested%5Cout.png'), null, 'filename must remain a basename');
 for (const source of ['https://evil/image.png', '//evil/image.png', '/api/comfy/view?filename=..%2Fevil.png', '/api/comfy/view?filename=x.png&type=invalid', '/api/projects/prj_x/assets/%2E%2E%5Cevil.png']) {
   assert.equal(thumbnailUrl(source), null, source);
 }

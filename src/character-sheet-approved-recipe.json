@@ -1,0 +1,62 @@
+{
+  "version": "white-female-approved-20261108-v1",
+  "templateVersion": "portrait-proportions-v2",
+  "portraitCrop": {
+    "x": 210,
+    "y": 10,
+    "width": 600,
+    "height": 700
+  },
+  "deliveryCrop": {
+    "x": 108,
+    "y": 384,
+    "width": 936,
+    "height": 1664
+  },
+  "seeds": {
+    "front_portrait": 781307,
+    "three_quarter_portrait": 2096285145,
+    "front_body": 981306,
+    "back_body": 617210
+  },
+  "prompts": {
+    "front_portrait": "Edit <image1> only. Create a FRONT-FACING HEAD CLOSE-UP IDENTITY PORTRAIT. Show the complete crown, scalp and side hair framing with a small clear margin above the topmost hair; bottom edge at the clavicle. Long hair lengths naturally continue beyond the lower edge; never shorten the hairstyle or pull back to include its full length. Keep the head upright without tilt, face centered and facing directly into the camera. Preserve visible accessories and upper garment. Do not pull back to show torso, waist or hands. Create exactly ONE INSTANCE of the same person, in ONE pose, from ONE camera angle, on a 9:16 canvas. Preserve identity, age, skin tone, hairstyle and distinctive traits from <image1>. Use a neutral light-gray seamless studio background (#D9D9D9), soft even studio lighting. Preserve the reference visual style unless explicitly changed. No beautification, collage, split screen, inset portrait, extra person, text, border or watermark. Portrait-only identity/style instructions (keep the required head-close-up framing): Use the provided cropped HEAD reference, not a full-body reference. Tight head-and-neck close-up. Face fills the composition, complete original top bun and sides inside the frame. Bottom edge cuts at the base of the pearl choker and clavicle, so NO chest pockets, jacket buttons or hanging necklaces can appear. Preserve the exact original face, hairline, pale skin, light natural makeup. Do NOT add any crown, tiara, headband, hair jewelry or new accessories. Keep the original updo shape. Fill the padded white areas with the neutral light-gray background, not with more torso.. Explicit traits to preserve: 同一成年白发女性；保持脸型、浅色眼睛、白金色盘发和两侧卷发、原肤色与淡妆、珍珠颈饰；不加烟熏妆、不加深皮肤。. ",
+    "three_quarter_portrait": "Edit the accepted front portrait <image1> only. 只修改头部和视线方向：向角色左侧45度，头部保持直立。保持头顶、头皮及两侧发型完整入镜，下沿锁骨的近景、头部大小与位置；长发可自然延伸到下沿画外，不缩短发型，也不为纳入全部发长而拉远。保持、五官身份、发型、可见上衣、浅灰背景、光线和画质不变。不要拉远，不要改变画幅。 Portrait-only identity/style instructions (keep the required head-close-up framing): 保持参考的写实人物身份和自然柔和肤质、淡妆；头顶发髻完整，下沿仅到锁骨，脸部是画面主体，不能再次拉远成上半身。不为了展示长珍珠链或外套胸袋拉远。. Explicit traits to preserve: 同一成年白发女性；保持脸型、浅色眼睛、白金色盘发和两侧卷发、原肤色与淡妆、珍珠颈饰；不加烟熏妆、不加深皮肤。. ",
+    "front_body": "Edit <image1> only. Create a HEAD-TO-TOE FULL-BODY FRONT VIEW, facing directly toward the camera. Show one complete natural head and the entire body down to the soles with clear margins around the hair and both feet fully visible. Both arms, hands, legs and feet remain fully inside the frame. Use natural neck, spine, shoulder, hip and knee joints; do not force landmarks to fixed frame percentages. Create exactly ONE INSTANCE of the same person, in ONE pose, from ONE camera angle, on a 9:16 canvas. Preserve identity, age, skin tone, hairstyle and distinctive traits from <image1>. Use a neutral light-gray seamless studio background (#D9D9D9), soft even studio lighting. Preserve the reference visual style unless explicitly changed. No beautification, collage, split screen, inset portrait, extra person, text, border or watermark. Priority: explicit numeric/text requirements override the selected preset. A selected non-reference preset is an explicit user choice: apply its specified attributes even when the reference differs. Preserve reference evidence for all unspecified attributes. Do not slim, lengthen legs, widen shoulders, lighten skin or beautify unless explicitly requested by the fields or selected preset. Explicit traits: Target anatomical head-to-total-height ratio: 1:9; measure skull/chin head height, excluding hair volume.; 体格: 成年女性，修长但自然，保持原人物体型特征，不做夸张胸腰臀塑形。; 腿部比例: 双腿修长，大腿与小腿协调；胯点较高，避免低胯、长躯干短腿；自然关节，不屈膝。; 躯干比例: 紧凑但解剖自然，肩至胯不过长，不拉长颈部凑比例。; 站姿: 平视正交感棚拍，直立、双臂自然垂下且稍离躯干，双手双脚完整可见，无透视缩短。; 保留特征: 同一成年白发女性；保持脸型、浅色眼睛、白金色盘发和两侧卷发、原肤色与淡妆、珍珠颈饰；不加烟熏妆、不加深皮肤。. Selected preset: Use a heroic nine-head silhouette with natural joints. Explicit outfit/body brief: Preserve the same adult woman, platinum updo, face, skin tone and original upper garment from the reference. Complete the outfit consistently: ivory-white cropped fitted jacket with the original black trim, neckline, front placket, long sleeves, chest pockets, silver buttons, pearl choker and layered pearl/silver ornaments. Lower garment is pale light-blue HIGH-WAIST denim shorts with a simple clean tailored fit, short but fully covering the hips, subtle denim texture and two normal rear patch pockets. Bare feet, no shoes, no stockings, no skirt. Same clothing and proportions in front and back. Front ornaments belong on the front only; rear jacket has clean seams and black-trimmed hem, not mirrored front buttons or necklace pendants. Natural nine-head fashion silhouette as explicitly selected, slim long legs and compact torso, complete head-to-feet, neutral pale gray studio background and even light. Do not use low-angle or high-angle perspective to fake proportions.",
+    "back_body": "Edit the accepted complete FRONT BODY <image1> only. Turn the same person 180 degrees into a HEAD-TO-TOE FULL-BODY BACK VIEW. Head, shoulders, torso and feet face away; no face or looking back. Preserve its exact body build, scale, garment design, colors, materials and footwear. Do not copy front pockets, buttons or pendants onto the back. Unseen back details are design completion, not recovered facts. Show one complete natural head and the entire body down to the soles with clear margins around the hair and both feet fully visible. Both arms, hands, legs and feet remain fully inside the frame. Use natural neck, spine, shoulder, hip and knee joints; do not force landmarks to fixed frame percentages. Create exactly ONE INSTANCE of the same person, in ONE pose, from ONE camera angle, on a 9:16 canvas. Preserve identity, age, skin tone, hairstyle and distinctive traits from <image1>. Use a neutral light-gray seamless studio background (#D9D9D9), soft even studio lighting. Preserve the reference visual style unless explicitly changed. No beautification, collage, split screen, inset portrait, extra person, text, border or watermark. Priority: explicit numeric/text requirements override the selected preset. A selected non-reference preset is an explicit user choice: apply its specified attributes even when the reference differs. Preserve reference evidence for all unspecified attributes. Do not slim, lengthen legs, widen shoulders, lighten skin or beautify unless explicitly requested by the fields or selected preset. Explicit traits: Target anatomical head-to-total-height ratio: 1:9; measure skull/chin head height, excluding hair volume.; 体格: 成年女性，修长但自然，保持原人物体型特征，不做夸张胸腰臀塑形。; 腿部比例: 双腿修长，大腿与小腿协调；胯点较高，避免低胯、长躯干短腿；自然关节，不屈膝。; 躯干比例: 紧凑但解剖自然，肩至胯不过长，不拉长颈部凑比例。; 站姿: 平视正交感棚拍，直立、双臂自然垂下且稍离躯干，双手双脚完整可见，无透视缩短。; 保留特征: 同一成年白发女性；保持脸型、浅色眼睛、白金色盘发和两侧卷发、原肤色与淡妆、珍珠颈饰；不加烟熏妆、不加深皮肤。. Selected preset: Use a heroic nine-head silhouette with natural joints. Explicit outfit/body brief: Preserve the same adult woman, platinum updo, face, skin tone and original upper garment from the reference. Complete the outfit consistently: ivory-white cropped fitted jacket with the original black trim, neckline, front placket, long sleeves, chest pockets, silver buttons, pearl choker and layered pearl/silver ornaments. Lower garment is pale light-blue HIGH-WAIST denim shorts with a simple clean tailored fit, short but fully covering the hips, subtle denim texture and two normal rear patch pockets. Bare feet, no shoes, no stockings, no skirt. Same clothing and proportions in front and back. Front ornaments belong on the front only; rear jacket has clean seams and black-trimmed hem, not mirrored front buttons or necklace pendants. Natural nine-head fashion silhouette as explicitly selected, slim long legs and compact torso, complete head-to-feet, neutral pale gray studio background and even light. Do not use low-angle or high-angle perspective to fake proportions."
+  },
+  "modelNodes": {
+    "model": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "text": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+        "type": "qwen_image",
+        "device": "default"
+      }
+    },
+    "vae": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+      }
+    },
+    "cache": {
+      "class_type": "QwenImage21Cache",
+      "inputs": {
+        "model": [
+          "model",
+          0
+        ],
+        "device": "cpu",
+        "dtype": "default"
+      }
+    }
+  }
+}

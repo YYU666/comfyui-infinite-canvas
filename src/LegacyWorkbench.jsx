@@ -6,9 +6,11 @@ import {
   Settings2, Sparkles, Square, Trash2, Upload, WandSparkles, X, Zap,
 } from 'lucide-react';
 import {
-  buildWorkflow, cancelPrompt, createClientId, durationToFrames, extractVideos,
+  buildWorkflow, cancelGenerationJob, createClientId, durationToFrames, extractVideos, getGenerationJob,
   getHistory, getSystemStats, openProgressSocket, queuePrompt, uploadImage,
 } from './workbench-api';
+import { getVisibleGenerationPage, startCurrentCanvasPage } from './canvas-current-page.js';
+import { gpuJobText } from './gpu-job-status.js';
 import './styles.css';
 
 const EXAMPLES = [
@@ -84,6 +86,9 @@ function VideoCard({ item, onSelect, onDelete }) {
 
 export default function App({ onCanvasMode }) {
   const [page, setPage] = useState('create');
+  useEffect(() => startCurrentCanvasPage({
+    tools: [], getPage: () => ({ projectId: 'legacy', readOnly: false, visible: true }),
+  }), []);
   const [form, setForm] = useState(DEFAULT_FORM);
   const [firstFrame, setFirstFrame] = useState(null);
   const [lastFrame, setLastFrame] = useState(null);
@@ -93,10 +98,10 @@ export default function App({ onCanvasMode }) {
   const [active, setActive] = useState(null);
   const [selected, setSelected] = useState(null);
   const [historyItems, setHistoryItems] = useState([]);
-  const [jobs, setJobs] = useState(readJobs);
+
   const [notice, setNotice] = useState(null);
   const [elapsed, setElapsed] = useState(0);
-  const clientId = useMemo(createClientId, []);
+  const clientId = useMemo(() => 'legacy:' + createClientId(), []);
   const activeRef = useRef(null);
   const socketRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -112,11 +117,10 @@ export default function App({ onCanvasMode }) {
 
   const saveJob = useCallback((id, data) => {
     if (!id) return;
-    setJobs((previous) => {
-      const next = { ...previous, [id]: { ...previous[id], ...data } };
-      localStorage.setItem(JOB_KEY, JSON.stringify(next));
-      return next;
-    });
+    try {
+      const previous = readJobs();
+      localStorage.setItem(JOB_KEY, JSON.stringify({ ...previous, [id]: { ...previous[id], ...data } }));
+    } catch { /* A blocked local history store does not affect execution. */ }
   }, []);
 
   const refreshHistory = useCallback(async (selectId) => {
@@ -126,7 +130,7 @@ export default function App({ onCanvasMode }) {
       for (const [id, entry] of Object.entries(history || {})) {
         const videos = extractVideos(entry).filter((file) => file.filename?.includes('H3_Workbench'));
         if (!videos.length) continue;
-        const meta = jobs[id] || readJobs()[id] || {};
+        const meta = readJobs()[id] || {};
         for (const video of videos) items.push({ ...meta, ...video, id: `${id}-${video.filename}`, promptId: id });
       }
       items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -137,7 +141,7 @@ export default function App({ onCanvasMode }) {
       }
       return items;
     } catch { return []; }
-  }, [jobs]);
+  }, []);
 
   const checkStatus = useCallback(async () => {
     setStatus({ state: 'connecting', label: '正在连接本地服务' });
@@ -165,37 +169,64 @@ export default function App({ onCanvasMode }) {
     return () => clearInterval(timer);
   }, [busy, active?.startedAt]);
 
+  const activeJobId = active?.jobId;
+  useEffect(() => {
+    if (!activeJobId) return;
+    let disposed = false;
+    let timer;
+    const poll = async () => {
+      try {
+        const job = await getGenerationJob(activeJobId);
+        const current = activeRef.current;
+        if (disposed || current?.jobId !== activeJobId) return;
+        if (job.comfyPromptId && job.comfyPromptId !== current.promptId) {
+          const { localJob, origin } = current;
+          saveJob(job.comfyPromptId, { ...localJob, origin });
+        }
+        if (job.status === 'done') {
+          await refreshHistory(job.comfyPromptId);
+          if (disposed || activeRef.current?.jobId !== activeJobId) return;
+          updateActive(null);
+          setNotice({ type: 'success', text: '视频生成完成，已保存到 ComfyUI 输出目录。' });
+          return;
+        }
+        updateActive((old) => old?.jobId === activeJobId ? {
+          ...old, state: job.status, stage: job.status === 'running' && old.liveStage ? old.liveStage : job.stage,
+          promptId: job.comfyPromptId, gpu: job.gpu, error: job.error?.message,
+        } : old);
+        if (['error', 'cancelled'].includes(job.status) && !['held', 'reconciling'].includes(job.gpu?.state)) return;
+      } catch (error) {
+        if (disposed) return;
+        if (error.status === 404) {
+          updateActive((old) => old?.jobId === activeJobId ? { ...old, state: 'error', stage: '队列记录已清理', error: error.message, gpu: null } : old);
+          return;
+        }
+      }
+      timer = setTimeout(poll, 500);
+    };
+    void poll();
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [activeJobId, refreshHistory, saveJob, updateActive]);
+
   useEffect(() => {
     const socket = openProgressSocket(clientId, {
       onProgress(data) {
-        if (activeRef.current?.promptId && data.prompt_id && data.prompt_id !== activeRef.current.promptId) return;
-        const percent = data.max ? Math.round(data.value / data.max * 100) : 0;
-        updateActive((old) => old ? { ...old, state: 'running', progress: percent, stage: `正在采样 · ${data.value}/${data.max} 步` } : old);
+        const current = activeRef.current;
+        if (!current?.promptId || current.promptId !== data.prompt_id || current.state !== 'running') return;
+        const progress = data.max ? Math.round(data.value / data.max * 100) : 0;
+        const liveStage = `正在采样 · ${data.value}/${data.max} 步`;
+        updateActive((old) => old?.jobId === current.jobId ? { ...old, progress, stage: liveStage, liveStage } : old);
       },
       onExecuting(data) {
         const current = activeRef.current;
-        if (!current || (data.prompt_id && current.promptId && data.prompt_id !== current.promptId)) return;
-        if (data.node) {
-          updateActive((old) => old ? { ...old, state: 'running', stage: NODE_LABELS[data.node] || '正在处理工作流' } : old);
-        } else if (current.promptId) {
-          updateActive((old) => old ? { ...old, state: 'finishing', stage: '正在读取成片', progress: 100 } : old);
-          setTimeout(async () => {
-            await refreshHistory(current.promptId);
-            updateActive(null);
-            setNotice({ type: 'success', text: '视频生成完成，已保存到 ComfyUI 输出目录。' });
-          }, 800);
-        }
-      },
-      onExecutionError(data) {
-        updateActive((old) => old ? { ...old, state: 'error', stage: '生成失败', error: data.exception_message || 'ComfyUI 执行出错' } : old);
-      },
-      onInterrupted() {
-        updateActive((old) => old ? { ...old, state: 'cancelled', stage: '已取消生成' } : old);
+        if (!current?.promptId || current.promptId !== data.prompt_id || current.state !== 'running' || !data.node) return;
+        const liveStage = NODE_LABELS[data.node] || '正在处理工作流';
+        updateActive((old) => old?.jobId === current.jobId ? { ...old, stage: liveStage, liveStage } : old);
       },
     });
     socketRef.current = socket;
     return () => socket.close();
-  }, [clientId, refreshHistory, updateActive]);
+  }, [clientId, updateActive]);
 
   const updateForm = (key, value) => setForm((old) => ({ ...old, [key]: value }));
   const randomizeSeed = () => updateForm('seed', Math.floor(Math.random() * 2147483647));
@@ -215,18 +246,20 @@ export default function App({ onCanvasMode }) {
       ]);
       updateActive((old) => ({ ...old, state: 'queued', stage: '正在提交本地生成任务' }));
       const workflow = buildWorkflow({ ...localJob, firstFrame: first, lastFrame: last });
-      const result = await queuePrompt(workflow, clientId);
-      saveJob(result.prompt_id, localJob);
-      updateActive((old) => ({ ...old, promptId: result.prompt_id, state: 'queued', stage: '任务已排队，等待 GPU', ...localJob }));
+      const result = await queuePrompt(workflow, clientId, getVisibleGenerationPage('legacy'));
+      updateActive((old) => ({ ...old, jobId: result.jobId, origin: result.origin, state: 'queued', stage: '后台队列等待中', localJob }));
     } catch (error) {
       updateActive((old) => ({ ...old, state: 'error', stage: '无法提交任务', error: error.message }));
     }
   };
 
   const cancel = async () => {
-    try { await cancelPrompt(activeRef.current?.promptId); }
-    catch (error) { setNotice({ type: 'error', text: error.message }); }
-    updateActive((old) => old ? { ...old, state: 'cancelled', stage: '已取消生成' } : old);
+    const jobId = activeRef.current?.jobId;
+    if (!jobId) return;
+    try {
+      const job = await cancelGenerationJob(jobId);
+      updateActive((old) => old?.jobId === jobId ? { ...old, state: job.status, stage: job.stage, gpu: job.gpu } : old);
+    } catch (error) { setNotice({ type: 'error', text: error.message }); }
   };
 
   const removeRecord = (item) => {
@@ -298,7 +331,7 @@ export default function App({ onCanvasMode }) {
             </div>}
           </div>
           <div className="generate-area">
-            {busy ? <button className="generate-button cancel" onClick={cancel}><Square size={16} fill="currentColor" />取消生成<span>{active.stage}</span></button>
+            {busy ? <button className="generate-button cancel" onClick={cancel} disabled={!active.jobId}><Square size={16} fill="currentColor" />取消生成<span>{active.stage}</span></button>
               : <button className="generate-button" onClick={generate} disabled={status.state === 'offline'}><Sparkles size={18} />开始生成<span><kbd>Ctrl</kbd><kbd>↵</kbd></span></button>}
             <p><Info size={12} />生成完全在本机进行，时长取决于显卡与参数</p>
           </div>
@@ -314,11 +347,11 @@ export default function App({ onCanvasMode }) {
               {selected ? <video className="result-video" src={selected.url} controls autoPlay playsInline key={selected.url} />
                 : active && busy ? <div className="generation-state">
                   <div className="generation-visual"><div className="scan-line" /><Aperture size={45} strokeWidth={1.2} /></div>
-                  <div className="generation-copy"><span className="live-label"><LoaderCircle size={13} className="spin" />本地生成中</span><h2>{active.stage}</h2><p>MiniMax H3 正在把文字转化为画面与声音</p></div>
+                  <div className="generation-copy"><span className="live-label"><LoaderCircle size={13} className="spin" />本地生成中</span><h2>{active.stage}</h2>{gpuJobText(active.gpu) && <p data-gpu-state={active.gpu.state}>{gpuJobText(active.gpu)}</p>}</div>
                   <div className="progress-track"><i style={{ width: `${active.progress || 2}%` }} /></div>
                   <div className="progress-meta"><span>{active.progress || 0}%</span><span>{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}</span></div>
                 </div>
-                : active && ['error', 'cancelled'].includes(active.state) ? <div className="generation-state result-message"><div className="empty-orbit">{active.state === 'error' ? <X size={30} /> : <Square size={27} />}</div><h3>{active.stage}</h3><p>{active.error || '你可以调整提示词后重新开始。'}</p><button onClick={() => updateActive(null)}>返回创作</button></div>
+                : active && ['error', 'cancelled'].includes(active.state) ? <div className="generation-state result-message"><div className="empty-orbit">{active.state === 'error' ? <X size={30} /> : <Square size={27} />}</div><h3>{active.stage}</h3><p>{active.error || '你可以调整提示词后重新开始。'}</p>{gpuJobText(active.gpu) && <p data-gpu-state={active.gpu.state}>{gpuJobText(active.gpu)}</p>}<button onClick={() => updateActive(null)}>返回创作</button></div>
                 : <EmptyPreview ratio={form.ratio} />}
             </div>
             <div className="preview-footer"><span><Cpu size={13} />MiniMax H3 · Int8</span><span>{selected ? `${selected.ratio || '16:9'} · ${selected.duration || 5} 秒` : gpuMemory}</span></div>

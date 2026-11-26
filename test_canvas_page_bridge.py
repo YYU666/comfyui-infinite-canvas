@@ -19,6 +19,58 @@ class CanvasPageBridgeTests(unittest.TestCase):
             callback()
         self.assertEqual(caught.exception.code, code)
 
+    def test_extension_publication_dispatch_and_readonly_status(self):
+        self.bridge.heartbeat(self.page)
+        args = {"requestId": "publish_one", "digest": "a" * 64, "packageId": "user/package", "version": "0.2.0"}
+        self.submit("publish", tool="canvas_publish_extension", args=args)
+        command = self.bridge.heartbeat(self.page)["command"]
+        self.assertEqual(command["args"], {**args, "mode": "update"})
+        self.bridge.complete({**command, "result": {"ok": True, "status": "submitted"}})
+        self.assertEqual(self.submit("publish", tool="canvas_publish_extension", args=args)["status"], "done")
+        self.assertIsNone(self.bridge.heartbeat(self.page)["command"])
+        self.submit("status", tool="canvas_get_extension_publish_status", args={"requestId": "publish_one"})
+        self.assertEqual(self.bridge.heartbeat(self.page)["command"]["tool"], "canvas_get_extension_publish_status")
+        for invalid in ({**args, "path": "archive.zip"}, {**args, "digest": "bad"}, {**args, "mode": "replace"}, {**args, "version": "latest"}):
+            self.assert_code("BAD_REQUEST", lambda: self.submit("invalid", tool="canvas_publish_extension", args=invalid))
+
+    def test_image_compact_default_preview_dispatch_and_replay(self):
+        self.bridge.heartbeat(self.page)
+        request = {**self.bridge.current(), "opId": "compact", "tool": "canvas_image_compact", "args": {"nodeIds": ["generator-1"]}}
+        self.assertEqual(self.bridge.submit(request)["status"], "queued")
+        command = self.bridge.heartbeat(self.page)["command"]
+        self.assertEqual(command["tool"], "canvas_image_compact")
+        self.assertEqual(command["args"], {"nodeIds": ["generator-1"], "dryRun": True})
+        self.assertIsNone(self.bridge.heartbeat(self.page)["command"])
+        result = {"ok": True, "dryRun": True, "compacted": []}
+        self.bridge.complete({**command, "result": result})
+        self.assertEqual(self.bridge.submit(request)["result"], result)
+        self.assertEqual(self.bridge.submit({**request, "args": {**request["args"], "dryRun": True}})["status"], "done")
+        self.assertIsNone(self.bridge.heartbeat(self.page)["command"])
+        self.assert_code("CANVAS_OP_CONFLICT", lambda: self.bridge.submit({**request, "args": {**request["args"], "dryRun": False}}))
+        self.assertEqual(self.bridge.submit({**request, "opId": "compact_apply", "args": {**request["args"], "dryRun": False}})["status"], "queued")
+        self.assertFalse(self.bridge.heartbeat(self.page)["command"]["args"]["dryRun"])
+
+    def test_image_compact_rejects_unsafe_or_unbounded_arguments(self):
+        self.bridge.heartbeat(self.page)
+        for args in ({}, {"nodeIds": []}, {"nodeIds": ["g"] * 101}, {"nodeIds": "g"}, {"nodeIds": ["../g"]}, {"nodeIds": [1]}, {"nodeIds": ["g"], "dryRun": 1}, {"nodeIds": ["g"], "dryRun": "false"}, {"nodeIds": ["g"], "unknown": True}):
+            self.assert_code("BAD_REQUEST", lambda: self.submit("bad_compact", tool="canvas_image_compact", args=args))
+        self.assertEqual(self.bridge.commands, {})
+        self.bridge.release(self.page)
+        self.bridge.heartbeat({**self.page, "projectId": "launcher"})
+        self.assert_code("BAD_REQUEST", lambda: self.bridge.submit({**self.bridge.current(), "opId": "launcher_compact", "tool": "canvas_image_compact", "args": {"nodeIds": ["g"]}}))
+
+    def test_native3d_capabilities_readonly_query_dispatches_once(self):
+        self.bridge.heartbeat(self.page)
+        request = {**self.bridge.current(), "opId":"native_caps", "tool":"canvas_native3d_capabilities", "args":{}}
+        self.assertEqual('queued',self.bridge.submit(request)['status'])
+        command = self.bridge.heartbeat(self.page)['command']
+        self.assertEqual('canvas_native3d_capabilities',command['tool'])
+        result = {"ok":True,"operations":{"analyze":{"ready":False,"reason":"Runtime missing"}}}
+        self.assertEqual(result,self.bridge.complete({**command,"result":result})['result'])
+        self.assertEqual('done',self.bridge.submit(request)['status'])
+        self.assertIsNone(self.bridge.heartbeat(self.page)['command'])
+        self.assert_code('BAD_REQUEST',lambda:self.bridge.submit({**request,"opId":"invalid_caps","args":{"command":"x"}}))
+
     def test_no_page_hidden_ambiguous_and_project_binding(self):
         self.assert_code("NO_VISIBLE_CANVAS", self.bridge.current)
         self.bridge.heartbeat({**self.page, "visible": False})
@@ -31,6 +83,29 @@ class CanvasPageBridgeTests(unittest.TestCase):
         self.assert_code("CANVAS_SESSION_CHANGED", lambda: self.bridge.heartbeat({**self.page, "projectId": "prj_other"}))
         self.bridge.release({"sessionId": "page_two"})
         self.assertEqual(self.bridge.current()["sessionId"], "page_one")
+
+    def test_native3d_viewer_close_routes_once_and_rejects_arguments(self):
+        self.bridge.heartbeat(self.page)
+        request = {**self.bridge.current(), "opId": "close_viewer", "tool": "canvas_native3d_viewer_close", "args": {}}
+        self.assertEqual("queued", self.bridge.submit(request)["status"])
+        command = self.bridge.heartbeat(self.page)["command"]
+        self.assertEqual("canvas_native3d_viewer_close", command["tool"])
+        self.bridge.complete({**command, "result": {"ok": True, "closed": True}})
+        self.assertEqual("done", self.bridge.submit(request)["status"])
+        self.assertIsNone(self.bridge.heartbeat(self.page)["command"])
+        self.assert_code("BAD_REQUEST", lambda: self.bridge.submit({**request, "opId": "bad_close", "args": {"nodeId": "x"}}))
+
+    def test_stage_retry_routes_once_and_forbids_seed_or_path(self):
+        self.bridge.heartbeat(self.page)
+        request = {**self.bridge.current(), "opId": "retry_lod", "tool": "canvas_native3d_retry_stage", "args": {"nodeId": "lod3"}}
+        self.assertEqual("queued", self.bridge.submit(request)["status"])
+        command = self.bridge.heartbeat(self.page)["command"]
+        self.assertEqual("canvas_native3d_retry_stage", command["tool"])
+        self.bridge.complete({**command, "result": {"ok": True, "nodeId": "retry_processor", "seed": 42}})
+        self.assertEqual("done", self.bridge.submit(request)["status"])
+        self.assertIsNone(self.bridge.heartbeat(self.page)["command"])
+        for args in ({}, {"nodeId": "x", "seed": 1}, {"nodeId": "x", "path": "x"}):
+            self.assert_code("BAD_REQUEST", lambda: self.bridge.submit({**request, "opId": "bad_retry", "args": args}))
 
     def test_dedup_never_redelivers_dispatched_generate(self):
         self.bridge.heartbeat(self.page)

@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {generateNodeForMcp,waitForNodeForMcp} from './src/canvas-mcp.js';
+const node={id:'native',type:'native3d',data:{operation:'ai_lowpoly',status:'idle'}};
+const result={id:'result',type:'native3d',data:{sourceJobId:'njob',assetPath:'assets/result.glb'}};
+const latest={current:{nodesRef:{current:[node,result]},edgesRef:{current:[]},actions:{generateNode:async()=>{Object.assign(node.data,{nativeJobId:'njob',status:'queued'});}}}};
+const wait=async(read)=>{const value=read();assert.ok(value);return value;};
+assert.equal((await generateNodeForMcp(latest,{nodeId:'native'},wait)).node.nativeJobId,'njob');
+await assert.rejects(()=>generateNodeForMcp(latest,{nodeId:'native'},wait),/已经/);
+node.data.status='completed';
+assert.equal((await waitForNodeForMcp(latest,{nodeId:'native'},wait)).resultNode.id,'result');
+node.data.status='stale';
+await assert.rejects(()=>waitForNodeForMcp(latest,{nodeId:'native'},wait),/stale/);
+console.log('NATIVE3D_BRIDGE_OK native submission, duplicate blocking, completion/result identity, stale rejection');

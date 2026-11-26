@@ -14,7 +14,9 @@ export function thumbnailUrl(source) {
       params = new URLSearchParams({ project: asset[1], asset: `assets/${filename}` });
     } else if (url.pathname === '/api/comfy/view') {
       const filename = url.searchParams.get('filename');
-      const subfolder = url.searchParams.get('subfolder') || '';
+      // ComfyUI on Windows can return relative subfolders with backslashes.
+      // Normalize only this derived identity, then apply the same path guards.
+      const subfolder = (url.searchParams.get('subfolder') || '').replaceAll('\\', '/');
       const type = url.searchParams.get('type') || 'output';
       if (!safePath(filename) || (subfolder && !safePath(subfolder, true)) || !['input', 'output', 'temp'].includes(type)) return null;
       params = new URLSearchParams({ filename, subfolder, type });

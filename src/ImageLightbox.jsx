@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Image as ImageIcon, X } from 'lucide-react';
+import ImageComparison from './ImageComparison';
 
 const FIT_VIEW = { scale: 1, x: 0, y: 0 };
 const clampScale = (value) => Math.min(8, Math.max(1, value));
 
 export default function ImageLightbox({ preview, onClose, closeRef }) {
   const [view, setView] = useState(FIT_VIEW);
+  const [showCompare, setShowCompare] = useState(false);
   const contentRef = useRef(null);
   const dragRef = useRef(null);
 
@@ -32,7 +34,7 @@ export default function ImageLightbox({ preview, onClose, closeRef }) {
     };
     content.addEventListener('wheel', onWheel, { passive: false });
     return () => content.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [showCompare]);
 
   const startDrag = (event) => {
     if (view.scale === 1 || event.button !== 0) return;
@@ -60,13 +62,13 @@ export default function ImageLightbox({ preview, onClose, closeRef }) {
     <section className="image-lightbox-panel">
       <header className="image-lightbox-header">
         <div><ImageIcon size={15} /><span>{preview.title || '图片预览'}</span>{preview.name && <small>{preview.name}</small>}</div>
-        <div><span className="image-lightbox-hint">滚轮缩放 · 拖动查看 · 双击复位 · Esc 关闭</span><span className="image-lightbox-zoom" data-testid="image-preview-zoom">{Math.round(view.scale * 100)}%</span><button ref={closeRef} onClick={onClose} aria-label="关闭大图预览" title="关闭 · Esc"><X size={18} /></button></div>
+        <div>{preview.comparison && <button className="image-lightbox-compare-tab" type="button" aria-pressed={showCompare} onClick={() => setShowCompare(!showCompare)}>图像对照</button>}<span className="image-lightbox-hint" hidden={showCompare}>滚轮缩放 · 拖动查看 · 双击复位 · Esc 关闭</span><span className="image-lightbox-zoom" data-testid="image-preview-zoom" hidden={showCompare}>{Math.round(view.scale * 100)}%</span><button ref={closeRef} onClick={onClose} aria-label="关闭大图预览" title="关闭 · Esc"><X size={18} /></button></div>
       </header>
-      <div ref={contentRef} className="image-lightbox-content" onClick={onClose} onDoubleClick={() => setView(FIT_VIEW)}>
+      {showCompare ? <ImageComparison {...preview.comparison} /> : <div ref={contentRef} className="image-lightbox-content" onClick={onClose} onDoubleClick={() => setView(FIT_VIEW)}>
         <img src={preview.url} alt={preview.title || '生成图片大图'} draggable={false} className={view.scale > 1 ? 'is-zoomed' : ''}
           style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
           onClick={(event) => event.stopPropagation()} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} />
-      </div>
+      </div>}
     </section>
   </div>;
 }

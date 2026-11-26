@@ -96,7 +96,7 @@ class AgentProtocolTests(unittest.TestCase):
         self.assertEqual(after["canvas"]["nodes"][0]["data"]["seed"], 42)
         self.assertLessEqual(estimate_tokens({"tools": TOOLS}), 600)
 
-    def test_apply_four_ops_idempotent_and_wait(self):
+    def test_apply_four_edit_ops_idempotent(self):
         document = self.store.create("批量生成")
         pid = document["id"]
         result = self.protocol.apply(pid, {"opId": "four-ops", "ops": [
@@ -104,18 +104,14 @@ class AgentProtocolTests(unittest.TestCase):
             {"op": "create", "preset": "prompt_optimizer", "title": "提示"},
             {"op": "connect", "from": "p1", "to": "g1", "port": "prompt"},
             {"op": "set", "target": "g1", "settings": {"seed": 7}},
-            {"op": "generate", "target": "g1"},
         ]})
-        job = next(item["job"] for item in result["results"] if "job" in item)
-        waited = self.protocol.wait(pid, [job], 2000)
-        self.assertEqual(waited["jobs"][0]["status"], "done")
-        self.assertLessEqual(waited["meta"]["estTokens"], 50, waited)
+        self.assertTrue(result["ok"])
         replay = self.protocol.apply(pid, {"opId": "four-ops", "ops": [{"op": "delete", "target": "g1"}]})
         self.assertTrue(replay["idempotent"])
-        self.assertEqual(self.adapter.submissions, 1)
+        self.assertEqual(self.adapter.submissions, 0)
         self.assertEqual(self.protocol.prompt_get(pid, self.protocol.query(pid, {"fields": ["prompt"], "where": {"handle": "g1"}})["rows"][0]["prompt"]["hash"])["text"], "雨夜")
 
-    def test_semantic_full_chain_without_browser(self):
+    def test_semantic_take_and_export_from_existing_job(self):
         document = self.store.create("语义全链路")
         pid = document["id"]
         asset = self.store.put_asset(pid, "reference.png", io.BytesIO(PNG), "image/png")["asset"]["path"]
@@ -125,12 +121,15 @@ class AgentProtocolTests(unittest.TestCase):
             revision = result["project"]["revision"]
         result = self.protocol.apply(pid, {"opId": "semantic-generate", "ops": [
             {"op": "shot.create", "character": "c1", "outfit": "o1", "location": "l1", "prompt": "看向镜头", "duration": 5},
-            {"op": "generate", "target": "s1"},
         ]})
-        self.assertEqual(len(self.adapter.uploads), 1, "相同素材只上传一次")
-        self.assertEqual(len(self.store.get(pid)["canvas"]["edges"]), 1, "相同素材只展开一条去重参考连线")
-        job = next(item["job"] for item in result["results"] if "job" in item)
-        waited = self.protocol.wait(pid, job, 2000)
+        current = self.store.get(pid)
+        self.assertEqual(len(current["canvas"]["edges"]), 1, "相同素材只展开一条去重参考连线")
+        shot = current["shots"][0]
+        node = next(node for node in current["canvas"]["nodes"] if node["id"] == shot["canvasNodeId"])
+        job = self.queue.enqueue({"projectId": pid, "nodeId": node["id"], "shotId": shot["id"],
+                                  "workflow": self.protocol._workflow(current, node, shot)})
+        waited = self.protocol.wait(pid, job["id"], 2000)
+        self.assertLessEqual(waited["meta"]["estTokens"], 50, waited)
         self.assertEqual(waited["jobs"][0]["status"], "done")
         self.assertEqual(waited["jobs"][0]["takes"], ["t1"])
         document = self.store.get(pid)
@@ -172,41 +171,31 @@ class AgentProtocolTests(unittest.TestCase):
                 self.assertTrue(receipt["ok"])
                 self.assertEqual(len(self.store.get(pid)["canvas"]["nodes"]), 1)
 
-    def test_generate_crash_after_enqueue_recovers_exactly_one_job(self):
-        document = self.store.create("生成边界恢复")
+    def test_mixed_generation_batch_rejected_and_legacy_pending_cannot_resume(self):
+        document = self.store.create("生成整批拒绝")
         pid = document["id"]
-        original_enqueue = self.queue.enqueue
-        injected = [False]
-
-        def failing_enqueue(payload):
-            job = original_enqueue(payload)
-            if payload.get("clientId", "").endswith(":1") and not injected[0]:
-                injected[0] = True
-                raise SystemExit("process lost after enqueue")
-            return job
-
-        self.queue.enqueue = failing_enqueue
-        payload = {"opId": "recover-generate", "ops": [{"op": "create", "preset": "text_video"}, {"op": "generate", "target": "g1"}]}
-        with self.assertRaises(SystemExit):
+        payload = {"opId": "mixed", "ops": [{"op": "create", "preset": "text_video"},
+                                             {"op": "generate", "target": "g1"}]}
+        with self.assertRaises(StoreError) as denied:
             self.protocol.apply(pid, payload)
-        self.queue.enqueue = original_enqueue
-        self.assertEqual(self.store.get(pid)["settings"]["agentOperations"]["recover-generate"]["status"], "pending")
-        receipt = self.protocol.apply(pid, payload)
-        job_rows = [item for item in receipt["results"] if "job" in item]
-        self.assertEqual(len(job_rows), 1)
-        jobs = [job for job in self.queue.snapshot()["jobs"] if job.get("projectId") == pid]
-        self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["id"], job_rows[0]["job"])
-        self.assertEqual(self.store.get(pid)["canvas"]["nodes"][0]["data"]["queueJobId"], jobs[0]["id"])
-        replay = self.protocol.apply(pid, payload)
-        self.assertTrue(replay["idempotent"])
-        self.assertEqual(len([job for job in self.queue.snapshot()["jobs"] if job.get("projectId") == pid]), 1)
+        self.assertEqual(denied.exception.code, "VISIBLE_CANVAS_REQUIRED")
+        self.assertEqual(self.store.get(pid), document)
+        self.assertEqual(self.queue.snapshot()["jobs"], [])
+
+        document["settings"]["agentOperations"] = {"legacy": {"status": "pending", "generate": [[0, payload["ops"][1]]]}}
+        saved = self.store.save(pid, document, document["revision"])
+        with self.assertRaises(StoreError) as denied:
+            self.protocol.apply(pid, {"opId": "legacy", "ops": [{"op": "create", "preset": "text_video"}]})
+        self.assertEqual(denied.exception.code, "VISIBLE_CANVAS_REQUIRED")
+        preview = self.protocol.apply(pid, {**payload, "opId": "legacy", "dryRun": True})
+        self.assertTrue(preview["dryRun"])
+        self.assertEqual(self.store.get(pid), saved)
+        self.assertEqual(self.queue.snapshot()["jobs"], [])
 
     def test_wait_rejects_other_project_without_any_write(self):
         first = self.store.create("项目 A")
         second = self.store.create("项目 B")
-        result = self.protocol.apply(first["id"], {"opId": "job-a", "ops": [{"op": "shot.create"}, {"op": "generate", "target": "s1"}]})
-        job_id = next(item["job"] for item in result["results"] if "job" in item)
+        job_id = self.queue.enqueue({"projectId": first["id"], "workflow": {"1": {"class_type": "Fixture", "inputs": {}}}})["id"]
         before_first = self.store.get(first["id"])
         before_second = self.store.get(second["id"])
         with self.assertRaises(StoreError) as caught:

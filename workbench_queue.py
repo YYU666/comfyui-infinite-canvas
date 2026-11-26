@@ -11,6 +11,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from gpu_lease import alive, comfy_device, comfy_process, gpu_status, job_owner
 from outfit_queue import initial_state, sheet_stage_label, stage_transfer, stage_workflow, validate_plan
 from workbench_lifecycle import atomic_write_json, runtime_dir, utc_now
 
@@ -23,7 +24,7 @@ def _error(code, message, suggestion=None):
 
 
 def _public(job):
-    hidden = {"workflow", "plan", "clientId"}
+    hidden = {"workflow", "plan", "clientId", "gpuDispatch", "gpuBackend"}
     return {key: copy.deepcopy(value) for key, value in job.items() if key not in hidden}
 
 
@@ -39,8 +40,29 @@ class ComfyQueueAdapter:
             content = response.read()
             return json.loads(content) if content.strip() else {}
 
-    def submit(self, workflow, client_id):
-        return self._request("/prompt", {"prompt": workflow, "client_id": client_id})["prompt_id"]
+    def gpu_target(self):
+        device = comfy_device(self._request("/system_stats", timeout=3))
+        return device, comfy_process(self.origin) if device else None
+
+    def submit(self, workflow, client_id, *, gpu_dispatch=None):
+        payload = {"prompt": workflow, "client_id": client_id}
+        if gpu_dispatch:
+            payload["extra_data"] = {"refmuse_gpu_dispatch": gpu_dispatch}
+        return self._request("/prompt", payload)["prompt_id"]
+
+    def find_gpu_dispatch(self, dispatch):
+        def matches(item):
+            return (isinstance(item, list) and len(item) > 3 and isinstance(item[3], dict)
+                    and item[3].get("refmuse_gpu_dispatch") == dispatch)
+        queue = self._request("/queue", timeout=3)
+        for item in queue.get("queue_pending", []) + queue.get("queue_running", []):
+            if matches(item):
+                return item[1]
+        history = self._request("/history?max_items=100", timeout=3)
+        for prompt_id, entry in history.items():
+            if isinstance(entry, dict) and matches(entry.get("prompt")):
+                return prompt_id
+        return None
 
     def preflight(self, workflow):
         """Validate registered nodes and model choices without submitting or uploading."""
@@ -69,14 +91,11 @@ class ComfyQueueAdapter:
         return {"nodes": len(workflow), "models": checked}
 
     def cancel(self, prompt_id):
-        current = self._request("/queue")
-
-        def prompt_ids(key):
-            return {str(item[1]) for item in current.get(key, []) if isinstance(item, (list, tuple)) and len(item) > 1}
-
         self._request("/queue", {"delete": [prompt_id]})
-        if str(prompt_id) in prompt_ids("queue_running"):
-            self._request("/interrupt", {})
+        current = self._request("/queue")
+        if any(isinstance(item, (list, tuple)) and len(item) > 1 and item[1] == prompt_id
+               for item in current.get("queue_running", [])):
+            self._request("/interrupt", {"prompt_id": prompt_id})
 
     def poll(self, prompt_id):
         history = self._request(f"/history/{prompt_id}")
@@ -99,7 +118,7 @@ class ComfyQueueAdapter:
 
     def upload_image(self, filename, content):
         boundary = f"----H3Workbench{uuid.uuid4().hex}"
-        fields = {"type": "input", "subfolder": "workbench", "overwrite": "true"}
+        fields = {"type": "input", "subfolder": "workbench", "overwrite": "false"}
         body = bytearray()
         for key, value in fields.items():
             body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n".encode("utf-8"))
@@ -126,7 +145,7 @@ class ComfyQueueAdapter:
 
 
 class QueueManager:
-    def __init__(self, path=None, adapter=None, concurrency=1, poll_interval=0.5, job_timeout=60 * 60):
+    def __init__(self, path=None, adapter=None, concurrency=1, poll_interval=0.5, job_timeout=60 * 60, gpu_leases=None):
         self.path = Path(path or runtime_dir() / "queue.json")
         self.adapter = adapter or ComfyQueueAdapter()
         self.concurrency = self._concurrency(concurrency)
@@ -139,7 +158,10 @@ class QueueManager:
         self._thread = None
         self._listeners = set()
         self._event_id = 0
+        self.gpu_leases = gpu_leases
+        self._gpu_grants = {}
         self._load()
+        self._restore_terminal_gpu()
 
     @staticmethod
     def _concurrency(value):
@@ -169,6 +191,8 @@ class QueueManager:
                 if job.get("status") in ACTIVE and not job.get("comfyPromptId"):
                     if job.get("submissionPending") is False:
                         job["status"] = "queued"
+                    elif job.get("gpuDispatch"):
+                        job["stage"] = "原 ComfyUI 提交待核对"
                     else:
                         # ComfyUI may have accepted a request immediately before
                         # the process died. Missing acknowledgement is not proof
@@ -206,7 +230,7 @@ class QueueManager:
             job = self._find_locked(job_id)
             return _public(job)
 
-    def enqueue(self, payload):
+    def enqueue(self, payload, *, legacy_manual=False):
         workflow = payload.get("workflow")
         plan = payload.get("plan")
         if plan is not None:
@@ -219,6 +243,9 @@ class QueueManager:
             "id": f"job_{uuid.uuid4().hex}",
             "projectId": payload.get("projectId"),
             "nodeId": payload.get("nodeId"),
+            **({"origin": "legacy-manual", "canvasOwned": False} if legacy_manual else {}),
+            **({"requestId": payload["requestId"]} if payload.get("requestId") else {}),
+            **({"canvasAdmission": payload["canvasAdmission"]} if payload.get("canvasAdmission") else {}),
             "shotId": payload.get("shotId"),
             "kind": plan["kind"] if plan else "workflow",
             "status": "queued",
@@ -236,19 +263,25 @@ class QueueManager:
             "error": None,
             "outputs": None,
             "history": None,
-            "attempts": 0,
+            "attempts": 1 if payload.get("canvasAdmission") else 0,
             "workflow": copy.deepcopy(workflow),
             "plan": plan,
             "planState": initial_state() if plan else None,
             "clientId": str(payload.get("clientId") or uuid.uuid4()),
         }
         with self._lock:
-            if job["clientId"].startswith("agent:"):
+            if job["clientId"].startswith(("agent:", "canvas:")):
                 existing = next((item for item in self.jobs if item.get("clientId") == job["clientId"] and item.get("projectId") == job["projectId"]), None)
                 if existing:
+                    if job["clientId"].startswith("canvas:") and any(existing.get(key) != job.get(key) for key in ("nodeId", "workflow", "plan")):
+                        raise ValueError("该请求已用于不同的节点或执行内容。")
                     return _public(existing)
             self.jobs.append(job)
-            self._changed_locked("job.queued", job)
+            try:
+                self._changed_locked("job.queued", job)
+            except OSError:
+                self.jobs.pop()
+                raise
             return _public(job)
 
     def inspect_workflow(self, project_id, node_id=None, job_id=None, prompt_id=None):
@@ -299,7 +332,8 @@ class QueueManager:
                 reason = None
             except (KeyError, ValueError):
                 graph, reason = None, "四张图片尚未全部保存，拼接输入不可用。"
-            add("stitch", "最终拼接", graph, submitted[4] if len(submitted) > 4 else None, len(submitted) > 4, reason)
+            stitch_index = len(plan["panels"])
+            add("stitch", "最终拼接", graph, submitted[stitch_index] if len(submitted) > stitch_index else None, len(submitted) > stitch_index, reason)
         else:
             for index, panel in enumerate(plan["panels"]):
                 current = index == state.get("panelIndex")
@@ -369,27 +403,51 @@ class QueueManager:
             # allowing retry() to start a new attempt. Never cancel that retry.
             if job.get("attempts", 0) != cancel_attempt:
                 return _public(job)
+            if job.get("gpu", {}).get("state") == "waiting":
+                job.pop("gpu")
+            elif job.get("gpu", {}).get("state") == "held":
+                job["gpu"]["state"] = "reconciling"
             job["status"] = "cancelled"
+            job["stage"] = "已取消生成"
             job["finishedAt"] = utc_now()
             job["error"] = None
             self._changed_locked("job.cancelled", job)
             return _public(job)
 
-    def retry(self, job_id):
+    def retry(self, job_id, *, request_id=None, expected_attempt=None, admission=None):
         with self._lock:
             job = self._find_locked(job_id)
+            previous = job.get("retryAdmission") or {}
+            if request_id and previous.get("requestId") == request_id:
+                if previous.get("previousAttempt") != expected_attempt:
+                    raise ValueError("请求 ID 已用于另一轮尝试。")
+                return _public(job)
+            if expected_attempt is not None and job.get("attempts") != expected_attempt:
+                raise ValueError("任务尝试轮次已变化，请按原身份查询。")
             if job["status"] not in TERMINAL:
                 raise ValueError("任务尚未结束，不能重试。")
+            prior = copy.deepcopy(job)
+            for field in ("gpu", "gpuDispatch", "gpuBackend"):
+                job.pop(field, None)
             job.update({"status": "queued", "stage": "后台队列等待中", "progress": 0, "eta": None, "startedAt": None, "finishedAt": None,
                         "comfyPromptId": None, "submissionPending": False, "cancelRequested": False, "error": None, "outputs": None, "history": None,
                         "attempts": job.get("attempts", 0) + 1,
                         "planState": initial_state() if job.get("plan") else None})
-            self._changed_locked("job.retry", job)
+            if request_id:
+                job["retryAdmission"] = {**admission, "requestId": request_id,
+                                         "previousAttempt": expected_attempt, "attempt": job["attempts"]}
+            try:
+                self._changed_locked("job.retry", job)
+            except OSError:
+                job.clear()
+                job.update(prior)
+                raise
             return _public(job)
 
     def clear_completed(self):
         with self._lock:
-            retained = [job for job in self.jobs if job["status"] not in TERMINAL]
+            retained = [job for job in self.jobs if job["status"] not in TERMINAL
+                        or job.get("gpu", {}).get("state") in {"held", "reconciling"}]
             removed = len(self.jobs) - len(retained)
             self.jobs = retained
             if removed:
@@ -432,31 +490,161 @@ class QueueManager:
                 except queue.Empty:
                     pass
 
+    def _gpu_ready(self, job):
+        if self.gpu_leases is None:
+            return True
+        key = (job["id"], job["attempts"])
+        if key in self._gpu_grants:
+            return True
+        try:
+            device, backend = self.adapter.gpu_target()
+            if device is None:
+                return True
+            owner = job_owner("comfy", job)
+            grant, blocker = self.gpu_leases.claim(device, owner, recovery=self.adapter.origin if job.get("comfyPromptId") else None)
+            if grant:
+                self._gpu_grants[key] = (grant, job.get("gpuBackend") or backend)
+                if job.get("comfyPromptId"):
+                    grant.restore_prompt(self.adapter.origin, backend, job["comfyPromptId"])
+            with self._lock:
+                if job["status"] in TERMINAL or job["attempts"] != key[1]:
+                    return False
+                state = gpu_status(device, "held" if grant else "waiting", owner if grant else blocker)
+                if job.get("gpu") != state:
+                    job["gpu"] = state
+                    if not grant:
+                        job["stage"] = "等待 GPU"
+                    elif job["status"] == "queued":
+                        job["stage"] = "GPU 已接力 · 待提交"
+                    self._changed_locked("job.progress", job)
+            return bool(grant)
+        except (OSError, ValueError, RuntimeError) as exc:
+            with self._lock:
+                if job["status"] not in TERMINAL and job["attempts"] == key[1] and not job.get("comfyPromptId"):
+                    job.update(status="error", stage="GPU 不可用", finishedAt=utc_now(),
+                               error=_error("GPU_UNAVAILABLE", exc))
+                    self._changed_locked("job.error", job)
+            return False
+
+    def _restore_terminal_gpu(self):
+        if self.gpu_leases is None:
+            return
+        for job in self.jobs:
+            gpu = job.get("gpu") or {}
+            if job["status"] not in TERMINAL or gpu.get("state") not in {"held", "reconciling"}:
+                continue
+            device, owner = gpu["device"], job_owner("comfy", job)
+            recovered = self.gpu_leases.recover_comfy(device, owner, self.adapter.origin)
+            if recovered:
+                self._gpu_grants[(job["id"], job["attempts"])] = recovered
+            else:
+                job["gpu"] = gpu_status(device, "released", owner)
+
+    def _recover_gpu_dispatches(self):
+        with self._lock:
+            unresolved = [(job, job["attempts"], job["gpuDispatch"], job.get("gpuBackend"))
+                          for job in self.jobs if job.get("gpuDispatch") and job.get("submissionPending")
+                          and not job.get("comfyPromptId")
+                          and (job["status"] in ACTIVE
+                               or (job.get("cancelRequested") and (job["id"], job["attempts"]) in self._gpu_grants))]
+        for job, attempt, dispatch, backend in unresolved:
+            try:
+                prompt = self.adapter.find_gpu_dispatch(dispatch)
+            except (OSError, ValueError, RuntimeError):
+                prompt = None
+            with self._lock:
+                if job["attempts"] != attempt:
+                    continue
+                cancel = job.get("cancelRequested")
+            if prompt and cancel:
+                try:
+                    self.adapter.cancel(prompt)
+                except (OSError, ValueError, RuntimeError):
+                    continue
+            with self._lock:
+                if job["attempts"] != attempt:
+                    continue
+                if prompt:
+                    target = self._gpu_grants.get((job["id"], attempt))
+                    if target:
+                        job["gpu"] = gpu_status(target[0].device, "reconciling" if cancel else "held", target[0].owner)
+                        # A foreign runtime may already have retired a proven terminal row.
+                        try:
+                            target[0].acknowledge(prompt)
+                        except RuntimeError:
+                            self._gpu_grants.pop((job["id"], attempt), None)
+                    job.update(comfyPromptId=prompt, submissionPending=False)
+                    if not cancel:
+                        job["stage"] = "已查回原 ComfyUI 任务"
+                    if job.get("plan"):
+                        job["planState"]["promptIds"].append(prompt)
+                    self._changed_locked("job.submitted", job)
+                elif backend and not alive(backend):
+                    job["submissionPending"] = False
+                    if cancel:
+                        self._changed_locked("job.progress", job)
+                    else:
+                        job.update(status="error", stage="ComfyUI 已退出", finishedAt=utc_now(),
+                                   error=_error("COMFY_EXITED", "提交失联后原 ComfyUI 进程已退出。"))
+                        self._changed_locked("job.error", job)
+
+    def _retire_gpu(self):
+        for key, (grant, _) in list(self._gpu_grants.items()):
+            with self._lock:
+                job = next((candidate for candidate in self.jobs if candidate["id"] == key[0]), None)
+                current = job is not None and job["attempts"] == key[1]
+                if current and job["status"] not in TERMINAL and (job["status"] != "queued" or not self.paused):
+                    continue
+            try:
+                settled = grant.retire_comfy(self.adapter.free)
+            except (OSError, ValueError, RuntimeError):
+                continue
+            if settled:
+                self._gpu_grants.pop(key, None)
+            with self._lock:
+                if current and job["attempts"] == key[1]:
+                    state = gpu_status(grant.device, "released" if settled else "reconciling", grant.owner)
+                    if job.get("gpu") != state:
+                        job["gpu"] = state
+                        self._changed_locked("job.progress", job)
+
     def _run(self):
         while not self._stop.is_set():
+            self._recover_gpu_dispatches()
+            self._retire_gpu()
             submissions = []
             with self._lock:
-                if not self.paused:
-                    active_count = sum(job["status"] in ACTIVE for job in self.jobs)
-                    slots = max(0, self.concurrency - active_count)
-                    waiting = sorted((job for job in self.jobs if job["status"] == "queued"),
-                                     key=lambda job: (-job["priority"], job["createdAt"]))
-                    for job in waiting[:slots]:
-                        job["status"] = "running"
-                        job["startedAt"] = job["startedAt"] or utc_now()
-                        job["attempts"] = max(1, job.get("attempts", 0))
-                        if job.get("plan"):
-                            panel = job["plan"]["panels"][job["planState"]["panelIndex"]]
-                            count = len(job["plan"]["panels"])
-                            job["stage"] = sheet_stage_label(job["planState"], job["plan"]) if job["kind"] == "characterSheet" else f"{'保留原图' if panel['preserve'] else '千问独立换装'} {job['planState']['panelIndex'] + 1}/{count} · {panel['label']}"
-                        submissions.append(job)
-                        self._changed_locked("job.started", job)
+                active_count = sum(job["status"] in ACTIVE for job in self.jobs)
+                slots = 0 if self.paused else max(0, self.concurrency - active_count)
+                waiting = sorted((job for job in self.jobs if job["status"] == "queued"),
+                                 key=lambda job: (-job["priority"], job["createdAt"]))[:slots]
+                for job in waiting:
+                    job["attempts"] = max(1, job.get("attempts", 0))
+            for job in waiting:
+                if not self._gpu_ready(job):
+                    continue
+                with self._lock:
+                    if self.paused or job["status"] != "queued" or job.get("cancelRequested"):
+                        continue
+                    job["status"] = "running"
+                    job["startedAt"] = job["startedAt"] or utc_now()
+                    if job.get("plan"):
+                        panel = job["plan"]["panels"][job["planState"]["panelIndex"]]
+                        count = len(job["plan"]["panels"])
+                        job["stage"] = sheet_stage_label(job["planState"], job["plan"]) if job["kind"] == "characterSheet" else f"{'保留原图' if panel['preserve'] else '千问独立换装'} {job['planState']['panelIndex'] + 1}/{count} · {panel['label']}"
+                    submissions.append(job)
+                    self._changed_locked("job.started", job)
+            with self._lock:
                 active = [job for job in self.jobs if job["status"] in ACTIVE]
                 submitted_ids = {id(job) for job in submissions}
-                to_submit = submissions + [job for job in active if id(job) not in submitted_ids and job.get("plan") and not job.get("comfyPromptId")]
+                to_submit = submissions + [job for job in active if id(job) not in submitted_ids and job.get("plan") and not job.get("comfyPromptId") and not job.get("submissionPending")]
 
             for job in to_submit:
                 submit_attempt = job["attempts"]
+                if not self._gpu_ready(job):
+                    continue
+                target = self._gpu_grants.get((job["id"], submit_attempt))
+                dispatch = None
                 try:
                     if job.get("kind") == "characterSheet":
                         with self._lock:
@@ -468,7 +656,21 @@ class QueueManager:
                             continue
                         job["submissionPending"] = True
                         self._changed_locked("job.submitting", job)
-                    prompt_id = self.adapter.submit(workflow, job["clientId"])
+                    if target:
+                        grant, backend = target
+                        dispatch = grant.dispatch(self.adapter.origin, backend)
+                        with self._lock:
+                            cancelled_before_send = job.get("cancelRequested") or job["attempts"] != submit_attempt
+                            if not cancelled_before_send:
+                                job.update(gpuDispatch=dispatch, gpuBackend=backend)
+                                self._persist_locked()
+                        if cancelled_before_send:
+                            grant.rejected()
+                            continue
+                        prompt_id = self.adapter.submit(workflow, job["clientId"], gpu_dispatch=dispatch)
+                        grant.acknowledge(prompt_id)
+                    else:
+                        prompt_id = self.adapter.submit(workflow, job["clientId"])
                     with self._lock:
                         same_attempt = job["attempts"] == submit_attempt
                         needs_cancel = bool(job.get("cancelRequested") or job["status"] in TERMINAL or not same_attempt)
@@ -493,18 +695,39 @@ class QueueManager:
                                     job["error"] = _error("COMFY_CANCEL_FAILED", exc, "任务 ID 已保留，请在 ComfyUI 队列中确认该任务后重试取消。")
                                     self._changed_locked("job.error", job)
                 except Exception as exc:
+                    if dispatch:
+                        if isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500:
+                            target[0].rejected()
+                        else:
+                            target[0].uncertain()
                     with self._lock:
                         if job["status"] in TERMINAL or job["attempts"] != submit_attempt:
                             continue
-                        job["status"] = "error"
-                        job["finishedAt"] = utc_now()
-                        job["error"] = self._submission_error(exc)
-                        self._changed_locked("job.error", job)
+                        if dispatch and not (isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500):
+                            job["stage"] = "原 ComfyUI 提交待核对"
+                            job["gpu"] = gpu_status(target[0].device, "reconciling", target[0].owner)
+                            self._changed_locked("job.progress", job)
+                        else:
+                            job["status"] = "error"
+                            job["finishedAt"] = utc_now()
+                            job["error"] = self._submission_error(exc)
+                            self._changed_locked("job.error", job)
 
             for job in active:
                 poll_attempt = job["attempts"]
                 prompt_id = job.get("comfyPromptId")
                 if not prompt_id or job["status"] in TERMINAL or self._stop.is_set():
+                    continue
+                # Polling old upstream work is read-only. The durable row still
+                # guards any live worker even before this process re-attaches.
+                self._gpu_ready(job)
+                target = self._gpu_grants.get((job["id"], poll_attempt))
+                if target and not alive(target[1]):
+                    with self._lock:
+                        if job["status"] in ACTIVE and job["attempts"] == poll_attempt:
+                            job.update(status="error", stage="ComfyUI 已退出", finishedAt=utc_now(),
+                                       error=_error("COMFY_EXITED", "本次任务的 ComfyUI 进程已退出。"))
+                            self._changed_locked("job.error", job)
                     continue
                 if self._expired(job):
                     cancel_error = None

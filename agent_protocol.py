@@ -295,11 +295,21 @@ class AgentProtocol:
         return item
 
     def apply(self, project_id, payload):
+        operations = payload.get("ops")
+        if not isinstance(operations, list) or not operations or len(operations) > 100:
+            raise StoreError("BAD_REQUEST", "apply ops 必须包含 1–100 个操作。")
+        if not all(isinstance(operation, dict) for operation in operations):
+            raise StoreError("BAD_REQUEST", "每个 op 必须是对象。")
+        dry_run = payload.get("dryRun", False)
+        if type(dry_run) is not bool:
+            raise StoreError("BAD_REQUEST", "dryRun 必须为布尔值。")
+        if not dry_run and any(operation.get("op") == "generate" for operation in operations):
+            raise StoreError("VISIBLE_CANVAS_REQUIRED", "生成必须通过当前可写画布的 canvas_generate_node，整个批次未执行。", 409)
         op_id = str(payload.get("opId") or "").strip()
         if not op_id or len(op_id) > 120:
             raise StoreError("BAD_REQUEST", "apply 必须提供 1–120 字符的 opId。")
         current = self._get(project_id)
-        cached = current.get("settings", {}).get("agentOperations", {}).get(op_id)
+        cached = None if dry_run else current.get("settings", {}).get("agentOperations", {}).get(op_id)
         if cached and cached.get("status") == "pending":
             return self._finish_pending(project_id, op_id, current, cached)
         if cached:
@@ -307,14 +317,9 @@ class AgentProtocol:
             response["meta"] = {"estTokens": estimate_tokens(response)}
             return response
         revision = payload.get("revision", current["revision"])
-        operations = payload.get("ops")
-        if not isinstance(operations, list) or not operations or len(operations) > 100:
-            raise StoreError("BAD_REQUEST", "apply ops 必须包含 1–100 个操作。")
         document = copy.deepcopy(current)
         changed, results, generate, exports, cancels = [], [], [], [], []
         for index, operation in enumerate(operations):
-            if not isinstance(operation, dict):
-                raise StoreError("BAD_REQUEST", "每个 op 必须是对象。")
             action = operation.get("op")
             if action == "create":
                 node = self._new_node(document, operation.get("preset"), operation)
@@ -410,7 +415,7 @@ class AgentProtocol:
             update_handoff(document, {}, payload["agent"])
         changed = list(dict.fromkeys(changed))
         receipt = {"ok": True, "rev": current["revision"] + 1, "changed": changed, "warnings": [], "results": results}
-        if payload.get("dryRun"):
+        if dry_run:
             for _, operation in generate:
                 target = operation.get("target")
                 shot = self._entity(document, "shots", target) if str(target or "").startswith("s") else None
@@ -420,7 +425,7 @@ class AgentProtocol:
                         raise StoreError("BAD_REQUEST", "generate.workflow 必须是非空 ComfyUI 工作流。")
                     workflow = operation["workflow"]
                 else:
-                    workflow = self._workflow(document, node, shot, upload=False)
+                    workflow = self._workflow(document, node, shot)
                 try:
                     self.queue.adapter.preflight(workflow)
                 except (OSError, ValueError, RuntimeError) as error:
@@ -429,7 +434,7 @@ class AgentProtocol:
         pending = {
             "status": "pending", "phase": "business",
             "receipt": {key: copy.deepcopy(value) for key, value in receipt.items() if key != "ok"},
-            "generate": copy.deepcopy(generate), "cancels": list(cancels), "exports": copy.deepcopy(exports),
+            "cancels": list(cancels), "exports": copy.deepcopy(exports),
         }
         document.setdefault("settings", {}).setdefault("agentOperations", {})[op_id] = pending
         operations_cache = document["settings"]["agentOperations"]
@@ -439,7 +444,9 @@ class AgentProtocol:
         return self._finish_pending(project_id, op_id, saved, pending)
 
     def _finish_pending(self, project_id, op_id, saved, pending):
-        """Resume durable side effects; only the last save may say ok=True."""
+        """Resume non-generation side effects; only the last save may say ok=True."""
+        if pending.get("generate"):
+            raise StoreError("VISIBLE_CANVAS_REQUIRED", "旧生成批次不会继续执行。请核对历史任务，再从当前画布发起。", 409)
         receipt = copy.deepcopy(pending["receipt"])
         results = receipt["results"]
         changed = receipt["changed"]
@@ -450,23 +457,6 @@ class AgentProtocol:
             saved["settings"]["agentOperations"][op_id] = pending
             return self.store.save(project_id, saved, saved["revision"])
 
-        for index, operation in pending.get("generate", []):
-            target = operation.get("target")
-            shot = self._entity(saved, "shots", target) if str(target or "").startswith("s") else None
-            node = resolve_node(saved, shot.get("canvasNodeId") if shot else target)
-            client_id = f"agent:{project_id}:{op_id}:{index}"
-            existing = next((job for job in self.queue.snapshot()["jobs"] if job.get("clientId") == client_id), None) if self.queue else None
-            if existing:
-                job = existing
-            else:
-                workflow = operation.get("workflow") or self._workflow(saved, node, shot)
-                job = self.queue.enqueue({"workflow": workflow, "projectId": project_id, "nodeId": node["id"], "shotId": shot and shot["id"], "clientId": client_id})
-            node["data"].update({"status": "queued", "stage": "Agent 已提交", "queueJobId": job["id"]})
-            if not any(item.get("op") == index and "job" in item for item in results):
-                results.append({"op": index, "job": job["id"]})
-            changed.append(handle_for(saved, node["id"]))
-            receipt["changed"] = list(dict.fromkeys(changed))
-            saved = checkpoint(f"generated:{index}")
         for job_id in pending.get("cancels", []):
             if self.queue.get(job_id).get("projectId") != project_id:
                 raise StoreError("JOB_PROJECT_CONFLICT", "取消任务不属于当前项目，已停止后续副作用。", 409)
@@ -484,7 +474,7 @@ class AgentProtocol:
         receipt["meta"] = {"estTokens": estimate_tokens({key: value for key, value in receipt.items() if key != "meta"})}
         return receipt
 
-    def _workflow(self, document, node, shot=None, upload=True):
+    def _workflow(self, document, node, shot=None):
         data = node["data"]
         options = {**data, **((shot or {}).get("params") or {})}
         options["prompt"] = (shot or {}).get("prompt", data.get("prompt", ""))
@@ -498,7 +488,7 @@ class AgentProtocol:
                 path = self.store.asset_file(document["id"], source["data"]["assetPath"])
                 if item["kind"] != "image":
                     raise StoreError("BAD_REQUEST", "Agent 当前仅支持直接上传项目图片参考；视频/音频请先使用画布上传。")
-                item["name"] = self.queue.adapter.upload_image(path.name, path.read_bytes()) if upload else f"workbench/{path.name}"
+                item["name"] = f"workbench/{path.name}"
             else:
                 item["name"] = source["data"].get("name") or source["data"].get("filename")
             if not item["name"]:

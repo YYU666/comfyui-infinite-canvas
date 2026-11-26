@@ -1,11 +1,12 @@
 {
   "name": "h3-video-workbench",
-  "version": "1.0.5",
+  "version": "1.0.6-local.20261126",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 8790",
     "build": "vite build",
+    "build:canvas-dev": "vite build --mode local-tools --outDir .cache/feature-dev/ui",
     "preview": "vite preview --host 127.0.0.1 --port 8790",
     "test": "npm run test:node && npm run test:browser",
     "test:all": "npm run test:python && npm test",
@@ -20,6 +21,7 @@
     "lucide-react": "^0.577.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
+    "three": "^0.187.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.1"
   },

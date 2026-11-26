@@ -1,0 +1,48 @@
+.native3d-overlay > .native3d-takeover {
+  width: min(1190px, 94vw); padding: 18px; border: 1px solid #334942;
+  background: #121916; color: #e6edea; border-radius: 18px;
+  box-shadow: 0 20px 90px #000a;
+}
+.native3d-takeover > header { align-items: center; gap: 12px; }
+.native3d-takeover > header strong { font-size: 17px; }
+.native3d-takeover > header small { display: block; margin-bottom: 3px; color: #81cfb8; }
+.native3d-takeover > header div, .takeover-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.native3d-takeover button, .native3d-takeover input, .native3d-takeover select {
+  border: 1px solid #3d534b; border-radius: 6px; background: #202d27; color: inherit; padding: 5px 8px;
+}
+.native3d-takeover button:disabled { opacity: .48; }
+.native3d-takeover button[aria-pressed=true] { border-color: #4fd6b5; color: #a8f3db; }
+.native3d-takeover-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(270px, 340px); gap: 14px; }
+.native3d-takeover-model { padding: 5px; min-width: 0; }
+.native3d-takeover-viewport { min-height: 260px; overflow: hidden; border-radius: 10px; background: #0a100d; }
+.native3d-takeover-viewport canvas { display: block; }
+.native3d-takeover-sidebar { display: grid; align-content:start; gap: 10px; padding: 0 4px; max-height: 74vh; overflow: auto; }
+.native3d-takeover-sidebar section { background:#1b2420; padding: 10px 12px; border:1px solid #323f38; border-radius: 9px; }
+.native3d-takeover-sidebar h3 { margin: 0 0 8px; font-size: 14px; display: flex; justify-content: space-between; }
+.native3d-takeover-sidebar dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 12px; margin: 0; font-size: 13px; }
+.native3d-takeover-sidebar dd { margin:0; overflow-wrap: anywhere; }
+.native3d-takeover-sidebar dt, .native3d-takeover-sidebar small { color:#a8bdb4; }
+.native3d-takeover-sidebar small { display: block; }
+.native3d-takeover-sidebar a { display: inline-block; margin-top:6px; color:#99e7cd; }
+.native3d-takeover-sidebar p, .native3d-takeover-sidebar ul { margin: 6px 0; font-size: 13px; }
+.native3d-takeover-sidebar ul { padding-inline-start: 18px; }
+.takeover-parameter { display:flex; gap:12px; align-items:center; justify-content:space-between; margin: 7px 0; font-size:13px; }
+.takeover-parameter input[type=number], .takeover-parameter select { width: 106px; }
+.takeover-actions { margin-top: 8px; }
+.takeover-status { color:#a7d8c6; font-weight:normal; }
+.takeover-status[data-state=pending] { color:#ffd28a; }
+@media (max-width: 780px) {
+  .native3d-takeover-body { grid-template-columns: minmax(0, 1fr); }
+  .native3d-takeover-sidebar { max-height:none; overflow:visible; }
+}
+
+.native3d-node > .native3d-takeover-button {
+  justify-self: start; margin: 0 12px 6px; padding: 4px 9px; color: #a8e6cf;
+  background: #1a3229; border: 1px solid #446d5d; border-radius: 6px; cursor: pointer;
+}
+.takeover-advanced > summary { cursor: pointer; font-size: 13px; color: #a8bdb4; }
+
+.native3d-takeover-sidebar .takeover-downstream { padding: 0; list-style: none; }
+.takeover-downstream li { padding: 6px 0; overflow-wrap: anywhere; }
+.takeover-downstream li + li { border-top: 1px solid #323f38; }
+.takeover-downstream code { font-size: 10px; }

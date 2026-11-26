@@ -1,0 +1,36 @@
+import {planConfirmationKey} from './src/native3d-plan.js';
+import assert from 'node:assert/strict';
+import {nativeNextStepPlan,nextStepActions,needsCanonicalLODStage} from './src/native3d-next-step.js';
+const hash='a'.repeat(64), highHash='b'.repeat(64), meshHash='c'.repeat(64),jid='n3d_'+'1'.repeat(32);
+const record={stage:'lod3',status:'accepted',eligibleForDownstream:true,filename:'lod3.glb',mesh_hash:meshHash,file_sha256:hash,receipt:{geometry:{status:'accepted',mesh_hash:meshHash,intersectionComplete:true,intersection_pairs_count:0}}};
+const source={id:'source',type:'native3d',position:{x:0,y:0},data:{operation:'analyze',status:'completed',sourceJobId:jid,assetPath:`assets/${hash}.glb`,metadata:{operation:'source_lod',geometry:{status:'accepted',selectedLodLevel:3,selectedStage:'lod3',stages:[record]}}}};
+const high={id:'high',type:'native3d',position:{x:-400,y:0},data:{operation:'analyze',status:'completed',assetPath:`assets/${highHash}.glb`}};
+const job={id:jid,projectId:'p',operation:'source_lod',status:'succeeded',source:{highAssetPath:high.data.assetPath,highSha256:highHash},parameters:{retryJobId:'old',retryStage:'lod3',retryKeepPercent:2.5,seed:1,lod0KeepPercent:10,lod4KeepPercent:1.25},result:{metadata:{geometry:{stages:[record],settings:{lodKeepPercents:[10,10,5,2.5,1.25]},retry:{lod0Triangles:99999,originalSourceSha256:highHash}}},files:[{name:'lod3.glb',role:'export',sha256:hash}]}};
+const args={source,nodes:[source,high],edges:[],job,projectId:'p',action:'next_lod',seed:42,id:'new'};
+const plan=nativeNextStepPlan(args);assert.equal(plan.node.data.nativeParameters.retryJobId,jid);assert.equal(plan.node.data.nativeParameters.retryStage,'lod4');assert.equal(plan.node.data.nativeParameters.retryKeepPercent,undefined);assert.equal(plan.node.data.nativeParameters.lod4KeepPercent,1.25);assert.equal(plan.node.data.status,'idle');assert.equal(plan.edges.find(e=>e.targetHandle==='model').source,'source');
+const repeated=nativeNextStepPlan({...args,nodes:[...args.nodes,plan.node],edges:plan.edges,id:'different',seed:43});assert.equal(repeated.reused,true);assert.equal(repeated.node.id,'new');
+const edited=structuredClone(plan.node);edited.data.nativeParameters.seed=9;assert.throws(()=>nativeNextStepPlan({...args,nodes:[...args.nodes,edited],edges:plan.edges}),/已修改/);
+const running=structuredClone(plan.node);running.data.nativeJobId='submitted';assert.throws(()=>nativeNextStepPlan({...args,nodes:[...args.nodes,running],edges:plan.edges}),/已启动/);
+const uv=nativeNextStepPlan({...args,action:'uv_plan'});assert.equal(uv.node.data.nativeParameters.orientationConfirmed,false);assert.equal(uv.node.data.nativeParameters.resolution,4096);
+const base=structuredClone(job);base.parameters={};base.source={assetPath:high.data.assetPath,sha256:highHash};base.result.metadata.geometry.sourceFileSha256=highHash;assert.equal(nativeNextStepPlan({...args,job:base,action:'uv_plan'}).edges.find(e=>e.targetHandle==='high').source,'high');
+assert.throws(()=>nativeNextStepPlan({...args,job:{...job,projectId:'other'}}),/不匹配/);
+const blocked=structuredClone(source);blocked.data.metadata.geometry.status='blocked';assert.deepEqual(nextStepActions(blocked),[]);
+const changed=structuredClone(source);changed.data.metadata.geometry.selectedMeshHash='d'.repeat(64);assert.throws(()=>nativeNextStepPlan({...args,source:changed}),/证据/);
+const planSource={...source,data:{...source.data,nativeUVPlan:{jobId:jid,planSha256:hash,source:{lowSha256:hash,highSha256:highHash},lowAssetPath:source.data.assetPath,highAssetPath:high.data.assetPath,settings:{}},metadata:{operation:'uv_plan'}}};assert.equal(nextStepActions(planSource)[0].disabled,true);
+console.log('NEXT_STEP_DRAFTS_OK exact lineage, no duplicate/overwrite, base high, stale hash, orientation explicit');
+
+planSource.data.nativeUVPlanConfirmation=planConfirmationKey(planSource.data.nativeUVPlan);
+const planJob={...job,operation:'uv_plan',source:{assetPath:source.data.assetPath,sha256:hash,highAssetPath:high.data.assetPath,highSha256:highHash},result:{metadata:{uvPlan:{planSha256:hash}}}};
+const unwrap=nativeNextStepPlan({...args,source:planSource,nodes:[source,high,planSource],job:planJob,action:'unwrap'});assert.equal(unwrap.node.data.operation,'uv');assert.equal(unwrap.edges.length,3);
+assert.throws(()=>nativeNextStepPlan({...args,source:planSource,nodes:[source,high,planSource],job:{...planJob,source:{...planJob.source,sha256:'d'.repeat(64)}},action:'unwrap'}),/不一致/);
+const uvSource=structuredClone(source);uvSource.data.metadata.operation='uv';uvSource.data.metadata.uv={};
+const flags=Object.fromEntries(['exactGeometry','rasterOverlapFree','nondegenerateUV','noMixedFlip','paddingPixelCenters','geometricOverlapFree','geometricPadding','geometricBounds'].map(k=>[k,true]));
+const uvJob={...job,operation:'uv',result:{files:[{name:'model.glb',role:'model',sha256:hash}],metadata:{uv:{qualityFlags:flags}}}};
+const bake=nativeNextStepPlan({...args,source:uvSource,job:uvJob,action:'bake'});assert.equal(bake.node.data.nativeParameters.resolution,4096);assert.equal(bake.edges.length,1);assert.match(bake.notice,/带材质的原高模/);
+flags.geometricOverlapFree=false;assert.throws(()=>nativeNextStepPlan({...args,source:uvSource,job:uvJob,action:'bake'}),/结构检查/);
+console.log('NEXT_STEP_PLAN_BAKE_OK confirmation bound, UV gates, material high never guessed');
+
+const generic=structuredClone(source);generic.data.nativeArtifacts=[{name:'lod3.glb',role:'export',assetPath:`assets/${'e'.repeat(64)}.glb`}];
+assert.equal(needsCanonicalLODStage(generic.data),true);assert.deepEqual(nextStepActions(generic),[]);
+generic.data.assetPath=generic.data.nativeArtifacts[0].assetPath;assert.equal(needsCanonicalLODStage(generic.data),false);assert.equal(nextStepActions(generic).length,2);
+console.log('CANONICAL_STAGE_RECOVERY_OK mismatch disables next; exact stage unchanged');

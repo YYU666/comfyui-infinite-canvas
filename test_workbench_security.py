@@ -1,4 +1,6 @@
 import json
+import subprocess
+import time
 import sys
 import tempfile
 import threading
@@ -27,6 +29,13 @@ class SecurityProbeTests(unittest.TestCase):
                 self.assertFalse(valid_content_type("POST", "/api/extensions/abc/prepare", headers))
                 self.assertFalse(valid_content_type("PUT", "/api/extensions/import", headers))
         self.assertFalse(valid_content_type("POST", "/api/extensions/import", {"Content-Length": "20", "Content-Type": "text/plain"}))
+
+    def test_model_mime_is_scoped_to_asset_upload(self):
+        for mime in ('model/gltf-binary', 'model/obj'):
+            headers = {'Content-Length':'20', 'Content-Type':mime}
+            self.assertTrue(valid_content_type('PUT','/api/projects/prj_test/assets/mesh.glb',headers))
+            self.assertFalse(valid_content_type('POST','/api/native3d/jobs',headers))
+            self.assertFalse(valid_content_type('POST','/api/extensions/import',headers))
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -101,8 +110,59 @@ class SecurityProbeTests(unittest.TestCase):
         project_id = document["id"]
         status, _, _ = self.request("PUT", f"/api/projects/{project_id}/assets/a.png", b"fake-image", {"Content-Type": "image/png", "X-H3-Token": self.server.token})
         self.assertEqual(status, 201)
-        status, _, _ = self.request("DELETE", f"/api/projects/{project_id}", headers={"X-H3-Token": self.server.token})
+        project_path = f"/api/projects/{project_id}"
+        headers = {"X-H3-Token": self.server.token}
+        status, _, error = self.request("DELETE", project_path, headers=headers)
+        self.assertEqual(status, 423)
+        self.assertEqual(error["code"], "LOCKED")
+        status, _, closed = self.request("POST", project_path + "/close", {}, self.json_headers())
         self.assertEqual(status, 200)
+        self.assertTrue(closed["closed"])
+        status, _, deleted = self.request("DELETE", project_path, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertTrue(deleted["deleted"])
+
+    def test_launcher_rename_releases_only_the_lock_it_acquires(self):
+        store = self.server.project_store
+        project = store.create("启动页重命名")
+        project_id = project["id"]
+        path = f"/api/projects/{project_id}"
+        headers = {"X-H3-Token": self.server.token}
+        store.open(project_id)
+        status, _, renamed = self.request("PUT", path + "/name", {
+            "name": "画布编辑期间重命名", "revision": project["revision"]
+        }, self.json_headers())
+        self.assertEqual(status, 200)
+        self.assertEqual(self.request("DELETE", path, headers=headers)[0], 423)
+        self.assertEqual(self.request("POST", path + "/close", {}, self.json_headers())[0], 200)
+
+        status, _, result = self.request("PUT", path + "/name", {
+            "name": "启动页已重命名", "revision": renamed["revision"]
+        }, self.json_headers())
+        self.assertEqual(status, 200)
+        self.assertEqual(result["name"], "启动页已重命名")
+        self.assertEqual(self.request("PUT", path + "/name", {
+            "name": "过期版本", "revision": renamed["revision"]
+        }, self.json_headers())[0], 409)
+        self.assertEqual(self.request("DELETE", path, headers=headers)[0], 200)
+
+    def test_stale_dead_owner_lock_is_released_after_normal_open_and_close(self):
+        store = self.server.project_store
+        project_id = store.create("离线锁恢复")["id"]
+        lock = store._project_path(project_id).parent / ".lock"
+        with subprocess.Popen([sys.executable, "-c", "pass"]) as exited:
+            exited.wait(timeout=10)
+        lock.write_text(json.dumps({"owner": "crashed-backend", "pid": exited.pid,
+                                    "heartbeat": time.time() - 60}), encoding="utf-8")
+        path = f"/api/projects/{project_id}"
+        headers = {"X-H3-Token": self.server.token}
+        self.assertEqual(self.request("DELETE", path, headers=headers)[0], 423)
+        status, _, reopened = self.request("POST", "/api/projects/open", {"id": project_id}, self.json_headers())
+        self.assertEqual(status, 200)
+        self.assertEqual(reopened["id"], project_id)
+        self.assertEqual(self.request("POST", path + "/close", {}, self.json_headers())[0], 200)
+        self.assertFalse(lock.exists())
+        self.assertEqual(self.request("DELETE", path, headers=headers)[0], 200)
 
     def test_read_api_also_requires_token_except_health(self):
         status, _, _ = self.request("GET", "/api/projects")

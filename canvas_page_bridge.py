@@ -10,16 +10,17 @@ import uuid
 
 from project_store import StoreError
 
-TOOLS = frozenset({"canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
-                   "canvas_generate_node", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset",
+TOOLS = frozenset({"canvas_publish_extension", "canvas_get_extension_publish_status", "canvas_image_compact", "canvas_native3d_sync_task", "canvas_native3d_retry_lod", "canvas_native3d_repair_lod", "canvas_native3d_create_resolution", "canvas_native3d_next_step", "canvas_native3d_retry_stage", "canvas_native3d_diagnostic_preview", "canvas_link_native3d_process", "canvas_link_native3d_diagnostic", "canvas_native3d_uv_preview", "canvas_recover_native3d", "canvas_native3d_capabilities", "canvas_native3d_stage", "canvas_move_nodes", "canvas_get_state", "canvas_create_node", "canvas_update_node", "canvas_connect_nodes",
+                   "canvas_retry_save", "canvas_generate_node", "canvas_cancel_video", "canvas_retry_generation", "canvas_delete_node", "canvas_focus_node", "canvas_tidy", "canvas_import_asset",
                    "canvas_create_project", "canvas_open_project", "canvas_inspect_node", "canvas_open_reference_library",
-                   "canvas_create_extension"})
-LAUNCHER_TOOLS = frozenset({"canvas_get_state", "canvas_create_project", "canvas_open_project"})
+                   "canvas_create_extension", "canvas_wait_for_node", "canvas_native3d_plan_review", "canvas_native3d_plan_confirm", "canvas_native3d_viewer_close"})
+LAUNCHER_TOOLS = frozenset({"canvas_native3d_create_resolution", "canvas_native3d_capabilities", "canvas_get_state", "canvas_create_project", "canvas_open_project"})
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}")
+PAGE_BRIDGE_WAIT_MS = 20000
 
 
 class CanvasPageBridge:
-    def __init__(self, *, now=time.monotonic, ttl=15, capacity=512):
+    def __init__(self, *, now=time.monotonic, ttl=15, capacity=4096):
         self.epoch = uuid.uuid4().hex
         self.now, self.ttl, self.capacity = now, ttl, capacity
         self.sessions, self.commands = {}, {}
@@ -47,7 +48,9 @@ class CanvasPageBridge:
     def current(self, project_id=None):
         with self.lock:
             self._expire()
-            pages = [page for page in self.sessions.values() if page["visible"] and (not project_id or page["projectId"] == project_id)]
+            pages = [page for page in self.sessions.values() if page["visible"] and (
+                page["projectId"] == project_id if project_id else page["projectId"] != "legacy"
+            )]
             if not pages:
                 raise StoreError("NO_VISIBLE_CANVAS", "没有连接到当前可见画布，请在现有网页打开项目；不要另开后台画布。", 409)
             if len(pages) != 1:
@@ -58,7 +61,7 @@ class CanvasPageBridge:
     def heartbeat(self, payload):
         with self.lock:
             session_id, project_id = self._id(payload, "sessionId"), self._id(payload, "projectId")
-            if (project_id != "launcher" and not project_id.startswith("prj_")) or not isinstance(payload.get("visible"), bool) or not isinstance(payload.get("busy", False), bool):
+            if (project_id not in ("launcher", "legacy") and not project_id.startswith("prj_")) or not isinstance(payload.get("visible"), bool) or not isinstance(payload.get("busy", False), bool):
                 raise StoreError("BAD_REQUEST", "Invalid canvas heartbeat.")
             self._expire()
             previous = self.sessions.get(session_id)
@@ -89,10 +92,37 @@ class CanvasPageBridge:
             tool, args = payload.get("tool"), payload.get("args", {})
             if not isinstance(tool, str) or tool not in TOOLS or not isinstance(args, dict):
                 raise StoreError("BAD_REQUEST", "Unsupported canvas tool or arguments.")
+            if tool in {"canvas_native3d_capabilities", "canvas_native3d_viewer_close"} and args:
+                raise StoreError("BAD_REQUEST", "Native3D query/viewer close takes no arguments.")
+            if project_id == "legacy":
+                raise StoreError("NO_VISIBLE_CANVAS", "简易模式仅供人工操作，Agent 生成需要打开项目画布。", 409)
             if project_id == "launcher" and tool not in LAUNCHER_TOOLS:
                 raise StoreError("BAD_REQUEST", "请先在当前页面打开项目，再操作画布节点。")
             if tool == "canvas_generate_node" and args.get("wait", False) is not False:
                 raise StoreError("BAD_REQUEST", "当前页通道只提交生成（wait:false），请用 canvas_get_state 查询结果。")
+            if tool == "canvas_cancel_video" and (set(args) != {"nodeId", "jobId"}
+                    or not isinstance(args.get("nodeId"), str) or not IDENTIFIER.fullmatch(args["nodeId"])
+                    or not isinstance(args.get("jobId"), str) or not re.fullmatch(r"(?:ved|vry|vck|vwp)_[a-f0-9]{32}", args["jobId"])):
+                raise StoreError("BAD_REQUEST", "必须提供节点和要取消的视频作业 ID。")
+            if tool == "canvas_wait_for_node":
+                args = self._bounded_wait_args(args)
+            if tool == "canvas_native3d_retry_stage" and (set(args) != {"nodeId"} or not isinstance(args.get("nodeId"), str) or not IDENTIFIER.fullmatch(args["nodeId"])):
+                raise StoreError("BAD_REQUEST", "Stage retry accepts only a nodeId.")
+            if tool == "canvas_image_compact":
+                ids = args.get("nodeIds")
+                if set(args) - {"nodeIds", "dryRun"} or not isinstance(ids, list) or not 1 <= len(ids) <= 100 or any(not isinstance(node_id, str) or not IDENTIFIER.fullmatch(node_id) for node_id in ids) or type(args.get("dryRun", True)) is not bool:
+                    raise StoreError("BAD_REQUEST", "Image compact accepts 1–100 safe nodeIds and optional boolean dryRun only.")
+                args = {"nodeIds": list(ids), "dryRun": args.get("dryRun", True)}
+            if tool in {"canvas_publish_extension", "canvas_get_extension_publish_status"}:
+                expected = {"requestId", "digest", "packageId", "version"} if tool == "canvas_publish_extension" else {"requestId"}
+                if (set(args) - ({"mode"} if tool == "canvas_publish_extension" else set())) != expected or not isinstance(args.get("requestId"), str) or not IDENTIFIER.fullmatch(args["requestId"]):
+                    raise StoreError("BAD_REQUEST", "Invalid publication request identity.")
+                if tool == "canvas_publish_extension":
+                    if args.get("mode", "update") not in ("update", "publish"):
+                        raise StoreError("BAD_REQUEST", "Invalid publication mode.")
+                    args = {**args, "mode": args.get("mode", "update")}
+                if tool == "canvas_publish_extension" and (not isinstance(args["digest"], str) or not re.fullmatch(r"[a-f0-9]{64}", args["digest"]) or not isinstance(args["packageId"], str) or len(args["packageId"]) > 128 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*", args["packageId"]) or not isinstance(args["version"], str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?", args["version"])):
+                    raise StoreError("BAD_REQUEST", "Invalid publication package identity.")
             identity = {"sessionId": session_id, "projectId": project_id, "tool": tool, "args": args}
             encoded = json.dumps(identity, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
             if len(encoded) > 32768:
@@ -107,9 +137,25 @@ class CanvasPageBridge:
             if active["sessionId"] != session_id:
                 raise StoreError("CANVAS_SESSION_CHANGED", "目标页面已失效，请重新读取当前画布。", 409)
             if len(self.commands) >= self.capacity:
-                raise StoreError("CANVAS_CAPACITY", "当前页命令记录已满；不会删除去重记录或重放生成。", 429)
+                raise StoreError("CANVAS_CAPACITY", f"Agent 画布命令记录已达工作台上限（{self.capacity} 条）；已有回执仍可查询。", 429)
             self.commands[op_id] = {**identity, "opId": op_id, "epoch": self.epoch, "fingerprint": fingerprint, "status": "queued"}
             return self.get(op_id)
+
+    def assert_generation_page(self, proof, project_id, node_id, request_id, *, tool="canvas_generate_node"):
+        """Caller holds lock through queue admission so release and enqueue are ordered."""
+        if not isinstance(proof, dict):
+            raise StoreError("VISIBLE_CANVAS_REQUIRED", "生成需要当前可写画布的提交记录。", 409)
+        self._epoch(proof)
+        session_id = self._id(proof, "sessionId")
+        if self.current(project_id)["sessionId"] != session_id:
+            raise StoreError("CANVAS_SESSION_CHANGED", "准备生成的页面已经失效。", 409)
+        if "opId" in proof:
+            op_id = self._id(proof, "opId")
+            command = self.commands.get(op_id)
+            if (request_id != op_id or not command or command["status"] != "dispatched"
+                    or command["tool"] != tool or command["projectId"] != project_id
+                    or command["sessionId"] != session_id or command["args"].get("nodeId") != node_id):
+                raise StoreError("CANVAS_OP_CONFLICT", "生成命令与当前页面记录不符。", 409)
 
     def complete(self, payload):
         with self.lock:
@@ -133,6 +179,20 @@ class CanvasPageBridge:
             else:
                 command.update(status="done", result=result)
             return self.get(op_id)
+
+    @staticmethod
+    def _bounded_wait_args(args):
+        """Copy args and force a short timeout. Omitted timeout becomes the cap, not 5 minutes."""
+        timeout = args.get("timeoutMs", PAGE_BRIDGE_WAIT_MS)
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1000 or timeout > PAGE_BRIDGE_WAIT_MS:
+            raise StoreError("BAD_REQUEST", f"当前页通道的 canvas_wait_for_node 等待时间须在 1000–{PAGE_BRIDGE_WAIT_MS} 毫秒之间，避免占住页面命令。未结束时页面返回 pending，不会重新提交。")
+        job_id = args.get("jobId")
+        if "jobId" in args and (not isinstance(job_id, str) or not re.fullmatch(r"(?:n3d|job|ved|vry|vck|vwp)_[a-f0-9]{32}", job_id)):
+            raise StoreError("BAD_REQUEST", "Invalid jobId.")
+        bounded = dict(args)
+        bounded["timeoutMs"] = timeout
+        return bounded
+
 
     def get(self, op_id):
         with self.lock:

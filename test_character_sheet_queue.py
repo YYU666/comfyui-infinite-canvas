@@ -7,7 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from outfit_queue import SHEET_PANELS, initial_state, stage_workflow, validate_plan
+from outfit_queue import SHEET_PANELS, SHEET_STABLE_PANELS, SHEET_PREP_PANELS, SHEET_PANEL_INPUT, initial_state, stage_transfer, stage_workflow, validate_plan, sheet_stage_label
 from test_outfit_queue import FakeOutfitAdapter
 from test_workbench_queue import wait_for
 from workbench_queue import QueueManager
@@ -69,6 +69,17 @@ class CharacterSheetQueueTests(unittest.TestCase):
             qwenSteps:40, qwenRefResolution:1536, references:[{kind:'image',slot:'guide',name:'male.png'}]})));
         """
         cls.plan = json.loads(subprocess.check_output(['node', '--input-type=module', '-e', script], cwd=Path(__file__).resolve().parent, text=True, encoding='utf-8'))
+        cls.browser_plan = copy.deepcopy(cls.plan)
+        prep_script = "import {CHARACTER_SHEET_RECIPE_VERSION} from './src/character-sheet-recipe.js';\n" + script.replace(
+            "{prompt:'male test'", "{characterSheetRecipeVersion:CHARACTER_SHEET_RECIPE_VERSION,prompt:'male test'")
+        cls.prepared_browser_plan = json.loads(subprocess.check_output(['node', '--input-type=module', '-e', prep_script], cwd=Path(__file__).resolve().parent, text=True, encoding='utf-8'))
+        # Keep legacy four-panel queue regression coverage when browser defaults evolve.
+        if cls.plan['panels'][0]['id'] == 'portrait_reference':
+            cls.plan['panels'].pop(0)
+            cls.plan['panels'][0]['dependsOn'] = []
+            for node in cls.plan['panels'][0]['single'].values():
+                if node['class_type'] == 'LoadImage':
+                    node['inputs']['image'] = 'male.png'
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -235,6 +246,144 @@ class CharacterSheetQueueTests(unittest.TestCase):
         for state in [{**initial_state(), 'panelIndex': 1}, {**initial_state(), 'phase': 'stitch'}]:
             with self.assertRaisesRegex(ValueError, '依赖图片'):
                 stage_workflow({'plan': normalized, 'planState': state})
+
+    def plan_for_order(self, order):
+        # Model persisted legacy plans independently of the current browser default.
+        panels = {panel['id']: copy.deepcopy(panel) for panel in self.plan['panels']}
+        back = panels['back_body']
+        stable = order == SHEET_STABLE_PANELS
+        back['dependsOn'] = ['front_body'] if stable else []
+        for node in back['single'].values():
+            if node['class_type'] == 'LoadImage':
+                node['inputs']['image'] = SHEET_PANEL_INPUT.format(panel_id='front_body') if stable else 'male.png'
+        return {**copy.deepcopy(self.plan), 'panels': [panels[key] for key in order]}
+
+    def test_delivery_crop_is_validated_and_legacy_stitch_is_accepted(self):
+        validate_plan(self.plan)
+        legacy = copy.deepcopy(self.plan)
+        for key in ("front_body", "back_body"):
+            del legacy["stitch"][f"{key}_delivery_crop"]
+            del legacy["stitch"][f"{key}_delivery_pad"]
+        legacy["stitch"]["bottom_row"]["inputs"].update(image1=["back_body_load", 0], image2=["front_body_load", 0])
+        validate_plan(legacy)
+        mutations = [
+            lambda p: p["stitch"]["front_body_delivery_crop"]["inputs"].update(image=["front_portrait_load", 0]),
+            lambda p: p["stitch"]["front_body_delivery_crop"]["inputs"].update(x=-1),
+            lambda p: p["stitch"]["front_body_delivery_crop"]["inputs"].update(width=1153),
+            lambda p: p["stitch"]["front_body_delivery_crop"]["inputs"].update(y=True),
+            lambda p: p["stitch"]["front_body_delivery_pad"]["inputs"].update(target_width=1000),
+            lambda p: p["stitch"]["top_row"]["inputs"].update(image1=["front_body_delivery_pad", 0]),
+        ]
+        for mutate in mutations:
+            invalid = copy.deepcopy(self.plan)
+            mutate(invalid)
+            with self.assertRaises(ValueError):
+                validate_plan(invalid)
+
+    def test_legacy_and_stable_orders_transfer_correct_panel_identities(self):
+        for order in (SHEET_PANELS, SHEET_STABLE_PANELS):
+            with self.subTest(order=order):
+                plan = validate_plan(self.plan_for_order(order))
+                state = initial_state()
+                adapter = SheetAdapter()
+                for index, panel_id in enumerate(order):
+                    job = {'plan': plan, 'planState': state}
+                    workflow = stage_workflow(job)
+                    if panel_id == 'three_quarter_portrait' or (order == SHEET_STABLE_PANELS and panel_id == 'back_body'):
+                        source = 'front_portrait' if panel_id == 'three_quarter_portrait' else 'front_body'
+                        self.assertEqual([node['inputs']['image'] for node in workflow.values() if node['class_type'] == 'LoadImage'],
+                                         [state['images'][source]])
+                    prompt = adapter.submit(workflow, 'test')
+                    job['outputs'] = adapter.results[prompt]
+                    state = stage_transfer(job, adapter)['planState']
+                    self.assertEqual(list(state['images']), list(order[:index + 1]))
+                    self.assertEqual(state['panelOutputs'][panel_id]['filename'], f'H3_CharacterSheetPanel_{panel_id}_00001_.png')
+                    # Persist/reload after every transfer, including before back-body.
+                    state = json.loads(json.dumps(state))
+                self.assertEqual(state['phase'], 'stitch')
+                job = {'plan': plan, 'planState': state}
+                prompt = adapter.submit(stage_workflow(job), 'test')
+                job['outputs'] = adapter.results[prompt]
+                self.assertEqual(stage_transfer(job, adapter)['status'], 'done')
+                self.assertEqual(adapter.free_calls, 0)
+
+    def test_stable_back_dependency_and_placeholder_are_strict(self):
+        plan = self.plan_for_order(SHEET_STABLE_PANELS)
+        back = plan['panels'][3]
+        source_id = next(key for key, node in back['single'].items() if node['class_type'] == 'LoadImage')
+        mutations = [
+            lambda p: p['panels'][3].update(dependsOn=[]),
+            lambda p: p['panels'][3].update(dependsOn=['front_portrait']),
+            lambda p: p['panels'][3]['single'][source_id]['inputs'].update(image='male.png'),
+            lambda p: p['panels'][3]['single'][source_id]['inputs'].update(image=SHEET_PANEL_INPUT.format(panel_id='front_portrait')),
+            lambda p: p['panels'][3]['single'].update(extra={'class_type': 'LoadImage', 'inputs': {'image': 'male.png'}}),
+        ]
+        for mutate in mutations:
+            candidate = copy.deepcopy(plan)
+            mutate(candidate)
+            with self.assertRaises(ValueError):
+                validate_plan(candidate)
+        with self.assertRaisesRegex(ValueError, '依赖图片'):
+            stage_workflow({'plan': validate_plan(plan), 'planState': {**initial_state(), 'panelIndex': 3, 'images': {'front_portrait': 'portrait.png'}}})
+        legacy = self.plan_for_order(SHEET_PANELS)
+        legacy['panels'][2]['dependsOn'] = ['front_body']
+        with self.assertRaises(ValueError):
+            validate_plan(legacy)
+
+    def prep_plan(self):
+        return copy.deepcopy(self.prepared_browser_plan)
+
+    def test_prep_restart_and_six_stage_inspection(self):
+        self.plan = self.prep_plan()
+        self.assertEqual(tuple(panel['id'] for panel in validate_plan(self.plan)['panels']), SHEET_PREP_PANELS)
+        self.assertIn('预处理', sheet_stage_label(initial_state(), self.plan))
+        self.assertIn('1/4', sheet_stage_label({**initial_state(), 'panelIndex': 1}, self.plan))
+        self.assertIn('4/4', sheet_stage_label({**initial_state(), 'panelIndex': 4}, self.plan))
+        job_id = self.start_job()
+        self.adapter.completed = 1
+        wait_for(lambda: len(self.adapter.submitted) == 2)
+        self.manager.stop()
+        self.assertEqual(list(self.manager.get(job_id)['planState']['images']), ['portrait_reference'])
+        self.manager = QueueManager(self.path, self.adapter, poll_interval=0.01)
+        self.adapter.completed = 6
+        self.manager.start()
+        wait_for(lambda: self.manager.get(job_id)['status'] == 'done')
+        self.assertEqual(len(self.adapter.submitted), 6, 'restart cannot resubmit saved preprocessing')
+        for index, dependency in ((1, 'portrait_reference'), (2, 'front_portrait'), (4, 'front_body')):
+            loads = [node['inputs']['image'] for node in self.adapter.submitted[index]['workflow'].values() if node['class_type'] == 'LoadImage']
+            self.assertEqual(loads, [f'workbench/H3_CharacterSheetPanel_{dependency}_00001_.png'])
+        job = self.manager.get(job_id)
+        self.assertEqual(list(job['planState']['images']), list(SHEET_PREP_PANELS))
+        self.assertEqual(len(job['planState']['panelOutputs']), 5)
+        self.assertEqual(self.adapter.free_calls, 0)
+        inspection = self.manager.inspect_workflow(project_id='test', node_id='sheet', job_id=job_id)
+        self.assertEqual([stage['id'] for stage in inspection['stages']], [*SHEET_PREP_PANELS, 'stitch'])
+        self.assertEqual(inspection['stages'][-1]['promptId'], 'prompt-6')
+        self.assertTrue(inspection['stages'][-1]['executed'])
+
+    def test_prep_rejects_non_deterministic_invalid_dag_and_bad_crop(self):
+        plan = self.prep_plan()
+        mutations = [
+            lambda p: p['panels'][0]['single'].update(model={'class_type': 'KSampler', 'inputs': {}}),
+            lambda p: p['panels'][0]['single']['crop'].update(class_type='KSampler'),
+            lambda p: p['panels'][0]['single']['crop']['inputs'].update(image=['pad', 0]),
+            lambda p: p['panels'][0]['single']['crop']['inputs'].update(x=-1),
+            lambda p: p['panels'][0]['single']['crop']['inputs'].update(width=0),
+            lambda p: p['panels'][0]['single']['crop']['inputs'].update(height=True),
+            lambda p: p['panels'][0]['single']['crop']['inputs'].update(x=16384),
+            lambda p: p['panels'][0]['single']['pad']['inputs'].update(target_height=1024),
+            lambda p: p['panels'][0]['single']['save']['inputs'].update(images=['crop', 0]),
+            lambda p: p['panels'][0]['single']['source']['inputs'].update(image='../secret.png'),
+            lambda p: p['panels'][0]['single']['source']['inputs'].update(image='__H3_CHARACTER_SHEET_PANEL_front_body__'),
+            lambda p: p['panels'][1].update(dependsOn=[]),
+        ]
+        for mutate in mutations:
+            invalid = copy.deepcopy(plan)
+            mutate(invalid)
+            with self.assertRaises(ValueError):
+                validate_plan(invalid)
+        with self.assertRaisesRegex(ValueError, '依赖图片'):
+            stage_workflow({'plan': validate_plan(plan), 'planState': {**initial_state(), 'panelIndex': 1}})
 
 
 if __name__ == '__main__':

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import urllib.parse
@@ -10,6 +11,45 @@ from pathlib import Path
 from delivery_export import export_delivery
 from project_domain import ProjectDomain
 from project_store import ProjectStore, StoreError, default_projects_root, update_handoff
+
+logger = logging.getLogger(__name__)
+
+
+def reveal_asset_in_windows(file_path):
+    """Select a validated asset via the Unicode Shell API, without Explorer parsing."""
+    import ctypes
+    from ctypes import wintypes
+
+    ole = ctypes.WinDLL("ole32")
+    shell = ctypes.WinDLL("shell32")
+    ole.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    ole.CoInitializeEx.restype = ctypes.c_long
+    ole.CoUninitialize.argtypes = []
+    ole.CoUninitialize.restype = None
+    ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole.CoTaskMemFree.restype = None
+    shell.SHParseDisplayName.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), wintypes.DWORD, ctypes.c_void_p]
+    shell.SHParseDisplayName.restype = ctypes.c_long
+    shell.SHOpenFolderAndSelectItems.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p, wintypes.DWORD]
+    shell.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+    initialized = ole.CoInitializeEx(None, 2)
+    # RPC_E_CHANGED_MODE means this thread already has another COM apartment.
+    if initialized < 0 and initialized != -2147417850:
+        raise StoreError("REVEAL_FAILED", "无法初始化 Windows 文件定位服务。", 500)
+    pidl = ctypes.c_void_p()
+    try:
+        result = shell.SHParseDisplayName(str(file_path), None, ctypes.byref(pidl), 0, None)
+        if result < 0:
+            raise StoreError("REVEAL_FAILED", "Windows 无法解析素材位置。", 500)
+        # With cidl=0, pidl is the full item to select in its containing folder.
+        result = shell.SHOpenFolderAndSelectItems(pidl, 0, None, 0)
+        if result < 0:
+            raise StoreError("REVEAL_FAILED", "Windows 无法打开素材所在文件夹。", 500)
+    finally:
+        if pidl.value:
+            ole.CoTaskMemFree(pidl)
+        if initialized >= 0:
+            ole.CoUninitialize()
 
 
 class LimitedStream:
@@ -91,6 +131,10 @@ class ProjectAPI:
         match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)", path)
         if match:
             handler.send_json(200, self.store.get(match.group(1)))
+            return True
+        match = re.fullmatch(r'/api/projects/(prj_[A-Za-z0-9_-]+)/native3d-backup/([1-9][0-9]{0,8})', path)
+        if match:
+            handler.send_json(200, self.store.native3d_backup_fragment(match.group(1), int(match.group(2))))
             return True
         match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/assets/(.+)", path)
         if match:
@@ -223,6 +267,16 @@ class ProjectAPI:
             if match:
                 handler.send_json(200, self.store.release(match.group(1)))
                 return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/assets/reveal", path)
+            if match:
+                payload = self._json(handler, maximum=4096)
+                relative = payload.get("assetPath")
+                if not isinstance(relative, str) or not relative:
+                    raise StoreError("BAD_REQUEST", "素材路径无效。")
+                file_path = self.store.asset_file(match.group(1), relative)
+                reveal_asset_in_windows(file_path)
+                handler.send_json(200, {"ok": True})
+                return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/reveal", path)
             if match:
                 project_file = self.store._project_path(match.group(1))
@@ -238,11 +292,19 @@ class ProjectAPI:
     def handle_put(self, handler, path):
         if not path.startswith("/api/projects"):
             return False
+        operation = "project_put"
         try:
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)", path)
             if match:
                 document = self._json(handler)
-                handler.send_json(200, self.store.save(match.group(1), document, self._revision(handler, document)))
+                handler.send_json(200, self.store.save(match.group(1), document, self._revision(handler, document), skip_unchanged=True))
+                return True
+            match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/name", path)
+            if match:
+                payload = self._json(handler, maximum=16384)
+                if not isinstance(payload.get("name"), str) or set(payload) - {"name", "revision"}:
+                    raise StoreError("BAD_REQUEST", "项目重命名请求字段无效。")
+                handler.send_json(200, self.store.rename(match.group(1), payload["name"], self._revision(handler, payload)))
                 return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/metadata", path)
             if match:
@@ -270,6 +332,7 @@ class ProjectAPI:
                 return True
             match = re.fullmatch(r"/api/projects/(prj_[A-Za-z0-9_-]+)/assets/(.+)", path)
             if match:
+                operation = "asset_put"
                 length = int(handler.headers.get("Content-Length", "0"))
                 if length <= 0 or length > 2 * 1024 * 1024 * 1024:
                     raise StoreError("BAD_REQUEST", "素材为空或超过 2 GB。")
@@ -279,6 +342,20 @@ class ProjectAPI:
                 handler.send_json(201, result)
                 return True
             handler.send_json(404, {"code": "NOT_FOUND", "message": "项目接口不存在。", "details": {}})
+            return True
+        except OSError as error:
+            incident = uuid.uuid4().hex
+            # Exception messages/filenames can contain local paths or user data.
+            # Keep only diagnostic types/codes and source locations in the log.
+            frames = []
+            trace = error.__traceback__
+            while trace:
+                frames.append(f"{Path(trace.tb_frame.f_code.co_filename).name}:{trace.tb_lineno}:{trace.tb_frame.f_code.co_name}")
+                trace = trace.tb_next
+            logger.error("Project PUT IO failure incident=%s operation=%s type=%s errno=%s winerror=%s frames=%s",
+                         incident, operation, type(error).__name__, error.errno, getattr(error, "winerror", None), " > ".join(frames))
+            handler.send_json(503, {"code": "PROJECT_IO_ERROR", "message": "项目写入遇到文件系统错误，尚未确认保存成功；请保留本页修改。",
+                                    "details": {"incidentId": incident, "operation": operation}})
             return True
         except (ValueError, StoreError) as error:
             if isinstance(error, StoreError):

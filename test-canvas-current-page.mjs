@@ -5,6 +5,37 @@ const schema = { type: 'object', properties: { nodeId: { type: 'string' }, wait:
 assert.throws(() => validateCanvasArgs({}, schema), /required/);
 assert.throws(() => validateCanvasArgs({ nodeId: 2 }, schema), /string/);
 assert.throws(() => validateCanvasArgs({ nodeId: 'a', script: 'x' }, schema), /unsupported/);
+const moveSchema={type:'object',properties:{nodes:{type:'array',minItems:1,maxItems:30,items:{type:'object',properties:{nodeId:{type:'string'},x:{type:'number'},y:{type:'number'}},required:['nodeId','x','y'],additionalProperties:false}}},required:['nodes'],additionalProperties:false};
+validateCanvasArgs({nodes:[{nodeId:'model-a',x:100,y:200},{nodeId:'model-b',x:-1,y:0}]},moveSchema);
+assert.throws(()=>validateCanvasArgs({nodes:{}},moveSchema),/expected array/);
+assert.throws(()=>validateCanvasArgs({nodes:[]},moveSchema),/minItems/);
+assert.throws(()=>validateCanvasArgs({nodes:Array(31).fill({nodeId:'a',x:0,y:0})},moveSchema),/maxItems/);
+assert.throws(()=>validateCanvasArgs({nodes:[{nodeId:'a',x:0}]},moveSchema),/args.nodes\[0\].y: required/);
+assert.throws(()=>validateCanvasArgs({nodes:[{nodeId:'a',x:Infinity,y:0}]},moveSchema),/args.nodes\[0\].x: expected number/);
+assert.throws(()=>validateCanvasArgs({nodes:[{nodeId:'a',x:0,y:0,script:'x'}]},moveSchema),/unsupported argument/);
+assert.throws(()=>validateCanvasArgs({nodes:[[1,2]]},moveSchema),/expected object/);
+assert.throws(()=>validateCanvasArgs({nodes:[{nodeId:'a',x:0,y:0}],other:true},moveSchema),/unsupported argument/);
+validateCanvasArgs([[1,2],[3]],{type:'array',items:{type:'array',minItems:1,maxItems:2,items:{type:'integer'}}});
+assert.throws(()=>validateCanvasArgs([[1,'x']],{type:'array',items:{type:'array',items:{type:'integer'}}}),/args\[0\]\[1\]: expected integer/);
+let moveExecutions=0;const moveResults=[];
+const moveCommands=[{nodes:[{nodeId:'model-a',x:125,y:250}]},{nodes:[{nodeId:'model-a',x:'invalid',y:250}]},{nodes:[{nodeId:'model-a',x:300,y:400}]}];
+const stopMoves=startCurrentCanvasPage({intervalMs:5,
+ getPage:()=>({projectId:'prj_moves',visible:true,readOnly:moveResults.length>=2}),
+ tools:[{name:'canvas_move_nodes',inputSchema:moveSchema,execute:async args=>{moveExecutions++;return JSON.stringify({ok:true,moved:args.nodes});}}],
+ fetchImpl:async(url,options)=>{
+  const payload=JSON.parse(options.body);
+  if(url.endsWith('/result')){moveResults.push(payload.result);return {ok:true,json:async()=>({})};}
+  if(url.endsWith('/release'))return {ok:true,json:async()=>({})};
+  const index=moveResults.length;
+  return {ok:true,json:async()=>({epoch:'move_epoch',command:index<moveCommands.length?{epoch:'move_epoch',sessionId:payload.sessionId,projectId:'prj_moves',opId:`move-${index}`,tool:'canvas_move_nodes',args:moveCommands[index]}:null})};
+ }});
+try{
+ for(let i=0;i<200 && moveResults.length<3;i++)await new Promise(resolve=>setTimeout(resolve,5));
+ assert.equal(moveResults.length,3);assert.equal(moveResults[0].ok,true);
+ assert.deepEqual(moveResults[0].moved,moveCommands[0].nodes);
+ assert.equal(moveResults[1].ok,false);assert.match(moveResults[1].error,/expected number/);
+ assert.equal(moveResults[2].ok,false);assert.equal(moveExecutions,1,'malformed arrays and readonly pages must never execute movement');
+}finally{stopMoves();}
 let visible = true;
 let executions = 0;
 let heartbeat = 0;

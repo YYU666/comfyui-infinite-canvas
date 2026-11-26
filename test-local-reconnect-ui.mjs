@@ -23,7 +23,7 @@ let project = { schemaVersion: 3, id: 'prj_reconnect', name: '离线恢复测试
   settings: {}, characters: [], outfits: [], locations: [], shots: [], assets: [],
   createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
   canvas: { nodes: [{ id: 'note', type: 'note', position: { x: 70, y: 100 }, data: { title: '测试备注', text: '原始内容' } }], edges: [], viewport: { x: 0, y: 0, zoom: 1 } } };
-let available = true; let comfy = true; let token = 'fixture-one'; let epoch = 'epoch-one';
+let available = true; let comfy = true; let holdMetrics = false; let holdStats = false; let comfyState = null; let comfyStarts = 0; const heldStats = []; const heldMetrics = []; let token = 'fixture-one'; let epoch = 'epoch-one';
 let externalMappingLost = false;
 const externalPath = 'C:/synthetic/external-project';
 let bootstraps = 0; let opens = 0; let healthReads = 0; let denied = 0; let generationWrites = 0;
@@ -55,8 +55,11 @@ try {
     }
     if (!url.pathname.startsWith('/api/')) return route.continue();
     if (!available) return route.abort('connectionrefused');
-    if (url.pathname === '/api/health') { healthReads++; return json({ ok: true, pid: epoch, comfy: { running: comfy } }); }
+    if (url.pathname === '/api/health') { healthReads++; return json({ ok: true, pid: epoch, comfy: { running: comfy, state: comfyState, error: comfyState === 'exited' ? 'ComfyUI 素材库启动失败：缺少 alembic_db 迁移文件。请修复安装或查看诊断日志。' : '' } }); }
     if (!request.headers().cookie?.includes(`h3_session=${token}`)) { denied++; return json({ code: 'UNAUTHORIZED' }, 401); }
+    if (url.pathname === '/api/local-comfy/start') { comfyStarts++; return json({ state: comfyState || 'starting' }, 202); }
+    if (url.pathname === '/api/hardware-metrics') { if (holdMetrics) { heldMetrics.push(route); return; } return json({ cpuPercent: 20 }); }
+    if (url.pathname === '/api/comfy/system_stats' && holdStats) { heldStats.push(route); return; }
     if (url.pathname === '/api/comfy/system_stats') return json(comfy ? { devices: [] } : { error: 'Comfy unavailable' }, comfy ? 200 : 502);
     if (url.pathname === '/api/settings') return json({ notifications: false, updates: { autoCheck: false } });
     if (url.pathname === '/api/projects/open') {
@@ -99,6 +102,37 @@ try {
   await status.click(); await page.waitForTimeout(150);
   assert(healthReads > before, 'online click checks health');
   assert.equal(await page.evaluate(() => window.fixtureLaunches.length), 0, 'online click never launches');
+
+  // Real built hook: publish readiness while monitoring is held indefinitely.
+  comfy = false; await check(); await offline();
+  holdMetrics = true; comfy = true; await check();
+  await connected();
+  await page.waitForTimeout(1500);
+  assert.equal(await status.textContent(), '本地已连接');
+  assert(heldMetrics.length > 0);
+  // Force a fresh check rather than reusing a pending system_stats request.
+  holdStats = true; await check();
+  await page.waitForFunction(() => true);
+  for (let n = 0; n < 20 && heldStats.length === 0; n++) await page.waitForTimeout(50);
+  assert(heldStats.length > 0);
+  holdStats = false; const freshBefore = healthReads;
+  await status.click(); await connected();
+  assert(healthReads > freshBefore);
+  for (const route of heldStats.splice(0)) await route.fulfill({ status: 503, json: { error: 'old response' } }).catch(() => {});
+  await page.waitForTimeout(150);
+  assert.equal(await status.textContent(), '本地已连接', 'late failed probe cannot overwrite forced success');
+  holdMetrics = false;
+  for (const route of heldMetrics.splice(0)) await route.fulfill({ json: { cpuPercent: 80 } }).catch(() => {});
+
+  comfy = false; comfyState = 'exited'; await check();
+  await page.waitForFunction(() => document.querySelector('.server-status')?.textContent === '启动失败');
+  await page.getByRole('status').filter({ hasText: '缺少 alembic_db' }).waitFor();
+  await page.getByRole('button', { name: '下载诊断日志', exact: true }).waitFor();
+  if (process.env.H3_CONNECTIVITY_SCREENSHOT) await page.screenshot({ path: process.env.H3_CONNECTIVITY_SCREENSHOT, fullPage: false });
+  await page.getByRole('button', { name: '关闭连接提示', exact: true }).click();
+  await check(); await page.waitForTimeout(150);
+  assert.equal(await page.locator('.local-connection-notice').count(), 0, 'dismissed diagnostic is not reopened by identical polling');
+  comfy = true; comfyState = null; await check(); await connected();
 
   available = false; await check(); await offline();
   await note.fill('断线时的未保存修改');
@@ -144,6 +178,15 @@ try {
   comfy = false; await check(); await offline(); await status.click();
   await page.getByRole('status').filter({ hasText: '工作台已连接，但 ComfyUI 未就绪' }).waitFor();
   assert.equal(await page.evaluate(() => window.fixtureLaunches.length), 1, 'Comfy-only failure does not restart backend');
+  assert(comfyStarts > 0, 'manual retry asks managed backend to start ComfyUI');
+  comfyState = 'exited'; await check();
+  await page.waitForFunction(() => document.querySelector('.server-status')?.textContent === '启动失败');
+  await status.click();
+  await page.getByRole('status').filter({ hasText: '缺少 alembic_db' }).waitFor();
+  await page.getByRole('button', { name: '下载诊断日志', exact: true }).waitFor();
+
+  comfyState = null;
+
 
   // A missing/declined protocol handler must stop showing an endless spinner.
   await page.clock.install();
@@ -160,7 +203,7 @@ try {
   assert.equal(documents.length, 1, 'no document reload/navigation');
   assert.equal(context.pages().length, 1, 'no second canvas tab');
   assert.equal(opens, 2); assert.equal(generationWrites, 0); assert.deepEqual(errors, []);
-  console.log('LOCAL_RECONNECT_UI_OK protocolGesture=true dedupLaunch=true launchTimeout=true rotatedCookie=true currentPage=true bridgeSession=true externalPathRestored=true unsavedRetained=true CASConflict=true noGeneration=true');
+  console.log('LOCAL_RECONNECT_UI_OK heldMetrics=true forcedFreshCheck=true ignoredLateFailure=true actionableErrorAndLogs=true protocolGesture=true dedupLaunch=true launchTimeout=true rotatedCookie=true currentPage=true bridgeSession=true externalPathRestored=true unsavedRetained=true CASConflict=true noGeneration=true');
 } finally {
   await browser?.close();
   await new Promise((resolve) => server.close(resolve));

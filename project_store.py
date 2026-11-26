@@ -7,18 +7,24 @@ import mimetypes
 import os
 import re
 import shutil
+import stat
 import threading
 import time
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from project_uv_storage import decode_project_json, pack_uv_plans, json_bytes
 from scripts.validate_project import validate_project
 from workbench_lifecycle import APP_VERSION, atomic_write_json, utc_now
 
 MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PROJECT_MEMBERS = 10000
-ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac"}
+MAX_RECOVERY_BYTES = 128 * 1024 * 1024
+MAX_RECOVERY_NODES = 256
+MAX_RECOVERY_EDGES = 2048
+ASSET_EXTENSIONS = {".glb", ".obj", ".fbx", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".tga", ".mp4", ".mov", ".webm", ".mp3", ".wav", ".m4a", ".aac"}
+PROJECT_ID = re.compile(r"prj_[A-Za-z0-9_-]+")
 INVALID_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
@@ -194,7 +200,7 @@ def _read_project_json(path):
     # project.json. Retry only that transient sharing violation, never bad JSON.
     for attempt in range(50):
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return decode_project_json(path.read_text(encoding="utf-8"))
         except PermissionError:
             if attempt == 49:
                 raise
@@ -204,7 +210,7 @@ def _read_project_json(path):
 def _safe_project_file(path):
     path = path.resolve()
     for temporary in path.parent.glob(f".{path.name}.*.tmp"):
-        match = re.fullmatch(rf"\.{re.escape(path.name)}\.(\d+)\.tmp", temporary.name)
+        match = re.fullmatch(rf"\.{re.escape(path.name)}\.(\d+)(?:\.[0-9a-f]{{32}})?\.tmp", temporary.name)
         if match and not _writer_running(int(match.group(1))):
             # A killed writer cannot finish os.replace; its committed JSON and
             # backups remain intact, so only the abandoned temporary is removed.
@@ -213,7 +219,7 @@ def _safe_project_file(path):
         raise StoreError("NOT_FOUND", "项目不存在或尚未打开。", 404)
     try:
         document = _read_project_json(path)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
         raise StoreError("BAD_REQUEST", f"project.json 无法读取：{exc}") from exc
     return path, document
 
@@ -227,6 +233,10 @@ class ProjectStore:
         self._locks_guard = threading.Lock()
         self._held = set()
         self._opened_paths = {}
+        self._index_guard = threading.RLock()
+        self._index_root = None
+        self._index_files = {}
+        self._index_paths = {}
         self._read_only = set()
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = None
@@ -236,24 +246,130 @@ class ProjectStore:
         with self._locks_guard:
             return self._locks.setdefault(key, threading.RLock())
 
-    def _project_path(self, project_id):
-        if not re.fullmatch(r"prj_[A-Za-z0-9_-]+", str(project_id)):
+    @staticmethod
+    def _index_stamp(path, kind, *, reject_unsafe=False):
+        try:
+            entry = path.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        # Do not implicitly follow symlinks or Windows directory junctions.
+        if stat.S_ISLNK(entry.st_mode) or getattr(entry, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            if reject_unsafe:
+                raise StoreError("BAD_REQUEST", "项目路径包含链接或重解析点。")
+            return None
+        if not kind(entry.st_mode):
+            return None
+        return entry.st_dev, entry.st_ino, entry.st_size, entry.st_mtime_ns, entry.st_ctime_ns
+
+    @staticmethod
+    def _check_project_id(project_id):
+        if not isinstance(project_id, str) or not PROJECT_ID.fullmatch(project_id):
             raise StoreError("BAD_REQUEST", "项目 ID 无效。")
-        if self.root.is_dir():
-            for candidate in self.root.iterdir():
-                path = candidate / "project.json"
-                if not candidate.is_dir() or candidate.name.startswith(".") or not path.is_file():
-                    continue
+
+    def _indexed_project_id(self, path, *, reject_unsafe=False):
+        with self._index_guard:
+            for _ in range(3):
+                parent = self._index_stamp(path.parent, stat.S_ISDIR, reject_unsafe=reject_unsafe)
+                stamp = self._index_stamp(path, stat.S_ISREG, reject_unsafe=reject_unsafe) if parent else None
+                if stamp is None:
+                    self._index_files.pop(path, None)
+                    return None
+                cached = self._index_files.get(path)
+                if cached and cached[0] == stamp:
+                    return cached[1]
                 try:
                     document = _read_project_json(path)
-                except (OSError, UnicodeError, json.JSONDecodeError):
+                except (UnicodeError, ValueError, RecursionError):
+                    document = None
+                except (FileNotFoundError, NotADirectoryError):
                     continue
-                if document.get("id") == project_id:
-                    return path
-        external = self._opened_paths.get(project_id)
-        if external and external.is_file():
-            return external
+                if stamp != self._index_stamp(path, stat.S_ISREG):
+                    continue
+                project_id = document.get("id") if isinstance(document, dict) else None
+                if not isinstance(project_id, str) or not PROJECT_ID.fullmatch(project_id):
+                    project_id = None
+                self._index_files[path] = stamp, project_id
+                return project_id
+            raise StoreError("PROJECT_CHANGED", "项目文件正在变更，请重试。", 409)
+
+    def _refresh_project_index(self, root_stamp):
+        paths = {}
+        candidates = set(self._opened_paths.values())
+        if root_stamp is not None:
+            try:
+                candidates.update(child / "project.json" for child in self.root.iterdir()
+                                  if not child.name.startswith("."))
+            except FileNotFoundError:
+                pass
+        for path in candidates:
+            try:
+                project_id = self._indexed_project_id(path)
+            except OSError:
+                continue
+            # Explicit external paths are authorized for the ID that was opened.
+            if project_id and (path.parent.parent == self.root and not path.parent.name.startswith(".")
+                               or self._opened_paths.get(project_id) == path):
+                paths.setdefault(project_id, []).append(path)
+        self._index_files = {path: entry for path, entry in self._index_files.items() if path in candidates}
+        self._index_paths = paths
+        self._index_root = root_stamp
+
+    def _project_path(self, project_id, *, refresh=False):
+        self._check_project_id(project_id)
+        with self._index_guard:
+            root_stamp = self._index_stamp(self.root, stat.S_ISDIR, reject_unsafe=True)
+            paths = self._index_paths.get(project_id, [])
+            current_id = self._indexed_project_id(paths[0], reject_unsafe=True) if len(paths) == 1 else None
+            if refresh or root_stamp != self._index_root or current_id != project_id:
+                self._refresh_project_index(root_stamp)
+                paths = self._index_paths.get(project_id, [])
+            if len(paths) > 1:
+                raise StoreError("DUPLICATE_PROJECT_ID", "多个项目目录使用同一 ID。", 409)
+            if paths:
+                return paths[0]
         raise StoreError("NOT_FOUND", "项目不存在或尚未打开。", 404)
+
+    def _require_project_id(self, path, project_id):
+        if self._indexed_project_id(path, reject_unsafe=True) != project_id:
+            raise StoreError("PROJECT_CHANGED", "项目目录或 ID 已变更，请重试。", 409)
+
+    def native3d_backup_fragment(self, project_id, revision):
+        """Read-only recovery source. The current page remains the only writer."""
+        if type(revision) is not int or revision < 1:
+            raise StoreError('BAD_REQUEST', '备份版本无效。')
+        project = self._project_path(project_id).resolve()
+        folder = project.parent / 'backups'
+        path = folder / f'project-r{revision}.json'
+        if not path.is_file() or path.resolve() != path or folder.resolve() != folder:
+            raise StoreError('NOT_FOUND', '项目备份不存在或路径无效。', 404)
+        try:
+            # Bound the actual read even if the file changes after the stat.
+            if path.stat().st_size > MAX_RECOVERY_BYTES:
+                raise StoreError('BACKUP_TOO_LARGE', '项目备份超过 128 MiB 恢复上限。', 413)
+            with path.open('rb') as stream:
+                data = stream.read(MAX_RECOVERY_BYTES + 1)
+            if len(data) > MAX_RECOVERY_BYTES:
+                raise StoreError('BACKUP_TOO_LARGE', '项目备份超过 128 MiB 恢复上限。', 413)
+            document = decode_project_json(data)
+        except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+            raise StoreError('BACKUP_UNREADABLE', '项目备份无法读取或 JSON 无效。') from exc
+        if (not isinstance(document, dict) or document.get('id') != project_id
+                or type(document.get('revision')) is not int or document['revision'] != revision):
+            raise StoreError('BAD_REQUEST', '备份项目或版本不匹配。')
+        canvas = document.get('canvas')
+        if not isinstance(canvas, dict):
+            raise StoreError('BAD_REQUEST', '备份画布结构无效。')
+        nodes, edges = canvas.get('nodes'), canvas.get('edges')
+        if (not isinstance(nodes, list) or not isinstance(edges, list)
+                or any(not isinstance(node, dict) or not isinstance(node.get('id'), str) for node in nodes)
+                or any(not isinstance(edge, dict) or any(not isinstance(edge.get(key), str) for key in ('id', 'source', 'target')) for edge in edges)):
+            raise StoreError('BAD_REQUEST', '备份节点或连线结构无效。')
+        native = [node for node in nodes if node.get('type') == 'native3d']
+        ids = {node['id'] for node in native}
+        links = [edge for edge in edges if edge['source'] in ids or edge['target'] in ids]
+        if len(native) > MAX_RECOVERY_NODES or len(links) > MAX_RECOVERY_EDGES:
+            raise StoreError('BACKUP_FRAGMENT_TOO_LARGE', '备份的 3D 节点或连线超过可恢复数量。', 413)
+        return {'projectId': project_id, 'nodes': native, 'edges': links, 'backupRevision': revision}
 
     def _read(self, path, migrate=True):
         # Schema/handle repair can write: serialize the entire read-modify-write,
@@ -266,10 +382,10 @@ class ProjectStore:
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 if not backup.exists():
                     shutil.copy2(path, backup)
-                atomic_write_json(path, document)
+                atomic_write_json(path, pack_uv_plans(document), compact=True)
             return document
 
-    def _write(self, path, document, expected_revision=None, backup=True):
+    def _write(self, path, document, expected_revision=None, backup=True, skip_unchanged=False):
         with self._guard(path):
             _, current = _safe_project_file(path)
             current_revision = int(current.get("revision", 0))
@@ -277,6 +393,8 @@ class ProjectStore:
                 conflict = path.parent / f".conflict-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.json"
                 atomic_write_json(conflict, document)
                 raise RevisionConflict(current_revision, conflict.name)
+            if skip_unchanged and document == current and json_bytes(document, sort_keys=True) == json_bytes(current, sort_keys=True):
+                return current
             document = dict(document)
             document["revision"] = current_revision + 1
             document["updatedAt"] = utc_now()
@@ -285,8 +403,8 @@ class ProjectStore:
             if backup:
                 backup_path = path.parent / "backups" / f"project-r{current_revision}.json"
                 backup_path.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_json(backup_path, current)
-            atomic_write_json(path, document)
+                atomic_write_json(backup_path, pack_uv_plans(current), compact=True)
+            atomic_write_json(path, pack_uv_plans(document), compact=True)
             backups = sorted(path.parent.glob("backups/project-r*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
             for old in backups[20:]:
                 old.unlink(missing_ok=True)
@@ -336,62 +454,117 @@ class ProjectStore:
             "thumbnail": f"/api/projects/{document['id']}/{cover}" if cover else None,
         }
 
-    def get(self, project_id):
+    def get(self, project_id, *, migrate=True):
         path = self._project_path(project_id)
-        return self._read(path)
+        with self._guard(path):
+            self._require_project_id(path, project_id)
+            document = self._read(path, migrate=migrate)
+            if document["id"] != project_id:
+                raise StoreError("PROJECT_CHANGED", "项目目录或 ID 已变更，请重试。", 409)
+            return document
 
-    def _set_read_only(self, path, read_only):
+    def _set_read_only(self, path, project_id, read_only):
         path = Path(path).resolve()
         owns_lock = any(lock_path == path.parent / ".lock" and owner == self.owner_id for lock_path, owner in self._held)
         if read_only and not owns_lock:
-            self._read_only.add(path)
+            self._read_only.add(project_id)
         elif not read_only:
-            self._read_only.discard(path)
+            self._read_only.discard(project_id)
 
     def _require_writable(self, path):
-        if Path(path).resolve() in self._read_only:
+        project_id = self._indexed_project_id(Path(path), reject_unsafe=True)
+        if project_id is None:
+            raise StoreError("PROJECT_CHANGED", "项目目录或 ID 已变更，请重试。", 409)
+        if project_id in self._read_only:
             raise StoreError("READ_ONLY", "当前项目以只读方式打开，服务端已拒绝写操作。", 403)
 
     def open(self, project_id, owner_id=None, read_only=False):
         path = self._project_path(project_id)
-        self._set_read_only(path, read_only)
-        if not read_only:
-            self.acquire_lock(path, owner_id)
-        return self._read(path)
+        with self._guard(path):
+            self._require_project_id(path, project_id)
+            if not read_only:
+                self.acquire_lock(path, owner_id)
+            self._set_read_only(path, project_id, read_only)
+            document = self._read(path)
+            if document["id"] != project_id:
+                raise StoreError("PROJECT_CHANGED", "项目目录或 ID 已变更，请重试。", 409)
+            return document
 
     def open_path(self, directory, owner_id=None, read_only=False):
-        path = (Path(directory).expanduser().resolve() / "project.json")
-        document = self._read(path)
-        self._set_read_only(path, read_only)
-        if not read_only:
-            self.acquire_lock(path, owner_id)
-        self._opened_paths[document["id"]] = path
-        return document
+        path = Path(directory).expanduser().resolve() / "project.json"
+        with self._guard(path), self._index_guard:
+            if self._index_stamp(path, stat.S_ISREG) is None:
+                raise StoreError("NOT_FOUND", "项目不存在或项目文件路径无效。", 404)
+            project_id = self._indexed_project_id(path)
+            if project_id and self._other_project_path(project_id, path):
+                raise StoreError("DUPLICATE_PROJECT_ID", "项目 ID 已指向其他目录。", 409)
+            document = self._read(path)
+            self._check_project_id(document["id"])
+            if document["id"] != project_id and self._other_project_path(document["id"], path):
+                raise StoreError("DUPLICATE_PROJECT_ID", "项目 ID 已指向其他目录。", 409)
+            project_id = document["id"]
+            if not read_only:
+                self.acquire_lock(path, owner_id)
+            self._set_read_only(path, project_id, read_only)
+            self._opened_paths[project_id] = path
+            self._index_paths.pop(project_id, None)
+            return document
 
-    def save(self, project_id, document, expected_revision):
+    def _other_project_path(self, project_id, path):
+        try:
+            found = self._project_path(project_id, refresh=True)
+        except StoreError as exc:
+            if exc.code != "NOT_FOUND":
+                raise
+            return False
+        return found != path
+
+    def save(self, project_id, document, expected_revision, *, skip_unchanged=False):
         path = self._project_path(project_id)
-        self._require_writable(path)
-        self.acquire_lock(path)
-        if str(document.get("id")) != project_id or document.get("schemaVersion") != 3:
-            raise StoreError("BAD_REQUEST", "项目 ID 或 schema 版本不一致。")
-        return self._write(path, document, int(expected_revision))
+        with self._guard(path):
+            self._require_project_id(path, project_id)
+            self._require_writable(path)
+            if document.get("id") != project_id or document.get("schemaVersion") != 3:
+                raise StoreError("BAD_REQUEST", "项目 ID 或 schema 版本不一致。")
+            self.acquire_lock(path)
+            return self._write(path, document, int(expected_revision), skip_unchanged=skip_unchanged)
+
+    def rename(self, project_id, name, expected_revision):
+        name = validate_name(name)
+        path = self._project_path(project_id)
+        with self._guard(path):
+            self._require_project_id(path, project_id)
+            self._require_writable(path)
+            already_open = (path.parent / ".lock", self.owner_id) in self._held
+            self.acquire_lock(path)
+            try:
+                document = self._read(path)
+                document["name"] = name
+                saved = self._write(path, document, int(expected_revision))
+                return {"id": project_id, "name": saved["name"], "revision": saved["revision"]}
+            finally:
+                if not already_open:
+                    self._release_lock(path)
 
     def release(self, project_id):
         path = self._project_path(project_id)
-        lock_path = path.parent / ".lock"
         with self._guard(path):
-            for held_path, owner in list(self._held):
-                if held_path != lock_path:
-                    continue
-                try:
-                    lock = json.loads(lock_path.read_text(encoding="utf-8"))
-                    if lock.get("owner") == owner:
-                        lock_path.unlink(missing_ok=True)
-                except (OSError, UnicodeError, json.JSONDecodeError):
-                    pass
-                self._held.discard((held_path, owner))
-            self._read_only.discard(path.resolve())
+            self._release_lock(path)
+            self._read_only.discard(project_id)
         return {"closed": True, "id": project_id}
+
+    def _release_lock(self, path):
+        lock_path = path.parent / ".lock"
+        for held_path, owner in list(self._held):
+            if held_path != lock_path:
+                continue
+            try:
+                lock = json.loads(lock_path.read_text(encoding="utf-8"))
+                if isinstance(lock, dict) and lock.get("owner") == owner:
+                    lock_path.unlink(missing_ok=True)
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                pass
+            self._held.discard((held_path, owner))
 
     def acquire_lock(self, path, owner_id=None):
         owner = owner_id or self.owner_id
@@ -399,11 +572,23 @@ class ProjectStore:
         with self._guard(path):
             lock_path = path.parent / ".lock"
             now = time.time()
+            created = False
             try:
                 lock = json.loads(lock_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                lock = None
-            if lock and lock.get("owner") != owner:
+            except FileNotFoundError:
+                try:
+                    self._create_lock_file(lock_path, owner)
+                except FileExistsError:
+                    raise StoreError("LOCKED", "项目正由另一个实例编辑，请重试。", 423)
+                except FileNotFoundError:
+                    raise StoreError("PROJECT_CHANGED", "项目目录已变更，请重试。", 409)
+                lock = {"owner": owner}
+                created = True
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise StoreError("LOCKED", "项目锁暂不可验证，请重试。", 423) from exc
+            if not isinstance(lock, dict) or not lock.get("owner"):
+                raise StoreError("LOCKED", "项目锁暂不可验证，请重试。", 423)
+            if lock.get("owner") != owner:
                 fresh = now - float(lock.get("heartbeat", 0)) < 30
                 try:
                     owner_alive = _writer_running(int(lock.get("pid", 0)))
@@ -411,7 +596,8 @@ class ProjectStore:
                     owner_alive = False
                 if fresh or owner_alive:
                     raise StoreError("LOCKED", "项目正由另一个实例编辑，请以只读方式打开。", 423, {"owner": lock.get("owner")})
-            atomic_write_json(lock_path, {"owner": owner, "pid": os.getpid(), "heartbeat": now})
+            if not created:
+                atomic_write_json(lock_path, {"owner": owner, "pid": os.getpid(), "heartbeat": now})
             self._held.add((lock_path, owner))
             if not self._heartbeat_thread or not self._heartbeat_thread.is_alive():
                 self._heartbeat_stop.clear()
@@ -419,13 +605,30 @@ class ProjectStore:
                 self._heartbeat_thread.start()
             return {"owner": owner, "heartbeat": now, "readOnly": False}
 
+    @staticmethod
+    def _create_lock_file(path, owner):
+        # Publish a complete lock without replacing a concurrent winner.
+        temporary = path.with_name(f".lock-{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("x", encoding="utf-8") as handle:
+                json.dump({"owner": owner, "pid": os.getpid(), "heartbeat": time.time()}, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if os.name == "nt":
+                temporary.rename(path)  # Windows rename fails if the destination exists.
+            else:
+                os.link(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def _heartbeat(self):
         while not self._heartbeat_stop.wait(10):
             for lock_path, owner in list(self._held):
                 try:
-                    lock = json.loads(lock_path.read_text(encoding="utf-8"))
-                    if lock.get("owner") == owner:
-                        atomic_write_json(lock_path, {**lock, "heartbeat": time.time()})
+                    with self._guard(lock_path.parent / "project.json"):
+                        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+                        if lock.get("owner") == owner:
+                            atomic_write_json(lock_path, {**lock, "heartbeat": time.time()})
                 except (OSError, UnicodeError, json.JSONDecodeError):
                     continue
 
@@ -441,36 +644,80 @@ class ProjectStore:
         self._held.clear()
 
     def duplicate(self, project_id):
-        source = self._project_path(project_id).parent
-        document = self._read(source / "project.json")
-        target = (source.parent / f"{document['name']} 副本").resolve()
-        if target.exists():
-            raise StoreError("BAD_REQUEST", "副本文件夹已存在。")
-        shutil.copytree(source, target, ignore=shutil.ignore_patterns(".lock", ".conflict-*", "exports"))
-        document.update(id=f"prj_{uuid.uuid4().hex}", name=validate_name(document["name"] + " 副本"), revision=1, createdAt=utc_now(), updatedAt=utc_now())
-        atomic_write_json(target / "project.json", document)
-        for backup in (target / "backups").glob("*.json"):
-            backup.unlink()
+        path = self._project_path(project_id)
+        source = path.parent
+        temporary = source.parent / f".duplicate-{uuid.uuid4().hex}"
+        with self._guard(path):
+            self._require_project_id(path, project_id)
+            document = self._read(path)
+            name = validate_name(document["name"] + " 副本")
+            target = source.parent / name
+            if target.exists():
+                raise StoreError("BAD_REQUEST", "副本文件夹已存在。")
+            try:
+                shutil.copytree(source, temporary, ignore=shutil.ignore_patterns(".lock", ".conflict-*", "exports"))
+                document.update(id=f"prj_{uuid.uuid4().hex}", name=name, revision=1, createdAt=utc_now(), updatedAt=utc_now())
+                atomic_write_json(temporary / "project.json", document)
+                for backup in (temporary / "backups").glob("*.json"):
+                    backup.unlink()
+                temporary.rename(target)
+            finally:
+                if temporary.exists():
+                    shutil.rmtree(temporary)
         return document
 
     def delete(self, project_id):
-        source = self._project_path(project_id).parent
-        trash = self.root / ".trash"
-        trash.mkdir(parents=True, exist_ok=True)
-        target = trash / f"{source.name}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
-        shutil.move(str(source), str(target))
+        path = self._project_path(project_id)
+        source = path.parent
+        with self._guard(path):
+            self._require_project_id(path, project_id)
+            self._require_writable(path)
+            trash = self.root / ".trash"
+            trash.mkdir(parents=True, exist_ok=True)
+            if self._index_stamp(trash, stat.S_ISDIR) is None:
+                raise StoreError("BAD_REQUEST", "回收站路径无效。")
+            target = trash / f"{source.name}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+            lock_path = source / ".lock"
+            owner = f"delete-{uuid.uuid4().hex}"
+            try:
+                self._create_lock_file(lock_path, owner)
+            except FileExistsError:
+                raise StoreError("LOCKED", "请先关闭项目并释放项目锁，再移入回收站。", 423)
+            try:
+                shutil.move(str(source), str(target))
+            finally:
+                for lease in (lock_path, target / ".lock"):
+                    try:
+                        if json.loads(lease.read_text(encoding="utf-8")).get("owner") == owner:
+                            lease.unlink()
+                    except (OSError, UnicodeError, ValueError, AttributeError):
+                        pass
+            with self._index_guard:
+                self._opened_paths.pop(project_id, None)
+                self._index_paths.pop(project_id, None)
+                self._index_files.pop(path, None)
         return {"deleted": True, "trashPath": str(target), "restoreAfter": None}
 
     def restore(self, trash_name):
-        if Path(trash_name).name != trash_name or not trash_name:
+        if not trash_name or trash_name in {".", ".."} or INVALID_NAME.search(trash_name):
             raise StoreError("BAD_REQUEST", "回收站项目名无效。")
-        source = self.root / ".trash" / trash_name
-        document = self._read(source / "project.json")
-        target = self.root / document["name"]
-        if target.exists():
-            raise StoreError("BAD_REQUEST", "原位置已有同名项目，未覆盖。")
-        shutil.move(str(source), str(target))
-        return self._read(target / "project.json")
+        trash = self.root / ".trash"
+        source = trash / trash_name
+        path = source / "project.json"
+        with self._guard(path):
+            if (self._index_stamp(trash, stat.S_ISDIR) is None
+                    or self._index_stamp(source, stat.S_ISDIR) is None
+                    or self._index_stamp(path, stat.S_ISREG) is None):
+                raise StoreError("NOT_FOUND", "回收站项目不存在或路径无效。", 404)
+            document = self._read(path)
+            target = self.root / validate_name(document["name"])
+            with self._index_guard:
+                if self._other_project_path(document["id"], path):
+                    raise StoreError("DUPLICATE_PROJECT_ID", "已有项目使用相同 ID，未恢复。", 409)
+                if target.exists():
+                    raise StoreError("BAD_REQUEST", "原位置已有同名项目，未覆盖。")
+                source.rename(target)
+        return document
 
     def list_trash(self):
         trash = self.root / ".trash"
@@ -503,7 +750,13 @@ class ProjectStore:
         self._require_writable(path)
         self.acquire_lock(path)
         extension = Path(filename).suffix.lower()
-        if extension not in ASSET_EXTENSIONS:
+        report_upload = extension == ".json" and Path(filename).name == "report.json"
+        from native3d_plan_assets import LIMITS as plan_limits, validate as validate_plan_asset
+        plan_name=Path(filename).name
+        plan_upload=plan_name in plan_limits
+        if extension == '.fbx':
+            content_type = 'application/octet-stream'
+        if extension not in ASSET_EXTENSIONS and not report_upload and not plan_upload:
             raise StoreError("UNSUPPORTED_MEDIA", "素材类型不在白名单内。", 415)
         assets = path.parent / "assets"
         temporary = assets / f".upload-{uuid.uuid4().hex}.tmp"
@@ -517,12 +770,32 @@ class ProjectStore:
                     if not chunk:
                         break
                     size += len(chunk)
+                    if extension == '.fbx' and size > 512 * 1024 * 1024:
+                        raise StoreError("BAD_REQUEST", "FBX素材不能超过512 MiB。")
+                    if report_upload and size > 4 * 1024 * 1024:
+                        raise StoreError("BAD_REQUEST", "3D report exceeds 4 MiB.")
+                    if plan_upload and size>plan_limits[plan_name]:
+                        raise StoreError('BAD_REQUEST','UV plan artifact exceeds bounded limit.')
                     if size > MAX_ASSET_BYTES:
                         raise StoreError("BAD_REQUEST", "单个素材不能超过 2 GB。")
                     digest.update(chunk)
                     target.write(chunk)
                 target.flush()
                 os.fsync(target.fileno())
+            if plan_upload:
+                try:
+                    validate_plan_asset(temporary,plan_name)
+                except (ValueError,UnicodeError,RecursionError,zipfile.BadZipFile) as exc:
+                    raise StoreError('BAD_REQUEST','Invalid UV plan artifact: '+str(exc)[:160]) from exc
+                content_type='application/octet-stream'
+            if report_upload:
+                try:
+                    report = json.loads(temporary.read_text(encoding="utf-8"), parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+                except (ValueError, UnicodeError, RecursionError) as exc:
+                    raise StoreError("BAD_REQUEST", "3D report must be valid finite JSON.") from exc
+                if not isinstance(report, dict) or set(report) != {"metadata", "quality", "warnings"} or not isinstance(report.get("metadata"), dict) or not isinstance(report.get("quality"), dict) or not isinstance(report.get("warnings"), list):
+                    raise StoreError("BAD_REQUEST", "Unsupported 3D report structure.")
+                content_type = "application/json"
             sha256 = digest.hexdigest()
             relative = f"assets/{sha256}{extension}"
             with self._guard(path):
@@ -574,19 +847,33 @@ class ProjectStore:
         if not 0 <= age <= 3650:
             raise StoreError("BAD_REQUEST", "孤儿素材保留天数必须在 0–3650 之间。")
         path = self._project_path(project_id)
-        self.acquire_lock(path)
         with self._guard(path):
-            document = self._read(path)
+            self._require_project_id(path, project_id)
+            if not dry_run:
+                self._require_writable(path)
+                self.acquire_lock(path)
+            if dry_run:
+                try:
+                    document, _ = _migrate(_read_project_json(path))
+                except (OSError, UnicodeError, ValueError) as exc:
+                    raise StoreError("BAD_REQUEST", "项目文件暂不可读，已中止素材清理预览。") from exc
+            else:
+                document = self._read(path)
+            if not isinstance(document, dict) or document.get("id") != project_id:
+                raise StoreError("PROJECT_CHANGED", "项目目录或 ID 已变更，请重试。", 409)
             protected = self._asset_references(document)
             history = list((path.parent / "backups").glob("*.json")) + list(path.parent.glob(".conflict-*.json"))
             for historical in history:
                 try:
-                    protected.update(self._asset_references(json.loads(historical.read_text(encoding="utf-8"))))
-                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    protected.update(self._asset_references(_read_project_json(historical)))
+                except (OSError, UnicodeError, ValueError, RecursionError) as exc:
                     raise StoreError("BAD_REQUEST", f"历史副本 {historical.name} 无法读取，已中止素材清理。") from exc
             cutoff = time.time() - age * 86400
             candidates = []
-            for file_path in (path.parent / "assets").iterdir():
+            assets = path.parent / "assets"
+            if assets.exists() and self._index_stamp(assets, stat.S_ISDIR) is None:
+                raise StoreError("BAD_REQUEST", "素材目录路径无效。")
+            for file_path in assets.iterdir() if assets.exists() else ():
                 if not re.fullmatch(r"[0-9a-f]{64}\.[a-z0-9]+", file_path.name, re.IGNORECASE):
                     continue
                 if file_path.is_symlink() or not file_path.is_file():
@@ -594,10 +881,10 @@ class ProjectStore:
                 relative = f"assets/{file_path.name}".lower()
                 if relative in protected:
                     continue
-                stat = file_path.stat()
-                if stat.st_mtime > cutoff:
+                asset_stat = file_path.stat()
+                if asset_stat.st_mtime > cutoff:
                     continue
-                candidates.append({"path": f"assets/{file_path.name}", "bytes": stat.st_size})
+                candidates.append({"path": f"assets/{file_path.name}", "bytes": asset_stat.st_size})
             candidates.sort(key=lambda item: item["path"])
             result = {
                 "dryRun": bool(dry_run), "minAgeDays": age, "protected": len(protected),
@@ -655,6 +942,12 @@ class ProjectStore:
             status = 206
         length = max(0, end - start + 1)
         headers = {"Accept-Ranges": "bytes", "Content-Length": str(length), "Content-Type": mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"}
+        if file_path.suffix.lower() == ".json":
+            headers["Content-Type"] = "application/octet-stream"
+            headers["Content-Disposition"] = 'attachment; filename="report.json"'
+        if file_path.suffix.lower() == '.fbx':
+            headers['Content-Type'] = 'application/octet-stream'
+            headers['Content-Disposition'] = f'attachment; filename="{file_path.name}"'
         if status == 206:
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         return status, headers, start, length
@@ -666,7 +959,7 @@ class ProjectStore:
         exports.mkdir(exist_ok=True)
         target = exports / f"{document['name']}-r{document['revision']}.zip"
         with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.write(path, "project.json")
+            archive.writestr("project.json", json_bytes(document))
             for folder in ("assets", "outputs"):
                 base = path.parent / folder
                 if base.is_dir():
@@ -710,7 +1003,7 @@ class ProjectStore:
                 total += member.file_size
                 if total > MAX_ASSET_BYTES * 4:
                     raise StoreError("BAD_REQUEST", "项目包超过导入大小限制。")
-            document = json.loads(archive.read("project.json").decode("utf-8"))
+            document = decode_project_json(archive.read("project.json"))
             document, _ = _migrate(document)
             target = (self.root / document["name"]).resolve()
             if self.root not in target.parents or target.exists():

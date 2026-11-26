@@ -105,6 +105,10 @@ class ExtensionAPI:
                     # Resolve the pinned package before making an external request.
                     self.store.get(parts[0])
                     result = self.store.prepare(parts[0], payload, self.object_info())
+                elif len(parts) == 2 and parts[1] == "publication":
+                    from extension_publication import publication_status
+                    payload = read_json(self._read(handler, 4096), "publication")
+                    result = publication_status(self.store, parts[0], payload)
                 else:
                     raise ExtensionError("扩展接口不存在。", "NOT_FOUND", 404)
             handler.send_json(200, result)

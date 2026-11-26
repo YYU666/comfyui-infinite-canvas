@@ -67,11 +67,13 @@ export function declaredHistory(entry, outputs) {
 export function extensionMedia(entry, outputs) {
   const files = [];
   for (const output of outputs || []) {
-    const matcher = output.type === 'video' ? /\.(mp4|webm|mov|mkv)$/i : /\.(png|jpe?g|webp)$/i;
+    const isModel = output.type === 'model';
+    const matcher = isModel ? /\.glb$/i : output.type === 'video' ? /\.(mp4|webm|mov|mkv)$/i : /\.(png|jpe?g|webp)$/i;
+    const nodeOutputs = entry?.outputs?.[output.nodeId] || {};
     const declaredFiles = [];
-    for (const value of Object.values(entry?.outputs?.[output.nodeId] || {})) {
+    for (const value of isModel ? [nodeOutputs['3d']] : Object.values(nodeOutputs)) {
       if (!Array.isArray(value)) continue;
-      for (const file of value) if (file?.filename && typeof file.subfolder === 'string' && file.type && matcher.test(file.filename)) {
+      for (const file of value) if (file?.filename && typeof file.subfolder === 'string' && file.type && matcher.test(file.filename) && (!isModel || file.type === 'output')) {
         const url = `/api/comfy/view?${new URLSearchParams({ filename: file.filename, subfolder: file.subfolder, type: file.type })}`;
         declaredFiles.push({ ...file, url, kind: output.type, extensionOutputId: output.id });
       }

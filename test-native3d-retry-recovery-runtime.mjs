@@ -1,0 +1,48 @@
+import {nativeOutputNode,nativeAppendOutput,nativeBindOutputEdges} from './src/native3d-output.js';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {nativeLODStageRetryPlan,nativeRerunTarget,nextNativeLODSeed,withNativeRerunLock,nativeAutomaticLODStages,layoutNativeResultDelivery} from './src/native3d-rerun.js';
+import {nextStepOrigin} from './src/native3d-next-step.js';
+import {nativeRunIsCurrent,commitNativeDelivery} from './src/native3d-delivery.js';
+import {findFreePosition} from './src/canvas-layout.js';
+const text=await readFile('src/native3d-runtime.js','utf8');
+const root='.cache/native3d/quarry-and-first-v1/retry-recovery-v1/';
+const doc=JSON.parse(await readFile(root+'baseline.json','utf8')),jobs=JSON.parse(await readFile(root+'jobs.json','utf8'));
+const latestJob=jobs.find(j=>j.id==='n3d_e14cd90011394861a6dfbf8d51e0c66e');
+const code=name=>text.slice(text.indexOf(`  async function ${name}(`),text.indexOf('  async function ',text.indexOf(`  async function ${name}(`)+10));
+function fixture(){
+ const nodes=structuredClone(doc.canvas.nodes.filter(n=>n.type==='native3d'));
+ const calls=[],o={projectId:doc.id,readOnly:false,switchingRef:{current:false},nodesRef:{current:nodes},edgesRef:{current:structuredClone(doc.canvas.edges)},setNodes(){},setEdges(){},focusNode(id){calls.push(['focus',id]);},persistProject:async retry=>calls.push(['save',retry]),saveNativeFile:async()=> 'assets/file.glb',updateNode(id,p){const n=o.nodesRef.current.find(n=>n.id===id);Object.assign(n.data,p);}};
+ const latest={current:o},hooks={request:async(url,payload)=>{if(payload){calls.push(['POST',payload]);return {id:'n3d_'+'f'.repeat(32)};}if(url.includes('?'))return {jobs};return jobs.find(j=>url.endsWith(j.id));}};
+ const sourceFor=(_o,n)=>o.nodesRef.current.find(x=>x.id===o.edgesRef.current.find(e=>e.target===n?.id&&e.targetHandle==='model')?.source);
+ const inputsFor=(_o,n)=>({high:o.nodesRef.current.find(x=>x.id===o.edgesRef.current.find(e=>e.target===n?.id&&e.targetHandle==='high')?.source)});
+ const identityFor=(n,s)=>JSON.stringify([s?.data.assetPath,n?.data.nativeParameters,inputsFor(o,n).high?.data.assetPath]);
+ for(const n of nodes)if(n.data.nativeRun)n.data.nativeRun.identity=identityFor(n,sourceFor(o,n));
+ const current=()=>{if(o.readOnly||o.switchingRef.current)throw Error('readonly');return o;};
+ const assertRun=(pid,id,snapshot)=>{current();const n=o.nodesRef.current.find(n=>n.id===id);if(pid!==o.projectId||!nativeRunIsCurrent(n,sourceFor(o,n),snapshot,identityFor))throw Error('identity changed');return {o,node:n};};
+ const deps={nativeOutputNode,nativeAppendOutput,nativeBindOutputEdges,latest,current,sourceFor,inputsFor,identityFor,assertRun,patch:(id,p)=>current().updateNode(id,p),nativeRequest:(...a)=>hooks.request(...a),nativeGeometryInputError:()=>null,capabilities:{operations:{source_lod:{ready:true}}},nativeParameters:(_a,p)=>p,nextNativeLODSeed,withNativeRerunLock,rerunLocks:{current:new Set()},nextStepOrigin,nativeLODStageRetryPlan,pollNow:{current:null},retryDelivery:async()=>{},nativeRunIsCurrent,delivering:{current:new Set()},transferNativeArtifacts:async()=>({model:{name:'model.glb',role:'model',path:'assets/test.glb'}}),commitNativeDelivery,nativeAutomaticLODStages,layoutNativeResultDelivery,findFreePosition,setCapabilityError:e=>calls.push(['pollError',e]),stopped:false,setTimeout:()=>0};
+ deps.run=new Function(...Object.keys(deps),code('run')+';return run;')(...Object.values(deps));
+ deps.retryLOD=new Function(...Object.keys(deps),code('retryLOD')+';return retryLOD;')(...Object.values(deps));
+ deps.syncTask=new Function(...Object.keys(deps),code('syncTask')+';return syncTask;')(...Object.values(deps));
+ const pollCode=text.slice(text.indexOf('    async function poll(schedule=true)'),text.indexOf('    pollNow.current=poll;'));
+ deps.pollNow.current=new Function(...Object.keys(deps),pollCode+';return poll;')(...Object.values(deps));
+ return {o,calls,hooks,...deps};
+}
+for(const job of jobs.filter(j=>j.parameters?.retryKeepPercent&&[1.5,1.8,2.16].includes(j.parameters.retryKeepPercent)).slice(-3)){
+ const f=fixture(),result=await f.retryLOD(job.nodeId),post=f.calls.find(x=>x[0]==='POST')[1];assert.equal(post.parameters.retryKeepPercent,job.parameters.retryKeepPercent);assert.equal(post.parameters.retryJobId,job.parameters.retryJobId);assert.equal(post.parameters.localRepairJobId,undefined);assert.notEqual(post.parameters.seed,job.parameters.seed);assert.equal(result.keepPercent,job.parameters.retryKeepPercent);assert.equal(f.calls.filter(x=>x[0]==='POST').length,1);
+}
+{const f=fixture(),repair=jobs.find(j=>j.parameters?.localRepairJobId),original=jobs.find(j=>j.id===repair.parameters.localRepairJobId);await f.retryLOD(repair.nodeId);const p=f.calls.find(x=>x[0]==='POST')[1].parameters;assert.equal(p.retryKeepPercent,original.parameters.retryKeepPercent);assert.equal(p.retryJobId,original.parameters.retryJobId);assert.equal(p.localRepairJobId,undefined);}
+{const f=fixture(),n=f.o.nodesRef.current.find(n=>n.id===latestJob.nodeId);Object.assign(n.data,{status:'queued',progress:20,error:'save busy',nativeDeliveredJobId:null,nativeDeliveryErrorJobId:null});await f.syncTask(n.id);assert.equal(n.data.status,'completed');assert.equal(n.data.progress,100);assert.equal(n.data.error,null);assert.equal(f.calls.filter(x=>x[0]==='POST').length,0);assert.ok(n.data.nativeOutputRecords.some(x=>x.jobId===latestJob.id));}
+{const f=fixture(),n=f.o.nodesRef.current.find(n=>n.id===latestJob.nodeId);Object.assign(n.data,{nativeJobId:null,nativeSubmissionUncertain:true,status:'error',nativeDeliveredJobId:null});await f.syncTask(n.id);assert.equal(n.data.nativeJobId,latestJob.id);assert.equal(n.data.nativeSubmissionUncertain,false);assert.equal(f.calls.filter(x=>x[0]==='POST').length,0);}
+{const f=fixture(),n=f.o.nodesRef.current.find(n=>n.id===latestJob.nodeId);f.o.persistProject=async()=>{throw Error('conflict');};await assert.rejects(f.syncTask(n.id),/conflict/);assert.equal(f.calls.filter(x=>x[0]==='POST').length,0);}
+{const f=fixture();f.hooks.request=async()=>{f.o.projectId='changed';return latestJob;};await assert.rejects(f.retryLOD(latestJob.nodeId),/项目/);assert.equal(f.calls.filter(x=>x[0]==='POST').length,0);}
+console.log('RETRY_RECOVERY_RUNTIME_OK actual original percentages / repaired original lineage / real run single POST / actual poll delivery / uncertain opId recovery / conflict / switch');
+{const f=fixture(),n=f.o.nodesRef.current.find(n=>n.id===latestJob.nodeId);f.o.nodesRef.current=f.o.nodesRef.current.filter(x=>x.data.sourceJobId!==latestJob.id);Object.assign(n.data,{status:'error',error:'temporary save busy',nativeDeliveredJobId:null,nativeDeliveryErrorJobId:latestJob.id});let blocked=true;f.o.persistProject=async retry=>{assert.equal(retry,true);if(blocked)throw Error('save busy');};await assert.rejects(f.syncTask(n.id),/save busy/);assert.equal(n.data.nativeDeliveryErrorJobId,latestJob.id);blocked=false;f.o.persistProject=async()=>{};await f.syncTask(n.id);assert.equal(n.data.status,'completed');assert.equal(n.data.error,null);assert.ok(n.data.nativeOutputRecords.some(x=>x.jobId===latestJob.id));assert.equal(f.o.nodesRef.current.filter(x=>x.id==='native3d-result-'+latestJob.id).length,0);assert.equal(f.calls.filter(x=>x[0]==='POST').length,0);}
+{const f=fixture(),n=f.o.nodesRef.current.find(n=>n.id===latestJob.nodeId);Object.assign(n.data,{status:'completed',nativeDeliveryErrorJobId:null,nativeRun:null});let submitted;
+ f.hooks.request=async(url,payload)=>{if(payload){submitted={...latestJob,opId:payload.opId,source:{...latestJob.source,...payload.source},parameters:payload.parameters};f.calls.push(['POST',payload]);throw Error('response interrupted');}if(url.includes('?'))return {jobs:[submitted]};return submitted;};
+ await assert.rejects(f.run(n.id),/interrupted/);assert.equal(n.data.nativeSubmissionUncertain,true);const seed=n.data.nativeParameters.seed;await assert.rejects(f.run(n.id),/同步任务状态/);assert.equal(n.data.nativeParameters.seed,seed);await f.syncTask(n.id);assert.equal(f.calls.filter(x=>x[0]==='POST').length,1);assert.equal(n.data.nativeSubmissionUncertain,false);
+}
+console.log('INTERRUPTED_POST_AND_SAVE_BUSY_OK stable seed, no duplicate POST, explicit retry save, missing result restored');
+{const f=fixture();let fail=true;f.o.persistProject=async retry=>{if(fail)throw Error('save fail');assert.equal(retry,true);};await assert.rejects(f.retryLOD(latestJob.nodeId),/save fail/);const draft=f.o.nodesRef.current.find(n=>n.data.nativeRetryFailureJobId===latestJob.id),count=f.o.nodesRef.current.length;assert.ok(draft.data.nativeRetrySaveFailed);fail=false;let saves=0;f.o.persistProject=async retry=>{if(saves++===0)assert.equal(retry,true);};const r=await f.retryLOD(latestJob.nodeId);assert.equal(r.nodeId,draft.id);assert.equal(f.o.nodesRef.current.length,count);assert.equal(f.calls.filter(x=>x[0]==='POST').length,1);}
+{const f=fixture(),n=f.o.nodesRef.current.find(n=>n.id===latestJob.nodeId);Object.assign(n.data,{status:'failed',nativeBackendStatus:'failed',nativeRun:null,nativeDeliveryErrorJobId:null});let backend;f.hooks.request=async(url,payload)=>{if(payload){backend={...latestJob,id:'n3d_'+'f'.repeat(32),opId:payload.opId,source:{...latestJob.source,...payload.source},parameters:payload.parameters};return backend;}return backend;};await f.run(n.id);assert.equal(n.data.nativeBackendStatus,null);await f.pollNow.current(false);assert.equal(n.data.status,'completed');}
+console.log('RETRY_SAVE_DRAFT_REUSE_AND_BACKEND_RESET_OK');

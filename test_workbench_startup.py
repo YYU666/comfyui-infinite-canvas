@@ -147,6 +147,35 @@ class WorkbenchStartupTests(unittest.TestCase):
         self.assertTrue(json.loads(result.stdout)["comfyReady"])
         self.assertNotIn("private-test-token", result.stdout + result.stderr)
 
+    def test_native3d_reuses_service_without_comfy_probe(self):
+        self.publish_instance()
+        self.server.comfy_ready = False
+        with patch("workbench_lifecycle.subprocess.Popen") as spawn:
+            result = ensure_workbench(timeout=3, native3d_only=True)
+        spawn.assert_not_called()
+        self.assertTrue(result["workbenchReady"])
+        self.assertFalse(result["comfyRequired"])
+        self.assertIsNone(result["comfyReady"])
+        self.assertFalse(result["native3dServiceReady"])
+        self.assertEqual(self.server.comfy_probes, 0)
+
+    def test_native3d_cold_start_has_no_portable_or_comfy_requirement(self):
+        settings = Mock()
+        settings.data = {"comfyRoot": str(Path(self.temporary.name) / "absent-comfy")}
+        process = Mock(pid=123)
+        process.poll.return_value = None
+        def start(*args, **kwargs):
+            self.publish_instance()
+            return process
+        self.server.comfy_ready = False
+        with patch("workbench_settings.WorkbenchSettings", return_value=settings), \
+             patch("workbench_lifecycle.subprocess.Popen", side_effect=start) as spawn:
+            result = ensure_workbench(timeout=3, native3d_only=True)
+        self.assertTrue(result["started"])
+        self.assertEqual(spawn.call_args.args[0][0], sys.executable)
+        self.assertEqual(spawn.call_args.kwargs["env"]["H3_WORKBENCH_NATIVE3D_ONLY"], "1")
+        self.assertEqual(self.server.comfy_probes, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

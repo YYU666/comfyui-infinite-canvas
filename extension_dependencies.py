@@ -47,6 +47,12 @@ def canonical_sources():
             sources[path] = {**row, "url": "https://huggingface.co/" + urllib.parse.quote(remote, safe="/"),
                              "license": license_row.get("license", "未知"), "licenseUrl": license_row.get("licenseUrl", ""),
                              "verification": "sha256" if row.get("sha256") else "size-only"}
+    image_sources = json.loads((root / "h3-image-sources.json").read_text(encoding="utf-8"))
+    for row in image_sources["files"]:
+        remote = f'{image_sources["repository"]}/resolve/{image_sources["revision"]}/{row["path"]}'
+        sources[row["path"]] = {**row, "url": "https://huggingface.co/" + urllib.parse.quote(remote, safe="/"),
+                                "license": image_sources["license"], "licenseUrl": image_sources["licenseUrl"],
+                                "verification": "sha256"}
     return sources
 
 

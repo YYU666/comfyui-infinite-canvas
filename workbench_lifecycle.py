@@ -7,12 +7,14 @@ import math
 import os
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6-local.20261126"
 
 
 def runtime_dir() -> Path:
@@ -51,15 +53,32 @@ def restrict_private_file(path: Path) -> None:
         raise RuntimeError("无法限制实例令牌文件权限。")
 
 
-def atomic_write_json(path: Path, payload: dict) -> None:
+def atomic_write_json(path: Path, payload: dict, *, compact=False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-    with temporary.open("wb") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    layout = {"separators": (",", ":")} if compact else {"indent": 2}
+    data = json.dumps(payload, ensure_ascii=False, **layout).encode("utf-8")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Windows readers can briefly deny replacement (including WinError 5).
+        # Retry only this immutable replacement, never the caller's CAS write.
+        delays = (0.02, 0.05, 0.1, 0.2)
+        for attempt in range(len(delays) + 1):
+            try:
+                os.replace(temporary, path)
+                break
+            except OSError as error:
+                if os.name != "nt" or getattr(error, "winerror", None) not in (5, 32, 33) or attempt == len(delays):
+                    raise
+                time.sleep(delays[attempt])
+    finally:
+        # Never touch another invocation's temporary; retain the original error
+        # if cleanup itself is denied by Windows.
+        with contextlib.suppress(OSError):
+            temporary.unlink(missing_ok=True)
     if path == instance_path():
         restrict_private_file(path)
 
@@ -121,14 +140,34 @@ def instance_process_alive(instance: dict | None) -> bool:
         return True  # Cannot prove it exited; fail closed.
 
 
-def ensure_workbench(timeout: float = 120) -> dict:
-    """Start the local service if needed and return only after both APIs respond."""
+def request_comfy_start(instance, health, timeout=3):
+    """One authenticated hint for managed backends; old backends and native-only stay compatible."""
+    comfy = health.get("comfy", {})
+    if health.get("native3dOnly") or comfy.get("enabled") is False or comfy.get("state") in {None, "starting", "disabled"}:
+        return False
+    if comfy.get("state") in {"unresponsive", "timeout"} and comfy.get("owned") and comfy.get("running"):
+        return False
+    # A cached ready snapshot can outlive an external service. The manager
+    # rechecks HTTP/owned processes before spawning, so explicit reuse may hint once.
+    request = urllib.request.Request(f"http://127.0.0.1:{int(instance['port'])}/api/local-comfy/start",
+        data=b"{}", headers={"X-H3-Token": instance.get("token", ""), "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status == 202
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
+
+
+def ensure_workbench(timeout: float = 120, *, native3d_only: bool = False) -> dict:
+    """Start/reuse the service; native 3D mode does not require ComfyUI."""
     if not math.isfinite(timeout) or not 0 < timeout <= 600:
         raise ValueError("启动等待时间必须大于 0 且不超过 600 秒。")
     deadline = time.monotonic() + timeout
     process = None
     instance = read_instance()
     health = probe_health(instance) if instance else None
+    if health and not native3d_only:
+        request_comfy_start(instance, health, timeout=min(3, timeout))
     if not health:
         # Import lazily: settings uses lifecycle helpers as well.
         from workbench_settings import WorkbenchSettings
@@ -136,12 +175,14 @@ def ensure_workbench(timeout: float = 120) -> dict:
         settings = WorkbenchSettings()
         settings.load()
         root = Path(settings.data["comfyRoot"])
-        python = root / "python_embeded" / "python.exe"
-        if not python.is_file() or not (root / "ComfyUI" / "main.py").is_file():
+        python = Path(sys.executable) if native3d_only else root / "python_embeded" / "python.exe"
+        if not native3d_only and (not python.is_file() or not (root / "ComfyUI" / "main.py").is_file()):
             raise RuntimeError("未找到配置的 ComfyUI 便携版 Python 或 main.py；请设置 H3_COMFY_ROOT 或修正工作台设置。")
         here = Path(__file__).resolve().parent
         environment = os.environ.copy()
         environment.update(H3_WORKBENCH_NO_BROWSER="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+        if native3d_only:
+            environment["H3_WORKBENCH_NATIVE3D_ONLY"] = "1"
         process = subprocess.Popen(
             [str(python), "-X", "utf8", str(here / "video_workbench_launcher.py")],
             cwd=here, env=environment,
@@ -154,6 +195,11 @@ def ensure_workbench(timeout: float = 120) -> dict:
         health = probe_health(instance, timeout=min(0.6, max(0.01, deadline - time.monotonic()))) if instance else None
         if health:
             url = f"http://127.0.0.1:{instance['port']}"
+            if native3d_only:
+                return {"ok": True, "url": url + "/", "pid": health["pid"],
+                        "started": process is not None and process.pid == health["pid"],
+                        "workbenchReady": True, "comfyReady": None, "comfyRequired": False,
+                        "native3dServiceReady": bool(health.get("native3d", {}).get("service", False))}
             request = urllib.request.Request(url + "/api/comfy/system_stats", headers={"X-H3-Token": instance.get("token", "")})
             try:
                 with urllib.request.urlopen(request, timeout=min(1, max(0.01, deadline - time.monotonic()))) as response:
@@ -168,7 +214,9 @@ def ensure_workbench(timeout: float = 120) -> dict:
             raise RuntimeError(f"工作台启动失败；请检查 {runtime_dir() / 'logs' / 'app.log'}。")
         time.sleep(min(0.2, max(0, deadline - time.monotonic())))
     if health:
-        raise RuntimeError(f"画布服务已运行，但 ComfyUI 尚未就绪；请检查 {runtime_dir() / 'logs' / 'comfyui.log'}。未停止或重启已有服务。")
+        if native3d_only:
+            raise RuntimeError("画布健康检查尚未完成，未停止或重启已有服务。")
+        raise RuntimeError(f"画布服务已运行，但 ComfyUI 尚未就绪；请检查 {runtime_dir() / 'logs'}。未停止或重启已有服务。")
     raise RuntimeError(f"等待画布服务启动超时；请检查 {runtime_dir() / 'logs' / 'app.log'}。未停止后台启动过程。")
 
 

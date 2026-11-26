@@ -71,6 +71,69 @@ def manifest_paths(path, installation_root=None):
         raise RuntimeError("更新文件清单无法读取。") from exc
 
 
+class ProgramPathConflict(RuntimeError):
+    def __init__(self, paths=()):
+        self.paths = paths
+        listing = "、".join(paths[:8])
+        super().__init__(
+            f"新版程序路径与本地文件冲突，升级已停止。请先备份并移出冲突文件：{listing}。"
+            if listing else "无法确认本地程序路径的归属，升级已停止。"
+        )
+
+
+def check_program_path_conflicts(root, new_paths, old_paths, runner=subprocess.run):
+    root = Path(root)
+    owned = set(old_paths)
+    if (root / ".git").exists():
+        git = shutil.which("git")
+        if not git:
+            raise ProgramPathConflict()
+        try:
+            result = runner([git, "-C", str(root), "ls-files", "--cached", "-z"],
+                            capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
+                            timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ProgramPathConflict() from exc
+        if result.returncode:
+            raise ProgramPathConflict()
+        owned.update(result.stdout.rstrip("\0").split("\0"))
+    elif not owned:
+        # The official portable ZIP ships the file list for its first upgrade.
+        baseline = root / "release-files.json"
+        if not baseline.is_file():
+            return
+        try:
+            owned.update(manifest_paths(baseline))
+        except RuntimeError as exc:
+            raise ProgramPathConflict() from exc
+
+    if os.name == "nt":
+        owned = {path.casefold() for path in owned}
+    conflicts = []
+    for relative in new_paths:
+        key = relative.casefold() if os.name == "nt" else relative
+        if key in owned:
+            continue
+        parts = PurePosixPath(relative).parts
+        # A local file can also block creation of a new program directory.
+        parent = root
+        for part in parts[:-1]:
+            parent = parent / part
+            if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+                conflicts.append(parent.relative_to(root).as_posix())
+                break
+        else:
+            try:
+                target = safe_path(root, relative)
+            except RuntimeError:
+                conflicts.append(relative)
+            else:
+                if target.exists():
+                    conflicts.append(relative)
+    if conflicts:
+        raise ProgramPathConflict(list(dict.fromkeys(conflicts)))
+
+
 def wait_for_exit(pid, timeout=120):
     if os.name == "nt":
         import ctypes
@@ -235,8 +298,23 @@ def run(request):
     installed_manifest = Path(request["installedManifest"])
     old_paths = manifest_paths(installed_manifest, root) if installed_manifest.exists() else []
     all_paths = sorted(set(new_paths) | set(old_paths))
-    atomic_json(status_path, {"phase": "restarting", "message": "正在备份旧版并安装更新…", "version": request["targetVersion"]})
-    backup_current(root, backup, all_paths)
+    try:
+        check_program_path_conflicts(root, new_paths, old_paths)
+        atomic_json(status_path, {"phase": "restarting", "message": "正在备份旧版并安装更新…", "version": request["targetVersion"]})
+        backup_current(root, backup, all_paths)
+        check_program_path_conflicts(root, new_paths, old_paths)
+    except ProgramPathConflict as exc:
+        try:
+            restored = start_workbench(request["python"], root)
+            wait_for_health(request["runtimeDir"], expected_pid=restored.pid)
+        except Exception:
+            message = f"{exc} 旧版无法自动重启，请手动启动。"
+        else:
+            message = str(exc)
+        atomic_json(status_path, {"phase": "error", "code": "LOCAL_CHANGES",
+                                  "message": message, "version": request["targetVersion"]})
+        shutil.rmtree(source, ignore_errors=True)
+        raise
     process = None
     try:
         replace_program(root, source, backup, new_paths, old_paths)

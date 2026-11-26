@@ -43,6 +43,35 @@ class ModelManifestTests(unittest.TestCase):
                 else:
                     self.assertIn("optional.bin", output.getvalue())
 
+    def test_cli_reads_category_paths_from_comfy_yaml(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "dist").mkdir()
+            (root / "dist" / "index.html").write_text("fixture", encoding="utf-8")
+            comfy = root / "ComfyUI"
+            comfy.mkdir()
+            external = root / "external models"
+            weights = external / "second directory"
+            weights.mkdir(parents=True)
+            (weights / "core.bin").write_bytes(b"core")
+            yaml_path = comfy / "extra_model_paths.yaml"
+            configuration = ('external:\n  base_path: "../external models"  # relative to YAML\n'
+                             '  is_default: true\n  unet: |\n    first directory\n    second directory\n')
+            yaml_path.write_text(configuration, encoding="utf-8")
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({
+                "profiles": {"core-h3": {"include": "all"}},
+                "files": [{"path": "diffusion_models/core.bin", "bytes": 4,
+                           "sha256": hashlib.sha256(b"core").hexdigest()}],
+            }), encoding="utf-8")
+            argv = ["verify_workbench.py", "--comfy-root", str(root), "--manifest", str(manifest)]
+            for extra, expected in (([], 0), (["--model-root", str(root / "fallback")], 1)):
+                with self.subTest(extra=extra), mock.patch.object(verify_workbench, "ROOT", root), \
+                     mock.patch.object(verify_workbench, "NODE_DIRS", ()), \
+                     mock.patch.object(sys, "argv", argv + extra), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(verify_workbench.main(), expected)
+            self.assertEqual(yaml_path.read_text(encoding="utf-8"), configuration)
+
     def test_real_manifest_has_core_and_complete_profiles(self):
         manifest = json.loads((ROOT / "models" / "manifest.json").read_text(encoding="utf-8"))
         core = select_model_files(manifest, "core-h3")

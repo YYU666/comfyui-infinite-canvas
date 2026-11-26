@@ -86,6 +86,12 @@ class UpdateAPITests(unittest.TestCase):
 class UpdatePreflightTests(unittest.TestCase):
     def server(self, held=None, status="done"):
         return mock.Mock(
+            video_requests=0,
+            native3d_jobs=None,
+            video_edit_api=None,
+            video_rhythm_api=None,
+            video_chroma_api=None,
+            video_plate_api=None,
             project_store=mock.Mock(_held=held or {}),
             queue_manager=mock.Mock(snapshot=mock.Mock(return_value={"jobs": [{"status": status}]})),
         )

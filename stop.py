@@ -46,16 +46,26 @@ def main():
     try:
         with urllib.request.urlopen(request, timeout=3) as response:
             stopped = json.load(response).get("ok") is True
-    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            try:
+                message = json.load(exc).get("message")
+            except (OSError, ValueError, AttributeError):
+                message = None
+            print(message or "工作台正在忙，请等待活动任务完成后再停止。", flush=True)
+            return 1
+    except (OSError, ValueError, AttributeError):
         pass
+
+    if not stopped:
+        print("未能确认工作台已接受关闭请求，请稍后重试。", flush=True)
+        return 1
 
     process = own_process(instance)
     deadline = time.monotonic() + 8
     while process and process.is_running() and time.monotonic() < deadline:
         time.sleep(0.1)
     if process and process.is_running():
-        if not stopped:
-            print("后台停止接口未响应，将只结束已核对身份的工作台进程。")
         process.terminate()
         try:
             process.wait(timeout=5)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import re
 import urllib.parse
 from http.cookies import SimpleCookie
 
@@ -39,16 +40,20 @@ def valid_content_type(method, path, headers):
     content_type = headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
     if method == "POST" and path.startswith("/api/comfy/upload/"):
         return content_type == "multipart/form-data"
+    if method == "PUT" and re.fullmatch(r"/api/pureref/sessions/[0-9a-f]{32}/upload", path):
+        return content_type == "application/octet-stream"
     if method == "POST" and path == "/api/extensions/import":
         return content_type in ARCHIVE_TYPES | {"application/vnd.h3pack", "application/json"}
     if method == "PUT" and "/assets/" in path:
-        return content_type == "application/octet-stream" or content_type.startswith(("image/", "video/", "audio/"))
+        if path.rsplit('/',1)[-1]=='uv-plan.json' and content_type=='application/json':
+            return True  # ProjectStore validates the bounded immutable plan.
+        return content_type in {"application/octet-stream", "model/gltf-binary", "model/obj"} or content_type.startswith(("image/", "video/", "audio/"))
     if path in {"/api/projects/import", "/api/projects/migration-backup"}:
         return content_type in ARCHIVE_TYPES or content_type == "application/json" and path == "/api/projects/import"
     return content_type == "application/json"
 
 
-def valid_token(headers, expected):
+def valid_token(headers, expected, port=None):
     supplied = headers.get("X-H3-Token", "")
     if supplied and hmac.compare_digest(supplied, expected):
         return True
@@ -57,9 +62,10 @@ def valid_token(headers, expected):
         cookie.load(headers.get("Cookie", ""))
     except Exception:
         return False
-    morsel = cookie.get("h3_session")
+    morsel = cookie.get(f"h3_session_{int(port)}" if port is not None else "h3_session")
     return bool(morsel and hmac.compare_digest(morsel.value, expected))
 
 
-def session_cookie(token):
-    return f"h3_session={token}; Path=/; HttpOnly; SameSite=Strict"
+def session_cookie(token, port=None):
+    name = f"h3_session_{int(port)}" if port is not None else "h3_session"
+    return f"{name}={token}; Path=/; HttpOnly; SameSite=Strict"

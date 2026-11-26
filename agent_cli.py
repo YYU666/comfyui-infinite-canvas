@@ -14,7 +14,7 @@ from agent_io import configure_utf8
 
 
 def parser():
-    root = argparse.ArgumentParser(description="H3 Agent 协议 v2：无需浏览器操作本地项目。")
+    root = argparse.ArgumentParser(description="H3 Agent 协议 v2。生成通过当前可写画布提交。")
     root.add_argument("--url")
     root.add_argument("--token")
     commands = root.add_subparsers(dest="command", required=True)
@@ -39,7 +39,9 @@ def parser():
             command.add_argument("--name")
             command.add_argument("--duration", type=float, default=5)
         elif name == "generate":
-            command.add_argument("--shot", required=True)
+            command.add_argument("--node", required=True, help="当前可写画布的完整节点 ID")
+            command.add_argument("--expected-revision", type=int)
+            command.add_argument("--op-id", help="重查时复用原身份，不会自动重新提交")
             command.add_argument("--wait", action="store_true")
             command.add_argument("--timeout-ms", type=int, default=600000)
         elif name == "take-select":
@@ -58,6 +60,7 @@ def parser():
     commands.add_parser("schema")
     start = commands.add_parser("start", help="确保本地画布和 ComfyUI 已就绪，再返回地址；不打开额外网页。")
     start.add_argument("--timeout", type=float, default=120, help="等待服务就绪的秒数，最多 600 秒。")
+    start.add_argument("--native3d-only", action="store_true", help="仅启动画布，不启动或等待ComfyUI；当前Python须已安装画布服务依赖。")
     return root
 
 
@@ -74,7 +77,7 @@ def main(argv=None):
         from workbench_lifecycle import ensure_workbench
         if args.url or args.token:
             raise ValueError("start 使用本地实例配置，不接受 --url 或 --token。")
-        result = ensure_workbench(args.timeout)
+        result = ensure_workbench(args.timeout, native3d_only=True) if args.native3d_only else ensure_workbench(args.timeout)
     elif args.command in {"protocol", "schema"}:
         result = protocol_resource() if args.command == "protocol" else schema_resource()
     else:
@@ -93,10 +96,14 @@ def main(argv=None):
                          "prompt": args.prompt, "name": args.name, "duration": args.duration}
             result = client.request("POST", f"{base}/apply", {"opId": f"shot-{uuid.uuid4().hex}", "agent": os.environ.get("H3_AGENT_NAME", "cli"), "ops": [operation]})
         elif args.command == "generate":
-            result = client.request("POST", f"{base}/apply", {"opId": f"generate-{uuid.uuid4().hex}", "agent": os.environ.get("H3_AGENT_NAME", "cli"), "ops": [{"op": "generate", "target": args.shot}]})
-            if args.wait:
-                job = next(item["job"] for item in result["results"] if "job" in item)
-                result = client.request("POST", f"{base}/wait", {"jobs": [job], "timeoutMs": args.timeout_ms})
+            contents = {"nodeId": args.node, "wait": False}
+            if args.expected_revision is not None:
+                contents["expectedRevision"] = args.expected_revision
+            result = client.call_tool("canvas_call", {"projectId": args.project, "tool": "canvas_generate_node",
+                                                       "opId": args.op_id, "args": contents})
+            receipt = result.get("result") or {}
+            if args.wait and receipt.get("ok") and str(receipt.get("jobId", "")).startswith("job_"):
+                result = client.request("POST", f"{base}/wait", {"jobs": [receipt["jobId"]], "timeoutMs": args.timeout_ms})
         elif args.command == "take-select":
             result = client.request("POST", f"{base}/apply", {"opId": f"select-{uuid.uuid4().hex}", "agent": os.environ.get("H3_AGENT_NAME", "cli"), "ops": [{"op": "take.select", "shot": args.shot, "take": args.take}]})
         elif args.command == "export":

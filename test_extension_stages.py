@@ -10,12 +10,12 @@ import zipfile
 
 from extension_sharing import share_extension
 from extension_dependencies import dependency_report
-from extension_stages import flatten_plan
-from outfit_queue import SHEET_PANELS, initial_state, stage_workflow
+from extension_stages import flatten_plan, unpack_stages
+from outfit_queue import SHEET_PANELS, SHEET_PREP_PANELS, initial_state, stage_workflow, validate_plan
 from test_outfit_queue import FakeOutfitAdapter
 from test_workbench_queue import wait_for
 from workbench_queue import QueueManager
-from workflow_extensions import ExtensionError, ExtensionStore, validate_comfy, validate_definition
+from workflow_extensions import ExtensionError, ExtensionStore, validate_comfy, validate_definition, validate_compatibility
 
 
 class StageAdapter(FakeOutfitAdapter):
@@ -42,8 +42,20 @@ class StagedExtensionTests(unittest.TestCase):
             references:[{kind:'image',slot:'guide',name:'private-person.png'}]})));
         """
         cls.plan = json.loads(subprocess.check_output(['node', '--input-type=module', '-e', script], cwd=Path(__file__).resolve().parent, text=True, encoding='utf-8'))
+        approved_script = "import {CHARACTER_SHEET_RECIPE_VERSION} from './src/character-sheet-recipe.js';\n" + script.replace("{prompt:'private character brief'", "{characterSheetRecipeVersion:CHARACTER_SHEET_RECIPE_VERSION,prompt:'private character brief'")
+        cls.approved = json.loads(subprocess.check_output(['node', '--input-type=module', '-e', approved_script], cwd=Path(__file__).resolve().parent, text=True, encoding='utf-8'))
+        # Freeze an actual legacy v1 contract rather than tracking browser defaults.
+        panels = {p['id']: p for p in cls.plan['panels']}
+        panels['back_body']['dependsOn'] = []
+        panels['back_body']['single'] = copy.deepcopy(panels['front_body']['single'])
+        panels['back_body']['single']['save']['inputs']['filename_prefix'] = 'image/H3_CharacterSheetPanel_back_body'
+        cls.plan['panels'] = [panels[key] for key in SHEET_PANELS]
+        for key in ('front_body', 'back_body'):
+            cls.plan['stitch'].pop(f'{key}_delivery_crop', None)
+            cls.plan['stitch'].pop(f'{key}_delivery_pad', None)
+        cls.plan['stitch']['bottom_row']['inputs'].update(image1=['back_body_load', 0], image2=['front_body_load', 0])
         cls.info = {}
-        for graph in [p['single'] for p in cls.plan['panels']] + [cls.plan['stitch']]:
+        for graph in [p['single'] for p in cls.plan['panels'] + cls.approved['panels']] + [cls.plan['stitch'], cls.approved['stitch']]:
             for node in graph.values():
                 fields = cls.info.setdefault(node['class_type'], {'input': {'required': {}}, 'output': ['*'] * 5})['input']['required']
                 for key, value in node['inputs'].items():
@@ -198,6 +210,69 @@ class StagedExtensionTests(unittest.TestCase):
         report = dependency_report(shared, {'nodeDefinitionId':'workflow'}, info, sources={})
         models = [m for m in report['models'] if m['inputName']=='unet_name']
         self.assertTrue(all(m['status']=='missing' and m['candidates']==[] for m in models))
+
+    def test_v2_approved_export_import_prepare_exact_recipe_and_six_stage_queue(self):
+        shared = share_extension(self.store, {**self.payload, 'plan': self.approved}, self.info)
+        self.assertEqual(shared['nodes'][0]['definition']['execution']['version'], 2)
+        self.assertEqual(shared['manifest']['compatibility']['workbenchVersion'], '>=1.0.6')
+        definition = shared['nodes'][0]['definition']
+        self.assertEqual([s['id'] for s in definition['execution']['stages']], [*SHEET_PREP_PANELS, 'stitch'])
+        self.assertEqual(definition['outputs'][0]['nodeId'], 'stitch__save')
+        archive = self.store.download(shared['digest'])
+        other = ExtensionStore(Path(self.temp.name) / 'imported')
+        imported = other.import_bytes(archive, 'approved.h3pack')
+        prepared = other.prepare(imported['digest'], {'nodeDefinitionId': 'workflow', 'inputs': {'image_source': 'new-source.png'}}, self.info)
+        expected = validate_plan(self.approved)
+        for panel in expected['panels']:
+            if not panel['dependsOn']:
+                for node in panel['single'].values():
+                    if node['class_type'] == 'LoadImage':
+                        node['inputs']['image'] = 'new-source.png'
+        self.assertEqual(prepared['plan'], expected, 'all models/prompts/seeds/crops/dependencies/labels survive')
+        self.assertEqual(prepared['outputs'][0]['nodeId'], 'save')
+        adapter = StageAdapter()
+        manager = QueueManager(Path(self.temp.name) / 'v2-queue.json', adapter, poll_interval=0.01)
+        self.addCleanup(manager.stop)
+        job = manager.enqueue({'plan': prepared['plan'], 'projectId': 'test', 'nodeId': 'custom-sheet', 'clientId': 'test'})
+        manager.start()
+        wait_for(lambda: manager.get(job['id'])['status'] in ('done', 'error'))
+        final = manager.get(job['id'])
+        self.assertEqual(final['status'], 'done')
+        self.assertEqual(len(adapter.submitted), 6)
+        self.assertEqual(len(adapter.uploads), 5)
+        self.assertEqual(adapter.free_calls, 0)
+        self.assertIn(prepared['outputs'][0]['nodeId'], final['outputs'])
+        for index, source_index in ((1, 0), (2, 1), (4, 3)):
+            self.assertEqual([n['inputs']['image'] for n in adapter.submitted[index]['workflow'].values() if n['class_type'] == 'LoadImage'], [adapter.uploads[source_index]['name']])
+
+    def test_v2_rejects_wrong_dependency_namespace_cross_stage_and_public_prep(self):
+        chosen = flatten_plan(self.approved)
+        mutations = [
+            lambda d, w: d['execution']['stages'][1].update(dependsOn=[]),
+            lambda d, w: d['execution']['stages'][4].update(dependsOn=['front_portrait']),
+            lambda d, w: d['execution']['stages'].reverse(),
+            lambda d, w: d['execution'].update(version=1),
+            lambda d, w: d['execution']['stages'][0]['nodeIds'].append('front_body__source'),
+            lambda d, w: w['portrait_reference__crop']['inputs'].update(image=['front_body__source', 0]),
+            lambda d, w: w['stitch__front_body_delivery_crop']['inputs'].update(image=['front_body__save', 0]),
+            lambda d, w: d['outputs'][0].update(nodeId='portrait_reference__save'),
+            lambda d, w: d['bindings'].append({'sourceKind': 'input', 'sourceId': 'image_source', 'nodeId': 'front_portrait__angle_source', 'input': 'image'}),
+        ]
+        for mutate in mutations:
+            definition, workflow = copy.deepcopy(chosen['definition']), copy.deepcopy(chosen['workflow'])
+            mutate(definition, workflow)
+            with self.assertRaises(ExtensionError):
+                validate_definition(definition, workflow, 'workflow')
+
+    def test_local_build_version_core_keeps_compatibility_bounds(self):
+        with patch('workflow_extensions.APP_VERSION', '1.0.6-local'):
+            validate_compatibility({'workbenchVersion': '>=1.0.6 <1.1.0'})
+            with self.assertRaises(ExtensionError):
+                validate_compatibility({'workbenchVersion': '>=1.0.7'})
+        with patch('workflow_extensions.APP_VERSION', '1.0.5'), self.assertRaises(ExtensionError):
+            validate_compatibility({'workbenchVersion': '>=1.0.6'})
+        with patch('workflow_extensions.APP_VERSION', 'invalid'), self.assertRaises(ExtensionError):
+            validate_compatibility({'workbenchVersion': '>=1.0.3'})
 
 
 if __name__ == '__main__':

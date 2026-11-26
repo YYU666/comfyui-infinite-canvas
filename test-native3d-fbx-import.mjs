@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import { nativeSourceImportError } from './src/native3d-runtime.js';
+const ready={sourceFormats:['.glb','.obj','.fbx'],maxSourceBytes:512*1024*1024};
+const missing={sourceFormats:['.glb','.obj']};
+assert.equal(nativeSourceImportError({name:'source.FBX',size:100},ready),null);
+assert.match(nativeSourceImportError({name:'source.fbx',size:100},missing),/未就绪/);
+assert.match(nativeSourceImportError({name:'source.fbx',size:100},null),/未就绪/);
+assert.match(nativeSourceImportError({name:'source.fbx',size:512*1024*1024+1},ready),/512 MiB/);
+assert.match(nativeSourceImportError({name:'source.exe',size:100},ready),/仅支持/);
+assert.equal(nativeSourceImportError({name:'source.glb',size:100},missing),null);
+console.log('Native3D FBX import availability and limits passed');

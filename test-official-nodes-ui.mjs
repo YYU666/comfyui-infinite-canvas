@@ -6,6 +6,10 @@ import { chromium } from './test-browser.mjs';
 // Synthetic browser fixture: every request is intercepted; no live inference/service.
 const dist = path.resolve(process.env.H3_TEST_DIST_DIR || 'dist');
 const origin = 'http://127.0.0.1:8799';
+const expectedLocalTool = process.env.H3_EXPECT_LOCAL_TOOL || '';
+const expectedLocalTools = process.env.H3_EXPECT_LOCAL_TOOLS
+  ? JSON.parse(process.env.H3_EXPECT_LOCAL_TOOLS)
+  : expectedLocalTool ? [{ preset: 'identity_edit', label: expectedLocalTool }] : [];
 const browser = await chromium.launch({ headless: true });
 const failures = [], queued = [];
 const makeProject = (readOnly = false) => ({ id: 'prj_qwen_fixture', name: 'Qwen references fixture', revision: 1, readOnly, shots: [], canvas: {
@@ -65,10 +69,31 @@ try {
  const menu = page.getByRole('menu', { name: '添加节点' }); await menu.waitFor();
  assert.equal(await menu.getByRole('button', { name: /^视频生成/ }).count(), 1);
  assert.equal(await menu.getByRole('button', { name: /^文生图/ }).count(), 1);
- assert.doesNotMatch(await menu.innerText(), /提示词优化|本地生图|四视图/);
- assert.equal(await menu.getByRole('button',{name:/^母图编辑|^角色替换|^角色四视图/}).count(),0);
+ assert.doesNotMatch(await menu.innerText(), /提示词优化|本地生图/);
+ if (!expectedLocalTools.length) {
+   assert.doesNotMatch(await menu.innerText(), /四视图/);
+   assert.equal(await menu.getByRole('button',{name:/^母图编辑|^角色替换|^角色四视图/}).count(),0);
+ }
  assert.ok((await menu.innerText()).includes('第三方工具'));
  assert.equal(await menu.getByRole('button',{name:/^已安装的节点工具/}).count(),1);
+ const groups = await menu.evaluate((element) => {
+   let group = ''; const result = {};
+   for (const child of element.children) {
+     if (child.classList.contains('add-menu-title')) { group = child.textContent; result[group] = []; }
+     else if (child.tagName === 'BUTTON') result[group]?.push(child.querySelector('span')?.firstChild?.textContent || child.textContent);
+   }
+   return result;
+ });
+ for (const name of ['图片调色', '图像混合', 'RGBA 通道合并']) assert.ok(groups['官方节点'].includes(name), `${name} belongs to official nodes`);
+ assert.deepEqual(groups['第三方工具'], [...expectedLocalTools.map(tool => tool.label), '已安装的节点工具']);
+ for (const tool of expectedLocalTools) assert.ok(!groups['官方节点'].includes(tool.label), `${tool.label} stays in third-party tools`);
+ if (!expectedLocalTools.length) {
+   const qa = path.resolve('.cache/feature-dev/qa'); await mkdir(qa, {recursive:true});
+   await menu.screenshot({path:path.join(qa,'node-classification-official.png')});
+   await menu.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+   await menu.screenshot({path:path.join(qa,'node-classification-third-party.png')});
+   await menu.evaluate((element) => { element.scrollTop = 0; });
+ }
  await menu.getByRole('button', { name: /^视频生成/ }).click();
  let state = await call('canvas_get_state');
  const video = state.nodes.find(n => n.mode === 'reference'); assert.equal(video.title, '视频生成');
@@ -93,12 +118,19 @@ try {
  assert.ok(found, 'download creates media despite existing image generator');
  assert.equal(found.kind, 'video');
  assert.equal(queued.length,0,'no generation submitted');
- const unavailable=await call('canvas_create_node',{preset:'character_sheet',x:0,y:0});
- assert.equal(unavailable.ok,false,'public build cannot create unregistered local recipe');
+ for (const preset of ['color_adjust', 'color_hsl', 'color_levels', 'color_curves', 'image_blend', 'rgba_pack']) {
+   const created = await call('canvas_create_node', {preset, x:6000, y:0, focus:false});
+   assert.equal(created.ok,true,`official image preset ${preset} is available`);
+   assert.equal(created.node.type,'imageProcess');
+ }
+ for (const preset of ['identity_edit','character_swap','character_sheet','local_realism','outfit_edit','outfit_qwen21_turbo','outfit_qwen21_turbo_7b','outfit_muse_v4']) {
+   const created = await call('canvas_create_node', {preset,x:7000,y:0,focus:false});
+   assert.equal(created.ok,expectedLocalTools.some(tool => tool.preset === preset),`only explicitly registered local tools can create ${preset}`);
+ }
  await call('canvas_update_node', {nodeId:dn.id,title:'视频链接下载'});
  await page.reload(); await page.waitForFunction(() => window.fixtureTools.has('canvas_get_state'));
  state=await call('canvas_get_state'); assert.ok(state.nodes.some(n=>n.title==='下载测试视频'));
  assert.ok(state.nodes.some(n=>n.title==='视频链接下载'));
  assert.deepEqual(failures, []); await context.close();
- console.log('OFFICIAL_NODES_OK public/local isolation, video modes, download import persisted, no generation');
+ console.log(`OFFICIAL_NODES_OK official photo/blend/RGBA grouping, public/local isolation, video modes, download import persisted, no generation localTools=${expectedLocalTools.length}`);
 } finally {await browser.close();}

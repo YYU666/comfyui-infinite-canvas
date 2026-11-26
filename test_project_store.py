@@ -32,6 +32,28 @@ class ProjectStoreTests(unittest.TestCase):
         self.store.close()
         self.temporary.cleanup()
 
+    def test_native3d_report_is_validated_and_downloads_as_attachment(self):
+        report = {"metadata":{"operation":"analyze"},"quality":{},"warnings":[]}
+        result = self.store.put_asset(self.document['id'],'report.json',io.BytesIO(json.dumps(report).encode()),content_type='text/html')
+        file = self.store.asset_file(self.document['id'],result['asset']['path'])
+        _, headers, _, _ = self.store.range_response(file)
+        self.assertEqual('application/octet-stream',headers['Content-Type'])
+        self.assertIn('attachment',headers['Content-Disposition'])
+        self.assertEqual('application/json',result['asset']['mime'])
+        for name, body in [('arbitrary.json',b'{}'),('report.json',b'{}'),('report.json',b'{"metadata":NaN,"quality":{},"warnings":[]}')]:
+            with self.assertRaises(StoreError):
+                self.store.put_asset(self.document['id'],name,io.BytesIO(body))
+
+    def test_native3d_fbx_is_an_opaque_attachment(self):
+        result = self.store.put_asset(self.document['id'], 'model.FBX', io.BytesIO(b'opaque FBX bytes'), content_type='text/html')
+        self.assertTrue(result['asset']['path'].endswith('.fbx'))
+        self.assertEqual(result['asset']['mime'], 'application/octet-stream')
+        file = self.store.asset_file(self.document['id'], result['asset']['path'])
+        self.assertEqual(file.read_bytes(), b'opaque FBX bytes')
+        _, headers, _, _ = self.store.range_response(file)
+        self.assertEqual(headers['Content-Type'], 'application/octet-stream')
+        self.assertIn('attachment', headers['Content-Disposition'])
+
     def test_01_create_has_v3_layout(self):
         self.assertEqual(validate_project(self.document), [])
         for folder in ("assets", "backups", "outputs", "exports", ".cache"):
@@ -141,6 +163,16 @@ class ProjectStoreTests(unittest.TestCase):
         with self.assertRaises(StoreError) as caught:
             self.store.put_asset(self.document["id"], "bad.exe", io.BytesIO(b"x"))
         self.assertEqual(caught.exception.status, 415)
+
+    def test_tga_export_asset_is_saved_and_referenced(self):
+        data = bytes([0, 0, 2] + [0] * 9 + [1, 0, 1, 0, 32, 40, 30, 20, 10, 0])
+        result = self.store.put_asset(self.document["id"], "packed.tga", io.BytesIO(data), "image/x-tga", expected_revision=self.document["revision"])
+        self.assertTrue(result["asset"]["path"].endswith(".tga"))
+        self.assertEqual(self.store.asset_file(self.document["id"], result["asset"]["path"]).read_bytes(), data)
+        self.assertEqual(result["asset"]["mime"], "image/x-tga")
+        document = self.store.get(self.document["id"])
+        document["canvas"]["nodes"] = [{"id": "packed", "type": "imageProcess", "position": {"x": 0, "y": 0}, "data": {"processedTgaAssetPath": result["asset"]["path"]}}]
+        self.assertIn(result["asset"]["path"], self.store._asset_references(document))
 
     def test_13_asset_range_full_partial_and_suffix(self):
         result = self.store.put_asset(self.document["id"], "a.mp4", io.BytesIO(b"0123456789"), "video/mp4")

@@ -1,0 +1,10 @@
+.result-settings-toggle { float:right; margin:0 4px 6px; border:1px solid #45454d; border-radius:6px; background:#25252b; color:#c9c9d0; font-size:11px; padding:3px 7px; cursor:pointer; }
+.result-compact > .generator-subline,.result-compact > .qwen-mask-row,.result-compact > .custom-workflow-identity,.result-compact > .custom-workflow-params,.result-compact > .custom-workflow-footer,.result-compact > .image-process-heading,.result-compact > .image-process-port,.result-compact > .image-process-controls,.result-compact > footer { display:none; }
+.result-compact > .custom-workflow-port { position:absolute; top:var(--compact-port-top); left:0; width:0; height:0; padding:0; border:0; font-size:0; }
+.result-compact > .custom-workflow-port > :not(.react-flow__handle) { display:none; }
+.generator-shell.result-compact .generator-preview { width:100%; height:auto; min-height:180px; clear:both; }
+.generator-shell.result-compact .generator-preview > img { width:100%; height:auto; max-height:640px; object-fit:contain; }
+.generator-shell.result-compact .generator-preview > video { height:auto; max-height:640px; }
+.image-process-node.result-compact .image-process-preview { margin-top:0!important; height:auto; min-height:180px; clear:both; }
+.image-process-node.result-compact .image-process-preview img { width:100%; height:auto; max-height:640px; object-fit:contain; }
+

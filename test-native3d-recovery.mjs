@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {recoverNative3DFragment as restore} from './src/native3d-recovery.js';
+const n={id:'native3d-a',type:'native3d',position:{x:1,y:2},data:{status:'completed',assetPath:'assets/test.glb',nativeParameters:{x:3}}};
+const existing={id:'image-a',type:'media',data:{title:'new user edit'}};
+const edge={id:'e',source:n.id,target:existing.id,targetHandle:'reference',data:{preserve:true}};
+const r=restore([existing],[],{nodes:[n],edges:[edge]});
+assert.deepEqual(r.nodes,[existing,n]);assert.deepEqual(r.edges,[edge]);
+assert.equal(r.nodes[0],existing);assert.notEqual(r.nodes[1],n);
+const r2=restore(r.nodes,r.edges,{nodes:[{...n,data:{title:'old'}}],edges:[edge]});
+assert.deepEqual(r2.nodes,r.nodes);assert.deepEqual(r2.addedNodeIds,[]);assert.deepEqual(r2.addedEdgeIds,[]);
+assert.throws(()=>restore([],[],{nodes:[existing],edges:[]}));
+assert.throws(()=>restore([],[],{nodes:[{...n,data:{status:'running'}}],edges:[]}));
+assert.throws(()=>restore([],[],{nodes:[n],edges:[edge]}));
+console.log('native3d recovery: preserve edits, idempotency and invalid fragments passed');

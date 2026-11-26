@@ -190,11 +190,9 @@ class ComfyProxyTests(unittest.TestCase):
         self.assertNotIn("X-H3-Token", self.upstream.last_headers)
 
     def test_json_multipart_and_range_requests(self):
-        payload = json.dumps({"prompt": {"1": {}}}).encode()
-        status, _, body = self.request("POST", "/api/comfy/prompt", payload)
+        status, _, body = self.request("POST", "/api/comfy/free", b"{}")
         self.assertEqual(status, 200)
-        result = json.loads(body)
-        self.assertEqual((result["path"], result["body"]), ("/prompt", payload.decode()))
+        self.assertEqual((json.loads(body)["path"], json.loads(body)["body"]), ("/free", "{}"))
         status, _, _ = self.request("POST", "/api/comfy/upload/image", b"raw", "text/plain")
         self.assertEqual(status, 415)
         multipart = b"--boundary\r\nContent-Disposition: form-data; name=\"image\"; filename=\"a.png\"\r\nContent-Type: image/png\r\n\r\nfake\r\n--boundary--\r\n"
@@ -208,6 +206,25 @@ class ComfyProxyTests(unittest.TestCase):
             self.assertEqual(response.status, 206)
             self.assertEqual(response.headers["Content-Range"], "bytes 2-5/12")
             self.assertEqual(response.read(), b"2345")
+
+    def test_proxy_checks_generation_and_canonical_paths_before_forwarding(self):
+        self.request("GET", "/api/comfy/system_stats?seed=baseline")
+        last_headers = self.upstream.last_headers
+        for method in ("POST", "PUT", "DELETE"):
+            for route in ("/api/comfy/prompt", "/api/comfy/api/prompt"):
+                with self.subTest(method=method, route=route):
+                    status, _, body = self.request(method, route, b"{}")
+                    self.assertEqual((status, json.loads(body)["code"]), (409, "VISIBLE_CANVAS_REQUIRED"))
+                    self.assertIs(self.upstream.last_headers, last_headers)
+        for route in ("/api/comfy//system_stats", "/api/comfy/object_info/.",
+                      "/api/comfy/system_stats;metadata", "/api/comfy/object_info/%FF"):
+            with self.subTest(route=route):
+                status, _, body = self.request("GET", route)
+                self.assertEqual((status, json.loads(body)["code"]), (400, "INVALID_COMFY_PATH"))
+                self.assertIs(self.upstream.last_headers, last_headers)
+        status, _, body = self.request("GET", "/api/comfy/object_info/Node%20Name?q=a%2Fb")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["path"], "/object_info/Node%20Name?q=a%2Fb")
 
     def test_websocket_handshake_and_bidirectional_frames(self):
         connection = socket.create_connection(("127.0.0.1", self.server.server_port), timeout=5)

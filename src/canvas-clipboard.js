@@ -2,6 +2,13 @@ import { remapQwenReferences } from './qwen-references.js';
 import { allocateReferenceTag, replaceReferenceTags } from './reference-tags.js';
 
 const NODE_SIZES = {
+  artDirector: { width: 540, height: 1700 },
+  imageProcess: { width: 370, height: 1000 },
+  videoEdit: { width: 400, height: 420 },
+  videoSpeed: { width: 360, height: 300 },
+  videoTimeRemap: { width: 380, height: 420 },
+  videoChromaKey: { width: 400, height: 640 },
+  videoWhitePlate: { width: 400, height: 560 },
   media: { width: 310, height: 250 },
   generator: { width: 440, height: 360 },
   prompt: { width: 370, height: 430 },
@@ -13,7 +20,7 @@ const GRID = 22;
 const TEXT_FIELDS = ['prompt', 'idea', 'optimizedPrompt'];
 
 function cloneData(data = {}) {
-  const { file, ...serializable } = data;
+  const { file, productionZone, ...serializable } = data;
   return structuredClone(serializable);
 }
 
@@ -108,11 +115,27 @@ export function pasteCanvasSelection(clipboard, existingNodes, idFactory) {
   const offset = findGroupPosition(clipboard.nodes, existingNodes);
   const nodes = clipboard.nodes.map((source) => {
     const data = remapQwenReferences(cloneData(source.data), idMap);
+    ['gpu', 'videoSubmission', 'imageRun', 'visibleRun', 'visibleRetry', 'queueJobId'].forEach((key) => delete data[key]);
     if (data.maskSourceId) data.maskSourceId = idMap.get(data.maskSourceId) || data.maskSourceId;
     if (data.title) data.title = `${data.title} · 副本`;
     if (pastedRefTags.has(source.id)) data.refTag = pastedRefTags.get(source.id);
     TEXT_FIELDS.forEach((field) => { if (field in data) data[field] = replaceReferenceTags(replaceMentions(data[field]), tagMap); });
-    if (source.type === 'generator') {
+    if (source.type === 'artDirector') {
+      Object.assign(data,{status:'idle',stage:'',analysis:null,boardAssetPath:null,boardSignature:null,boardResultId:null,stale:false});
+      delete data.error;
+    }
+    if (data.sourceArtDirectorId) data.sourceArtDirectorId = idMap.get(data.sourceArtDirectorId) || null;
+    if (['videoSpeed', 'videoTimeRemap'].includes(source.type)) {
+      Object.assign(data, { status: 'idle', stage: '', progress: 0 });
+      ['rhythmJobId', 'rhythmSubmittedSettings', 'rhythmResultAssetPath', 'rhythmResult', 'rhythmResultSettings', 'rhythmResultJobId', 'rhythmInputCache', 'error'].forEach(key => delete data[key]);
+    }
+    if (source.type === 'videoChromaKey') { Object.assign(data, { status: 'idle', stage: '', progress: 0 }); ['chromaJobId', 'chromaSubmittedSettings', 'chromaResultAssetPath', 'chromaResult', 'chromaResultSettings', 'chromaResultJobId', 'chromaInputCache', 'error'].forEach(key => delete data[key]); }
+    if (source.type === 'videoWhitePlate') { Object.assign(data, { status: 'idle', stage: '', progress: 0 }); ['plateJobId', 'plateSubmittedSettings', 'plateResultAssetPath', 'plateResultNodeId', 'plateResultUrl', 'plateResult', 'plateResultJobId', 'plateInputCache', 'error'].forEach(key => delete data[key]); }
+    if (source.type === 'videoEdit') {
+      Object.assign(data, { status: 'idle', stage: '', progress: 0 });
+      ['videoEditJobId', 'editResultAssetPath', 'editResult', 'editResultDocument', 'editSubmittedDocument', 'editResultJobId', 'editInputCache', 'openMotion', 'error'].forEach(key => delete data[key]);
+    }
+    if (source.type === 'generator' || source.type === 'imageProcess') {
       Object.assign(data, { status: 'idle', progress: 0, stage: '', runs: [] });
       ['promptId', 'resultUrl', 'error', 'hasMedia'].forEach((field) => { delete data[field]; });
     }

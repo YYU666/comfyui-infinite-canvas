@@ -1,22 +1,62 @@
+import { ART_PORTS } from './art-director.js';
+import { currentImageOutputs } from './image-inline-output.js';
+import {nativeOutputNode} from './native3d-output.js';
+import { nativeModelConnection } from './native3d.js';
 import { isMaskNode } from './canvas-mask.js';
 import { qwenCanvasReferences } from './qwen-references.js';
+import { isImageProcess, acceptsImageProcessConnection } from './image-process-graph.js';
+import { isVideoEdit, planVideoEditConnection } from './video-edit-document.js';
+import { isVideoRhythm, planVideoRhythmConnection } from './video-rhythm-document.js';
+import { isVideoChroma, planVideoChromaConnection } from './video-chroma-document.js';
+import { isVideoPlate, planVideoPlateConnection } from './video-plate-document.js';
+import { isVideoProcessor } from './video-stream.js';
 
-const busy = (node) => ['uploading', 'queued', 'running', 'finishing'].includes(node?.data?.status);
+const busy = (node) => ['uploading', 'submitting', 'queued', 'running', 'finishing'].includes(node?.data?.status);
 const fail = (error) => ({ error });
+
+// The plate's SAM3 input is the registered video asset, not the processor node.
+export function resolvePlateAsset(source, nodes) {
+  if (source?.type !== 'videoWhitePlate') return { source };
+  const media = nodes.find((node) => node.id === source.data?.plateResultNodeId
+    && node.type === 'media' && node.data?.kind === 'video'
+    && node.data.assetPath && node.data.assetPath === source.data.plateResultAssetPath);
+  if (!media) return fail('请先导出绿幕白模。成片会登记为旁边的「绿幕白模成片」视频素材，把该素材连到角色替换上方的源视频端口，身份图连到下方端口。');
+  return { source: media, resolvedFrom: source.id };
+}
+
 
 // A generator socket means the visible, already-saved result, never a future run.
 // Resolve to its media node so changing/re-running the generator cannot silently
 // replace an existing reference. Ambiguous custom outputs require explicit choice.
 export function resolveConnectionSource(source, handle, nodes, edges) {
+  if(source?.type==='native3d'&&source.data.nativeCurrentOutputId){if(busy(source))return fail('3D节点正在处理，请完成并保存结果后再连接。');try{return {source:nativeOutputNode(source)};}catch(error){return fail(error.message);}}
+  if (source?.type==='native3d' && source.data.operation==='analyze' && source.data.nativeUVPlan && handle==='plan' && source.data.status==='completed') return {source};
+  if (source?.type==='native3d' && source.data.operation==='uv_plan' && handle==='plan') {
+    const outputs=nodes.filter(n=>n.data?.nativeUVPlan?.jobId===source.data.nativeJobId && n.id!==source.id && n.data.status==='completed');
+    if (busy(source) || outputs.length!==1) return fail('切缝方案尚未完成或结果不唯一。');
+    return {source:outputs[0],resolvedFrom:source.id};
+  }
+  if (source?.type === 'native3d' && source.data.operation !== 'analyze') {
+    if (busy(source)) return fail('3D节点正在处理，请完成并保存结果后再连接。');
+    if (source.data.status !== 'completed' || !source.data.nativeJobId || !source.data.resultAssetPath || (handle && handle !== 'model')) return fail('此3D节点还没有当前已保存的模型结果，请先完成生成。');
+    const outputs = nodes.filter(node => node.type === 'native3d'
+      && node.data.operation === 'analyze' && node.data.status === 'completed'
+      && node.data.sourceJobId === source.data.nativeJobId
+      && (!node.data.sourceNodeId || node.data.sourceNodeId === source.id)
+      && node.data.assetPath === source.data.resultAssetPath);
+    if (outputs.length !== 1) return fail('找不到唯一的当前3D模型成品，请直接从要使用的模型结果节点连线。');
+    return { source: outputs[0], resolvedFrom: source.id };
+  }
   if (source?.type !== 'generator') return { source };
   if (!source.data.resultUrl) return fail('此节点还没有生成结果，请先生成，再连接成品素材。');
   const outputs = nodes.filter((node) => node.type === 'media' && node.data.output && !isMaskNode(node)
     && ['image', 'video'].includes(node.data.kind)
     && (!handle || handle === 'ref' || node.data.kind === handle)
     && (node.data.sourceGeneratorId === source.id || edges.some((edge) => edge.source === source.id && edge.target === node.id && edge.targetHandle === 'preview'))
-    && node.data.url === source.data.resultUrl);
-  if (outputs.length !== 1) return fail('找不到唯一的当前成品，请直接从要使用的成品图片或视频节点连线。');
-  return { source: outputs[0], resolvedFrom: source.id };
+    );
+  const current = handle === 'video' || outputs.every(node => node.data.kind === 'video') ? outputs.filter(node => node.data.url === source.data.resultUrl) : currentImageOutputs(source, outputs);
+  if (current.length !== 1) return fail('找不到唯一的当前成品，请直接从要使用的成品图片或视频节点连线。');
+  return { source: current[0], resolvedFrom: source.id };
 }
 
 export function planCanvasConnection(connection, nodes, edges, { readOnly = false, switching = false } = {}) {
@@ -25,11 +65,32 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
   const target = nodes.find((node) => node.id === connection.target);
   if (!requestedSource || !target) return fail('连接的节点已不存在。');
   if (requestedSource.id === target.id) return fail('不能连接节点自身。');
-  const resolved = resolveConnectionSource(requestedSource, connection.sourceHandle, nodes, edges);
+  const resolved = requestedSource?.type === 'videoWhitePlate' && target?.type === 'generator'
+    ? resolvePlateAsset(requestedSource, nodes)
+    : resolveConnectionSource(requestedSource, connection.sourceHandle, nodes, edges);
   if (resolved.error) return resolved;
   const source = resolved.source;
   if (source.id === target.id) return fail('不能连接当前成品自身。');
   if (busy(target)) return fail('目标节点正在生成，请完成后再修改连接。');
+  const nativePlan = nativeModelConnection(connection, source, target, edges);
+  if (nativePlan) return { ...nativePlan, resolvedFrom: resolved.resolvedFrom };
+  if (target.type === 'artDirector') {
+    if (source.type !== 'media' || source.data.kind !== 'image' || isMaskNode(source) || !ART_PORTS.includes(connection.targetHandle)) return fail('电子主美只接受作品与可选参考图片。');
+    const queue = [target.id], seen = new Set();
+    while (queue.length) { const id = queue.pop(); if (id === source.id) return fail('电子主美连线不能形成循环。'); if (seen.has(id)) continue; seen.add(id); edges.filter(e => e.source === id).forEach(e => queue.push(e.target)); }
+    const normalized = { source: source.id, sourceHandle: 'ref', target: target.id, targetHandle: connection.targetHandle };
+    return { connection: normalized, source, target, multiple: false, existing: edges.find(e => Object.entries(normalized).every(([k,v]) => e[k] === v)), resolvedFrom: resolved.resolvedFrom };
+  }
+  if (isImageProcess(target)) {
+    const normalized = { source: source.id, sourceHandle: 'ref', target: target.id, targetHandle: connection.targetHandle };
+    if (!acceptsImageProcessConnection(normalized, nodes, edges)) return fail('图片处理只接受图片输入和对应通道，且连线不能形成循环。');
+    const existing = edges.find((edge) => Object.entries(normalized).every(([key, value]) => edge[key] === value));
+    return { connection: normalized, source, target, multiple: false, existing, resolvedFrom: resolved.resolvedFrom };
+  }
+  if (isVideoEdit(target)) { const plan = planVideoEditConnection(connection, source, target, nodes, edges); return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom }; }
+  if (isVideoRhythm(target)) { const plan = planVideoRhythmConnection(connection, source, target, nodes, edges); return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom }; }
+  if (isVideoChroma(target)) { const plan = planVideoChromaConnection(connection, source, target, nodes, edges); return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom }; }
+  if (isVideoPlate(target)) { const plan = planVideoPlateConnection(connection, source, target, nodes, edges); return plan.error ? plan : { ...plan, resolvedFrom: resolved.resolvedFrom }; }
   let targetHandle = connection.targetHandle;
   let sourceHandle = isMaskNode(source) ? 'mask' : source.type === 'prompt' ? 'prompt' : 'ref';
   let multiple = false;
@@ -40,9 +101,11 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
     if (source.type !== 'media' || source.data.kind !== 'image' || isMaskNode(source) || targetHandle !== 'guide') return fail('遮罩底图只接受图片。');
     if (edges.some((edge) => edge.source === target.id && edge.targetHandle === 'mask' && busy(nodes.find((node) => node.id === edge.target)))) return fail('生成期间不能更改遮罩底图。');
   } else {
+    if (isVideoProcessor(source) && target.type === 'generator') return fail('视频处理成片还不能直接连接到生成节点（含 SAM3）。请先导出，再把成片导入为视频素材节点后连接。');
     if (source.type !== 'media' || target.type !== 'generator') return fail('请把图片、视频或音频输出连接到生成节点的输入端口。');
     if (isMaskNode(source) && !(mode === 'qwenEdit' && targetHandle === 'mask')) return fail('局部遮罩修改只连接图生图的遮罩端口。');
     if (mode === 'qwenEdit' && targetHandle === 'mask') {
+      if (target.data.qwenModel === 'h3_image') return fail('H3-Image 不支持局部遮罩，请切回 Qwen。');
       if (!isMaskNode(source)) return fail('请连接「局部遮罩修改」节点。');
     } else if (mode === 'qwenEdit' && ['references', 'guide', 'identity'].includes(targetHandle)) {
       if (source.data.kind !== 'image') return fail('图生图只支持图片参考。');
@@ -63,6 +126,8 @@ export function planCanvasConnection(connection, nodes, edges, { readOnly = fals
       // Keyframe inputs replace one existing source.
     } else if (['swap', 'upscale'].includes(mode) && ((targetHandle === 'guide' && source.data.kind === 'video') || (targetHandle === 'identity' && source.data.kind === 'image'))) {
       // Video source / optional identity.
+    } else if (mode === 'characterSheet' && ['body_reference','back_reference'].includes(targetHandle) && source.data.kind === 'image') {
+      // Independent body/outfit role; may use the same media as the identity role.
     } else if (['imageUpscale', 'identityEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) && targetHandle === 'guide' && source.data.kind === 'image') {
       // Single-image edit.
     } else if (['outfitEdit', 'localRealism'].includes(mode) && targetHandle === 'identity' && source.data.kind === 'image') {
