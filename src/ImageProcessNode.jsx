@@ -42,18 +42,19 @@ export default function ImageProcessNode({ id, data, actions, title, toolbar }) 
   useEffect(() => {
     const controller = new AbortController();
     let previewUrl;
+    let active = true;
     setPreview(null); setPreviewError('');
-    if (state.error || presentation.compact) { setPreviewBusy(false); return; }
+    if (state.error || presentation.compact) { setPreviewBusy(false); return () => { active = false; }; }
     setPreviewBusy(true);
     const timer = setTimeout(async () => {
       try {
         const result = await renderImageProcess(data.mode, state.refs, state.settings, { maxEdge: 512, signal: controller.signal, previewChannel: data.packPreview || 'rgb' });
-        if (controller.signal.aborted) return;
+        if (!active || controller.signal.aborted) return;
         const url = URL.createObjectURL(result.blob); previewUrl = url;
-        setPreview({ ...result, blob: undefined, url }); setPreviewBusy(false);
-      } catch (error) { if (error.name !== 'AbortError') { setPreviewError(error.message); setPreviewBusy(false); } }
+        setPreview({ ...result, blob: undefined, url }); setPreviewError(''); setPreviewBusy(false);
+      } catch (error) { if (active && error.name !== 'AbortError') { setPreviewError(error.message); setPreviewBusy(false); } }
     }, 140);
-    return () => { clearTimeout(timer); controller.abort(); if (previewUrl) URL.revokeObjectURL(previewUrl); };
+    return () => { active = false; clearTimeout(timer); controller.abort(); if (previewUrl) URL.revokeObjectURL(previewUrl); };
   }, [signature, state.error, data.packPreview, presentation.compact]);
   const patch = (settings) => actions.updateNode(id, { ...settings, error: null });
   const disabled = running || maskBusy || actions.readOnly;
