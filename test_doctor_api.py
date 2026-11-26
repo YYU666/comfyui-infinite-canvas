@@ -48,12 +48,18 @@ class DoctorAPITests(unittest.TestCase):
         headers = {"Content-Type": "application/json"}
         if authenticated:
             headers["X-H3-Token"] = self.server.token
-        request = urllib.request.Request(self.base + path, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=3) as response:
-                return response.status, response.headers, response.read()
-        except urllib.error.HTTPError as error:
-            return error.code, error.headers, error.read()
+        last_error = None
+        for _ in range(3):
+            request = urllib.request.Request(self.base + path, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    return response.status, response.headers, response.read()
+            except urllib.error.HTTPError as error:
+                return error.code, error.headers, error.read()
+            except (ConnectionAbortedError, ConnectionResetError) as error:
+                # Windows CI occasionally aborts a just-accepted localhost socket (10053/10054).
+                last_error = error
+        raise last_error
 
     def test_doctor_requires_auth_and_forwards_explicit_connectivity_option(self):
         status, _, _ = self.request("/api/doctor", {}, authenticated=False)
