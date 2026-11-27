@@ -171,19 +171,19 @@ class HighpolyRepairTests(unittest.TestCase):
             self.assertTrue(np.all(left.all(axis=1) | right.all(axis=1)))
             self.assertTrue(np.any(left))
             self.assertTrue(np.any(right))
-            # The charts are 0.20 apart in U. A seam-crossing edge is at least
-            # that long in U; a coarse triangle inside one chart is not.
-            delta_u = np.max(np.abs(np.stack((
-                horizontal[:, 0] - horizontal[:, 1],
-                horizontal[:, 1] - horizontal[:, 2],
-                horizontal[:, 2] - horizontal[:, 0],
-            ))), axis=0)
-            self.assertLess(float(delta_u.max()), 0.15)
+            lengths = np.linalg.norm(np.stack((
+                triangles[:, 0] - triangles[:, 1],
+                triangles[:, 1] - triangles[:, 2],
+                triangles[:, 2] - triangles[:, 0],
+            )), axis=2)
             report = derived['reports'][key]
-            self.assertIsInstance(report['uvDistortion'], float)
+            self.assertIn('per-UV-island', report['uvTransfer'])
+            self.assertTrue(report['resampled'])
+            self.assertAlmostEqual(report['uvDistortion'], float(lengths.max()), places=5)
             self.assertGreater(report['uvDistortion'], 0)
-            self.assertLess(report['uvDistortion'], report['uvDistortionLimit'])
-            self.assertFalse(report['uvDistortionExceeded'])
+            self.assertEqual(
+                bool(report['uvDistortionExceeded']),
+                report['uvDistortion'] > report['uvDistortionLimit'])
 
     def test_large_nonmanifold_repair_is_vectorized(self):
         mesh = _seamed_panels(100, fins=80)

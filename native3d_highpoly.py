@@ -656,7 +656,13 @@ def derive_shared_lods(mesh, medium_ratio=0.30, low_ratio=0.12, distortion_limit
     medium_target = max(4, int(round(high_faces * medium_ratio)))
     low_target = max(4, int(round(high_faces * low_ratio)))
     medium, medium_report = _reduce_preserving_uv(mesh, medium_target, distortion_limit)
-    low, low_report = _reduce_preserving_uv(medium, low_target, distortion_limit)
+    # Stay on the island path for Low. The small-mesh collapse resamples across
+    # every source face once an edge exceeds the limit, which would pull a seam
+    # vertex onto the other chart.
+    if str(medium_report.get('uvTransfer', '')).startswith('per-UV-island') and len(medium.faces) > low_target:
+        low, low_report = _reduce_large_uv_islands(medium, low_target, distortion_limit)
+    else:
+        low, low_report = _reduce_preserving_uv(medium, low_target, distortion_limit)
     if low_report['uvDistortion'] > distortion_limit or low_report['uvDistortionExceeded']:
         low_report = {**low_report, 'uvDistortionExceeded': True}
         if not low_report['resampled']:
