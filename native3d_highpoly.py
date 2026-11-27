@@ -538,7 +538,11 @@ def _incident_fans(faces):
         member = set(unique)
         neighbors = {face_id: [] for face_id in unique}
         for face_id in unique:
-            for other in (int(v) for v in faces[face_id] if int(v) != vertex):
+            triangle = faces[face_id]
+            for corner in range(3):
+                other = int(triangle[corner])
+                if other == vertex:
+                    continue
                 edge = (vertex, other) if vertex < other else (other, vertex)
                 for linked in edge_users.get(edge, ()):
                     if linked != face_id and linked in member:
@@ -588,7 +592,7 @@ def _split_nonmanifold_vertices(vertices, faces):
     return vertices, faces, split
 
 
-def _topology_defects(vertices, faces):
+def _topology_defects(vertices, faces, count_vertices=True):
     faces = np.asarray(faces, dtype=np.int64)
     empty = {'nonManifoldEdges': 0, 'boundaryEdges': 0, 'nonManifoldVertices': 0, 'inconsistentWindingEdges': 0}
     if len(faces) == 0:
@@ -608,7 +612,7 @@ def _topology_defects(vertices, faces):
     return {
         'nonManifoldEdges': int(np.count_nonzero(counts > 2)),
         'boundaryEdges': int(np.count_nonzero(counts == 1)),
-        'nonManifoldVertices': len(_incident_fans(faces)),
+        'nonManifoldVertices': len(_incident_fans(faces)) if count_vertices else 0,
         'inconsistentWindingEdges': winding,
     }
 
@@ -679,8 +683,14 @@ def _clean_pass(vertices, faces, island_fraction, protected):
     faces, removed_islands = _drop_islands(vertices, faces, island_fraction)
     faces, repaired = _drop_nonmanifold(vertices, faces)
     vertices, faces, split = _split_nonmanifold_vertices(vertices, faces)
-    faces, peeled = _peel_boundary_spikes(faces, protected)
-    faces, filled, longest = _fill_holes(vertices, faces, protected)
+    edges, edge_counts = _edge_table(faces)
+    boundary = {tuple(int(vertex) for vertex in edge) for edge, count in zip(edges, edge_counts) if int(count) == 1}
+    opened = int(np.count_nonzero(edge_counts > 2)) > 0 or any(edge not in protected for edge in boundary)
+    if opened:
+        faces, peeled = _peel_boundary_spikes(faces, protected)
+        faces, filled, longest = _fill_holes(vertices, faces, protected)
+    else:
+        peeled = filled = longest = 0
     vertices, faces, remap = _compact(vertices, faces)
     return vertices, faces, remap, {
         'removedDegenerateTriangles': removed_degenerate,
@@ -711,9 +721,12 @@ def repair_high(mesh, epsilon=1e-5, island_fraction=0.01):
     stays the untouched input report.
     """
     before = topology_report(mesh, epsilon, island_fraction)
-    initial = _topology_defects(mesh.vertices, mesh.faces)
+    initial = _topology_defects(mesh.vertices, mesh.faces, count_vertices=False)
     dirty = any(before[key] for key in ('weldedVertices', 'degenerateTriangles', 'nonManifoldEdges', 'isolatedFragments'))
-    dirty = dirty or any(initial[key] for key in ('nonManifoldEdges', 'nonManifoldVertices', 'inconsistentWindingEdges'))
+    dirty = dirty or initial['nonManifoldEdges'] or initial['inconsistentWindingEdges']
+    if not dirty:
+        initial['nonManifoldVertices'] = len(_incident_fans(mesh.faces))
+        dirty = initial['nonManifoldVertices'] > 0
     empty = {
         'changed': False, 'before': before, 'after': before, 'weldedVertices': 0,
         'removedDegenerateTriangles': 0, 'removedDuplicateFaces': 0, 'removedIslands': 0,
@@ -733,6 +746,7 @@ def repair_high(mesh, epsilon=1e-5, island_fraction=0.01):
     from native3d_engine import repair_winding
     winding = None
     passes = 0
+    defects = initial
     for _ in range(8):
         passes += 1
         vertices, faces, remap, counts = _clean_pass(vertices, faces, island_fraction, protected)
@@ -741,16 +755,20 @@ def repair_high(mesh, epsilon=1e-5, island_fraction=0.01):
         for key, value in counts.items():
             totals[key] += value
         if len(faces) == 0:
+            defects = _topology_defects(vertices, faces, count_vertices=False)
             break
         current = trimesh.Trimesh(vertices, faces, process=False)
         current, winding = repair_winding(current)
         vertices = np.asarray(current.vertices, dtype=np.float64)
         faces = np.asarray(current.faces, dtype=np.int64)
-        if _defects_cleared(_topology_defects(vertices, faces), started_closed):
+        # Split already separated every pinch. Recount vertices only when peel
+        # or hole fill added or removed faces afterwards.
+        surface_changed = counts['peeledBoundaryFaces'] or counts['filledHoles']
+        defects = _topology_defects(vertices, faces, count_vertices=bool(surface_changed))
+        if _defects_cleared(defects, started_closed):
             break
     repaired_mesh = trimesh.Trimesh(vertices, faces, process=False) if len(faces) else mesh
     reconstruction = None
-    defects = _topology_defects(repaired_mesh.vertices, repaired_mesh.faces)
     needs_rebuild = not _defects_cleared(defects, started_closed)
     if not needs_rebuild and 0 < len(repaired_mesh.faces) <= 8000:
         from native3d_geometry import diagnose
