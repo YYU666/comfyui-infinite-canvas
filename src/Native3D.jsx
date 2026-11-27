@@ -183,7 +183,8 @@ export function Native3DNode({ id, data, selected }) {
       {data.nativeNaniteCandidate && <small>LOD0 · Nanite候选（未构建UE Nanite）</small>}
       {data.nativeLocalRepair&&<p>当前候选局部修复 · {data.nativeParameters.localRepairStage?.toUpperCase()} · {data.stage||data.status}</p>}
       {imageToModel && <small>{WHITE_MESH_STEP_LABEL} · 只接上一张参考图 · 只输出未展 UV、无材质的高模 GLB</small>}
-      {data.operation==='source_lod' && !data.nativeLocalRepair && <small>{data.nativeParameters?.retryStage?`LOD${Number(data.nativeParameters.retryStage.slice(3))-1} → ${data.nativeParameters.retryStage.toUpperCase()} · 仅重试本档 · 种子 ${data.nativeParameters.seed}`:'原高模 → High（高模）→ Medium（中模）→ Low（低模） · 默认 3 档，旧项目仍可读 1–5 档'}</small>}
+      {data.operation==='source_lod' && !data.nativeLocalRepair && <small>{data.nativeParameters?.retryStage?`LOD${Number(data.nativeParameters.retryStage.slice(3))-1} → ${data.nativeParameters.retryStage.toUpperCase()} · 仅重试本档 · 种子 ${data.nativeParameters.seed}`:data.nativeParameters?.deferChildLods===false?'原高模 → High（高模）→ Medium（中模）→ Low（低模） · 本步连算后续档':'白模 → 修拓扑并只输出 High（LOD0）。中模/低模在分 UV 之后按岛继承。'}</small>}
+      {data.metadata?.geometry?.highRepair?.before && data.metadata.geometry.highRepair.after && <small>拓扑体检 · 修前 {data.metadata.geometry.highRepair.before.faces ?? '—'} 面 / 非流形边 {data.metadata.geometry.highRepair.before.nonManifoldEdges ?? '—'} · 修后 {data.metadata.geometry.highRepair.after.faces ?? '—'} 面 / 非流形边 {data.metadata.geometry.highRepair.after.nonManifoldEdges ?? '—'}</small>}
       {data.operation==='uv_plan' && <small>候选缝 / 分区 / AO · 此步骤不展开UV</small>}
       {data.operation==='uv' && <small>{planStatus?.mode==='coherent'?'CPU 连续展 UV':planStatus?.mode==='structural'?'CPU 结构展 UV':planStatus?.ready?'已绑定当前确认方案':planStatus?.message || '连接低模、高模和已确认方案'}</small>}
       {data.nativeUVPlan && <button disabled={locked} onClick={()=>{try{api.openPlan(id);}catch(e){setUVError(e.message);}}}>3D审阅 / 确认方案</button>}

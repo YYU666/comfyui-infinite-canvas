@@ -11,8 +11,9 @@ from PIL import Image
 
 from native3d_geometry_audit import audit_geometry
 from native3d_highpoly import (
-    FACE_LIMIT, _occupancy, _topology_defects, _triangulate_loop, deliver_shared_lods,
-    derive_shared_lods, repair_high, topology_report,
+    FACE_LIMIT, _face_signed_areas, _occupancy, _reduce_large_uv_islands, _relax_uv,
+    _topology_defects, _triangles_overlap_2d, _triangulate_loop, _uv_boundary_mask,
+    deliver_shared_lods, derive_shared_lods, repair_high, topology_report,
 )
 from native3d_jobs import validate_parameters
 from native3d_lod_source import resolve_lod_settings, run_source_lod
@@ -102,6 +103,7 @@ class HighpolyRepairTests(unittest.TestCase):
         self.assertEqual(params['lod0KeepPercent'], 55)
         self.assertEqual(params['lod1KeepPercent'], 30)
         self.assertEqual(params['lod2KeepPercent'], 12)
+        self.assertIs(params['deferChildLods'], True)
         self.assertEqual(validate_parameters('source_lod', {'lod0FaceCap': 120000})['lod0FaceCap'], 120000)
         self.assertEqual(validate_parameters('source_lod', {'lodCount': 5})['lodCount'], 5)
         with self.assertRaises(Exception):
@@ -188,6 +190,49 @@ class HighpolyRepairTests(unittest.TestCase):
             self.assertEqual(
                 bool(report['uvDistortionExceeded']),
                 report['uvDistortion'] > report['uvDistortionLimit'])
+            self.assertEqual(report['uvRelax']['boundaryDisplacement'], 0.0)
+            self.assertLessEqual(report['uvRelax']['maxDisplacement'], report['uvRelax']['maxDisplacementLimit'] + 1e-9)
+
+    def test_uv_relax_locks_boundary_and_derived_islands(self):
+        mesh = _grid(6)
+        uv = np.array(mesh.visual.uv, copy=True)
+        faces = np.asarray(mesh.faces)
+        boundary = _uv_boundary_mask(faces)[:len(uv)]
+        interior = int(np.flatnonzero(~boundary)[0])
+        uv[interior] = uv[interior] + np.array([0.03, -0.02])
+        relaxed, stats = _relax_uv(uv, faces, rounds=3, max_displacement=0.02)
+        self.assertEqual(stats['boundaryDisplacement'], 0.0)
+        self.assertTrue(np.array_equal(relaxed[boundary], uv[boundary]))
+        self.assertGreater(stats['maxDisplacement'], 0)
+        self.assertLessEqual(stats['maxDisplacement'], 0.02 + 1e-9)
+        self.assertTrue(np.all(_face_signed_areas(relaxed, faces) > 0))
+        self.assertFalse(_chart_has_overlap(relaxed, faces))
+        panels = _seamed_panels(8)
+        reduced, report = _reduce_large_uv_islands(panels, 60, 0.5)
+        self.assertIn('per-UV-island', report['uvTransfer'])
+        self.assertEqual(report['uvRelax']['boundaryDisplacement'], 0.0)
+        self.assertGreater(report['uvRelax']['minSignedArea'], 0)
+        self.assertLessEqual(report['uvRelax']['maxDisplacement'], report['uvRelax']['maxDisplacementLimit'])
+        reduced_uv = np.asarray(reduced.visual.uv)
+        reduced_faces = np.asarray(reduced.faces)
+        horizontal = reduced_uv[reduced_faces][:, :, 0]
+        left = (horizontal >= 0.05 - 1e-3) & (horizontal <= 0.40 + 1e-3)
+        right = (horizontal >= 0.60 - 1e-3) & (horizontal <= 0.95 + 1e-3)
+        self.assertTrue(np.all(left.all(axis=1) | right.all(axis=1)))
+        self.assertTrue(np.any(left) and np.any(right))
+        self.assertFalse(_chart_has_overlap(reduced_uv, reduced_faces))
+
+    def test_deferred_child_lods_stop_at_clean_high(self):
+        mesh = trimesh.creation.icosphere(subdivisions=1)
+        with tempfile.TemporaryDirectory() as temporary:
+            _selected, manifest, _artifacts = run_source_lod(mesh, temporary, {
+                'lodCount': 3, 'deferChildLods': True, 'lod0KeepPercent': 100, 'maxSeconds': 90,
+            })
+        self.assertEqual(manifest['status'], 'accepted', manifest.get('blocker'))
+        self.assertTrue(manifest['childLodsDeferredUntilUV'])
+        self.assertEqual(manifest['plannedLodCount'], 3)
+        self.assertEqual([row['lodLevel'] for row in manifest['logicalLevels']], [0])
+        self.assertTrue(manifest['chainComplete'])
 
     def test_large_nonmanifold_repair_is_vectorized(self):
         mesh = _seamed_panels(100, fins=80)
@@ -238,9 +283,14 @@ class HighpolyRepairTests(unittest.TestCase):
                 json_size = struct.unpack('<I', blob[12:16])[0]
                 document = json.loads(blob[20:20 + json_size])
                 attributes = document['meshes'][0]['primitives'][0]['attributes']
+                self.assertIn('TEXCOORD_0', attributes)
                 self.assertIn('TANGENT', attributes)
                 self.assertNotIn('_TANGENT', attributes)
                 self.assertTrue(shares_orm_storage(document, document['materials'][0]))
+            self.assertEqual(delivered['uvRelax']['medium']['boundaryDisplacement'], 0.0)
+            self.assertEqual(delivered['uvRelax']['low']['boundaryDisplacement'], 0.0)
+            self.assertGreaterEqual(delivered['uvRelax']['medium']['minSignedArea'], 0)
+            self.assertGreaterEqual(delivered['uvRelax']['low']['minSignedArea'], 0)
 
     def test_compound_defects_repair_into_three_lods(self):
         vertices = np.array([
@@ -334,6 +384,18 @@ def _compound_dirty_mesh():
     faces = np.array(faces, copy=True)
     faces[220:224] = faces[220:224, ::-1]
     return trimesh.Trimesh(vertices, faces, process=False)
+
+
+def _chart_has_overlap(uv, faces):
+    faces = np.asarray(faces, dtype=int)
+    uv = np.asarray(uv, dtype=float)
+    for left in range(len(faces)):
+        for right in range(left + 1, len(faces)):
+            if set(faces[left]).intersection(faces[right]):
+                continue
+            if _triangles_overlap_2d(uv[faces[left]], uv[faces[right]]):
+                return True
+    return False
 
 
 def _seamed_panels(n, fins=0):

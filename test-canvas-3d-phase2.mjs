@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { analyzePrimaryButton, isGeneratedGLB } from './src/native3d.js';
+import { analyzePrimaryButton, isGeneratedGLB, nativeModelConnection } from './src/native3d.js';
 import { modelPreviewActions, persistGeneratedModelFiles } from './src/model-result.js';
 import { extractBakeTextureNode } from './src/native3d-bake-preview.js';
 import { lodStageLabel, nativeNextStepPlan, nextStepActions } from './src/native3d-next-step.js';
@@ -55,6 +55,10 @@ assert.match(high.find((item) => item.action === 'next_lod').label, /Mediumï¼ˆä¸
 assert.equal(nextStepActions(lodNode(2, 3)).some((item) => item.action === 'next_lod'), false);
 assert.match(nextStepActions(lodNode(3, 5)).find((item) => item.action === 'next_lod').label, /LOD4/);
 assert.equal(nextStepActions(lodNode(1, undefined)).some((item) => item.action === 'next_lod'), true);
+const deferredLod = lodNode(0, 3);
+deferredLod.data.metadata.geometry.childLodsDeferredUntilUV = true;
+assert.equal(nextStepActions(deferredLod).some((item) => item.action === 'next_lod'), false);
+assert.equal(nextStepActions(deferredLod).some((item) => item.action === 'uv_plan'), true);
 
 const glb = 'assets/' + 'd'.repeat(64) + '.glb';
 const job = 'n3d_' + 'e'.repeat(32);
@@ -94,5 +98,14 @@ assert.equal(planned.edges.find((edge) => edge.targetHandle === 'high').source, 
 const analyzed = { id: 'analyzed-high', type: 'native3d', position: { x: 0, y: 80 }, data: { operation: 'analyze', status: 'completed', assetPath: highPath, originalAssetPath: highPath, name: 'white.glb', kind: 'model' } };
 const throughAnalyze = nativeNextStepPlan({ source: lodResult, nodes: [analyzed, lodResult], edges: [{ id: 'high-wire', source: 'analyzed-high', target: 'lod-processor', sourceHandle: 'model', targetHandle: 'high' }], job: lodJobRecord, projectId: 'prj', action: 'uv_plan', seed: 2, id: 'uv-plan-analyzed' });
 assert.equal(throughAnalyze.edges.find((edge) => edge.targetHandle === 'high').source, 'analyzed-high');
+const bakeTarget = { id: 'bake', type: 'native3d', data: { operation: 'bake' } };
+const bakeHigh = nativeModelConnection({ source: white.id, target: bakeTarget.id, sourceHandle: 'model', targetHandle: 'high' }, white, bakeTarget, []);
+assert.equal(bakeHigh.connection.targetHandle, 'high');
+assert.equal(bakeHigh.connection.source, 'model-white');
+const imported = { id: 'import', type: 'native3d', data: { operation: 'analyze', status: 'completed', assetPath: highPath } };
+const topology = { id: 'topo', type: 'native3d', data: { operation: 'source_lod' } };
+const historical = nativeModelConnection({ source: imported.id, target: topology.id, sourceHandle: 'model', targetHandle: 'model' }, imported, topology, []);
+assert.equal(historical.connection.source, 'import');
+assert.equal(historical.connection.targetHandle, 'model');
 
 console.log('canvas 3d phase2 ok');

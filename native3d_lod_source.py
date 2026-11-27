@@ -62,9 +62,14 @@ def resolve_lod_settings(params=None):
     selected = params.get('selectedLodLevel', 0)
     if type(selected) is not int or not 0 <= selected < count:
         raise ValueError('selectedLodLevel must be below lodCount')
+    deferred = params.get('deferChildLods', False)
+    if type(deferred) is not bool:
+        raise ValueError('deferChildLods must be boolean')
     return {'lod0KeepPercent': _percent(params.get('lod0KeepPercent', 55), 'Original to LOD0 keep'),
             'lodPercentReference': reference, 'lodKeepPercents': percentages,
-            'lodFaceCaps': caps, 'selectedLodLevel': selected, **({'lodCount': count} if count != 5 else {})}
+            'lodFaceCaps': caps, 'selectedLodLevel': selected,
+            **({'lodCount': count} if count != 5 else {}),
+            **({'deferChildLods': True} if deferred else {})}
 
 
 def logical_target(level, source_faces, lod0_faces, previous_faces, settings):
@@ -469,6 +474,8 @@ def _run_source_lod_core(mesh, output, params=None, progress=None, *, protected_
     start = time.monotonic()
     params = dict(params or {})
     settings = resolve_lod_settings(params)
+    defer_children = bool(settings.get('deferChildLods')) and not params.get('retryJobId') and not params.get('localRepairJobId') and int(settings.get('selectedLodLevel') or 0) == 0
+    level_total = 1 if defer_children else settings.get('lodCount', 5)
     backend = params.get('simplifierBackend','open3d')
     if backend not in ('open3d','fast_simplification'):
         raise ValueError('Source LOD simplifierBackend must be open3d or fast_simplification')
@@ -611,7 +618,7 @@ def _run_source_lod_core(mesh, output, params=None, progress=None, *, protected_
         parent_stage = 'original_source'
         lod0_count = None
         pass_number = 0
-        for level in range(settings.get('lodCount', 5)):
+        for level in range(level_total):
             plan = logical_target(level, source_count, lod0_count, len(f), settings)
             target = plan['effectiveTargetTriangles']
             previous_count = len(f)
@@ -803,10 +810,14 @@ def _run_source_lod_core(mesh, output, params=None, progress=None, *, protected_
             raise ValueError('Source arrays mutated during source LOD')
         event('source_lod_complete', 95)
         manifest.update(status='accepted', selectedLodLevel=settings['selectedLodLevel'],
-                        acceptanceScope='complete_chain',chainStatus='accepted',chainComplete=True,
+                        acceptanceScope='lod0_clean_child_lods_deferred_until_uv' if defer_children else 'complete_chain',
+                        chainStatus='accepted',chainComplete=True,
                         returnedMeshRole='accepted_selected_logical_level',
                         lod0MeshHash=manifest['logicalLevels'][0]['mesh_hash'],
                         naniteLod0File=manifest['logicalLevels'][0]['filename'])
+        if defer_children:
+            manifest['childLodsDeferredUntilUV'] = True
+            manifest['plannedLodCount'] = settings.get('lodCount', 5)
     except ValueError as error:
         manifest['status'] = 'blocked'
         manifest['blocker'] = str(error)

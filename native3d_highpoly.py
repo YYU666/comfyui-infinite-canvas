@@ -982,6 +982,175 @@ def _project_uv_onto_island(points, vertices, faces, uv):
     return np.einsum('ij,ijk->ik', bary / totals, uv[faces[chosen]])
 
 
+def _face_signed_areas(uv, faces):
+    triangles = np.asarray(uv, dtype=np.float64)[np.asarray(faces, dtype=np.int64)]
+    return 0.5 * (
+        (triangles[:, 1, 0] - triangles[:, 0, 0]) * (triangles[:, 2, 1] - triangles[:, 0, 1])
+        - (triangles[:, 1, 1] - triangles[:, 0, 1]) * (triangles[:, 2, 0] - triangles[:, 0, 0])
+    )
+
+
+def _uv_boundary_mask(faces):
+    """Vertices on a chart border. Seam-split islands keep their own border."""
+    edges, counts = _edge_table(np.asarray(faces, dtype=np.int64))
+    mask = np.zeros(int(np.max(faces)) + 1 if len(faces) else 0, dtype=bool)
+    for edge, count in zip(edges, counts):
+        if int(count) == 1:
+            mask[int(edge[0])] = True
+            mask[int(edge[1])] = True
+    if len(mask) == 0:
+        return mask
+    return mask
+
+
+def _triangles_overlap_2d(left, right):
+    def orient(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    def crosses(a, b, c, d):
+        return orient(a, b, c) * orient(a, b, d) < 0 and orient(c, d, a) * orient(c, d, b) < 0
+
+    def inside(point, triangle):
+        signs = [orient(triangle[i], triangle[(i + 1) % 3], point) for i in range(3)]
+        return min(signs) > 1e-12 or max(signs) < -1e-12
+
+    for index in range(3):
+        if crosses(left[index], left[(index + 1) % 3], right[0], right[1]) or crosses(left[index], left[(index + 1) % 3], right[1], right[2]) or crosses(left[index], left[(index + 1) % 3], right[2], right[0]):
+            return True
+        if inside(left[index], right) or inside(right[index], left):
+            return True
+    return False
+
+
+def _relax_uv(uv, faces, rounds=3, max_displacement=0.02):
+    """Smooth interior UV only. Island borders stay put, and a bad step is undone.
+
+    One to three Jacobi rounds blend each interior vertex toward its neighbors.
+    The step cannot leave the displacement ball around the incoming UV. A move
+    that flips a triangle against its original signed area, or that overlaps a
+    triangle it does not touch, is reverted for that vertex.
+    """
+    uv = np.array(uv, dtype=np.float64, copy=True)
+    original = uv.copy()
+    faces = np.asarray(faces, dtype=np.int64)
+    empty = {
+        'rounds': 0, 'maxDisplacement': 0.0, 'maxDisplacementLimit': float(max_displacement),
+        'boundaryDisplacement': 0.0, 'flippedReverts': 0, 'overlapReverts': 0,
+        'edgeBefore': 0.0, 'edgeAfter': 0.0, 'minSignedArea': 0.0,
+    }
+    if len(faces) == 0 or len(uv) == 0:
+        return uv, empty
+    boundary = _uv_boundary_mask(faces)
+    if len(boundary) < len(uv):
+        boundary = np.pad(boundary, (0, len(uv) - len(boundary)))
+    boundary = boundary[:len(uv)]
+    interior = np.flatnonzero(~boundary)
+    neighbors = [[] for _ in range(len(uv))]
+    incident = [[] for _ in range(len(uv))]
+    for face_index, face in enumerate(faces):
+        for corner in range(3):
+            start, end = int(face[corner]), int(face[(corner + 1) % 3])
+            if end not in neighbors[start]:
+                neighbors[start].append(end)
+            if start not in neighbors[end]:
+                neighbors[end].append(start)
+            incident[int(face[corner])].append(face_index)
+    original_areas = _face_signed_areas(original, faces)
+    edge_before = _max_uv_edge(original, faces)
+    flipped = 0
+    overlapped = 0
+    limit = float(max_displacement)
+    used_rounds = min(3, max(1, int(rounds)))
+    full_overlap = len(faces) <= 400
+    for _round in range(used_rounds):
+        proposed = uv.copy()
+        for index in interior:
+            ring = neighbors[int(index)]
+            if len(ring) < 2:
+                continue
+            target = uv[ring].mean(axis=0)
+            delta = target - uv[index]
+            if float(np.linalg.norm(delta)) < 1e-8:
+                continue
+            step = uv[index] + 0.5 * delta
+            offset = step - original[index]
+            length = float(np.linalg.norm(offset))
+            if length > limit:
+                step = original[index] + offset * (limit / length)
+            proposed[index] = step
+        for index in interior:
+            if np.allclose(proposed[index], uv[index], atol=1e-12):
+                continue
+            trial = uv[index].copy()
+            uv[index] = proposed[index]
+            areas = _face_signed_areas(uv, faces[incident[int(index)]])
+            before = original_areas[incident[int(index)]]
+            flipped_face = np.any((before > 1e-12) & (areas <= 1e-12)) or np.any((before < -1e-12) & (areas >= -1e-12))
+            if flipped_face:
+                uv[index] = trial
+                flipped += 1
+                continue
+            if full_overlap and _moved_vertex_overlaps(int(index), uv, faces, incident):
+                uv[index] = trial
+                overlapped += 1
+    uv[boundary] = original[boundary]
+    offset = uv - original
+    length = np.linalg.norm(offset, axis=1)
+    too_far = length > limit
+    if np.any(too_far):
+        uv[too_far] = original[too_far] + offset[too_far] * ((limit * (1.0 - 1e-12)) / length[too_far])[:, None]
+        uv[boundary] = original[boundary]
+    displacement = np.linalg.norm(uv - original, axis=1)
+    areas = _face_signed_areas(uv, faces)
+    return uv, {
+        'rounds': used_rounds,
+        'maxDisplacement': float(displacement.max()) if len(displacement) else 0.0,
+        'maxDisplacementLimit': limit,
+        'boundaryDisplacement': float(displacement[boundary].max()) if np.any(boundary) else 0.0,
+        'flippedReverts': int(flipped),
+        'overlapReverts': int(overlapped),
+        'edgeBefore': float(edge_before),
+        'edgeAfter': float(_max_uv_edge(uv, faces)),
+        'minSignedArea': float(areas.min()) if len(areas) else 0.0,
+        'overlapCheck': 'incident triangles against non-adjacent faces' if full_overlap else 'flip and displacement clamp only',
+    }
+
+
+def _moved_vertex_overlaps(index, uv, faces, incident):
+    mine = incident[index]
+    mine_ids = set(mine)
+    touched = {int(vertex) for face_index in mine for vertex in faces[face_index]}
+    for face_index in mine:
+        triangle = uv[faces[face_index]]
+        low, high = triangle.min(axis=0), triangle.max(axis=0)
+        for other, face in enumerate(faces):
+            if other in mine_ids or any(int(vertex) in touched for vertex in face):
+                continue
+            other_triangle = uv[face]
+            other_low, other_high = other_triangle.min(axis=0), other_triangle.max(axis=0)
+            if other_low[0] > high[0] or other_high[0] < low[0] or other_low[1] > high[1] or other_high[1] < low[1]:
+                continue
+            if _triangles_overlap_2d(triangle, other_triangle):
+                return True
+    return False
+
+
+def _merge_uv_relax(parts):
+    if not parts:
+        return None
+    return {
+        'rounds': max(part['rounds'] for part in parts),
+        'maxDisplacement': max(part['maxDisplacement'] for part in parts),
+        'maxDisplacementLimit': max(part['maxDisplacementLimit'] for part in parts),
+        'boundaryDisplacement': max(part['boundaryDisplacement'] for part in parts),
+        'flippedReverts': int(sum(part['flippedReverts'] for part in parts)),
+        'overlapReverts': int(sum(part['overlapReverts'] for part in parts)),
+        'edgeBefore': max(part['edgeBefore'] for part in parts),
+        'edgeAfter': max(part['edgeAfter'] for part in parts),
+        'minSignedArea': min(part['minSignedArea'] for part in parts),
+    }
+
+
 def _reduce_large_uv_islands(mesh, target_faces, distortion_limit):
     """Simplify each UV chart on its own and interpolate UV only inside that chart.
 
@@ -997,7 +1166,7 @@ def _reduce_large_uv_islands(mesh, target_faces, distortion_limit):
     sizes = np.array([len(group) for group in groups], dtype=np.int64)
     raw = np.maximum(2, np.rint(float(target_faces) * sizes / max(int(sizes.sum()), 1)).astype(np.int64))
     targets = np.minimum(sizes, raw)
-    parts_v, parts_f, parts_uv = [], [], []
+    parts_v, parts_f, parts_uv, parts_relax = [], [], [], []
     measured = 0.0
     for group, target in zip(groups, targets):
         island_v, island_f, island_uv = _take_faces(vertices, faces, uv, group)
@@ -1016,10 +1185,12 @@ def _reduce_large_uv_islands(mesh, target_faces, distortion_limit):
                 chart_uv = _project_uv_onto_island(points, island_v, island_f, island_uv)
         else:
             points, indexed, chart_uv = island_v, island_f, island_uv
+        chart_uv, relax = _relax_uv(chart_uv, indexed)
         measured = max(measured, _max_uv_edge(chart_uv, indexed))
         parts_v.append(points)
         parts_f.append(indexed)
         parts_uv.append(chart_uv)
+        parts_relax.append(relax)
     merged_v, merged_f, merged_uv = [], [], []
     offset = 0
     for points, indexed, chart_uv in zip(parts_v, parts_f, parts_uv):
@@ -1038,6 +1209,7 @@ def _reduce_large_uv_islands(mesh, target_faces, distortion_limit):
         'uvDistortion': float(measured), 'uvDistortionLimit': limit,
         'uvDistortionExceeded': bool(measured > limit), 'resampled': True,
         'uvTransfer': 'per-UV-island border lock, then closest-face barycentric UV inside that island',
+        'uvRelax': _merge_uv_relax(parts_relax),
     }
 
 
@@ -1086,6 +1258,7 @@ def _reduce_preserving_uv(mesh, target_faces, distortion_limit):
         uv = _resample_uv(vertices, faces, mesh)
         resampled = True
         max_distortion = before
+    uv, relax = _relax_uv(uv, faces)
     result = trimesh.Trimesh(vertices, faces, process=False)
     result.visual = trimesh.visual.TextureVisuals(uv=uv, material=getattr(mesh.visual, 'material', None))
     return result, {
@@ -1096,6 +1269,7 @@ def _reduce_preserving_uv(mesh, target_faces, distortion_limit):
         'uvDistortionLimit': float(distortion_limit),
         'uvDistortionExceeded': bool(exceeded),
         'resampled': bool(resampled),
+        'uvRelax': relax,
     }
 
 
@@ -1120,12 +1294,15 @@ def derive_shared_lods(mesh, medium_ratio=0.30, low_ratio=0.12, distortion_limit
             resampled = np.array(low.visual.uv, copy=True)
             checked = _resample_uv(np.asarray(low.vertices), np.asarray(low.faces), mesh)
             error = float(np.linalg.norm(resampled - checked, axis=1).max()) if len(checked) else 0.0
-            low.visual.uv = checked
-            low_report = {**low_report, 'resampled': True, 'uvDistortion': max(float(low_report['uvDistortion']), error)}
+            locked, relax = _relax_uv(checked, np.asarray(low.faces))
+            low.visual.uv = locked
+            low_report = {**low_report, 'resampled': True, 'uvRelax': relax,
+                          'uvDistortion': max(float(low_report['uvDistortion']), error)}
     return {
         'high': mesh, 'medium': medium, 'low': low,
         'sharedTextures': list(SHARED_TEXTURES),
         'reports': {'medium': medium_report, 'low': low_report},
+        'uvRelax': {'medium': medium_report.get('uvRelax'), 'low': low_report.get('uvRelax')},
     }
 
 
@@ -1235,5 +1412,6 @@ def deliver_shared_lods(mesh, output, **kwargs):
         'sharedTextures': derived['sharedTextures'],
         'medium': derived['reports']['medium'],
         'low': derived['reports']['low'],
+        'uvRelax': derived['uvRelax'],
         'optionalFbx': 'geometry-only FBX stays on the existing model.geometry-only.fbx delivery when a converter is available',
     }

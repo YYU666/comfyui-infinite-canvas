@@ -14,7 +14,7 @@ export function nativeLowpolyPresetLabel(data) {
 export const NATIVE3D_PRESETS = {
   model_asset: ['native3d', { title: '3D模型', operation: 'analyze' }],
   model_lowpoly: ['native3d', { title: 'AI低模', operation: 'ai_lowpoly', nativePresetId: AI_LOWPOLY_PRESET.id, get nativeParameters() { return { ...AI_LOWPOLY_PRESET.parameters }; } }],
-  model_lod: ['native3d', { title: '原高模 · 百分比LOD', operation: 'source_lod' }],
+  model_lod: ['native3d', { title: '拓扑 / 高模整理', operation: 'source_lod' }],
   model_lod_legacy: ['native3d', { title: 'AI低模 · 修复减面（兼容）', operation: 'repair_lod' }],
   model_uv_plan: ['native3d', { title: 'UV切缝方案', operation: 'uv_plan' }],
   model_uv: ['native3d', { title: 'UV展开', operation: 'uv' }],
@@ -106,6 +106,13 @@ export function nativeModelConnection(connection, source, target, edges) {
   if (isNative3D(source) && isNative3D(target) && connection.targetHandle==='plan') {
     if (target.data.operation!=='uv' || connection.sourceHandle!=='plan' || !source.data.nativeUVPlan || source.data.status!=='completed') return {error:'切缝方案输出仅连接UV展开的方案输入。'};
     return {connection:{source:source.id,target:target.id,sourceHandle:'plan',targetHandle:'plan',data:nativeOutputBinding(source)},source,target,multiple:false};
+  }
+  if (isGeneratedGLB(source) && isNative3D(target) && connection.targetHandle === 'high'
+      && ['uv_plan', 'uv', 'bake'].includes(target.data.operation)
+      && connection.sourceHandle === 'model' && source.data.assetPath) {
+    const normalized = { source: source.id, target: target.id, sourceHandle: 'model', targetHandle: 'high' };
+    return { connection: normalized, source, target, multiple: false,
+      existing: edges.find(edge => Object.entries(normalized).every(([key, value]) => edge[key] === value)) };
   }
   if (isNative3D(source) && isNative3D(target) && connection.targetHandle==='high') {
     if (!(['uv_plan','uv','bake'].includes(target.data.operation) || (target.data.operation==='source_lod' && /^lod[1-4]$/.test(target.data.nativeParameters?.retryStage || target.data.nativeParameters?.localRepairStage || ''))) || connection.sourceHandle!=='model' || !source.data.assetPath || source.data.nativeUVPlan) return {error:'请将已保存的高模模型连接到高模参考输入。'};

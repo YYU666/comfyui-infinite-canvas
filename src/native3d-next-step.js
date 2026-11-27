@@ -34,7 +34,8 @@ export function nextStepActions(node) {
  if(d.metadata?.operation==='source_lod'&&d.metadata.geometry.status==='accepted'){
   const level=d.nativeLODLevel??d.metadata.geometry.selectedLodLevel;
   const lodCount=lodCountOf(d);
-  return [...(Number.isInteger(level)&&level>=0&&level<Math.min(4,lodCount-1)?[{action:'next_lod',label:`继续${lodStageLabel(level+1,lodCount)}`}]:[]),{action:'uv_plan',label:'制作UV'}];
+  const deferred=d.metadata.geometry.childLodsDeferredUntilUV===true;
+  return [...(!deferred&&Number.isInteger(level)&&level>=0&&level<Math.min(4,lodCount-1)?[{action:'next_lod',label:`继续${lodStageLabel(level+1,lodCount)}`}]:[]),{action:'uv_plan',label:'制作UV'}];
  }
  if(d.metadata?.operation==='uv'&&d.metadata?.uv)return [{action:'bake',label:'烘焙材质'}];
  return [];
