@@ -29,7 +29,7 @@ export function frameCanvasNodes(nodeTypes) {
 }
 
 function sameEdgeLook(a, b) {
-  return a.from === b.from && a.to === b.to && a.linked === b.linked && a.activeEndpoint === b.activeEndpoint;
+  return a.from === b.from && a.to === b.to && a.linked === b.linked && a.paint === b.paint && a.activeEndpoint === b.activeEndpoint;
 }
 
 export function ObsidianEdge({ edge, path }) {
@@ -41,7 +41,7 @@ export function ObsidianEdge({ edge, path }) {
   ), sameEdgeLook);
   const coincident = sourceX === targetX && sourceY === targetY;
   const paint = `url(#${id})`;
-  return <g className="obsidian-edge" data-linked={look.linked || undefined}>
+  return <g className="obsidian-edge" data-linked={look.linked || undefined} data-paint={look.paint || undefined}>
     <defs>
       <linearGradient id={id} gradientUnits="userSpaceOnUse" x1={sourceX} y1={sourceY} x2={targetX + (coincident ? 1 : 0)} y2={targetY}>
         <stop offset="0" stopColor={look.from} />

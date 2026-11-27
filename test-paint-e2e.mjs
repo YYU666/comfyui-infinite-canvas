@@ -112,6 +112,7 @@ try {
   await page.locator('.project-open').click();
   const node = (id) => page.locator(`.react-flow__node[data-id="${id}"]`);
   await node('paint1').waitFor();
+  await node('paint1').click({ position: { x: 24, y: 18 } });
   await page.screenshot({ path: path.join(shots, 'paint-canvas-connections.png') });
   const beforeNodes = await page.locator('.react-flow__node').count();
   await node('paint1').getByTestId('paint-open').click();

@@ -809,8 +809,11 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       <label className="paint-inline" title="旋转"><RotateCw size={14} /><input data-testid="paint-rotation" type="range" min="-180" max="180" value={rotation} onChange={(event) => setRotation(Number(event.target.value))} /></label>
       <button type="button" data-testid="paint-flip" title="水平镜像" aria-pressed={flip} onClick={() => setFlip((value) => !value)}><FlipHorizontal2 size={16} /></button>
       <button type="button" title="视角复位" onClick={() => { setZoom(1); setPan({ x: 40, y: 40 }); setRotation(0); setFlip(false); }}><Locate size={16} /></button>
-      <select data-testid="paint-output" value={doc.outputMode} onChange={(event) => setDoc({ ...doc, outputMode: event.target.value })}>{OUTPUT_MODES.map((mode) => <option key={mode} value={mode}>{OUTPUT_MODE_LABELS[mode]}</option>)}</select>
-      <button type="button" data-testid="paint-lan-open" onClick={connectLan}><Tablet size={16} /> 连接平板</button>
+      <div className="paint-modes" role="group" aria-label="输出模式">
+        {OUTPUT_MODES.map((mode) => <button type="button" key={mode} aria-pressed={doc.outputMode === mode} onClick={() => setDoc({ ...doc, outputMode: mode })}>{OUTPUT_MODE_LABELS[mode]}</button>)}
+        <select data-testid="paint-output" value={doc.outputMode} onChange={(event) => setDoc({ ...doc, outputMode: event.target.value })}>{OUTPUT_MODES.map((mode) => <option key={mode} value={mode}>{OUTPUT_MODE_LABELS[mode]}</option>)}</select>
+      </div>
+      <button type="button" data-testid="paint-lan-open" onClick={connectLan}><i />连接平板</button>
       <span className="paint-message" data-testid="paint-message" role="status">{message}</span>
       <span data-testid="paint-ink">{ink}</span>
       <button type="button" data-testid="paint-save" disabled={readOnly || saving} onClick={save}><Save size={15} />{saving ? '保存中' : '保存'}</button>
@@ -826,13 +829,15 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
     <aside className="paint-drawer">
       <div className="paint-tabs">
         <button type="button" aria-pressed={leftTab === 'brush'} onClick={() => setLeftTab('brush')}>画笔与颜色</button>
-        <button type="button" aria-pressed={leftTab === 'select'} onClick={() => setLeftTab('select')}>工具与选区</button>
+        <button type="button" aria-pressed={leftTab === 'select'} onClick={() => setLeftTab('select')}>选区与工具</button>
       </div>
       {leftTab === 'brush' && <>
-        <div className="paint-sv" data-testid="paint-sv" style={{ background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(${hsv.h} 100% 50%))` }} onPointerDown={pickSv} onPointerMove={(event) => { if (event.buttons) pickSv(event); }}>
-          <i style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%` }} />
+        <div className="paint-color-row">
+          <div className="paint-sv" data-testid="paint-sv" style={{ background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(${hsv.h} 100% 50%))` }} onPointerDown={pickSv} onPointerMove={(event) => { if (event.buttons) pickSv(event); }}>
+            <i style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%` }} />
+          </div>
+          <input className="paint-hue" data-testid="paint-hue" type="range" min="0" max="360" aria-label="色相" value={Math.round(hsv.h)} onChange={(event) => setColor(colorToHex(hsvToRgb(Number(event.target.value), hsv.s || 1, hsv.v || 1)))} style={{ background: 'linear-gradient(#f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)' }} />
         </div>
-        <label>色相<input className="paint-hue" data-testid="paint-hue" type="range" min="0" max="360" value={Math.round(hsv.h)} onChange={(event) => setColor(colorToHex(hsvToRgb(Number(event.target.value), hsv.s || 1, hsv.v || 1)))} /></label>
         <label>HEX<input data-testid="paint-hex" value={color} onChange={(event) => setColor(event.target.value)} /></label>
         <div className="paint-swatches">{[...new Set([color, ...doc.swatches, ...swatches])].slice(0, 16).map((swatch) => <button type="button" key={swatch} className="paint-swatch" style={{ background: swatch }} aria-label={swatch} onClick={() => setColor(swatch)} />)}</div>
         <button type="button" onClick={() => setDoc((current) => ({ ...current, swatches: [...new Set([color, ...current.swatches])].slice(0, 24) }))}>加入色板</button>
@@ -928,8 +933,8 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
     <aside className="paint-drawer right" data-testid="paint-layers">
       <div className="paint-tabs">
         <button type="button" data-testid="paint-tab-layers" aria-pressed={rightTab === 'layers'} onClick={() => setRightTab('layers')}>图层</button>
-        <button type="button" data-testid="paint-tab-paper" aria-pressed={rightTab === 'paper'} onClick={() => setRightTab('paper')}>纸张与底图</button>
-        <button type="button" data-testid="paint-tab-lan" aria-pressed={rightTab === 'lan'} onClick={() => setRightTab('lan')}>平板联动</button>
+        <button type="button" data-testid="paint-tab-paper" aria-pressed={rightTab === 'paper'} onClick={() => setRightTab('paper')}>纸张</button>
+        <button type="button" data-testid="paint-tab-lan" aria-pressed={rightTab === 'lan'} onClick={() => setRightTab('lan')}>平板</button>
       </div>
       {rightTab === 'paper' && <>
       <label>纸张<select data-testid="paint-preset" value="" onChange={(event) => { const preset = PAPER_PRESETS.find((item) => item.id === event.target.value); if (preset) updatePaper(preset); }}><option value="">预设</option>{PAPER_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>

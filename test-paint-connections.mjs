@@ -16,6 +16,13 @@ test('paint uses the violet modality and pearl image ports', () => {
   const look = canvasEdgeLook(paint('sketch'), 'ref', process('blend', 'imageBlend'), 'overlay');
   assert.equal(look.from, '#e6ddc7');
   assert.equal(look.to, '#e6ddc7');
+  const selected = paint('sketch');
+  selected.selected = true;
+  const glow = canvasEdgeLook(selected, 'ref', process('blend', 'imageBlend'), 'overlay');
+  assert.equal(glow.paint, true);
+  assert.equal(glow.from, '#34c77b');
+  assert.equal(glow.to, '#34c77b');
+  assert.equal(glow.linked, true);
 });
 
 test('paint cannot cycle into itself and can feed image, color, channel and generator nodes', () => {

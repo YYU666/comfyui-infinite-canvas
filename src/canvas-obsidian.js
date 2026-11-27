@@ -59,9 +59,11 @@ export function canvasEdgeLook(source, sourceHandle, target, targetHandle) {
   const mixedReference = target?.type === 'generator' && targetHandle === 'references'
     && (!target.data?.mode || target.data.mode === 'reference');
   const to = mixedReference ? from : portTone(target, targetHandle, 'target');
+  const paintSelected = (source?.type === 'paint' && source.selected) || (target?.type === 'paint' && target.selected);
   return {
-    from: colors[from],
-    to: colors[to],
+    from: paintSelected ? '#34c77b' : colors[from],
+    to: paintSelected ? '#34c77b' : colors[to],
+    paint: paintSelected,
     linked: Boolean(source?.selected || target?.selected),
     activeEndpoint: canvasNodeStatus(source?.type, source?.data).tone === 'running'
       || canvasNodeStatus(target?.type, target?.data).tone === 'running',
