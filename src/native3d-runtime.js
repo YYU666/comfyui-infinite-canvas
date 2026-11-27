@@ -136,7 +136,7 @@ export function useNative3D(options) {
   };
   const patch = (id, data) => {const o=current(),node=o.nodesRef.current.find(n=>n.id===id);o.updateNode(id,node?.data.nativeCurrentOutputId?nativePatchOutputData(node.data,data):data);};
   const sourceFor = (o, node) => {
-    if (node?.data.operation === 'analyze' && !node.data.sourceJobId) {
+    if (node?.data.operation === 'analyze' && !node.data.sourceJobId && !node.data.nativePendingSource && !node.data.assetPath) {
       const connected = nativeInputs(node, o.nodesRef.current, o.edgesRef.current).model;
       if (connected && (connected.data?.assetPath || isGeneratedGLB(connected))) return connected;
     }
@@ -560,7 +560,16 @@ export function useNative3D(options) {
             const beforeDeliveryNodes=o.nodesRef.current,beforeDeliveryEdges=o.edgesRef.current,beforeProcessorData=structuredClone(now.data);
             await commitNativeDelivery({ assertCurrent,
               apply: () => {
-                if (now.data.operation === 'analyze') o.updateNode(node.id, { ...common, ...(now.data.nativePendingSource ? { assetPath: now.data.nativePendingSource.path, name: now.data.nativePendingSource.name, kind: 'model', nativePendingSource: null } : {}) });
+                if (now.data.operation === 'analyze') {
+                  const pending = now.data.nativePendingSource;
+                  const run = now.data.nativeRun || {};
+                  const edgeDriven = run.sourceId && run.sourceId !== node.id && run.sourceAssetPath;
+                  const sourceName = sourceFor(o, now)?.data?.name || (run.sourceAssetPath ? String(run.sourceAssetPath).split('/').pop() : now.data.name);
+                  const persisted = pending
+                    ? { assetPath: pending.path, originalAssetPath: pending.path, name: pending.name, kind: 'model', nativePendingSource: null }
+                    : (edgeDriven ? { assetPath: run.sourceAssetPath, originalAssetPath: run.originalAssetPath || run.sourceAssetPath, name: sourceName, kind: 'model' } : {});
+                  o.updateNode(node.id, { ...common, ...persisted });
+                }
                 else {
                   let resultNode = { id: resultId, type: 'native3d', position: resultPosition, data: { ...common,...(!reviewedDownstream&&geometry?.returnedDiagnosticStage?{nativeStage:geometry.returnedDiagnosticStage,nativeStageDiagnostic:true,eligibleForDownstream:false}:{}), title: `${now.data.title} · ${geometry?.status==='blocked'&&!reviewedDownstream?'未通过诊断':uvPlan ? '待确认方案':now.data.operation==='source_lod'&&Number.isInteger(geometry?.selectedLodLevel)?`LOD${geometry.selectedLodLevel}结果`:'结果'}`, operation: 'analyze', ...(saved.model ? {assetPath:saved.model.path,resultAssetPath:saved.model.path,name:saved.model.name}:{}),sourceJobId: job.id, sourceNodeId: node.id } };
                   const inlineData=nativeAppendOutput(now,resultNode);

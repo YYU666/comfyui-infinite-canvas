@@ -259,26 +259,40 @@ def _drop_nonmanifold(vertices, faces):
     return kept, removed
 
 
-def _boundary_loops(faces):
+def _simple_boundary_loops(faces):
+    """Closed boundary cycles whose vertices all have boundary degree 2."""
     edges, counts = _edge_table(faces)
-    boundary = [tuple(int(v) for v in edge) for edge, count in zip(edges, counts) if count == 1]
+    boundary = [tuple(int(v) for v in edge) for edge, count in zip(edges, counts) if int(count) == 1]
     adjacency = {}
+    degree = {}
     for left, right in boundary:
         adjacency.setdefault(left, []).append(right)
         adjacency.setdefault(right, []).append(left)
+        degree[left] = degree.get(left, 0) + 1
+        degree[right] = degree.get(right, 0) + 1
     unused = {tuple(sorted(edge)) for edge in boundary}
     loops = []
     for seed in list(unused):
-        if seed not in unused:
+        if seed not in unused or degree.get(seed[0]) != 2 or degree.get(seed[1]) != 2:
             continue
         start = seed[0]
         loop = [start]
         previous = None
         current = start
         closed = False
+        simple = True
         while len(loop) <= len(boundary) + 1:
-            choices = [item for item in adjacency.get(current, []) if item != previous and tuple(sorted((current, item))) in unused]
-            if not choices:
+            choices = [
+                item for item in adjacency.get(current, [])
+                if item != previous and degree.get(item) == 2 and tuple(sorted((current, item))) in unused
+            ]
+            # The first vertex still has both cycle edges unused. Later vertices have one.
+            if previous is None:
+                if not choices:
+                    simple = False
+                    break
+            elif len(choices) != 1:
+                simple = False
                 break
             nxt = choices[0]
             unused.discard(tuple(sorted((current, nxt))))
@@ -287,66 +301,485 @@ def _boundary_loops(faces):
                 break
             loop.append(nxt)
             previous, current = current, nxt
-        if closed and len(loop) >= 3:
+        if closed and simple and len(loop) >= 3 and len(set(loop)) == len(loop):
             loops.append(loop)
     return loops
 
 
-def _fill_small_holes(vertices, faces, max_edges=4, max_area_fraction=0.25):
-    faces = np.asarray(faces)
+def _occupancy(faces):
+    counts = {}
+    keys = set()
+    for face in np.asarray(faces, dtype=np.int64):
+        verts = (int(face[0]), int(face[1]), int(face[2]))
+        keys.add(tuple(sorted(verts)))
+        for start, end in ((verts[0], verts[1]), (verts[1], verts[2]), (verts[2], verts[0])):
+            edge = (start, end) if start < end else (end, start)
+            counts[edge] = counts.get(edge, 0) + 1
+    return counts, keys
+
+
+def _triangle_is_safe(vertices, a, b, c, counts, keys):
+    if len({a, b, c}) < 3:
+        return False
+    key = tuple(sorted((a, b, c)))
+    if key in keys:
+        return False
+    triangle = np.asarray(vertices, dtype=np.float64)[[a, b, c]]
+    area = 0.5 * float(np.linalg.norm(np.cross(triangle[1] - triangle[0], triangle[2] - triangle[0])))
+    if area <= 1e-15:
+        return False
+    for start, end in ((a, b), (b, c), (c, a)):
+        edge = (start, end) if start < end else (end, start)
+        if counts.get(edge, 0) >= 2:
+            return False
+    return True
+
+
+def _commit_triangle(a, b, c, counts, keys):
+    keys.add(tuple(sorted((a, b, c))))
+    for start, end in ((a, b), (b, c), (c, a)):
+        edge = (start, end) if start < end else (end, start)
+        counts[edge] = counts.get(edge, 0) + 1
+
+
+def _newell_normal(vertices, loop):
+    points = np.asarray(vertices, dtype=np.float64)[list(loop)]
+    normal = np.cross(points, np.roll(points, -1, axis=0)).sum(axis=0)
+    length = float(np.linalg.norm(normal))
+    if length < 1e-15:
+        return None
+    return normal / length
+
+
+def _project_loop(vertices, loop, normal):
+    axis = np.array([1.0, 0.0, 0.0]) if abs(float(normal[0])) < 0.9 else np.array([0.0, 1.0, 0.0])
+    tangent = np.cross(normal, axis)
+    tangent = tangent / np.linalg.norm(tangent)
+    bitangent = np.cross(normal, tangent)
+    points = np.asarray(vertices, dtype=np.float64)[list(loop)]
+    offset = points - points[0]
+    return np.column_stack((offset @ tangent, offset @ bitangent))
+
+
+def _strictly_inside(point, a, b, c):
+    def side(origin, left, right):
+        return (left[0] - origin[0]) * (right[1] - origin[1]) - (left[1] - origin[1]) * (right[0] - origin[0])
+    first, second, third = side(a, b, point), side(b, c, point), side(c, a, point)
+    return (first > 1e-12 and second > 1e-12 and third > 1e-12) or (first < -1e-12 and second < -1e-12 and third < -1e-12)
+
+
+def _triangulate_loop(vertices, loop, counts, keys):
+    """Ear-clip one simple loop. A chord is used only when the new triangle stays manifold."""
+    loop = [int(v) for v in loop]
+    if len(loop) < 3:
+        return []
+    normal = _newell_normal(vertices, loop)
+    if normal is None:
+        return []
+    flat = _project_loop(vertices, loop, normal)
+    area = 0.5 * float(np.dot(flat[:, 0], np.roll(flat[:, 1], -1)) - np.dot(flat[:, 1], np.roll(flat[:, 0], -1)))
+    if area < 0:
+        loop.reverse()
+        flat = flat[::-1].copy()
+    remaining = list(range(len(loop)))
+    added = []
+    guard = len(loop) * len(loop)
+    while len(remaining) > 3 and guard > 0:
+        guard -= 1
+        best = None
+        for index, current in enumerate(remaining):
+            previous = remaining[index - 1]
+            nxt = remaining[(index + 1) % len(remaining)]
+            pa, pb, pc = flat[previous], flat[current], flat[nxt]
+            cross = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0])
+            if cross <= 1e-12:
+                continue
+            if any(_strictly_inside(flat[other], pa, pb, pc) for other in remaining if other not in (previous, current, nxt)):
+                continue
+            a, b, c = loop[previous], loop[current], loop[nxt]
+            if not _triangle_is_safe(vertices, a, b, c, counts, keys):
+                continue
+            if best is None or cross < best[0]:
+                best = (cross, index, a, b, c)
+        if best is None:
+            break
+        _cross, index, a, b, c = best
+        _commit_triangle(a, b, c, counts, keys)
+        added.append((a, b, c))
+        del remaining[index]
+    if len(remaining) == 3:
+        a, b, c = (loop[index] for index in remaining)
+        if _triangle_is_safe(vertices, a, b, c, counts, keys):
+            _commit_triangle(a, b, c, counts, keys)
+            added.append((a, b, c))
+    return added
+
+
+def _fill_holes(vertices, faces, protected=None):
+    """Close simple boundary loops without a new non-manifold edge or a duplicate face.
+
+    ``protected`` loops are the input's own open boundary and are left untouched.
+    """
+    faces = np.asarray(faces, dtype=np.int64)
+    if len(faces) == 0:
+        return faces, 0, 0
+    counts, keys = _occupancy(faces)
+    added = []
     filled = 0
-    total = float(_areas(vertices, faces).sum()) or 1.0
-    for _ in range(8):
-        added = False
-        for loop in _boundary_loops(faces):
-            if not 3 <= len(loop) <= max_edges:
+    longest = 0
+    for _ in range(max(1, len(faces))):
+        current = np.vstack([faces, np.asarray(added, dtype=np.int64)]) if added else faces
+        loops = _simple_boundary_loops(current)
+        if not loops:
+            break
+        loops.sort(key=len)
+        progressed = False
+        for loop in loops:
+            ring = [tuple(sorted((int(loop[index]), int(loop[(index + 1) % len(loop)])))) for index in range(len(loop))]
+            if protected and all(edge in protected for edge in ring):
                 continue
-            fan = np.array([[loop[0], loop[index], loop[index + 1]] for index in range(1, len(loop) - 1)], dtype=np.int64)
-            if float(_areas(vertices, fan).sum()) >= total * max_area_fraction:
+            triangles = _triangulate_loop(vertices, loop, counts, keys)
+            if not triangles:
                 continue
-            faces = np.vstack([faces, fan]) if len(faces) else fan
+            added.extend(triangles)
             filled += 1
-            added = True
-            total = float(_areas(vertices, faces).sum()) or total
+            longest = max(longest, len(loop))
+            progressed = True
             break
-        if not added:
+        if not progressed:
             break
-    return faces, filled
+    if not added:
+        return faces, 0, 0
+    return np.vstack([faces, np.asarray(added, dtype=np.int64)]), filled, longest
+
+
+def _protected_boundary(faces):
+    """Boundary edges of faces that are not themselves touching a non-manifold edge.
+
+    Those edges are the input sheet outline. Boundary edges of a non-manifold
+    fin are defects and stay eligible for peeling and hole fill.
+    """
+    edges, counts = _edge_table(faces)
+    count = {tuple(int(v) for v in edge): int(value) for edge, value in zip(edges, counts)}
+    protected = set()
+    for face in np.asarray(faces, dtype=np.int64):
+        verts = [int(value) for value in face]
+        face_edges = []
+        dirty = False
+        for index in range(3):
+            left, right = verts[index], verts[(index + 1) % 3]
+            edge = (left, right) if left < right else (right, left)
+            face_edges.append(edge)
+            if count.get(edge, 0) > 2:
+                dirty = True
+        if dirty:
+            continue
+        for edge in face_edges:
+            if count.get(edge, 0) == 1:
+                protected.add(edge)
+    return protected
+
+
+def _remap_edges(edges, remap):
+    remapped = set()
+    for left, right in edges:
+        first, second = int(remap[left]), int(remap[right])
+        if first < 0 or second < 0 or first == second:
+            continue
+        remapped.add((first, second) if first < second else (second, first))
+    return remapped
+
+
+def _peel_boundary_spikes(faces, protected=None):
+    """Drop faces left hanging by one edge after a non-manifold face is removed.
+
+    A face is a spike when two of its edges are boundary and at least one of
+    those edges is not part of the input sheet outline. Sheet corners stay.
+    """
+    faces = np.asarray(faces, dtype=np.int64)
+    removed = 0
+    while len(faces):
+        edges, counts = _edge_table(faces)
+        count = {tuple(int(v) for v in edge): int(value) for edge, value in zip(edges, counts)}
+        drop = np.zeros(len(faces), dtype=bool)
+        for index, face in enumerate(faces):
+            boundary = []
+            for offset in range(3):
+                left, right = int(face[offset]), int(face[(offset + 1) % 3])
+                edge = (left, right) if left < right else (right, left)
+                if count.get(edge, 0) == 1:
+                    boundary.append(edge)
+            if len(boundary) >= 2 and (not protected or any(edge not in protected for edge in boundary)):
+                drop[index] = True
+        if not np.any(drop):
+            break
+        removed += int(np.count_nonzero(drop))
+        faces = faces[~drop]
+    return faces, removed
+
+
+def _incident_fans(faces):
+    """Group faces around each vertex into edge-connected fans."""
+    faces = np.asarray(faces, dtype=np.int64)
+    edge_users = {}
+    incident = {}
+    for index, face in enumerate(faces):
+        verts = (int(face[0]), int(face[1]), int(face[2]))
+        for vertex in verts:
+            incident.setdefault(vertex, []).append(index)
+        for start, end in ((verts[0], verts[1]), (verts[1], verts[2]), (verts[2], verts[0])):
+            edge = (start, end) if start < end else (end, start)
+            edge_users.setdefault(edge, []).append(index)
+    groups = {}
+    for vertex, face_ids in incident.items():
+        unique = list(dict.fromkeys(face_ids))
+        if len(unique) < 2:
+            continue
+        member = set(unique)
+        neighbors = {face_id: [] for face_id in unique}
+        for face_id in unique:
+            for other in (int(v) for v in faces[face_id] if int(v) != vertex):
+                edge = (vertex, other) if vertex < other else (other, vertex)
+                for linked in edge_users.get(edge, ()):
+                    if linked != face_id and linked in member:
+                        neighbors[face_id].append(linked)
+        seen = set()
+        components = []
+        for face_id in unique:
+            if face_id in seen:
+                continue
+            stack = [face_id]
+            seen.add(face_id)
+            component = []
+            while stack:
+                current = stack.pop()
+                component.append(current)
+                for nxt in neighbors[current]:
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        stack.append(nxt)
+            components.append(component)
+        if len(components) > 1:
+            groups[vertex] = components
+    return groups
+
+
+def _split_nonmanifold_vertices(vertices, faces):
+    """Duplicate a pinched vertex once per extra face fan. Coordinates stay put."""
+    faces = np.array(faces, dtype=np.int64, copy=True)
+    vertices = np.array(vertices, dtype=np.float64, copy=True)
+    groups = _incident_fans(faces)
+    if not groups:
+        return vertices, faces, 0
+    extra = []
+    split = 0
+    for vertex, components in groups.items():
+        ordered = sorted(components, key=len, reverse=True)
+        for component in ordered[1:]:
+            new_index = len(vertices) + len(extra)
+            extra.append(vertices[vertex])
+            split += 1
+            for face_id in component:
+                face = faces[face_id]
+                face[face == vertex] = new_index
+                faces[face_id] = face
+    if extra:
+        vertices = np.vstack([vertices, np.asarray(extra, dtype=np.float64)])
+    return vertices, faces, split
+
+
+def _topology_defects(vertices, faces):
+    faces = np.asarray(faces, dtype=np.int64)
+    empty = {'nonManifoldEdges': 0, 'boundaryEdges': 0, 'nonManifoldVertices': 0, 'inconsistentWindingEdges': 0}
+    if len(faces) == 0:
+        return empty
+    _edges, counts = _edge_table(faces)
+    directed = np.stack((faces, np.roll(faces, -1, axis=1)), axis=2).reshape(-1, 2)
+    undirected = np.sort(directed, axis=1)
+    order = np.lexsort((undirected[:, 1], undirected[:, 0]))
+    sorted_edges = undirected[order]
+    begin = np.r_[0, np.flatnonzero(np.any(sorted_edges[1:] != sorted_edges[:-1], axis=1)) + 1]
+    count = np.diff(np.r_[begin, len(order)])
+    paired = begin[count == 2]
+    winding = 0
+    if len(paired):
+        left, right = order[paired], order[paired + 1]
+        winding = int(np.count_nonzero(np.all(directed[left] == directed[right], axis=1)))
+    return {
+        'nonManifoldEdges': int(np.count_nonzero(counts > 2)),
+        'boundaryEdges': int(np.count_nonzero(counts == 1)),
+        'nonManifoldVertices': len(_incident_fans(faces)),
+        'inconsistentWindingEdges': winding,
+    }
+
+
+def _surface_error(source, repaired):
+    import open3d as o3d
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(
+        o3d.core.Tensor(np.asarray(repaired.vertices, dtype=np.float32)),
+        o3d.core.Tensor(np.asarray(repaired.faces, dtype=np.uint32)))
+    query = np.asarray(source.vertices, dtype=np.float64)
+    if len(query) == 0 or len(repaired.faces) == 0:
+        return None
+    closest = scene.compute_closest_points(o3d.core.Tensor(query.astype(np.float32)))['points'].numpy()
+    distance = np.linalg.norm(closest - query, axis=1)
+    if not np.isfinite(distance).all():
+        return None
+    return {'max': float(distance.max()), 'mean': float(distance.mean())}
+
+
+def _reconstruct_watertight(source):
+    """Poisson isosurface used only after bounded topology repair is still dirty."""
+    import open3d as o3d
+    legacy = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(np.asarray(source.vertices, dtype=np.float64)),
+        o3d.utility.Vector3iVector(np.asarray(source.faces, dtype=np.int64)))
+    legacy.remove_duplicated_vertices()
+    legacy.remove_degenerate_triangles()
+    legacy.compute_vertex_normals()
+    count = int(min(max(len(source.faces) * 2, 2000), 80000))
+    try:
+        cloud = legacy.sample_points_poisson_disk(number_of_points=count, use_triangle_normal=True)
+    except RuntimeError:
+        cloud = legacy.sample_points_uniformly(number_of_points=count)
+        cloud.estimate_normals()
+    depth = 8 if len(source.faces) > 2000 else 6
+    reconstructed, _densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        cloud, depth=depth, linear_fit=True)
+    reconstructed.remove_duplicated_vertices()
+    reconstructed.remove_degenerate_triangles()
+    reconstructed.remove_unreferenced_vertices()
+    vertices = np.asarray(reconstructed.vertices, dtype=np.float64)
+    faces = np.asarray(reconstructed.triangles, dtype=np.int64)
+    if len(faces) < 4:
+        raise RuntimeError('Poisson reconstruction produced no surface')
+    mesh = trimesh.Trimesh(vertices, faces, process=False)
+    error = _surface_error(source, mesh)
+    return mesh, {
+        'triggered': True,
+        'method': 'open3d poisson watertight isosurface',
+        'poissonDepth': depth,
+        'sampleCount': count,
+        'surfaceErrorMax': None if error is None else error['max'],
+        'surfaceErrorMean': None if error is None else error['mean'],
+    }
 
 
 def _compact(vertices, faces):
     used = np.unique(faces) if len(faces) else np.zeros(0, dtype=np.int64)
     remap = np.full(len(vertices), -1, dtype=np.int64)
     remap[used] = np.arange(len(used))
-    return np.asarray(vertices, dtype=np.float64)[used], remap[faces] if len(faces) else faces
+    compacted = remap[faces] if len(faces) else faces
+    return np.asarray(vertices, dtype=np.float64)[used], compacted, remap
 
 
-def repair_high(mesh, epsilon=1e-5, island_fraction=0.01):
-    """Clean a high mesh. An already clean mesh is returned unchanged."""
-    before = topology_report(mesh, epsilon, island_fraction)
-    dirty = any(before[key] for key in ('weldedVertices', 'degenerateTriangles', 'nonManifoldEdges', 'isolatedFragments'))
-    empty = {
-        'changed': False, 'before': before, 'after': before, 'weldedVertices': 0,
-        'removedDegenerateTriangles': 0, 'removedDuplicateFaces': 0, 'removedIslands': 0,
-        'repairedNonManifoldFaces': 0, 'filledHoles': 0,
-    }
-    if not dirty:
-        return mesh, empty
-    vertices, faces, welded = spatial_weld(mesh.vertices, mesh.faces, epsilon)
+def _clean_pass(vertices, faces, island_fraction, protected):
     faces, removed_degenerate, removed_duplicates = _drop_degenerate_and_duplicates(vertices, faces)
     faces, removed_islands = _drop_islands(vertices, faces, island_fraction)
     faces, repaired = _drop_nonmanifold(vertices, faces)
-    faces, filled = _fill_small_holes(vertices, faces)
-    vertices, faces = _compact(vertices, faces)
-    repaired_mesh = trimesh.Trimesh(vertices, faces, process=False)
+    vertices, faces, split = _split_nonmanifold_vertices(vertices, faces)
+    faces, peeled = _peel_boundary_spikes(faces, protected)
+    faces, filled, longest = _fill_holes(vertices, faces, protected)
+    vertices, faces, remap = _compact(vertices, faces)
+    return vertices, faces, remap, {
+        'removedDegenerateTriangles': removed_degenerate,
+        'removedDuplicateFaces': removed_duplicates,
+        'removedIslands': removed_islands,
+        'repairedNonManifoldFaces': repaired,
+        'splitNonManifoldVertices': split,
+        'peeledBoundaryFaces': peeled,
+        'filledHoles': filled,
+        'maxFilledLoop': longest,
+    }
+
+
+def _defects_cleared(defects, started_closed):
+    if defects['nonManifoldEdges'] or defects['nonManifoldVertices'] or defects['inconsistentWindingEdges']:
+        return False
+    if started_closed and defects['boundaryEdges']:
+        return False
+    return True
+
+
+def repair_high(mesh, epsilon=1e-5, island_fraction=0.01):
+    """Clean a high mesh. An already clean mesh is returned unchanged.
+
+    Closed dirty input is welded, pruned, split at pinched vertices, capped,
+    and reoriented until edges, vertices, and winding are manifold. A still
+    dirty result may be replaced by a recorded Poisson isosurface. ``before``
+    stays the untouched input report.
+    """
+    before = topology_report(mesh, epsilon, island_fraction)
+    initial = _topology_defects(mesh.vertices, mesh.faces)
+    dirty = any(before[key] for key in ('weldedVertices', 'degenerateTriangles', 'nonManifoldEdges', 'isolatedFragments'))
+    dirty = dirty or any(initial[key] for key in ('nonManifoldEdges', 'nonManifoldVertices', 'inconsistentWindingEdges'))
+    empty = {
+        'changed': False, 'before': before, 'after': before, 'weldedVertices': 0,
+        'removedDegenerateTriangles': 0, 'removedDuplicateFaces': 0, 'removedIslands': 0,
+        'repairedNonManifoldFaces': 0, 'filledHoles': 0, 'splitNonManifoldVertices': 0,
+        'repairPasses': 0, 'reconstruction': None,
+    }
+    if not dirty:
+        return mesh, empty
+    started_closed = before['boundaryEdges'] == 0 and initial['boundaryEdges'] == 0
+    vertices, faces, welded = spatial_weld(mesh.vertices, mesh.faces, epsilon)
+    protected = _protected_boundary(faces)
+    totals = {key: 0 for key in (
+        'removedDegenerateTriangles', 'removedDuplicateFaces', 'removedIslands',
+        'repairedNonManifoldFaces', 'splitNonManifoldVertices', 'peeledBoundaryFaces',
+        'filledHoles')}
+    longest_loop = 0
     from native3d_engine import repair_winding
-    repaired_mesh, winding = repair_winding(repaired_mesh)
+    winding = None
+    passes = 0
+    for _ in range(8):
+        passes += 1
+        vertices, faces, remap, counts = _clean_pass(vertices, faces, island_fraction, protected)
+        protected = _remap_edges(protected, remap)
+        longest_loop = max(longest_loop, counts.pop('maxFilledLoop'))
+        for key, value in counts.items():
+            totals[key] += value
+        if len(faces) == 0:
+            break
+        current = trimesh.Trimesh(vertices, faces, process=False)
+        current, winding = repair_winding(current)
+        vertices = np.asarray(current.vertices, dtype=np.float64)
+        faces = np.asarray(current.faces, dtype=np.int64)
+        if _defects_cleared(_topology_defects(vertices, faces), started_closed):
+            break
+    repaired_mesh = trimesh.Trimesh(vertices, faces, process=False) if len(faces) else mesh
+    reconstruction = None
+    defects = _topology_defects(repaired_mesh.vertices, repaired_mesh.faces)
+    needs_rebuild = not _defects_cleared(defects, started_closed)
+    if not needs_rebuild and 0 < len(repaired_mesh.faces) <= 8000:
+        from native3d_geometry import diagnose
+        try:
+            needs_rebuild = bool(diagnose(repaired_mesh.vertices, repaired_mesh.faces)['intersection_pairs'])
+        except (ValueError, RuntimeError):
+            needs_rebuild = False
+    if needs_rebuild:
+        try:
+            rebuilt, reconstruction = _reconstruct_watertight(mesh)
+            vertices, faces, _remap, extra = _clean_pass(
+                np.asarray(rebuilt.vertices, dtype=np.float64),
+                np.asarray(rebuilt.faces, dtype=np.int64), island_fraction, set())
+            longest_loop = max(longest_loop, extra.pop('maxFilledLoop'))
+            for key, value in extra.items():
+                totals[key] += value
+            if len(faces):
+                rebuilt = trimesh.Trimesh(vertices, faces, process=False)
+                rebuilt, winding = repair_winding(rebuilt)
+                repaired_mesh = rebuilt
+            reconstruction['manifoldAfterReconstruction'] = _defects_cleared(
+                _topology_defects(repaired_mesh.vertices, repaired_mesh.faces), True)
+        except (RuntimeError, ValueError, ImportError) as error:
+            reconstruction = {'triggered': True, 'method': 'open3d poisson watertight isosurface', 'error': str(error)}
     after = topology_report(repaired_mesh, epsilon, island_fraction)
     return repaired_mesh, {
         'changed': True, 'before': before, 'after': after, 'weldedVertices': welded,
-        'removedDegenerateTriangles': removed_degenerate, 'removedDuplicateFaces': removed_duplicates,
-        'removedIslands': removed_islands, 'repairedNonManifoldFaces': repaired,
-        'filledHoles': filled, 'winding': winding, 'faceLimit': FACE_LIMIT,
+        **totals, 'maxFilledLoop': longest_loop, 'repairPasses': passes, 'winding': winding,
+        'faceLimit': FACE_LIMIT, 'reconstruction': reconstruction,
     }
 
 

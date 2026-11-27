@@ -9,9 +9,13 @@ import numpy as np
 import trimesh
 from PIL import Image
 
-from native3d_highpoly import FACE_LIMIT, deliver_shared_lods, derive_shared_lods, repair_high, topology_report
+from native3d_geometry_audit import audit_geometry
+from native3d_highpoly import (
+    FACE_LIMIT, _occupancy, _topology_defects, _triangulate_loop, deliver_shared_lods,
+    derive_shared_lods, repair_high, topology_report,
+)
 from native3d_jobs import validate_parameters
-from native3d_lod_source import resolve_lod_settings
+from native3d_lod_source import resolve_lod_settings, run_source_lod
 from native3d_material_atlas import shares_orm_storage, texture_qc_warnings, write_packed_maps
 
 
@@ -237,6 +241,99 @@ class HighpolyRepairTests(unittest.TestCase):
                 self.assertIn('TANGENT', attributes)
                 self.assertNotIn('_TANGENT', attributes)
                 self.assertTrue(shares_orm_storage(document, document['materials'][0]))
+
+    def test_compound_defects_repair_into_three_lods(self):
+        vertices = np.array([
+            [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+            [0.2, 0.2, -1], [0.8, 0.8, -1],
+        ], dtype=float)
+        occupied = np.array([[0, 2, 4], [0, 5, 2]], dtype=int)
+        counts, keys = _occupancy(occupied)
+        for edge in ((0, 1), (1, 2), (2, 3), (3, 0)):
+            counts[edge] = 1
+        capped = _triangulate_loop(vertices, [0, 1, 2, 3], counts, keys)
+        self.assertEqual(counts[(0, 2)], 2)
+        self.assertGreaterEqual(counts.get((1, 3), 0), 1)
+        self.assertTrue(capped)
+        for triangle in capped:
+            self.assertLessEqual(max(counts[tuple(sorted((int(triangle[i]), int(triangle[(i + 1) % 3]))))] for i in range(3)), 2)
+
+        mesh = _compound_dirty_mesh()
+        before = topology_report(mesh)
+        incoming = _topology_defects(mesh.vertices, mesh.faces)
+        self.assertGreater(before['nonManifoldEdges'], 1)
+        self.assertGreater(incoming['nonManifoldVertices'], 0)
+        self.assertGreater(incoming['inconsistentWindingEdges'], 0)
+        repaired, report = repair_high(mesh)
+        self.assertEqual(report['after']['nonManifoldEdges'], 0)
+        self.assertEqual(report['before']['nonManifoldEdges'], before['nonManifoldEdges'])
+        self.assertGreater(report['splitNonManifoldVertices'], 0)
+        self.assertGreater(report['maxFilledLoop'], 4)
+        self.assertIsNone(report['reconstruction'])
+        audit = audit_geometry(repaired.vertices, repaired.faces, max_seconds=30)
+        self.assertEqual(audit['status'], 'accepted', audit.get('blocker'))
+        self.assertEqual(audit['nonmanifold_vertices_count'], 0)
+        self.assertEqual(audit['inconsistent_winding_edges'], 0)
+        self.assertEqual(audit['nonmanifold_edges_count'], 0)
+        self.assertEqual(audit['boundary_edges'], 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            _selected, manifest, _artifacts = run_source_lod(repaired, temporary, {
+                'lodCount': 3, 'lod0KeepPercent': 80,
+                'lodKeepPercents': [100, 70, 50, 30, 15], 'maxSeconds': 180,
+            })
+        self.assertEqual(manifest['status'], 'accepted', manifest.get('blocker'))
+        self.assertTrue(manifest['chainComplete'])
+        levels = [row['lodLevel'] for row in manifest['logicalLevels']]
+        self.assertEqual(levels, [0, 1, 2])
+        accepted = [stage for stage in manifest['stages'] if stage.get('status') == 'accepted' and stage.get('lodLevel') in (0, 1, 2)]
+        self.assertGreaterEqual(len({stage['lodLevel'] for stage in accepted}), 3)
+
+
+def _compound_dirty_mesh():
+    """Closed sphere with several fins, a pinch, flipped faces, and a fan that repair opens into a >4 hole."""
+    base = trimesh.creation.icosphere(subdivisions=3)
+    vertices = np.array(base.vertices, dtype=float)
+    faces = np.array(base.faces, dtype=int)
+    fan = np.flatnonzero(np.any(faces == 0, axis=1))
+    if len(fan) <= 4:
+        raise RuntimeError('vertex fan is not a >4 edge hole')
+    for face_index in fan.tolist():
+        triangle = [int(vertex) for vertex in faces[face_index]]
+        rim = [vertex for vertex in triangle if vertex != 0]
+        left, right = rim
+        tip = (vertices[left] + vertices[right]) * 0.5
+        tip = tip / max(np.linalg.norm(tip), 1e-8) * 3.0
+        vertices = np.vstack([vertices, tip])
+        faces = np.vstack([faces, [left, right, len(vertices) - 1]])
+    for face_index, scale in ((80, 0.04), (90, 0.05), (100, 0.06)):
+        left, right = int(faces[face_index][0]), int(faces[face_index][1])
+        tip = (vertices[left] + vertices[right]) * 0.5
+        tip = tip / max(np.linalg.norm(tip), 1e-8) * (1 + scale)
+        vertices = np.vstack([vertices, tip])
+        faces = np.vstack([faces, [left, right, len(vertices) - 1]])
+    anchor = int(faces[140][2])
+    if anchor == 0:
+        anchor = int(faces[200][2])
+    normal = vertices[anchor] / max(np.linalg.norm(vertices[anchor]), 1e-8)
+    tangent = np.array([-normal[1], normal[0], 0.0])
+    tangent = tangent / max(np.linalg.norm(tangent), 1e-8)
+    bitangent = np.cross(normal, tangent)
+    tip = len(vertices)
+    vertices = np.vstack([vertices, [
+        vertices[anchor] + normal * 0.45 + tangent * 0.2,
+        vertices[anchor] + normal * 0.45 - tangent * 0.2,
+        vertices[anchor] + normal * 0.45 + bitangent * 0.35,
+    ]])
+    # Closed tetrahedron sharing only anchor, so the vertex has two fans and no new boundary.
+    faces = np.vstack([faces, [
+        [anchor, tip, tip + 1],
+        [anchor, tip + 1, tip + 2],
+        [anchor, tip + 2, tip],
+        [tip, tip + 2, tip + 1],
+    ]])
+    faces = np.array(faces, copy=True)
+    faces[220:224] = faces[220:224, ::-1]
+    return trimesh.Trimesh(vertices, faces, process=False)
 
 
 def _seamed_panels(n, fins=0):

@@ -39,8 +39,12 @@ export function nextStepActions(node) {
  if(d.metadata?.operation==='uv'&&d.metadata?.uv)return [{action:'bake',label:'烘焙材质'}];
  return [];
 }
+function persistedGeneratedModel(node,path) {
+ const data=node?.data;
+ return node?.type==='media'&&data?.kind==='model'&&data.output===true&&data.assetPath===path&&/^assets\/[a-f0-9]{64}\.glb$/i.test(path||'');
+}
 function exactNode(nodes,path,preferredId,reviewParameters=null) {
- const values=nativeOutputCandidates(nodes).filter(n=>n.type==='native3d'&&n.data.operation==='analyze'&&n.data.assetPath===path&&n.data.status==='completed'&&(!n.data.nativeStageDiagnostic||(reviewParameters&&!nativeGeometryInputError(n,'uv',reviewParameters))));
+ const values=nativeOutputCandidates(nodes).filter(n=>persistedGeneratedModel(n,path)||(n.type==='native3d'&&n.data.operation==='analyze'&&n.data.assetPath===path&&n.data.status==='completed'&&(!n.data.nativeStageDiagnostic||(reviewParameters&&!nativeGeometryInputError(n,'uv',reviewParameters)))));
  if(!values.length)throw Error('确切来源模型缺失，请先核对来源连接。');
  return values.find(n=>n.id===preferredId)||values.filter(n=>!n.data.sourceJobId).sort((a,b)=>a.id.localeCompare(b.id))[0]||values.sort((a,b)=>a.id.localeCompare(b.id))[0];
 }

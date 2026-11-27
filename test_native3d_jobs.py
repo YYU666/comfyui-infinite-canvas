@@ -451,4 +451,85 @@ class Native3DJobsTests(unittest.TestCase):
             self.assertFalse(self.jobs.capabilities()['ready'])
             with self.assertRaises(StoreError): self.jobs.submit(self.payload)
 
+class ConnectedAnalyzeSubmissionTests(unittest.TestCase):
+    def _claim(self, payload, source_id, source_path, nodes, edges, parameters=None):
+        if parameters is None:
+            parameters = payload.get('parameters', {})
+        payload = {**payload, 'parameters': parameters,
+                   'source': {**payload['source'], **({'highAssetPath': payload['source']['highAssetPath']} if 'highAssetPath' in payload['source'] else {})}}
+        encoded = json.dumps(payload, sort_keys=True)
+        proof = {'epoch': 'epoch_1', 'sessionId': 'session_1', 'opId': payload['opId']}
+        page = {'origin': 'agent', **{key: payload[key] for key in ('projectId', 'nodeId', 'opId')}}
+        node = {'id': payload['nodeId'], 'type': 'native3d', 'position': {'x': 320, 'y': 0},
+                'data': {'operation': payload['operation'], 'status': 'submitting', 'nativeRun': {
+                    'opId': payload['opId'], 'requestOrigin': 'agent', 'page': proof, 'submission': payload,
+                    'parameters': parameters, 'sourceId': source_id, 'sourceAssetPath': source_path}}}
+        document = {'canvas': {'nodes': [*nodes, node], 'edges': edges}}
+        return document, payload, encoded, page, proof
+
+    def test_generated_glb_analyze_lod_and_uv_plan_stay_connected(self):
+        from native3d_canvas_submission import check_saved_submission
+        path = 'assets/' + ('ab' * 32) + '.glb'
+        low = 'assets/' + ('cd' * 32) + '.glb'
+        media = {'id': 'model-white', 'type': 'media', 'position': {'x': 0, 'y': 0},
+                 'data': {'kind': 'model', 'output': True, 'assetPath': path, 'name': 'white.glb'}}
+        analyze_id = 'native3d-analyze'
+        analyze_payload = {'projectId': 'project-1', 'nodeId': analyze_id, 'opId': 'op-analyze',
+                           'operation': 'analyze', 'source': {'assetPath': path}, 'parameters': {}}
+        document, payload, encoded, page, proof = self._claim(
+            analyze_payload, 'model-white', path, [media],
+            [{'id': 'edge-model', 'source': 'model-white', 'target': analyze_id,
+              'sourceHandle': 'model', 'targetHandle': 'model'}])
+        self.assertIsNone(check_saved_submission(document, payload, encoded, page, proof, lambda _job: None))
+        with self.assertRaises(StoreError) as mismatch:
+            drifted = {**payload, 'source': {'assetPath': 'assets/' + ('ef' * 32) + '.glb'}}
+            run = document['canvas']['nodes'][-1]['data']['nativeRun']
+            run['sourceAssetPath'] = drifted['source']['assetPath']
+            run['submission'] = drifted
+            check_saved_submission(document, drifted, json.dumps(drifted, sort_keys=True), page, proof, lambda _job: None)
+        self.assertEqual(mismatch.exception.code, 'NATIVE3D_CANVAS_MISMATCH')
+
+        analyze = {'id': analyze_id, 'type': 'native3d', 'position': {'x': 300, 'y': 0},
+                   'data': {'operation': 'analyze', 'status': 'completed', 'assetPath': path,
+                            'originalAssetPath': path, 'name': 'white.glb', 'kind': 'model'}}
+        lod_id = 'native3d-lod'
+        lod_payload = {'projectId': 'project-1', 'nodeId': lod_id, 'opId': 'op-lod',
+                       'operation': 'source_lod', 'parameters': {'lodCount': 3},
+                       'source': {'assetPath': path, 'highAssetPath': path}}
+        document, payload, encoded, page, proof = self._claim(
+            lod_payload, analyze_id, path, [media, analyze],
+            [{'id': 'edge-lod', 'source': analyze_id, 'target': lod_id,
+              'sourceHandle': 'model', 'targetHandle': 'model'},
+             {'id': 'edge-high', 'source': 'model-white', 'target': lod_id,
+              'sourceHandle': 'model', 'targetHandle': 'high'}])
+        self.assertIsNone(check_saved_submission(document, payload, encoded, page, proof, lambda _job: None))
+
+        lod_result = {'id': 'lod-result', 'type': 'native3d', 'position': {'x': 640, 'y': 0},
+                      'data': {'operation': 'analyze', 'status': 'completed', 'assetPath': low,
+                               'originalAssetPath': path, 'sourceJobId': 'n3d_' + ('12' * 16)}}
+        plan_id = 'native3d-uv-plan'
+        plan_payload = {'projectId': 'project-1', 'nodeId': plan_id, 'opId': 'op-plan',
+                        'operation': 'uv_plan', 'parameters': {'resolution': 4096},
+                        'source': {'assetPath': low, 'highAssetPath': path}}
+        document, payload, encoded, page, proof = self._claim(
+            plan_payload, 'lod-result', low, [media, analyze, lod_result],
+            [{'id': 'edge-plan-model', 'source': 'lod-result', 'target': plan_id,
+              'sourceHandle': 'model', 'targetHandle': 'model'},
+             {'id': 'edge-plan-high', 'source': 'model-white', 'target': plan_id,
+              'sourceHandle': 'model', 'targetHandle': 'high'}])
+        self.assertIsNone(check_saved_submission(document, payload, encoded, page, proof, lambda _job: None))
+
+    def test_saved_import_analyze_still_uses_its_own_source(self):
+        from native3d_canvas_submission import check_saved_submission
+        path = 'assets/' + ('12' * 32) + '.glb'
+        node_id = 'native3d-imported'
+        payload = {'projectId': 'project-1', 'nodeId': node_id, 'opId': 'op-import',
+                   'operation': 'analyze', 'source': {'assetPath': path}, 'parameters': {}}
+        document, payload, encoded, page, proof = self._claim(payload, node_id, path, [], [])
+        document['canvas']['nodes'][-1]['data']['assetPath'] = path
+        document['canvas']['nodes'][-1]['data']['originalAssetPath'] = path
+        document['canvas']['nodes'][-1]['data']['kind'] = 'model'
+        self.assertIsNone(check_saved_submission(document, payload, encoded, page, proof, lambda _job: None))
+
+
 if __name__=='__main__': unittest.main()

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { analyzePrimaryButton, isGeneratedGLB } from './src/native3d.js';
 import { modelPreviewActions, persistGeneratedModelFiles } from './src/model-result.js';
 import { extractBakeTextureNode } from './src/native3d-bake-preview.js';
-import { lodStageLabel, nextStepActions } from './src/native3d-next-step.js';
+import { lodStageLabel, nativeNextStepPlan, nextStepActions } from './src/native3d-next-step.js';
 
 const whiteMesh = {
   type: 'media',
@@ -77,5 +77,22 @@ assert.equal(extracted.nodes[0].type, 'media');
 assert.equal(extracted.nodes[0].data.kind, 'image');
 assert.equal(extracted.nodes[0].data.name, 'orm.png');
 assert.equal(extracted.nodes.filter((node) => node.data.kind === 'image').length, 1);
+
+const highSha = 'a'.repeat(64);
+const lowSha = 'b'.repeat(64);
+const meshHash = 'c'.repeat(64);
+const lodJob = 'n3d_' + 'd'.repeat(32);
+const highPath = `assets/${highSha}.glb`;
+const lowPath = `assets/${lowSha}.glb`;
+const white = { id: 'model-white', type: 'media', position: { x: 0, y: 0 }, data: { kind: 'model', output: true, assetPath: highPath, name: 'white.glb' } };
+const stage = { stage: 'lod0', status: 'accepted', eligibleForDownstream: true, filename: 'lod0.glb', mesh_hash: meshHash, file_sha256: lowSha, geometry: { status: 'accepted', intersectionComplete: true, intersection_pairs_count: 0, mesh_hash: meshHash } };
+const lodResult = { id: 'lod-result', type: 'native3d', position: { x: 400, y: 0 }, data: { operation: 'analyze', status: 'completed', sourceJobId: lodJob, sourceNodeId: 'lod-processor', assetPath: lowPath, nativeLODLevel: 0, metadata: { operation: 'source_lod', geometry: { status: 'accepted', selectedLodLevel: 0, selectedStage: 'lod0', settings: { lodCount: 3 } } } } };
+const lodJobRecord = { id: lodJob, projectId: 'prj', status: 'succeeded', operation: 'source_lod', parameters: {}, source: { assetPath: highPath, sha256: highSha, highAssetPath: highPath, highSha256: highSha }, result: { metadata: { geometry: { status: 'accepted', selectedLodLevel: 0, selectedStage: 'lod0', sourceFileSha256: highSha, settings: { lodCount: 3 }, stages: [stage] } }, files: [{ name: 'lod0.glb', role: 'export', sha256: lowSha }] } };
+const planned = nativeNextStepPlan({ source: lodResult, nodes: [white, lodResult], edges: [{ id: 'wire', source: 'model-white', target: 'lod-processor', sourceHandle: 'model', targetHandle: 'model' }], job: lodJobRecord, projectId: 'prj', action: 'uv_plan', seed: 1, id: 'uv-plan' });
+assert.equal(planned.node.data.operation, 'uv_plan');
+assert.equal(planned.edges.find((edge) => edge.targetHandle === 'high').source, 'model-white');
+const analyzed = { id: 'analyzed-high', type: 'native3d', position: { x: 0, y: 80 }, data: { operation: 'analyze', status: 'completed', assetPath: highPath, originalAssetPath: highPath, name: 'white.glb', kind: 'model' } };
+const throughAnalyze = nativeNextStepPlan({ source: lodResult, nodes: [analyzed, lodResult], edges: [{ id: 'high-wire', source: 'analyzed-high', target: 'lod-processor', sourceHandle: 'model', targetHandle: 'high' }], job: lodJobRecord, projectId: 'prj', action: 'uv_plan', seed: 2, id: 'uv-plan-analyzed' });
+assert.equal(throughAnalyze.edges.find((edge) => edge.targetHandle === 'high').source, 'analyzed-high');
 
 console.log('canvas 3d phase2 ok');
