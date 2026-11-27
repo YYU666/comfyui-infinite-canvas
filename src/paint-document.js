@@ -22,6 +22,10 @@ export const GUIDES = ['none', 'thirds', 'grid', 'story-2x2', 'story-3x2'];
 export const OUTPUT_MODES = ['transparent', 'composite', 'mask'];
 export const LAYER_BLEND_MODES = ['normal', 'multiply', 'screen', 'add', 'overlay', 'soft-light'];
 export const OUTPUT_MODE_LABELS = { transparent: '透明层', composite: '合并成图', mask: '黑白遮罩' };
+export const LAYER_BLEND_MODE_LABELS = { normal: '正常', multiply: '正片叠底', screen: '滤色', add: '添加', overlay: '叠加', 'soft-light': '柔光' };
+export const BACKGROUND_LABELS = { transparent: '透明', white: '白色', warm: '暖色', dark: '深色' };
+export const TEXTURE_LABELS = { none: '无', sketch: '素描', watercolor: '水彩' };
+export const GUIDE_LABELS = { none: '无', thirds: '三分法', grid: '网格', 'story-2x2': '分镜 2×2', 'story-3x2': '分镜 3×2' };
 
 // Phase-2 extension slots. This release stores them and does not interpret them.
 export const PAINT_EXTENSIONS = { symmetry: null, perspective: null, annotation: null, timelapse: null };

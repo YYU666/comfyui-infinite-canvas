@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MAX_LAYERS, HISTORY_LIMIT, LAYER_LIMIT_MESSAGE, LAYER_BLEND_MODES,
+  MAX_LAYERS, HISTORY_LIMIT, LAYER_LIMIT_MESSAGE, LAYER_BLEND_MODES, LAYER_BLEND_MODE_LABELS,
+  BACKGROUND_LABELS, TEXTURE_LABELS, GUIDE_LABELS,
   createPaintData, normalizeOpacity, normalizeBlendMode, addLayer, deleteLayer, duplicateLayer,
   paintSignature, matchBaseSize, initialPaperForBase, createHistory, pushHistory, undoHistory, redoHistory,
 } from './src/paint-document.js';
@@ -21,6 +22,10 @@ test('a new paint document has one layer and normalizes opacity and blend modes'
   assert.equal(normalizeOpacity(-4), 0);
   assert.equal(normalizeOpacity(40.6), 41);
   for (const mode of LAYER_BLEND_MODES) assert.equal(normalizeBlendMode(mode), mode);
+  assert.deepEqual(LAYER_BLEND_MODES.map((mode) => LAYER_BLEND_MODE_LABELS[mode]), ['正常', '正片叠底', '滤色', '添加', '叠加', '柔光']);
+  assert.deepEqual(Object.values(BACKGROUND_LABELS), ['透明', '白色', '暖色', '深色']);
+  assert.deepEqual(Object.values(TEXTURE_LABELS), ['无', '素描', '水彩']);
+  assert.deepEqual(Object.values(GUIDE_LABELS), ['无', '三分法', '网格', '分镜 2×2', '分镜 3×2']);
   assert.equal(normalizeBlendMode('darken'), 'normal');
   assert.equal(normalizeBlendMode('color-dodge'), 'normal');
 });

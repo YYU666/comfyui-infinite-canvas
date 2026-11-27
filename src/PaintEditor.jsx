@@ -5,7 +5,8 @@ import {
   Paintbrush, PaintBucket, Pipette, Plus, Redo2, RotateCw, Save, Square, Stamp, Tablet, Trash2, Undo2, Wand, X, ZoomIn,
 } from 'lucide-react';
 import {
-  LAYER_LIMIT_MESSAGE, OUTPUT_MODES, OUTPUT_MODE_LABELS, PAPER_PRESETS, BACKGROUNDS, TEXTURES, GUIDES,
+  LAYER_LIMIT_MESSAGE, OUTPUT_MODES, OUTPUT_MODE_LABELS, LAYER_BLEND_MODES, LAYER_BLEND_MODE_LABELS,
+  PAPER_PRESETS, BACKGROUNDS, BACKGROUND_LABELS, TEXTURES, TEXTURE_LABELS, GUIDES, GUIDE_LABELS,
   addLayer, deleteLayer, duplicateLayer, moveLayer, patchLayer, renameLayer, createHistory, pushHistory,
   undoHistory, redoHistory, initialPaperForBase, normalizePaintData, structurePatch,
 } from './paint-document.js';
@@ -950,11 +951,11 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       <label>宽<input data-testid="paint-width" type="number" min="64" max="4096" value={doc.paper.width} onChange={(event) => updatePaper({ width: Number(event.target.value) })} /></label>
       <label>高<input data-testid="paint-height" type="number" min="64" max="4096" value={doc.paper.height} onChange={(event) => updatePaper({ height: Number(event.target.value) })} /></label>
       <button type="button" data-testid="paint-match-base" disabled={!baseImage} onClick={() => baseRef.current && updatePaper(initialPaperForBase({ ...doc, touched: false }, baseRef.current))}>一键匹配底图尺寸</button>
-      <label>纸底<select value={doc.paper.background} onChange={(event) => updatePaper({ background: event.target.value })}>{BACKGROUNDS.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-      <label>纸纹<select value={doc.paper.texture} onChange={(event) => updatePaper({ texture: event.target.value })}>{TEXTURES.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+      <label>纸底<select data-testid="paint-paper-background" value={doc.paper.background} onChange={(event) => updatePaper({ background: event.target.value })}>{BACKGROUNDS.map((item) => <option key={item} value={item}>{BACKGROUND_LABELS[item]}</option>)}</select></label>
+      <label>纸纹<select data-testid="paint-paper-texture" value={doc.paper.texture} onChange={(event) => updatePaper({ texture: event.target.value })}>{TEXTURES.map((item) => <option key={item} value={item}>{TEXTURE_LABELS[item]}</option>)}</select></label>
       <label>纸纹透明度<input type="range" min="0" max="100" value={doc.paper.textureOpacity} onChange={(event) => updatePaper({ textureOpacity: Number(event.target.value) })} /></label>
       <label className="paint-check"><input type="checkbox" checked={doc.paper.textureInOutput} onChange={(event) => updatePaper({ textureInOutput: event.target.checked })} />纸纹进入成图</label>
-      <label>规划线<select data-testid="paint-guides" value={doc.paper.guideGrid} onChange={(event) => updatePaper({ guideGrid: event.target.value })}>{GUIDES.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+      <label>规划线<select data-testid="paint-guides" value={doc.paper.guideGrid} onChange={(event) => updatePaper({ guideGrid: event.target.value })}>{GUIDES.map((item) => <option key={item} value={item}>{GUIDE_LABELS[item]}</option>)}</select></label>
       <label>底图透明度<input type="range" min="0" max="100" value={doc.baseOverlay.opacity} onChange={(event) => setDoc({ ...doc, baseOverlay: { ...doc.baseOverlay, opacity: Number(event.target.value) } })} /></label>
       <button type="button" onClick={() => setDoc({ ...doc, baseOverlay: { ...doc.baseOverlay, position: doc.baseOverlay.position === 'above' ? 'below' : 'above', visible: true } })}>底图{doc.baseOverlay.position === 'above' ? '置顶' : '置底'}</button>
       </>}
@@ -969,7 +970,7 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       {doc.layers.length >= 12 && <p>{LAYER_LIMIT_MESSAGE}</p>}
       <label>图层名<input data-testid="paint-layer-name" type="text" value={activeLayer().name} onChange={(event) => setDoc(renameLayer(doc, doc.activeLayerId, event.target.value).doc)} /></label>
       <label>图层不透明度<input data-testid="paint-layer-opacity" type="range" min="0" max="100" value={activeLayer().opacity} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { opacity: Number(event.target.value) }).doc)} /></label>
-      <label>混合<select data-testid="paint-blend" value={activeLayer().blendMode} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { blendMode: event.target.value }).doc)}>{['normal', 'multiply', 'screen', 'add', 'overlay', 'soft-light'].map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
+      <label>混合<select data-testid="paint-blend" value={activeLayer().blendMode} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { blendMode: event.target.value }).doc)}>{LAYER_BLEND_MODES.map((mode) => <option key={mode} value={mode}>{LAYER_BLEND_MODE_LABELS[mode]}</option>)}</select></label>
       <label className="paint-check"><input type="checkbox" checked={activeLayer().alphaLock} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { alphaLock: event.target.checked }).doc)} />锁定透明像素</label>
       <label className="paint-check"><input type="checkbox" checked={activeLayer().clippingMask} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { clippingMask: event.target.checked }).doc)} />剪贴蒙版</label>
       <div className="paint-layer-ops" data-testid="paint-layer-ops">
