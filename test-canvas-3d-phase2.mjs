@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { planCanvasConnection } from './src/canvas-connections.js';
 import { analyzePrimaryButton, isGeneratedGLB, nativeModelConnection } from './src/native3d.js';
 import { modelPreviewActions, persistGeneratedModelFiles } from './src/model-result.js';
-import { extractBakeTextureNode } from './src/native3d-bake-preview.js';
+import { extractBakeTextureNode, nativeBakePreview } from './src/native3d-bake-preview.js';
 import { lodStageLabel, nativeNextStepPlan, nextStepActions } from './src/native3d-next-step.js';
 import { transferNativeArtifacts } from './src/native3d-delivery.js';
 
@@ -168,5 +168,28 @@ assert.ok(texturedWf.materials?.inputs?.metallic);
 assert.ok(texturedWf.materials?.inputs?.roughness);
 assert.equal(texturedWf.save_high_glb?.class_type, 'SaveGLB');
 assert.equal(texturedWf.unwrap_high?.inputs?.resolution, 2048);
+
+const bakeWithSharedLods = {
+  ...bake,
+  data: {
+    ...bake.data,
+    quality: { triangles: 76658 },
+    metadata: {
+      operation: 'bake',
+      bake: { sharedLods: { medium: { faces: 23330 }, low: { faces: 10244 } } },
+    },
+    nativeArtifacts: [
+      ...bake.data.nativeArtifacts,
+      { name: 'LOD0_high.glb', role: 'export', assetPath: `assets/${'1'.repeat(64)}.glb` },
+      { name: 'LOD1_medium.glb', role: 'export', assetPath: `assets/${'2'.repeat(64)}.glb` },
+      { name: 'LOD2_low.glb', role: 'export', assetPath: `assets/${'3'.repeat(64)}.glb` },
+    ],
+  },
+};
+const lodPreview = nativeBakePreview(bakeWithSharedLods);
+assert.deepEqual(
+  lodPreview.lodVariants.map((v) => [v.key, v.triangles, v.name]),
+  [['lod0', 76658, 'LOD0_high.glb'], ['lod1', 23330, 'LOD1_medium.glb'], ['lod2', 10244, 'LOD2_low.glb']],
+);
 
 console.log('canvas 3d phase2 ok');

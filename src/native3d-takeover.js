@@ -1,4 +1,5 @@
 import { nativeAdapterSchema, nativeParameterValue } from './native3d.js';
+import { nativeSharedLodVariants } from './native3d-bake-preview.js';
 import { nativeOutputNode } from './native3d-output.js';
 import { nativeInputs } from './native3d-plan.js';
 
@@ -119,10 +120,13 @@ export function nativeTakeover(nodeId, nodes, edges, capabilities) {
   const pending = changed.length > 0 || data.status === 'stale';
   const basis = !completed ? 'none' : !adapter ? 'missing' : !fields.length ? 'no-parameters'
     : fields.every(field => field.baseline !== undefined) ? 'verified' : 'missing';
+  const previewSource = preview && [selectedModel.proxyAssetPath, selectedModel.assetPath, selectedModel.resultAssetPath].includes(preview[0])
+    ? selectedModel
+    : sources.model?.data;
   return {
     nodeId: selected.id, processorId: processor.id, title: selected.data.title || '模型',
     operation: data.operation, step: labels[data.operation] || data.operation, status: data.status,
-    preview: preview && { path: preview[0], title: preview[1], sourceLabel: preview[2], materialPreview: preview[3] === 'bake' || preview[3] === 'material_wear' },
+    preview: preview && { path: preview[0], title: preview[1], sourceLabel: preview[2], materialPreview: preview[3] === 'bake' || preview[3] === 'material_wear', lodVariants: nativeSharedLodVariants(previewSource) },
     sources: [['低模', sources.model], ['高模', sources.high], ['切缝方案', sources.plan]].flatMap(([label, node]) =>
       node ? [{label, title:node.data.title || node.id}] : []),
     fields, changed, busy: busy.has(data.status), ready: adapter?.ready === true && !data.nativeSubmissionUncertain,

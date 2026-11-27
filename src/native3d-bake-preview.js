@@ -1,7 +1,29 @@
 import {nativeOutputNode} from './native3d-output.js';
 export const BAKE_CHANNELS=[['basecolor','底色'],['normal','法线'],['roughness','粗糙度'],['metallic','金属度'],['ao','AO'],['orm','ORM'],['curvature','凸棱曲率'],['edge-wear','磨损遮罩']];
+const SHARED_LOD_SPECS = [
+  ['lod0', 'LOD0 高模', 'LOD0_high.glb', (d) => [d?.quality?.triangles, d?.quality?.faces, d?.metadata?.source?.triangles].find((v) => Number.isInteger(v) && v > 0) ?? null],
+  ['lod1', 'LOD1 中模', 'LOD1_medium.glb', (d) => d?.metadata?.bake?.sharedLods?.medium?.faces ?? null],
+  ['lod2', 'LOD2 低模', 'LOD2_low.glb', (d) => d?.metadata?.bake?.sharedLods?.low?.faces ?? null],
+];
 const modelPath=/^assets\/[a-f0-9]{64}\.(glb|obj)$/i;
 const imagePath=/^assets\/[a-f0-9]{64}\.png$/i;
+export function nativeSharedLodVariants(data) {
+  const artifacts = data?.nativeArtifacts || [];
+  const shared = SHARED_LOD_SPECS.flatMap(([key, label, name, getTriangles]) => {
+    const match = artifacts.find((a) => a?.role === 'export' && a?.name === name && modelPath.test(a?.assetPath || ''));
+    return match ? [{ key, label, name, path: match.assetPath, triangles: getTriangles(data) }] : [];
+  });
+  if (shared.length > 1) return shared;
+  const stages = (data?.metadata?.geometry?.stages || []).filter((s) => s?.status === 'accepted' && /^lod[0-4]$/.test(s?.stage || ''));
+  const staged = stages.flatMap((s) => {
+    const match = artifacts.find((a) => a?.role === 'export' && a?.name === s.filename && modelPath.test(a?.assetPath || ''));
+    if (!match) return [];
+    const triangles = s.receipt?.actual_triangles ?? s.receipt?.geometry?.triangles ?? null;
+    const label = ({ lod0: 'LOD0 高模', lod1: 'LOD1 中模', lod2: 'LOD2 低模' })[s.stage] || s.stage.toUpperCase();
+    return [{ key: s.stage, label, name: s.filename, path: match.assetPath, triangles }];
+  });
+  return staged.length > 1 ? staged : [];
+}
 export function nativeBakePreview(node) {
   const live=node?.data;
   const operation = live?.metadata?.operation;
@@ -26,7 +48,7 @@ export function nativeBakePreview(node) {
   const mode=channels.some(c=>c.key===requested)?requested:channels[0].key;
   const selected=channels.find(c=>c.key===mode);
   const proxy=artifacts.find(a=>a.role==='proxy'&&a.assetPath===data.proxyAssetPath&&modelPath.test(a.assetPath||''));
-  return {jobId,modelAssetPath:model,channels,mode,selected,materialPath:proxy?.assetPath||model};
+  return {jobId,modelAssetPath:model,channels,mode,selected,materialPath:proxy?.assetPath||model,lodVariants:nativeSharedLodVariants(data)};
 }
 export function extractBakeTextureNode({node,channel,projectId,id,position}) {
   const preview=nativeBakePreview(node);

@@ -1,7 +1,7 @@
 import { gpuJobText } from './gpu-job-status.js';
 import Native3DTakeover from './Native3DTakeover.jsx';
 import CanvasImage from './CanvasImage.jsx';
-import {nativeBakePreview} from './native3d-bake-preview.js';
+import {nativeBakePreview,nativeSharedLodVariants} from './native3d-bake-preview.js';
 import {nativeOutputNode} from './native3d-output.js';
 import {reviewedDownstreamWarning,reviewedDisplayTitle} from './native3d-reviewed-warning.js';
 import {nativeUVOrientationError,nativeEmptyPoster} from './native3d-uv-prerequisite.js';
@@ -190,7 +190,7 @@ export function Native3DNode({ id, data, selected }) {
       {data.nativeUVPlan && <button disabled={locked} onClick={()=>{try{api.openPlan(id);}catch(e){setUVError(e.message);}}}>3D审阅 / 确认方案</button>}
       {planPreviews&&<><div className="native3d-actions">{PLAN_PREVIEW_MODES.map(mode=><button key={mode} aria-pressed={planMode===mode} disabled={locked} onClick={()=>api.patch(id,{nativePlanPreviewMode:mode})}>{planLabels[mode]}</button>)}</div><small>真实候选：蓝分区 · 黄凸角 · 橙凹角 · 粉AO；尚未展开UV。</small></>}
       {planOutput && <small>确认后从方案端口连接UV展开</small>}
-      {bakePreview&&<section className="native3d-next-step"><strong>{bakePreview.mode==='grey'?'灰模外形':`烘焙贴图 · ${bakePreview.selected.label}`}</strong><div className="native3d-actions">{bakePreview.channels.map(channel=><button key={channel.key} disabled={api.readOnly} aria-pressed={bakePreview.mode===channel.key} onClick={()=>api.patch(id,{nativeBakePreviewMode:channel.key})}>{channel.label}</button>)}</div><small>贴图默认只在本节点预览和附件列表里，不会自动铺到画布。双击放大。查看模型上的材质请打开3D效果。</small>{bakePreview.selected.key!=='grey'&&<button type="button" disabled={api.readOnly} onClick={()=>{try{api.extractBakeTexture(id,bakePreview.selected.key);}catch(e){setUVError(e.message);}}}>提取这张贴图到画布</button>}<button onClick={()=>api.view({path:bakePreview.materialPath,title:data.title,materialPreview:true})}>查看材质效果</button></section>}
+      {bakePreview&&<section className="native3d-next-step"><strong>{bakePreview.mode==='grey'?'灰模外形':`烘焙贴图 · ${bakePreview.selected.label}`}</strong><div className="native3d-actions">{bakePreview.channels.map(channel=><button key={channel.key} disabled={api.readOnly} aria-pressed={bakePreview.mode===channel.key} onClick={()=>api.patch(id,{nativeBakePreviewMode:channel.key})}>{channel.label}</button>)}</div><small>贴图默认只在本节点预览和附件列表里，不会自动铺到画布。双击放大。查看模型上的材质请打开3D效果。</small>{bakePreview.selected.key!=='grey'&&<button type="button" disabled={api.readOnly} onClick={()=>{try{api.extractBakeTexture(id,bakePreview.selected.key);}catch(e){setUVError(e.message);}}}>提取这张贴图到画布</button>}{bakePreview.lodVariants.length>1&&<div className="native3d-actions">{bakePreview.lodVariants.map(v=><button key={v.key} type="button" onClick={()=>api.view({path:v.path,title:data.title,materialPreview:true,lodVariants:bakePreview.lodVariants,initialLodKey:v.key})}>{v.label}{Number.isInteger(v.triangles)?` (${v.triangles.toLocaleString('zh-CN')})`:''}</button>)}</div>}<button onClick={()=>api.view({path:bakePreview.materialPath,title:data.title,materialPreview:true,lodVariants:bakePreview.lodVariants})}>查看材质效果</button></section>}
       {uvIdentity && <><div className="native3d-actions">{uvPreviews ? uvModes.map(mode=><button key={mode} aria-pressed={uvMode===mode} disabled={api.readOnly} onClick={()=>api.patch(id,{nativeUVPreviewMode:mode})}>{({seams:'最终缝',checker:'棋盘',layout:'UV图集',ao:'AO依据','ao-seams':'候选缝',grey:'灰模'})[mode]}</button>) : <button disabled={locked || uvBusy} onClick={refreshUV}>{uvBusy ? '读取UV预览…' : '显示UV切缝'}</button>}{uvPreviews && <button disabled={locked || uvBusy} title="更新UV预览" onClick={refreshUV}>{uvBusy ? '读取UV预览…' : uvPreviews.seamsAssetPath?'更新UV预览':'显示表面切缝 / 棋盘'}</button>}</div><small>{uvPreviews ? uvLegend : '当前为灰模外形；点击显示真实UV切缝与棋盘预览。'}</small>{uvPreviews?.aoUnavailable && <small>AO来源证据不足，诊断不可用。</small>}{uvError && <p className="native3d-error">{uvError}</p>}</>}
       <small>{acceptedLOD?'几何检查通过 · 可继续LOD或制作UV':data.nativeUVPlan?`切缝已生成 · ${planConfirmed?'已确认':'待确认'}`:`${displayTriangles?`${displayTriangles} 面 · `:''}${({idle:'待开始',completed:'已完成',failed:'失败',error:'失败',submitting:'待提交确认',queued:'排队中',running:'处理中',finishing:'保存中',stale:'输入已改变',cancelled:'已取消',uploading:'导入中'}[data.status]||'待开始')}${needsReview?' · 待复核':''}${textureQc?' · 贴图质检告警':''}${busy?` · ${data.progress!=null?`${Math.round(data.progress)}%`:''}`:''}`}</small>
       {uvSummary && <small>{uvSummary}</small>}
@@ -211,7 +211,7 @@ export function Native3DNode({ id, data, selected }) {
       {nextDraftNotice(data,inputs)&&<small>{nextDraftNotice(data,inputs)}</small>}
       {data.nativeResolutionSaveFailed&&<p className="native3d-error">调整草稿保留在本页，保存未完成；回到来源重复创建可重试保存。</p>}
       {data.nativeNextStepSaveFailed&&<p className="native3d-error">节点保留在本页，保存未完成；回到来源重复点击下一步可重试保存。</p>}
-      {!planOutput&&<div className="native3d-actions">{!failedLOD&&!(data.nativeLocalRepair&&data.nativeJobId)&&<button disabled={locked || (data.operation==='uv' && !planStatus?.ready && !retry) || (!source && adapter?.ready === false && !retry)} onClick={() => analyzeAction?.action==='import' ? input.current.click() : (retry ? api.retryDelivery(id) : api.run(id)).catch(e => setUVError(e.message))}>{retry ? '重新交付' : analyzeAction ? analyzeAction.label : (data.nativeNextStep?.action==='next_lod'||data.nativeResolution)&&!data.nativeJobId?`生成${data.nativeParameters?.retryStage?.toUpperCase()}`:nativeProcessorRunLabel(data,retry)}</button>}{busy && <button disabled={api.readOnly} onClick={() => api.cancel(id)}>取消</button>}{!bakePreview&&<button disabled={!data.proxyAssetPath} onClick={() => api.view({path:data.proxyAssetPath,title:data.title,materialPreview:['bake','material_wear','image_to_3d'].includes(data.metadata?.operation)})}>{data.metadata?.operation==='bake'?'查看材质效果':'查看3D代理'}</button>}</div>}
+      {!planOutput&&<div className="native3d-actions">{!failedLOD&&!(data.nativeLocalRepair&&data.nativeJobId)&&<button disabled={locked || (data.operation==='uv' && !planStatus?.ready && !retry) || (!source && adapter?.ready === false && !retry)} onClick={() => analyzeAction?.action==='import' ? input.current.click() : (retry ? api.retryDelivery(id) : api.run(id)).catch(e => setUVError(e.message))}>{retry ? '重新交付' : analyzeAction ? analyzeAction.label : (data.nativeNextStep?.action==='next_lod'||data.nativeResolution)&&!data.nativeJobId?`生成${data.nativeParameters?.retryStage?.toUpperCase()}`:nativeProcessorRunLabel(data,retry)}</button>}{busy && <button disabled={api.readOnly} onClick={() => api.cancel(id)}>取消</button>}{!bakePreview&&<button disabled={!data.proxyAssetPath} onClick={() => api.view({path:data.proxyAssetPath,title:data.title,materialPreview:['bake','material_wear','image_to_3d'].includes(data.metadata?.operation),lodVariants:nativeSharedLodVariants(outputData)})}>{data.metadata?.operation==='bake'?'查看材质效果':'查看3D代理'}</button>}</div>}
       {failedLOD&&/^lod[1-4]$/.test(failedStage||'')&&<button disabled={api.readOnly||rerunBusy||busy} onClick={async()=>{setRerunBusy(true);setUVError('');try{await api.retryLOD(id);}catch(e){setUVError(e.message);}finally{setRerunBusy(false);}}}>{rerunBusy?'提交中…':`重新生成${failedStage.toUpperCase()}（新种子）`}</button>}
       {(data.nativeRun?.opId||data.sourceJobId)&&<button disabled={api.readOnly||rerunBusy} onClick={async()=>{setRerunBusy(true);setUVError('');try{await api.syncTask(id);}catch(e){setUVError(e.message);}finally{setRerunBusy(false);}}}>同步任务状态</button>}
       {rerunnableResult && !failedLOD && <section className="native3d-rerun"><strong>同档重试 / 调整</strong><button disabled={locked||rerunBusy||!rerunStatus?.ready} onClick={async()=>{setRerunBusy(true);setUVError('');try{await api.rerunResult(id);}catch(error){setUVError(error.message);}finally{setRerunBusy(false);}}}>{rerunBusy?'提交中…':data.metadata.operation==='source_lod'?(rerunStatus?.label||'重试本档LOD（新种子）'):'重新分UV'}</button>{rerunStatus?.ready?<small>原处理节点：{rerunStatus.processorTitle}。{rerunStatus.scope}{data.metadata.operation==='uv'?'已有结果保留；修改设置请到原处理节点。':''}</small>:<p className="native3d-error">{rerunStatus?.message||'原处理任务暂不可用。'}</p>}</section>}
@@ -232,9 +232,17 @@ function Native3DAssetViewer({ asset, projectId, close, takeover }) {
   const [error, setError] = useState('');
   const [objects, setObjects] = useState([]);
   const [previewMode, setPreviewMode] = useState(asset.materialPreview ? 'material' : 'structure');
+  const lodVariants = Array.isArray(asset.lodVariants) ? asset.lodVariants : [];
+  const [activeLodKey, setActiveLodKey] = useState(() => asset.initialLodKey || lodVariants.find(v => v.path === asset.path)?.key || lodVariants[0]?.key || '');
+  const activeVariant = lodVariants.find(v => v.key === activeLodKey) || null;
+  const activePath = activeVariant?.path || asset.path;
   const previewModeRef = useRef(previewMode); previewModeRef.current = previewMode;
   const materialControl = useRef(null);
   useEffect(() => { setPreviewMode(asset.materialPreview ? 'material' : 'structure'); }, [asset.path, asset.materialPreview]);
+  useEffect(() => {
+    const list = Array.isArray(asset.lodVariants) ? asset.lodVariants : [];
+    setActiveLodKey(asset.initialLodKey || list.find(v => v.path === asset.path)?.key || list[0]?.key || '');
+  }, [asset.path, asset.initialLodKey, lodVariants.length]);
   useEffect(() => { materialControl.current?.(previewMode); }, [previewMode]);
   useEffect(() => {
     let disposed = false, renderer, controls, model, applyMode,invalidate,resize,demand;
@@ -263,12 +271,12 @@ function Native3DAssetViewer({ asset, projectId, close, takeover }) {
     (async () => {
       const THREE = await import('three');
       const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
-      const response = await fetch(nativeAssetUrl(projectId, asset.path), { signal: abort.signal });
+      const response = await fetch(nativeAssetUrl(projectId, activePath), { signal: abort.signal });
       if (!response.ok) throw new Error('代理模型读取失败');
       const buffer = await response.arrayBuffer(); if (disposed) return;
       const manager = new THREE.LoadingManager();
       manager.setURLModifier(url => { if (/^(blob:|data:)/.test(url)) return url; throw new Error('代理包含外部资源，已拒绝加载'); });
-      if (asset.path.toLowerCase().endsWith('.obj')) {
+      if (activePath.toLowerCase().endsWith('.obj')) {
         const { OBJLoader } = await import('three/addons/loaders/OBJLoader.js');
         model = new OBJLoader(manager).parse(new TextDecoder().decode(buffer));
       } else {
@@ -327,16 +335,19 @@ function Native3DAssetViewer({ asset, projectId, close, takeover }) {
       setObjects(loadedObjects);
     })().catch(error => { if (!disposed) setError(error.message); });
     return () => { disposed = true; abort.abort(); release(); };
-  }, [asset.path, projectId]);
+  }, [activePath, projectId]);
   useEffect(() => {
     if (!takeover) return;
     const escape = event => { if (event.key === 'Escape') { event.stopPropagation(); close(); } };
     window.addEventListener('keydown', escape, true);
     return () => window.removeEventListener('keydown', escape, true);
   }, [Boolean(takeover), close]);
+  const totalTriangles = objects.reduce((sum, item) => sum + (item.triangles || 0), 0);
+  const lodButtons = lodVariants.length > 1 ? lodVariants.map(v => <button key={v.key} type="button" aria-pressed={activeLodKey === v.key} onClick={() => setActiveLodKey(v.key)}>{v.label}{Number.isInteger(v.triangles) ? ` (${v.triangles.toLocaleString('zh-CN')})` : ''}</button>) : null;
   if (takeover) return <div className="native3d-overlay nodrag" role="dialog" aria-modal="true" aria-label="模型接手">
     <div className="native3d-takeover">
-      <header><strong><small>模型接手</small>{takeover.state.title}</strong><div>
+      <header><strong><small>模型接手</small>{takeover.state.title}{totalTriangles > 0 ? ` · ${totalTriangles.toLocaleString('zh-CN')} 面` : ''}</strong><div>
+        {lodButtons}
         {['material','structure','wireframe'].map(mode => <button key={mode} type="button" aria-pressed={previewMode===mode} onClick={()=>setPreviewMode(mode)}>
           {({material:'材质',structure:'结构',wireframe:'线框'})[mode]}
         </button>)}
@@ -352,9 +363,11 @@ function Native3DAssetViewer({ asset, projectId, close, takeover }) {
     </div>
   </div>;
   return <div className="native3d-overlay nodrag" role="dialog" aria-label="3D代理查看器"><div>
-    <header>{asset.title} · 分析代理<div>
-      <button aria-pressed={previewMode === 'structure'} onClick={() => setPreviewMode('structure')}>结构</button>
-      <button aria-pressed={previewMode === 'material'} onClick={() => setPreviewMode('material')}>材质</button>
+    <header>{asset.title} · {activeVariant ? activeVariant.label : '分析代理'}{totalTriangles > 0 ? ` · ${totalTriangles.toLocaleString('zh-CN')} 面` : ''}<div>
+      {lodButtons}
+      {['material','structure','wireframe'].map(mode => <button key={mode} type="button" aria-pressed={previewMode===mode} onClick={()=>setPreviewMode(mode)}>
+        {({material:'材质',structure:'结构',wireframe:'线框'})[mode]}
+      </button>)}
       <button onClick={close}>关闭</button>
     </div></header>
     <div ref={host} />{error && <p>{error}</p>}
