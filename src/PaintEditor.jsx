@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Blend, Brush, Circle, Eraser, Eye, EyeOff, FlipHorizontal2, Lasso, Layers, Locate, Lock, Move,
-  PaintBucket, Pipette, Redo2, RotateCw, Save, Square, Tablet, Undo2, Wand, X, ZoomIn,
+  ArrowDown, ArrowUp, Blend, Brush, Circle, Copy, Eraser, Eye, EyeOff, FlipHorizontal2, Image, Lasso, Layers, Locate, Lock, Move,
+  Paintbrush, PaintBucket, Pipette, Plus, Redo2, RotateCw, Save, Square, Stamp, Tablet, Trash2, Undo2, Wand, X, ZoomIn,
 } from 'lucide-react';
 import {
   LAYER_LIMIT_MESSAGE, OUTPUT_MODES, OUTPUT_MODE_LABELS, PAPER_PRESETS, BACKGROUNDS, TEXTURES, GUIDES,
@@ -805,8 +805,6 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       <h2>{doc.title}</h2>
       <button type="button" title="撤销" onClick={undo}><Undo2 size={16} /></button>
       <button type="button" title="重做" onClick={redo}><Redo2 size={16} /></button>
-      <label className="paint-inline" title="缩放"><ZoomIn size={14} /><input data-testid="paint-zoom" type="range" min="10" max="800" value={Math.round(zoom * 100)} onChange={(event) => setZoom(Number(event.target.value) / 100)} /></label>
-      <label className="paint-inline" title="旋转"><RotateCw size={14} /><input data-testid="paint-rotation" type="range" min="-180" max="180" value={rotation} onChange={(event) => setRotation(Number(event.target.value))} /></label>
       <button type="button" data-testid="paint-flip" title="水平镜像" aria-pressed={flip} onClick={() => setFlip((value) => !value)}><FlipHorizontal2 size={16} /></button>
       <button type="button" title="视角复位" onClick={() => { setZoom(1); setPan({ x: 40, y: 40 }); setRotation(0); setFlip(false); }}><Locate size={16} /></button>
       <div className="paint-modes" role="group" aria-label="输出模式">
@@ -815,7 +813,6 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       </div>
       <button type="button" data-testid="paint-lan-open" onClick={connectLan}><i />连接平板</button>
       <span className="paint-message" data-testid="paint-message" role="status">{message}</span>
-      <span data-testid="paint-ink">{ink}</span>
       <button type="button" data-testid="paint-save" disabled={readOnly || saving} onClick={save}><Save size={15} />{saving ? '保存中' : '保存'}</button>
       <button type="button" data-testid="paint-close" onClick={onClose}><X size={16} />关闭</button>
     </header>
@@ -826,7 +823,7 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
         <button type="button" className="paint-fg back" data-testid="paint-background" style={{ background }} aria-label="背景色" />
       </div>
     </nav>
-    <aside className="paint-drawer">
+    <aside className="paint-drawer left">
       <div className="paint-tabs">
         <button type="button" aria-pressed={leftTab === 'brush'} onClick={() => setLeftTab('brush')}>画笔与颜色</button>
         <button type="button" aria-pressed={leftTab === 'select'} onClick={() => setLeftTab('select')}>选区与工具</button>
@@ -838,7 +835,7 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
           </div>
           <input className="paint-hue" data-testid="paint-hue" type="range" min="0" max="360" aria-label="色相" value={Math.round(hsv.h)} onChange={(event) => setColor(colorToHex(hsvToRgb(Number(event.target.value), hsv.s || 1, hsv.v || 1)))} style={{ background: 'linear-gradient(#f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)' }} />
         </div>
-        <label>HEX<input data-testid="paint-hex" value={color} onChange={(event) => setColor(event.target.value)} /></label>
+        <label>HEX<input data-testid="paint-hex" type="text" value={color} onChange={(event) => setColor(event.target.value)} /></label>
         <div className="paint-swatches">{[...new Set([color, ...doc.swatches, ...swatches])].slice(0, 16).map((swatch) => <button type="button" key={swatch} className="paint-swatch" style={{ background: swatch }} aria-label={swatch} onClick={() => setColor(swatch)} />)}</div>
         <button type="button" onClick={() => setDoc((current) => ({ ...current, swatches: [...new Set([color, ...current.swatches])].slice(0, 24) }))}>加入色板</button>
         <div className="paint-brush-library" data-testid="paint-brush-library">
@@ -855,15 +852,15 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
         <label>流量<input type="range" min="1" max="100" value={brush.flow} onChange={(event) => setBrush({ ...brush, flow: Number(event.target.value) })} /></label>
         <label>间距<input type="range" min="1" max="200" value={brush.spacing} onChange={(event) => setBrush({ ...brush, spacing: Number(event.target.value) })} /></label>
         <label>平滑<input data-testid="paint-smoothing" type="range" min="0" max="100" value={brush.smoothing} onChange={(event) => setBrush({ ...brush, smoothing: Number(event.target.value) })} /></label>
-        <label><input data-testid="paint-eraser-tip" type="checkbox" checked={eraserTip} onChange={(event) => setEraserTip(event.target.checked)} />橡皮沿用笔尖纹理</label>
-        <label><input data-testid="paint-palm" type="checkbox" checked={palmReject} onChange={(event) => setPalmReject(event.target.checked)} />防手掌误触</label>
+        <label className="paint-check"><input data-testid="paint-eraser-tip" type="checkbox" checked={eraserTip} onChange={(event) => setEraserTip(event.target.checked)} />橡皮沿用笔尖纹理</label>
+        <label className="paint-check"><input data-testid="paint-palm" type="checkbox" checked={palmReject} onChange={(event) => setPalmReject(event.target.checked)} />防手掌误触</label>
       </>}
       {leftTab === 'select' && <>
         <label>压感曲线<select data-testid="paint-pressure" value={pressureCurve} onChange={(event) => setPressureCurve(event.target.value)}><option value="linear">线性</option><option value="soft">软</option><option value="hard">硬</option></select></label>
-        <label><input type="checkbox" checked={brush.pressureSize} onChange={(event) => setBrush({ ...brush, pressureSize: event.target.checked })} />压感控制大小</label>
+        <label className="paint-check"><input type="checkbox" checked={brush.pressureSize} onChange={(event) => setBrush({ ...brush, pressureSize: event.target.checked })} />压感控制大小</label>
         <label>最小直径 %<input data-testid="paint-min-diameter" type="range" min="1" max="100" value={brush.minDiameter || 20} onChange={(event) => setBrush({ ...brush, minDiameter: Number(event.target.value) })} /></label>
-        <label><input data-testid="paint-pressure-opacity" type="checkbox" checked={Boolean(brush.pressureOpacity)} onChange={(event) => setBrush({ ...brush, pressureOpacity: event.target.checked })} />压感控制不透明度</label>
-        <label><input data-testid="paint-follow" type="checkbox" checked={Boolean(brush.followDirection)} onChange={(event) => setBrush({ ...brush, followDirection: event.target.checked })} />角度跟随运笔</label>
+        <label className="paint-check"><input data-testid="paint-pressure-opacity" type="checkbox" checked={Boolean(brush.pressureOpacity)} onChange={(event) => setBrush({ ...brush, pressureOpacity: event.target.checked })} />压感控制不透明度</label>
+        <label className="paint-check"><input data-testid="paint-follow" type="checkbox" checked={Boolean(brush.followDirection)} onChange={(event) => setBrush({ ...brush, followDirection: event.target.checked })} />角度跟随运笔</label>
         <label>角度<input data-testid="paint-angle" type="range" min="0" max="360" value={brush.angle || 0} onChange={(event) => setBrush({ ...brush, angle: Number(event.target.value) })} /></label>
         <label>大小抖动<input data-testid="paint-size-jitter" type="range" min="0" max="100" value={brush.sizeJitter || 0} onChange={(event) => setBrush({ ...brush, sizeJitter: Number(event.target.value) })} /></label>
         <label>角度抖动<input data-testid="paint-angle-jitter" type="range" min="0" max="180" value={brush.angleJitter || 0} onChange={(event) => setBrush({ ...brush, angleJitter: Number(event.target.value) })} /></label>
@@ -877,7 +874,7 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
         <button type="button" data-testid="paint-apply-feather" onClick={() => selection && setSelection(featherSelection(selection, feather))}>应用羽化</button>
         <button type="button" data-testid="paint-grow" onClick={() => selection && setSelection(growSelection(selection, 1))}>扩展选区</button>
         <button type="button" data-testid="paint-shrink" onClick={() => selection && setSelection(growSelection(selection, -1))}>收缩选区</button>
-        <label><input type="checkbox" checked={sampleAll} onChange={(event) => { setSampleAll(event.target.checked); setBucketAll(event.target.checked); }} />参考全部可见层</label>
+        <label className="paint-check"><input type="checkbox" checked={sampleAll} onChange={(event) => { setSampleAll(event.target.checked); setBucketAll(event.target.checked); }} />参考全部可见层</label>
       </>}
     </aside>
     <div className="paint-stage-wrap" data-testid="paint-viewport" onWheel={(event) => { event.preventDefault(); setZoom((value) => Math.max(0.1, Math.min(8, value * (event.deltaY > 0 ? 0.9 : 1.1)))); }}>
@@ -889,6 +886,18 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
         <button type="button" data-testid="paint-transform-apply" onClick={confirmTransform}>确认</button>
         <button type="button" onClick={() => setTransform(null)}>取消</button>
       </div>}
+      <div className="paint-stage-hud">
+        <label className="paint-hud-zoom" title="缩放">
+          <ZoomIn size={14} />
+          <span>{Math.round(zoom * 100)}%</span>
+          <input data-testid="paint-zoom" type="range" min="10" max="800" value={Math.round(zoom * 100)} onChange={(event) => setZoom(Number(event.target.value) / 100)} />
+        </label>
+        <label className="paint-hud-rotate" title="旋转">
+          <RotateCw size={14} />
+          <input data-testid="paint-rotation" type="range" min="-180" max="180" value={rotation} onChange={(event) => setRotation(Number(event.target.value))} />
+        </label>
+        <span className="paint-ink" data-testid="paint-ink">{ink}</span>
+      </div>
       <div className="paint-stage-frame" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${rotation}deg) scaleX(${flip ? -1 : 1})` }}>
         <canvas ref={canvasRef} className={`paint-stage${doc.outputMode === 'transparent' ? ' is-transparent' : ''}`} data-testid="paint-stage" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onDoubleClick={() => {
           if (polygon.length < 3) return;
@@ -944,13 +953,12 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       <label>纸底<select value={doc.paper.background} onChange={(event) => updatePaper({ background: event.target.value })}>{BACKGROUNDS.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
       <label>纸纹<select value={doc.paper.texture} onChange={(event) => updatePaper({ texture: event.target.value })}>{TEXTURES.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
       <label>纸纹透明度<input type="range" min="0" max="100" value={doc.paper.textureOpacity} onChange={(event) => updatePaper({ textureOpacity: Number(event.target.value) })} /></label>
-      <label><input type="checkbox" checked={doc.paper.textureInOutput} onChange={(event) => updatePaper({ textureInOutput: event.target.checked })} />纸纹进入成图</label>
+      <label className="paint-check"><input type="checkbox" checked={doc.paper.textureInOutput} onChange={(event) => updatePaper({ textureInOutput: event.target.checked })} />纸纹进入成图</label>
       <label>规划线<select data-testid="paint-guides" value={doc.paper.guideGrid} onChange={(event) => updatePaper({ guideGrid: event.target.value })}>{GUIDES.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
       <label>底图透明度<input type="range" min="0" max="100" value={doc.baseOverlay.opacity} onChange={(event) => setDoc({ ...doc, baseOverlay: { ...doc.baseOverlay, opacity: Number(event.target.value) } })} /></label>
       <button type="button" onClick={() => setDoc({ ...doc, baseOverlay: { ...doc.baseOverlay, position: doc.baseOverlay.position === 'above' ? 'below' : 'above', visible: true } })}>底图{doc.baseOverlay.position === 'above' ? '置顶' : '置底'}</button>
       </>}
       {rightTab === 'layers' && <>
-      <button type="button" data-testid="paint-add-layer" onClick={() => { const added = addLayer(doc); if (added.error) setMessage(added.error); else replaceDoc(added.doc, new Map([[added.doc.activeLayerId, new PaintBuffer(doc.paper.width, doc.paper.height)]])); }}>新建图层</button>
       <div className="paint-layers">{layerItems.map((layer) => <div key={layer.id} className={`paint-layer${layer.id === doc.activeLayerId ? ' active' : ''}`} data-testid={`paint-layer-${layer.id}`}>
         <LayerThumb buffer={buffersRef.current.get(layer.id)} />
         <button type="button" className="paint-eye" aria-label={`${layer.name}可见`} aria-pressed={layer.visible} onClick={() => setDoc(patchLayer(doc, layer.id, { visible: !layer.visible }).doc)}>{layer.visible ? <Eye size={14} /> : <EyeOff size={14} />}</button>
@@ -959,23 +967,28 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       </div>)}</div>
       <p>{doc.layers.length}/12</p>
       {doc.layers.length >= 12 && <p>{LAYER_LIMIT_MESSAGE}</p>}
-      <label>图层名<input data-testid="paint-layer-name" value={activeLayer().name} onChange={(event) => setDoc(renameLayer(doc, doc.activeLayerId, event.target.value).doc)} /></label>
+      <label>图层名<input data-testid="paint-layer-name" type="text" value={activeLayer().name} onChange={(event) => setDoc(renameLayer(doc, doc.activeLayerId, event.target.value).doc)} /></label>
       <label>图层不透明度<input data-testid="paint-layer-opacity" type="range" min="0" max="100" value={activeLayer().opacity} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { opacity: Number(event.target.value) }).doc)} /></label>
       <label>混合<select data-testid="paint-blend" value={activeLayer().blendMode} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { blendMode: event.target.value }).doc)}>{['normal', 'multiply', 'screen', 'add', 'overlay', 'soft-light'].map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
-      <label><input type="checkbox" checked={activeLayer().alphaLock} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { alphaLock: event.target.checked }).doc)} />锁定透明像素</label>
-      <label><input type="checkbox" checked={activeLayer().clippingMask} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { clippingMask: event.target.checked }).doc)} />剪贴蒙版</label>
-      <button type="button" onClick={() => setDoc(moveLayer(doc, doc.activeLayerId, 'up').doc)}>上移</button>
-      <button type="button" onClick={() => setDoc(moveLayer(doc, doc.activeLayerId, 'down').doc)}>下移</button>
-      <button type="button" data-testid="paint-duplicate-layer" onClick={() => { const copied = duplicateLayer(doc); if (copied.error) setMessage(copied.error); else replaceDoc(copied.doc, new Map([[copied.doc.activeLayerId, buffersRef.current.get(copied.sourceId).clone()]])); }}>复制图层</button>
-      <button type="button" onClick={() => { const removed = deleteLayer(doc); if (removed.error) setMessage(removed.error); else replaceDoc(removed.doc, new Map([[doc.activeLayerId, null]])); }}>删除图层</button>
-      <button type="button" data-testid="paint-merge-down" onClick={() => applyStructure(mergeDown(doc, buffersRef.current))}>向下合并</button>
-      <button type="button" data-testid="paint-stamp" onClick={() => applyStructure(stampVisible(doc, buffersRef.current))}>盖印可见层</button>
-      <button type="button" data-testid="paint-clear-layer" onClick={() => commitPixels({ ...clearBuffer(activeBuffer()), layerId: doc.activeLayerId })}>清空当前图层</button>
-      <button type="button" data-testid="paint-tint" onClick={() => { const entry = tintBuffer(buffersRef.current.get(doc.activeLayerId), color); commitPixels({ ...entry, layerId: doc.activeLayerId }); }}>图层着色</button>
-      <button type="button" data-testid="paint-extract" onClick={() => extract('transparent')}>拆出为透明图</button>
-      <button type="button" data-testid="paint-extract-mask" onClick={() => extract('mask')}>拆出为黑白遮罩</button>
-      <button type="button" data-testid="paint-fill-mask" onClick={() => selection && commitPixels(fillColor(activeBuffer(), '#ffffff', selection, false))}>当前选区一键填白生成遮罩</button>
-      <button type="button" data-testid="paint-transform-flip" onClick={() => commitPixels(transformBuffer(activeBuffer(), selectionRef.current, { flipH: true }))}>水平翻转像素</button>
+      <label className="paint-check"><input type="checkbox" checked={activeLayer().alphaLock} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { alphaLock: event.target.checked }).doc)} />锁定透明像素</label>
+      <label className="paint-check"><input type="checkbox" checked={activeLayer().clippingMask} onChange={(event) => setDoc(patchLayer(doc, doc.activeLayerId, { clippingMask: event.target.checked }).doc)} />剪贴蒙版</label>
+      <div className="paint-layer-ops" data-testid="paint-layer-ops">
+        <button type="button" title="新建图层" data-testid="paint-add-layer" onClick={() => { const added = addLayer(doc); if (added.error) setMessage(added.error); else replaceDoc(added.doc, new Map([[added.doc.activeLayerId, new PaintBuffer(doc.paper.width, doc.paper.height)]])); }}><Plus size={15} /></button>
+        <button type="button" title="向下合并" data-testid="paint-merge-down" onClick={() => applyStructure(mergeDown(doc, buffersRef.current))}><ArrowDown size={15} /></button>
+        <button type="button" title="盖印可见层" data-testid="paint-stamp" onClick={() => applyStructure(stampVisible(doc, buffersRef.current))}><Stamp size={15} /></button>
+        <button type="button" title="清空当前图层" data-testid="paint-clear-layer" onClick={() => commitPixels({ ...clearBuffer(activeBuffer()), layerId: doc.activeLayerId })}><Eraser size={15} /></button>
+        <button type="button" title="图层着色" data-testid="paint-tint" onClick={() => { const entry = tintBuffer(buffersRef.current.get(doc.activeLayerId), color); commitPixels({ ...entry, layerId: doc.activeLayerId }); }}><Paintbrush size={15} /></button>
+      </div>
+      <div className="paint-layer-actions">
+        <button type="button" title="上移" onClick={() => setDoc(moveLayer(doc, doc.activeLayerId, 'up').doc)}><ArrowUp size={13} />上移</button>
+        <button type="button" title="下移" onClick={() => setDoc(moveLayer(doc, doc.activeLayerId, 'down').doc)}><ArrowDown size={13} />下移</button>
+        <button type="button" title="复制图层" data-testid="paint-duplicate-layer" onClick={() => { const copied = duplicateLayer(doc); if (copied.error) setMessage(copied.error); else replaceDoc(copied.doc, new Map([[copied.doc.activeLayerId, buffersRef.current.get(copied.sourceId).clone()]])); }}><Copy size={13} />复制</button>
+        <button type="button" title="删除图层" onClick={() => { const removed = deleteLayer(doc); if (removed.error) setMessage(removed.error); else replaceDoc(removed.doc, new Map([[doc.activeLayerId, null]])); }}><Trash2 size={13} />删除</button>
+        <button type="button" title="拆出为透明图" data-testid="paint-extract" onClick={() => extract('transparent')}><Image size={13} />透明图</button>
+        <button type="button" title="拆出为黑白遮罩" data-testid="paint-extract-mask" onClick={() => extract('mask')}><Square size={13} />遮罩</button>
+        <button type="button" title="当前选区一键填白生成遮罩" data-testid="paint-fill-mask" onClick={() => selection && commitPixels(fillColor(activeBuffer(), '#ffffff', selection, false))}>填白遮罩</button>
+        <button type="button" title="水平翻转像素" data-testid="paint-transform-flip" onClick={() => commitPixels(transformBuffer(activeBuffer(), selectionRef.current, { flipH: true }))}>翻转像素</button>
+      </div>
       </>}
       {rightTab === 'lan' && <>
       <button type="button" onClick={connectLan}>连接平板（局域网）</button>

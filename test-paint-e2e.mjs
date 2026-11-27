@@ -118,6 +118,16 @@ try {
   await node('paint1').getByTestId('paint-open').click();
   const editor = page.getByTestId('paint-editor');
   await editor.waitFor();
+  const layout = await page.evaluate(() => {
+    const box = (selector) => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return { x: rect.x, width: rect.width };
+    };
+    return { view: box('[data-testid="paint-viewport"]'), left: box('.paint-drawer.left'), right: box('.paint-drawer.right'), editor: box('.paint-editor') };
+  });
+  assert.ok(layout.view.x >= layout.left.x + layout.left.width - 1, `viewport is not to the right of the left drawer: ${JSON.stringify(layout)}`);
+  assert.ok(layout.view.x + layout.view.width <= layout.right.x + 1, `viewport overlaps the right drawer: ${JSON.stringify(layout)}`);
+  assert.ok(layout.view.width >= layout.editor.width * 0.5, `viewport is narrower than half the editor: ${JSON.stringify(layout)}`);
   await page.getByTestId('paint-tab-paper').click();
   await page.getByTestId('paint-guides').selectOption('thirds');
   await page.getByTestId('paint-tab-layers').click();
@@ -215,6 +225,8 @@ try {
   await page.getByTestId('paint-tool-brush').click();
   await pointerStroke(stage, [[60, 200], [200, 240]], { pointerType: 'pen', pressure: 0.75 });
   await page.screenshot({ path: path.join(shots, 'paint-editor.png') });
+  await page.locator('.paint-drawer.left').screenshot({ path: path.join(shots, 'paint-left-drawer.png') });
+  await page.getByTestId('paint-layer-ops').screenshot({ path: path.join(shots, 'paint-layer-ops.png') });
   await page.getByTestId('paint-size').fill('120');
   await pointerStroke(stage, [[80, 220], [220, 250]], { pointerType: 'pen', pressure: 0.8 });
   const broad = await pixelLater(150, 235);
