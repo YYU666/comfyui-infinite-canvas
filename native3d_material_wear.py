@@ -87,6 +87,27 @@ def freeze_wear(manager, job, directory):
             'resolution': prior['result']['metadata']['bake']['resolution'], 'channels': channels}
 
 
+def apply_wear_arrays(basecolor, roughness, metallic, curvature, parameters):
+    """Apply convex-edge wear in linear color space to uint8 PBR texture arrays."""
+    import numpy as np
+
+    curv = np.asarray(curvature, dtype=np.float32) / 255.0
+    threshold = float(parameters['threshold'])
+    mask = np.clip((curv - threshold) / (1.0 - threshold), 0.0, 1.0) * float(parameters['strength'])
+    rgb = np.asarray(basecolor, dtype=np.float32) / 255.0
+    linear = np.where(rgb <= .04045, rgb / 12.92, ((rgb + .055) / 1.055) ** 2.4)
+    linear += mask[..., None] * float(parameters['edgeLighten']) * (1.0 - linear)
+    rgb = np.where(linear <= .0031308, linear * 12.92, 1.055 * np.maximum(linear, 0.0) ** (1.0 / 2.4) - .055)
+    result_color = np.rint(np.clip(rgb, 0.0, 1.0) * 255.0).astype('uint8')
+    rough_arr = np.asarray(roughness, dtype=np.float32)
+    metal_arr = np.asarray(metallic, dtype=np.float32)
+    edge_roughness = float(parameters['edgeRoughness']) * 255.0
+    out_roughness = np.rint(np.clip(rough_arr + mask * (edge_roughness - rough_arr), 0.0, 255.0)).astype('uint8')
+    out_metallic = np.rint(np.clip(metal_arr + mask * float(parameters['metalExposure']) * (255.0 - metal_arr), 0.0, 255.0)).astype('uint8')
+    edge_wear = np.rint(np.clip(mask, 0.0, 1.0) * 255.0).astype('uint8')
+    return result_color, out_roughness, out_metallic, edge_wear, mask
+
+
 def apply_wear(source, output, snapshot, parameters):
     import numpy as np
     from PIL import Image
@@ -108,26 +129,17 @@ def apply_wear(source, output, snapshot, parameters):
                 raise ValueError('磨损输入需要同尺寸的烘焙 PNG 贴图。')
             return np.asarray(image.convert(mode)).copy()
 
-    curvature = read('curvature', 'L').astype(np.float32)/255
-    threshold = parameters['threshold']
-    mask = np.clip((curvature-threshold)/(1-threshold), 0, 1) * parameters['strength']
+    curvature = read('curvature', 'L')
     color = read('basecolor', 'RGB')
-    # Blend display colors in linear space so response to strength is predictable.
-    rgb = color.astype(np.float32) / 255
-    linear = np.where(rgb <= .04045, rgb/12.92, ((rgb+.055)/1.055)**2.4)
-    linear += mask[..., None] * parameters['edgeLighten'] * (1-linear)
-    rgb = np.where(linear <= .0031308, linear*12.92, 1.055*linear**(1/2.4)-.055)
-    result_color = np.rint(np.clip(rgb, 0, 1)*255).astype('uint8')
     roughness = read('roughness', 'L')
     metallic = read('metallic', 'L')
     ao = read('ao', 'L')
-    edge_roughness = parameters['edgeRoughness']*255
-    roughness = np.rint(roughness+mask*(edge_roughness-roughness)).astype('uint8')
-    metallic = np.rint(metallic+mask*parameters['metalExposure']*(255-metallic)).astype('uint8')
+    result_color, roughness, metallic, edge_wear, mask = apply_wear_arrays(
+        color, roughness, metallic, curvature, parameters)
     from native3d_material_atlas import shares_orm_storage, write_packed_maps
     write_packed_maps(output, ao, roughness, metallic)
     for name, data in {'basecolor': result_color, 'roughness': roughness, 'metallic': metallic,
-                       'edge-wear': np.rint(mask*255).astype('uint8')}.items():
+                       'edge-wear': edge_wear}.items():
         Image.fromarray(data).save(output/(name+'.png'))
     for name in ('normal', 'ao', 'curvature'):
         read(name, 'RGB' if name=='normal' else 'L')

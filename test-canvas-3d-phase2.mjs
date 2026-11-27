@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { planCanvasConnection } from './src/canvas-connections.js';
 import { analyzePrimaryButton, isGeneratedGLB, nativeModelConnection } from './src/native3d.js';
 import { modelPreviewActions, persistGeneratedModelFiles } from './src/model-result.js';
@@ -159,5 +160,13 @@ await transferNativeArtifacts(
 );
 assert.equal(uploadedPlanFiles.length, 1);
 assert.equal(uploadedPlanFiles[0].type, 'application/octet-stream');
+
+const texturedWf = JSON.parse(fs.readFileSync(new URL('./workflows/pixal3d_textured_mesh_api.json', import.meta.url), 'utf8'));
+assert.equal(texturedWf.materials?.class_type, 'ApplyTextureToMesh');
+assert.ok(texturedWf.materials?.inputs?.base_color);
+assert.ok(texturedWf.materials?.inputs?.metallic);
+assert.ok(texturedWf.materials?.inputs?.roughness);
+assert.equal(texturedWf.save_high_glb?.class_type, 'SaveGLB');
+assert.equal(texturedWf.unwrap_high?.inputs?.resolution, 2048);
 
 console.log('canvas 3d phase2 ok');

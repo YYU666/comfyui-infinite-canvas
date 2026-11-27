@@ -26,6 +26,7 @@ def compatible(prior,job):
     # Explicit supported artifact semantics; this is a derivative of OLD
     # shading evidence, not a claim that historical code equals current code.
     return (report.get('resolution')==b.get('resolution') and report.get('concavitySafety',{}).get('version')=='concavity-safety-v1'
+            and not report.get('autoWear',{}).get('enabled') and not b.get('autoWear')
             and report.get('rasterConvention')=='UV*resolution; texel centers at integer+.5'
             and report.get('dilation',{}).get('outsideIslandCoverageOnly') is True
             and report.get('dilation',{}).get('pixels')==old

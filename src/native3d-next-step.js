@@ -99,10 +99,10 @@ export function nativeNextStepPlan({source,nodes,edges,job,projectId,action,seed
   const model=(job.result?.files||[]).find(f=>f.role==='model'&&f.name==='model.glb');
   const flags=job.result?.metadata?.uv?.qualityFlags;
   if(!model||d.assetPath!==`assets/${model.sha256}.glb`||!['exactGeometry','rasterOverlapFree','nondegenerateUV','noMixedFlip','paddingPixelCenters','geometricOverlapFree','geometricPadding','geometricBounds'].every(key=>flags?.[key]===true))throw Error('UV结构检查或结果文件不匹配，不能继续烘焙。');
-  operation='bake';parameters={resolution:4096,rayDistance:.02,padding:64,aoSamples:256,aoRadiusFraction:.1,aoAttenuation:'linear',...(review||{})};
+  operation='bake';parameters={resolution:4096,rayDistance:.02,padding:64,aoSamples:256,aoRadiusFraction:.1,aoAttenuation:'linear',autoWear:true,...(review||{})};
   // Geometry identity alone is not proof of material-high identity. Keep this
   // input explicit until a verifiable, unique material source is available.
-  notice='请连接带材质的原高模，再检查烘焙设置。';
+  notice='请连接带贴图的原高模，再检查烘焙与自动磨损设置。';
  }
  const origin=nextStepOrigin(source),key=JSON.stringify([projectId,nativeLogicalNodeId(source),action,origin]);
  const inputSnapshot=JSON.stringify(Object.entries(selectedInputs).filter(([handle])=>Object.hasOwn(inputs,handle)).map(([handle,node])=>[handle,nativeLogicalNodeId(node)]).sort());

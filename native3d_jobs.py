@@ -110,6 +110,12 @@ SCHEMAS = {
         'aoRadiusFraction': {'type':'number', 'minimum':0.001, 'maximum':1, 'default':0.1, 'title':'AO最大距离占对角线比例'},
         'aoAttenuation': {'type':'string', 'enum':['none','linear'], 'default':'linear', 'title':'AO距离衰减'},
         'padding': {'type':'integer', 'minimum':0, 'maximum':64, 'default':0, 'title':'岛外扩边像素（0自动）'},
+        'autoWear': {'type':'boolean', 'default':True, 'title':'自动计算凸棱磨损'},
+        'wearStrength': {'type':'number', 'minimum':0, 'maximum':1, 'default':0.55, 'title':'磨损强度'},
+        'wearThreshold': {'type':'number', 'minimum':0, 'maximum':0.95, 'default':0.18, 'title':'磨损凸棱阈值'},
+        'wearEdgeLighten': {'type':'number', 'minimum':0, 'maximum':1, 'default':0.28, 'title':'磨损棱边提亮'},
+        'wearEdgeRoughness': {'type':'number', 'minimum':0, 'maximum':1, 'default':0.52, 'title':'磨损粗糙度'},
+        'wearMetalExposure': {'type':'number', 'minimum':0, 'maximum':1, 'default':0.15, 'title':'磨损露出金属量'},
     },
 }
 

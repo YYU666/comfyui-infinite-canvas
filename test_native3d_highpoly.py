@@ -541,6 +541,52 @@ class SdfWatertightReconstructionTests(unittest.TestCase):
                 self.assertEqual(im.format, 'PNG')
                 self.assertGreater(im.width, 0)
 
+    def test_bake_auto_wear_updates_pbr_orm_and_shared_lods(self):
+        from native3d_engine import bake, read_mesh, unwrap
+        from native3d_glb_layout import read_glb_document
+        self.assertIs(validate_parameters('bake', {})['autoWear'], True)
+        high, _ = unwrap(trimesh.creation.box(), {'resolution': 1024})
+        albedo = np.full((16, 16, 3), [120, 72, 42], dtype=np.uint8)
+        high.visual.material = trimesh.visual.material.PBRMaterial(
+            baseColorTexture=Image.fromarray(albedo), metallicFactor=0.0, roughnessFactor=0.85)
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_dir = Path(temporary)
+            high_path = temp_dir / 'high.glb'
+            high.export(high_path)
+            high_loaded = read_mesh(high_path)
+            low, _ = unwrap(trimesh.creation.box(), {'resolution': 1024})
+            low.metadata['nativeSourceUV'] = True
+            out_dir = temp_dir / 'bake_wear'
+            out_dir.mkdir()
+            report = bake(low, high_loaded, out_dir, {
+                'resolution': 1024, 'aoSamples': 8, 'padding': 8, 'autoWear': True,
+                'wearStrength': 0.8, 'wearThreshold': 0.1, 'wearEdgeLighten': 0.5,
+                'wearEdgeRoughness': 0.3, 'wearMetalExposure': 0.6,
+            })
+            self.assertTrue(report['autoWear']['enabled'])
+            self.assertGreater(report['autoWear']['wearOnProjectedTexels'], 0)
+            self.assertTrue((out_dir / 'edge-wear.png').is_file())
+            with Image.open(out_dir / 'edge-wear.png') as im:
+                wear_arr = np.asarray(im)
+                self.assertGreater(int((wear_arr > 0).sum()), 0)
+            with Image.open(out_dir / 'hits.png') as hits_im, Image.open(out_dir / 'basecolor.png') as bc_im, Image.open(out_dir / 'orm.png') as orm_im:
+                hit_mask = np.asarray(hits_im) > 0
+                bc_arr = np.asarray(bc_im)
+                orm_arr = np.asarray(orm_im)
+                worn = hit_mask & (wear_arr > 64)
+                unworn = hit_mask & (wear_arr == 0)
+                self.assertTrue(worn.any() and unworn.any())
+                self.assertGreater(float(bc_arr[worn].mean()), float(bc_arr[unworn].mean()))
+                self.assertLess(float(orm_arr[worn, 1].mean()), float(orm_arr[unworn, 1].mean()))
+                self.assertGreater(float(orm_arr[worn, 2].mean()), float(orm_arr[unworn, 2].mean()))
+            for glb_name in ('LOD0_high.glb', 'LOD1_medium.glb', 'LOD2_low.glb'):
+                glb_path = out_dir / glb_name
+                self.assertTrue(glb_path.is_file(), glb_name)
+                doc = read_glb_document(glb_path)
+                self.assertTrue(shares_orm_storage(doc, doc['materials'][0]), glb_name)
+            for key in ('medium', 'low'):
+                self.assertEqual(report['sharedLods']['uvRelax'][key]['boundaryDisplacement'], 0.0)
+
 
 if __name__ == '__main__':
     unittest.main()

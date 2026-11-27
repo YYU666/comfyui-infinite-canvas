@@ -714,6 +714,27 @@ def bake(low, high, out, params, progress_callback=None):
     dilated = (coverage == 0) & (distance <= settings['padding'])
     for pixels in (normal, ao, basecolor, roughness, metallic, curvature):
         pixels[dilated] = pixels[indices[0][dilated], indices[1][dilated]]
+    auto_wear = bool(params.get('autoWear', False))
+    auto_wear_report = {'enabled': False}
+    if auto_wear:
+        from native3d_material_wear import apply_wear_arrays
+        wear_params = {
+            'strength': float(params.get('wearStrength', 0.55)),
+            'threshold': float(params.get('wearThreshold', 0.18)),
+            'edgeLighten': float(params.get('wearEdgeLighten', 0.28)),
+            'edgeRoughness': float(params.get('wearEdgeRoughness', 0.52)),
+            'metalExposure': float(params.get('wearMetalExposure', 0.15)),
+        }
+        basecolor, roughness, metallic, edge_wear, wear_mask = apply_wear_arrays(
+            basecolor, roughness, metallic, curvature, wear_params)
+        edge_wear[dilated] = edge_wear[indices[0][dilated], indices[1][dilated]]
+        Image.fromarray(edge_wear).save(out / 'edge-wear.png')
+        auto_wear_report = {
+            'enabled': True,
+            'wearOnProjectedTexels': int(((wear_mask > 0) & (hitmask > 0)).sum()),
+            'parameters': wear_params,
+            'curvature': 'projected convex high-mesh edge strength',
+        }
     Image.fromarray(normal).save(out / 'normal.png')
     Image.fromarray(ao).save(out / 'ao.png')
     Image.fromarray(curvature).save(out / 'curvature.png')
@@ -797,6 +818,7 @@ def bake(low, high, out, params, progress_callback=None):
                                           'linear vertex-color projection encoded to sRGB' if vertex_rgb is not None else 'original/default scalar factor'),
                             'metallicRoughness': 'embedded texture times original factors' if mr_pixels is not None else 'original/default scalar factors'},
             'dilation': {'pixels':settings['padding'],'requestedPixels':settings['paddingRequested'],'automatic':settings['paddingRequested']==0, 'changedTexels': int(dilated.sum()), 'outsideIslandCoverageOnly': True},
+            'autoWear': auto_wear_report,
             'textureQuality': {'warnings': texture_warnings},
             'sharedLods': deliver_shared_lods(low, out)}
 
@@ -1077,6 +1099,8 @@ def run(request, output, *, worker_lease=None):
             if name == 'curvature' and not (out/'curvature.png').is_file():
                 continue
             files.append({'name': name + '.png', 'role': 'texture', 'mime': 'image/png'})
+        if (out / 'edge-wear.png').is_file():
+            files.append({'name': 'edge-wear.png', 'role': 'texture', 'mime': 'image/png'})
         warnings += ['Normal uses2x2 directional-cage high barycentric samples; tangent basis: '+metadata['bake']['tangentBasis']+'. Projection preserves primary finite cage hits; unresolved samples use bounded k32 external-visible candidate first-hit certification, retrying k64 only for still-unresolved samples. Candidate search is not globally optimal; remaining covered misses stay neutral/white and require review. AO uses deterministic cosine Hammersley rays in the actual high geometric-normal hemisphere; radius is independent of cage, while origin epsilon remains cage-linked. '+str(metadata['bake']['padding'])+'px dilation only outside island coverage. PBR channels report original textures or scalar factors.']
         warnings += list(metadata['bake'].get('textureQuality', {}).get('warnings') or [])
         for name in metadata['bake'].get('sharedLods', {}).get('files') or []:
