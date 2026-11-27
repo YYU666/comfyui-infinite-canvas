@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { planCanvasConnection } from './src/canvas-connections.js';
 import { analyzePrimaryButton, isGeneratedGLB, nativeModelConnection } from './src/native3d.js';
 import { modelPreviewActions, persistGeneratedModelFiles } from './src/model-result.js';
 import { extractBakeTextureNode } from './src/native3d-bake-preview.js';
@@ -107,5 +108,38 @@ const topology = { id: 'topo', type: 'native3d', data: { operation: 'source_lod'
 const historical = nativeModelConnection({ source: imported.id, target: topology.id, sourceHandle: 'model', targetHandle: 'model' }, imported, topology, []);
 assert.equal(historical.connection.source, 'import');
 assert.equal(historical.connection.targetHandle, 'model');
+
+const persistedSha = 'e'.repeat(64);
+const persistedPath = `assets/${persistedSha}.glb`;
+const generator = {
+  id: 'generator-mwyjyt6k-1n867', type: 'generator', position: { x: 0, y: 0 },
+  data: {
+    mode: 'customWorkflow', status: 'completed',
+    resultUrl: '/api/comfy/view?filename=white.glb&type=output',
+    inlineImageOutputId: 'model-mwyk06is-0t2wq',
+    resultAssetPath: persistedPath,
+  },
+};
+const persistedModel = {
+  id: 'model-mwyk06is-0t2wq', type: 'media', position: { x: 280, y: 0 },
+  data: {
+    kind: 'model', output: true, type: 'output', sourceGeneratorId: generator.id,
+    url: `/api/projects/prj/assets/${persistedSha}.glb`, assetPath: persistedPath, name: 'white.glb',
+  },
+};
+const lodTarget = { id: 'lod', type: 'native3d', position: { x: 560, y: 0 }, data: { operation: 'source_lod' } };
+const bakeFromGenerator = { id: 'bake-from-generator', type: 'native3d', position: { x: 560, y: 140 }, data: { operation: 'bake' } };
+const persistedNodes = [generator, persistedModel, lodTarget, bakeFromGenerator];
+const toLod = planCanvasConnection({ source: generator.id, target: lodTarget.id, sourceHandle: 'model', targetHandle: 'model' }, persistedNodes, []);
+assert.equal(toLod.error, undefined);
+assert.equal(toLod.connection.source, persistedModel.id);
+assert.equal(toLod.connection.targetHandle, 'model');
+const toBake = planCanvasConnection({ source: generator.id, target: bakeFromGenerator.id, sourceHandle: 'model', targetHandle: 'high' }, persistedNodes, []);
+assert.equal(toBake.error, undefined);
+assert.equal(toBake.connection.source, persistedModel.id);
+assert.equal(toBake.connection.targetHandle, 'high');
+const blankAsset = { ...generator, id: 'blank-generator', data: { ...generator.data, resultAssetPath: '', inlineImageOutputId: '' } };
+const stale = { ...persistedModel, id: 'stale-model', data: { ...persistedModel.data, sourceGeneratorId: 'blank-generator', assetPath: persistedPath } };
+assert.match(planCanvasConnection({ source: 'blank-generator', target: lodTarget.id, sourceHandle: 'model', targetHandle: 'model' }, [blankAsset, stale, lodTarget], []).error, /唯一/);
 
 console.log('canvas 3d phase2 ok');

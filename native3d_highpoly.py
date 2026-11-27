@@ -633,8 +633,140 @@ def _surface_error(source, repaired):
     return {'max': float(distance.max()), 'mean': float(distance.mean())}
 
 
-def _reconstruct_watertight(source):
-    """Poisson isosurface used only after bounded topology repair is still dirty."""
+def _reconstruction_face_target(source_faces, reconstructed_faces):
+    """Keep a Poisson surface inside 160k faces.
+
+    A source above that band is reduced to 140k so a 300k white mesh cannot
+    come back heavier than it went in. Smaller sources keep a lighter isosurface.
+    """
+    if reconstructed_faces <= 160_000:
+        return None
+    if source_faces > 160_000:
+        return 140_000
+    return 160_000
+
+
+def _simplify_to_face_target(mesh, target):
+    import fast_simplification
+    points, indexed = fast_simplification.simplify(
+        np.ascontiguousarray(np.asarray(mesh.vertices, dtype=np.float64)),
+        np.ascontiguousarray(np.asarray(mesh.faces, dtype=np.int64)),
+        target_count=max(4, int(target)))
+    points = np.asarray(points, dtype=np.float64)
+    indexed = np.asarray(indexed, dtype=np.int64)
+    if len(indexed) < 4 or len(points) < 4:
+        raise RuntimeError('Reconstruction decimation produced no surface')
+    indexed, _removed, _duplicates = _drop_degenerate_and_duplicates(points, indexed)
+    points, indexed, _remap = _compact(points, indexed)
+    if len(indexed) < 4:
+        raise RuntimeError('Reconstruction decimation removed every face')
+    return trimesh.Trimesh(points, indexed, process=False)
+
+
+def _audit_reconstructed_surface(vertices, faces):
+    """Real intersection check. Exact diagnose stays within its own triangle limit.
+
+    Larger surfaces use the production auditor, which stops when it finds a
+    defect and never reports an unfinished search as clean.
+    """
+    if len(faces) <= 10000:
+        from native3d_geometry import diagnose
+        report = diagnose(vertices, faces)
+        pairs = len(report['intersection_pairs'])
+        nonmanifold = len(report['nonmanifold_edges'])
+        pinched = len(report['nonmanifold_vertices'])
+        degenerate = len(report['degenerate_faces'])
+        clean = (
+            pairs == 0 and nonmanifold == 0 and pinched == 0 and degenerate == 0
+            and report['boundary_edges'] == 0 and report['inconsistent_winding_edges'] == 0)
+        return {
+            'method': 'diagnose',
+            'intersectionComplete': True,
+            'intersection_pairs_count': pairs,
+            'nonManifoldEdges': nonmanifold,
+            'nonManifoldVertices': pinched,
+            'degenerateTriangles': degenerate,
+            'boundaryEdges': report['boundary_edges'],
+            'inconsistentWindingEdges': report['inconsistent_winding_edges'],
+            'intersection_pairs': report['intersection_pairs'][:64],
+            'status': 'accepted' if clean else 'blocked',
+        }
+    from native3d_geometry_audit import audit_geometry
+    report = audit_geometry(vertices, faces, max_seconds=60, allow_boundaries=False)
+    return {
+        'method': 'audit_geometry',
+        'intersectionComplete': bool(report.get('intersectionComplete')),
+        'intersection_pairs_count': report.get('intersection_pairs_count'),
+        'nonManifoldEdges': report.get('nonmanifold_edges_count'),
+        'degenerateTriangles': report.get('degenerate_faces_count'),
+        'boundaryEdges': report.get('boundary_edges'),
+        'intersection_pairs': report.get('intersection_pairs') or [],
+        'status': report.get('status'),
+        'blocker': report.get('blocker'),
+    }
+
+
+def _taubin_smooth(mesh, iterations):
+    import open3d as o3d
+    legacy = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(np.asarray(mesh.vertices, dtype=np.float64)),
+        o3d.utility.Vector3iVector(np.asarray(mesh.faces, dtype=np.int64)))
+    if len(legacy.triangles) < 4:
+        return mesh
+    legacy.compute_vertex_normals()
+    legacy.filter_smooth_taubin(number_of_iterations=int(iterations))
+    legacy.remove_degenerate_triangles()
+    legacy.remove_unreferenced_vertices()
+    if len(legacy.triangles) < 4:
+        return mesh
+    return trimesh.Trimesh(np.asarray(legacy.vertices), np.asarray(legacy.triangles), process=False)
+
+
+def _drop_intersection_faces(mesh, pairs, limit=64):
+    """Remove the faces named by one intersection audit, at most ``limit`` of them."""
+    chosen = []
+    for pair in pairs or []:
+        for face_id in pair:
+            face_id = int(face_id)
+            if face_id not in chosen:
+                chosen.append(face_id)
+            if len(chosen) >= limit:
+                break
+        if len(chosen) >= limit:
+            break
+    if not chosen or len(mesh.faces) - len(chosen) < 4:
+        return mesh, 0
+    keep = np.ones(len(mesh.faces), dtype=bool)
+    keep[np.asarray(chosen, dtype=np.int64)] = False
+    return trimesh.Trimesh(np.asarray(mesh.vertices), np.asarray(mesh.faces)[keep], process=False), len(chosen)
+
+
+def _surface_is_clean(audit):
+    if not audit.get('intersectionComplete'):
+        return False
+    if audit.get('intersection_pairs_count') not in (0,):
+        return False
+    if audit.get('nonManifoldEdges') not in (0,):
+        return False
+    if audit.get('nonManifoldVertices') not in (0, None):
+        return False
+    if audit.get('degenerateTriangles') not in (0,):
+        return False
+    if audit.get('inconsistentWindingEdges') not in (0, None):
+        return False
+    if audit.get('boundaryEdges') not in (0, None):
+        return False
+    return audit.get('status') == 'accepted'
+
+
+def _reconstruct_watertight(source, epsilon=1e-5, island_fraction=0.01):
+    """Poisson isosurface used only after bounded topology repair is still dirty.
+
+    ``linear_fit`` stays off so creases do not grow sliver faces. A heavy
+    isosurface is decimated into the 120k–160k band, then the same conservative
+    cleanup removes non-manifold and degenerate faces. The recorded intersection
+    count comes from diagnose or the production auditor, not from a guess.
+    """
     import open3d as o3d
     legacy = o3d.geometry.TriangleMesh(
         o3d.utility.Vector3dVector(np.asarray(source.vertices, dtype=np.float64)),
@@ -643,14 +775,19 @@ def _reconstruct_watertight(source):
     legacy.remove_degenerate_triangles()
     legacy.compute_vertex_normals()
     count = int(min(max(len(source.faces) * 2, 2000), 80000))
+    random_state = np.random.get_state()
+    np.random.seed(0x3D11)
     try:
-        cloud = legacy.sample_points_poisson_disk(number_of_points=count, use_triangle_normal=True)
-    except RuntimeError:
-        cloud = legacy.sample_points_uniformly(number_of_points=count)
-        cloud.estimate_normals()
+        try:
+            cloud = legacy.sample_points_poisson_disk(number_of_points=count, use_triangle_normal=True)
+        except RuntimeError:
+            cloud = legacy.sample_points_uniformly(number_of_points=count)
+            cloud.estimate_normals()
+    finally:
+        np.random.set_state(random_state)
     depth = 8 if len(source.faces) > 2000 else 6
     reconstructed, _densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-        cloud, depth=depth, linear_fit=True)
+        cloud, depth=depth, linear_fit=False)
     reconstructed.remove_duplicated_vertices()
     reconstructed.remove_degenerate_triangles()
     reconstructed.remove_unreferenced_vertices()
@@ -659,14 +796,63 @@ def _reconstruct_watertight(source):
     if len(faces) < 4:
         raise RuntimeError('Poisson reconstruction produced no surface')
     mesh = trimesh.Trimesh(vertices, faces, process=False)
+    target = _reconstruction_face_target(len(source.faces), len(mesh.faces))
+    simplified = False
+    if target is not None and len(mesh.faces) > target:
+        mesh = _simplify_to_face_target(mesh, target)
+        simplified = True
+    removed_intersections = 0
+    rounds = []
+
+    def record(round_index, loop, audit, removed=0, extra_passes=0):
+        rounds.append({
+            'round': round_index,
+            'faces': _as_int(len(mesh.faces)),
+            'repairPasses': loop['repairPasses'] + extra_passes,
+            'stalled': loop['stalled'],
+            'removedIntersectingFaces': removed,
+            'intersectionCheck': audit['method'],
+            'intersectionComplete': audit['intersectionComplete'],
+            'intersection_pairs_count': audit['intersection_pairs_count'],
+            'nonManifoldEdges': audit['nonManifoldEdges'],
+            'degenerateTriangles': audit['degenerateTriangles'],
+        })
+
+    mesh, first_loop = _bounded_topology_repair(mesh, epsilon, island_fraction)
+    mesh = _taubin_smooth(mesh, 2)
+    mesh, loop = _bounded_topology_repair(mesh, epsilon, island_fraction)
+    audit = _audit_reconstructed_surface(mesh.vertices, mesh.faces)
+    record(1, loop, audit, extra_passes=first_loop['repairPasses'])
+    if not _surface_is_clean(audit) and len(mesh.faces) >= 4:
+        mesh, removed_intersections = _drop_intersection_faces(mesh, audit.get('intersection_pairs'))
+        if removed_intersections:
+            mesh, loop = _bounded_topology_repair(mesh, epsilon, island_fraction)
+            if len(mesh.faces) > 160_000:
+                mesh = _simplify_to_face_target(mesh, 140_000)
+                simplified = True
+            audit = _audit_reconstructed_surface(mesh.vertices, mesh.faces)
+            record(2, loop, audit, removed_intersections)
     error = _surface_error(source, mesh)
+    clean = _surface_is_clean(audit)
     return mesh, {
         'triggered': True,
-        'method': 'open3d poisson watertight isosurface',
+        'method': 'open3d poisson watertight isosurface, linear_fit off, taubin, face cap, conservative cleanup',
+        'linearFit': False,
         'poissonDepth': depth,
         'sampleCount': count,
+        'taubinIterations': 2,
+        'simplified': simplified,
+        'targetFaces': target,
+        'cleanupRounds': rounds,
+        'faces': _as_int(len(mesh.faces)),
+        'intersectionCheck': None if audit is None else audit['method'],
+        'intersectionComplete': False if audit is None else audit['intersectionComplete'],
+        'intersection_pairs_count': None if audit is None else audit['intersection_pairs_count'],
+        'nonManifoldEdges': None if audit is None else audit['nonManifoldEdges'],
+        'degenerateTriangles': None if audit is None else audit['degenerateTriangles'],
         'surfaceErrorMax': None if error is None else error['max'],
         'surfaceErrorMean': None if error is None else error['mean'],
+        'manifoldAfterReconstruction': clean,
     }
 
 
@@ -712,29 +898,12 @@ def _defects_cleared(defects, started_closed):
     return True
 
 
-def repair_high(mesh, epsilon=1e-5, island_fraction=0.01):
-    """Clean a high mesh. An already clean mesh is returned unchanged.
-
-    Closed dirty input is welded, pruned, split at pinched vertices, capped,
-    and reoriented until edges, vertices, and winding are manifold. A still
-    dirty result may be replaced by a recorded Poisson isosurface. ``before``
-    stays the untouched input report.
-    """
-    before = topology_report(mesh, epsilon, island_fraction)
-    initial = _topology_defects(mesh.vertices, mesh.faces, count_vertices=False)
-    dirty = any(before[key] for key in ('weldedVertices', 'degenerateTriangles', 'nonManifoldEdges', 'isolatedFragments'))
-    dirty = dirty or initial['nonManifoldEdges'] or initial['inconsistentWindingEdges']
-    if not dirty:
-        initial['nonManifoldVertices'] = len(_incident_fans(mesh.faces))
-        dirty = initial['nonManifoldVertices'] > 0
-    empty = {
-        'changed': False, 'before': before, 'after': before, 'weldedVertices': 0,
-        'removedDegenerateTriangles': 0, 'removedDuplicateFaces': 0, 'removedIslands': 0,
-        'repairedNonManifoldFaces': 0, 'filledHoles': 0, 'splitNonManifoldVertices': 0,
-        'repairPasses': 0, 'reconstruction': None,
-    }
-    if not dirty:
-        return mesh, empty
+def _bounded_topology_repair(mesh, epsilon, island_fraction, before=None, initial=None):
+    """Weld and clean until the defect counts stop falling, at most eight passes."""
+    if before is None:
+        before = topology_report(mesh, epsilon, island_fraction)
+    if initial is None:
+        initial = _topology_defects(mesh.vertices, mesh.faces, count_vertices=False)
     started_closed = before['boundaryEdges'] == 0 and initial['boundaryEdges'] == 0
     vertices, faces, welded = spatial_weld(mesh.vertices, mesh.faces, epsilon)
     protected = _protected_boundary(faces)
@@ -746,9 +915,13 @@ def repair_high(mesh, epsilon=1e-5, island_fraction=0.01):
     from native3d_engine import repair_winding
     winding = None
     passes = 0
-    defects = initial
+    stalled = False
+    defects = _topology_defects(vertices, faces, count_vertices=False)
     for _ in range(8):
         passes += 1
+        snapshot = (
+            len(faces), defects['nonManifoldEdges'],
+            defects['boundaryEdges'], defects['inconsistentWindingEdges'])
         vertices, faces, remap, counts = _clean_pass(vertices, faces, island_fraction, protected)
         protected = _remap_edges(protected, remap)
         longest_loop = max(longest_loop, counts.pop('maxFilledLoop'))
@@ -765,9 +938,62 @@ def repair_high(mesh, epsilon=1e-5, island_fraction=0.01):
         # or hole fill added or removed faces afterwards.
         surface_changed = counts['peeledBoundaryFaces'] or counts['filledHoles']
         defects = _topology_defects(vertices, faces, count_vertices=bool(surface_changed))
-        if _defects_cleared(defects, started_closed):
+        progressed = (
+            len(faces), defects['nonManifoldEdges'],
+            defects['boundaryEdges'], defects['inconsistentWindingEdges']) != snapshot or any(counts.values())
+        if _defects_cleared(defects, started_closed) or not progressed:
+            stalled = not progressed and not _defects_cleared(defects, started_closed)
             break
     repaired_mesh = trimesh.Trimesh(vertices, faces, process=False) if len(faces) else mesh
+    return repaired_mesh, {
+        'before': before, 'initial': initial, 'startedClosed': started_closed, 'weldedVertices': welded,
+        **totals, 'maxFilledLoop': longest_loop, 'repairPasses': passes, 'stalled': stalled,
+        'winding': winding, 'defects': defects,
+    }
+
+
+def repair_high(mesh, epsilon=1e-5, island_fraction=0.01):
+    """Clean a high mesh. An already clean mesh is returned unchanged.
+
+    Closed dirty input is welded, pruned, split at pinched vertices, capped,
+    and reoriented until edges, vertices, and winding are manifold. A pass that
+    does not change the geometry or the defect counts stops the loop. A still
+    dirty result may be replaced by a recorded Poisson isosurface. ``before``
+    stays the untouched input report.
+    """
+    before = topology_report(mesh, epsilon, island_fraction)
+    initial = _topology_defects(mesh.vertices, mesh.faces, count_vertices=False)
+    dirty = any(before[key] for key in ('weldedVertices', 'degenerateTriangles', 'nonManifoldEdges', 'isolatedFragments'))
+    dirty = dirty or initial['nonManifoldEdges'] or initial['inconsistentWindingEdges']
+    if not dirty:
+        initial['nonManifoldVertices'] = len(_incident_fans(mesh.faces))
+        dirty = initial['nonManifoldVertices'] > 0
+    if not dirty and 0 < len(mesh.faces) <= 8000:
+        from native3d_geometry import diagnose
+        try:
+            dirty = bool(diagnose(mesh.vertices, mesh.faces)['intersection_pairs'])
+        except (ValueError, RuntimeError):
+            dirty = False
+    empty = {
+        'changed': False, 'before': before, 'after': before, 'weldedVertices': 0,
+        'removedDegenerateTriangles': 0, 'removedDuplicateFaces': 0, 'removedIslands': 0,
+        'repairedNonManifoldFaces': 0, 'filledHoles': 0, 'splitNonManifoldVertices': 0,
+        'repairPasses': 0, 'reconstruction': None,
+    }
+    if not dirty:
+        return mesh, empty
+    repaired_mesh, loop = _bounded_topology_repair(
+        mesh, epsilon, island_fraction, before=before, initial=initial)
+    totals = {key: loop[key] for key in (
+        'removedDegenerateTriangles', 'removedDuplicateFaces', 'removedIslands',
+        'repairedNonManifoldFaces', 'splitNonManifoldVertices', 'peeledBoundaryFaces',
+        'filledHoles')}
+    longest_loop = loop['maxFilledLoop']
+    passes = loop['repairPasses']
+    winding = loop['winding']
+    welded = loop['weldedVertices']
+    defects = loop['defects']
+    started_closed = loop['startedClosed']
     reconstruction = None
     needs_rebuild = not _defects_cleared(defects, started_closed)
     if not needs_rebuild and 0 < len(repaired_mesh.faces) <= 8000:
@@ -778,19 +1004,8 @@ def repair_high(mesh, epsilon=1e-5, island_fraction=0.01):
             needs_rebuild = False
     if needs_rebuild:
         try:
-            rebuilt, reconstruction = _reconstruct_watertight(mesh)
-            vertices, faces, _remap, extra = _clean_pass(
-                np.asarray(rebuilt.vertices, dtype=np.float64),
-                np.asarray(rebuilt.faces, dtype=np.int64), island_fraction, set())
-            longest_loop = max(longest_loop, extra.pop('maxFilledLoop'))
-            for key, value in extra.items():
-                totals[key] += value
-            if len(faces):
-                rebuilt = trimesh.Trimesh(vertices, faces, process=False)
-                rebuilt, winding = repair_winding(rebuilt)
-                repaired_mesh = rebuilt
-            reconstruction['manifoldAfterReconstruction'] = _defects_cleared(
-                _topology_defects(repaired_mesh.vertices, repaired_mesh.faces), True)
+            rebuilt, reconstruction = _reconstruct_watertight(mesh, epsilon, island_fraction)
+            repaired_mesh = rebuilt
         except (RuntimeError, ValueError, ImportError) as error:
             reconstruction = {'triggered': True, 'method': 'open3d poisson watertight isosurface', 'error': str(error)}
     after = topology_report(repaired_mesh, epsilon, island_fraction)

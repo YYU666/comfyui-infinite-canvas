@@ -9,11 +9,13 @@ import numpy as np
 import trimesh
 from PIL import Image
 
+from native3d_geometry import diagnose
 from native3d_geometry_audit import audit_geometry
 from native3d_highpoly import (
-    FACE_LIMIT, _face_signed_areas, _occupancy, _reduce_large_uv_islands, _relax_uv,
-    _topology_defects, _triangles_overlap_2d, _triangulate_loop, _uv_boundary_mask,
-    deliver_shared_lods, derive_shared_lods, repair_high, topology_report,
+    FACE_LIMIT, _face_signed_areas, _occupancy, _reconstruction_face_target,
+    _reduce_large_uv_islands, _relax_uv, _topology_defects, _triangles_overlap_2d,
+    _triangulate_loop, _uv_boundary_mask, deliver_shared_lods, derive_shared_lods,
+    repair_high, topology_report,
 )
 from native3d_jobs import validate_parameters
 from native3d_lod_source import resolve_lod_settings, run_source_lod
@@ -221,6 +223,44 @@ class HighpolyRepairTests(unittest.TestCase):
         self.assertTrue(np.all(left.all(axis=1) | right.all(axis=1)))
         self.assertTrue(np.any(left) and np.any(right))
         self.assertFalse(_chart_has_overlap(reduced_uv, reduced_faces))
+
+    def test_reconstruction_face_target_keeps_a_heavy_white_mesh_inside_the_band(self):
+        self.assertEqual(_reconstruction_face_target(299_974, 403_918), 140_000)
+        self.assertEqual(_reconstruction_face_target(50_000, 220_000), 160_000)
+        self.assertIsNone(_reconstruction_face_target(160, 7_442))
+
+    def test_intersecting_shells_rebuild_without_burning_repair_rounds(self):
+        left = trimesh.creation.icosphere(subdivisions=1)
+        right = left.copy()
+        right.apply_translation((0.45, 0.1, 0.05))
+        mesh = trimesh.util.concatenate([left, right])
+        incoming = diagnose(mesh.vertices, mesh.faces)
+        self.assertGreater(len(incoming['intersection_pairs']), 0)
+        self.assertEqual(incoming['nonmanifold_edges'], [])
+        repaired, report = repair_high(mesh)
+        reconstruction = report['reconstruction']
+        self.assertIsNotNone(reconstruction)
+        self.assertNotIn('error', reconstruction)
+        self.assertFalse(reconstruction['linearFit'])
+        self.assertLessEqual(report['repairPasses'], 2)
+        self.assertLessEqual(len(repaired.faces), 200_000)
+        self.assertEqual(report['after']['nonManifoldEdges'], 0)
+        self.assertEqual(report['after']['degenerateTriangles'], 0)
+        self.assertTrue(reconstruction['manifoldAfterReconstruction'])
+        self.assertTrue(reconstruction['intersectionComplete'])
+        self.assertEqual(reconstruction['intersection_pairs_count'], 0)
+        self.assertEqual(reconstruction['intersectionCheck'], 'diagnose')
+        audited = diagnose(repaired.vertices, repaired.faces)
+        self.assertEqual(audited['intersection_pairs'], [])
+        self.assertEqual(audited['nonmanifold_edges'], [])
+        self.assertEqual(audited['nonmanifold_vertices'], [])
+        self.assertEqual(audited['degenerate_faces'], [])
+        with tempfile.TemporaryDirectory() as temporary:
+            _selected, manifest, _artifacts = run_source_lod(repaired, temporary, {
+                'lodCount': 3, 'deferChildLods': True, 'lod0KeepPercent': 100, 'maxSeconds': 120,
+            })
+        self.assertEqual(manifest['status'], 'accepted', manifest.get('blocker'))
+        self.assertEqual([row['lodLevel'] for row in manifest['logicalLevels']], [0])
 
     def test_deferred_child_lods_stop_at_clean_high(self):
         mesh = trimesh.creation.icosphere(subdivisions=1)
