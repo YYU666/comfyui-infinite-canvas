@@ -4,6 +4,7 @@ import { analyzePrimaryButton, isGeneratedGLB, nativeModelConnection } from './s
 import { modelPreviewActions, persistGeneratedModelFiles } from './src/model-result.js';
 import { extractBakeTextureNode } from './src/native3d-bake-preview.js';
 import { lodStageLabel, nativeNextStepPlan, nextStepActions } from './src/native3d-next-step.js';
+import { transferNativeArtifacts } from './src/native3d-delivery.js';
 
 const whiteMesh = {
   type: 'media',
@@ -141,5 +142,22 @@ assert.equal(toBake.connection.targetHandle, 'high');
 const blankAsset = { ...generator, id: 'blank-generator', data: { ...generator.data, resultAssetPath: '', inlineImageOutputId: '' } };
 const stale = { ...persistedModel, id: 'stale-model', data: { ...persistedModel.data, sourceGeneratorId: 'blank-generator', assetPath: persistedPath } };
 assert.match(planCanvasConnection({ source: 'blank-generator', target: lodTarget.id, sourceHandle: 'model', targetHandle: 'model' }, [blankAsset, stale, lodTarget], []).error, /唯一/);
+
+const planJob = 'n3d_1234567890abcdef1234567890abcdef';
+const uploadedPlanFiles = [];
+await transferNativeArtifacts(
+  [{ name: 'uv-plan.json', role: 'plan', mime: 'application/json', url: `/api/native3d/jobs/${planJob}/files/uv-plan.json` }],
+  planJob,
+  {
+    fetchFile: async () => new Response('{"version":1}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    saveFile: async (file) => {
+      uploadedPlanFiles.push(file);
+      return `assets/${'f'.repeat(64)}.json`;
+    },
+    assertCurrent: () => {},
+  },
+);
+assert.equal(uploadedPlanFiles.length, 1);
+assert.equal(uploadedPlanFiles[0].type, 'application/octet-stream');
 
 console.log('canvas 3d phase2 ok');

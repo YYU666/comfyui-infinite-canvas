@@ -12,7 +12,7 @@ export function nativeDeliveryError(error, phase, { name, jobId } = {}) {
   for (const key of ['code', 'status', 'details']) if (error?.[key] !== undefined) wrapped[key] = error[key];
   return Object.assign(wrapped, { deliveryPhase, artifactName, jobId: error?.jobId || jobId, deliveryOriginalMessage: originalMessage });
 }
-export async function transferNativeArtifacts(files, jobId, { fetchFile = fetch, saveFile, assertCurrent, makeFile = (blob, artifact) => new File([blob], artifact.name, { type: artifact.role === 'report' || /\.fbx$/i.test(artifact.name) ? 'application/octet-stream' : artifact.mime || 'application/octet-stream' }) }) {
+export async function transferNativeArtifacts(files, jobId, { fetchFile = fetch, saveFile, assertCurrent, makeFile = (blob, artifact) => new File([blob], artifact.name, { type: ['report', 'plan', 'evidence'].includes(artifact.role) || /\.fbx$/i.test(artifact.name) ? 'application/octet-stream' : artifact.mime || 'application/octet-stream' }) }) {
   const saved = {};
   for (const artifact of files) {
     if (!artifactExtensions[artifact.role]) continue;

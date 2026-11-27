@@ -1,5 +1,7 @@
 import json
 import struct
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -12,9 +14,10 @@ from PIL import Image
 from native3d_geometry import diagnose
 from native3d_geometry_audit import audit_geometry
 from native3d_highpoly import (
-    FACE_LIMIT, _face_signed_areas, _occupancy, _reconstruction_face_target,
-    _reduce_large_uv_islands, _relax_uv, _topology_defects, _triangles_overlap_2d,
-    _triangulate_loop, _uv_boundary_mask, deliver_shared_lods, derive_shared_lods,
+    FACE_LIMIT, _face_signed_areas, _occupancy, _reconstruct_sdf_marching_cubes,
+    _reconstruction_face_target, _reduce_large_uv_islands, _relax_uv,
+    _topology_defects, _triangles_overlap_2d, _triangulate_loop,
+    _uv_boundary_mask, deliver_shared_lods, derive_shared_lods,
     repair_high, topology_report,
 )
 from native3d_jobs import validate_parameters
@@ -488,6 +491,55 @@ def _seamed_panels(n, fins=0):
     mesh.visual = trimesh.visual.TextureVisuals(
         uv=uv, material=trimesh.visual.material.PBRMaterial(roughnessFactor=0.8, metallicFactor=0.0))
     return mesh
+
+
+class SdfWatertightReconstructionTests(unittest.TestCase):
+    def test_sdf_marching_cubes_rebuilds_clean_watertight_surface_for_source_lod(self):
+        left = trimesh.creation.icosphere(subdivisions=1)
+        right = left.copy()
+        right.apply_translation((0.45, 0.1, 0.05))
+        dirty = trimesh.util.concatenate([left, right])
+        rebuilt, meta = _reconstruct_sdf_marching_cubes(dirty)
+        self.assertIsNotNone(rebuilt)
+        self.assertTrue(meta['manifoldAfterReconstruction'])
+        self.assertEqual(meta['nonManifoldEdges'], 0)
+        self.assertEqual(meta['nonManifoldVertices'], 0)
+        self.assertEqual(meta['inconsistentWindingEdges'], 0)
+        self.assertEqual(meta['intersection_pairs_count'], 0)
+        audited = diagnose(rebuilt.vertices, rebuilt.faces)
+        self.assertEqual(audited['intersection_pairs'], [])
+        self.assertEqual(audited['inconsistent_winding_edges'], 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            _selected, manifest, _artifacts = run_source_lod(rebuilt, temporary, {
+                'lodCount': 3, 'deferChildLods': True, 'lod0KeepPercent': 55, 'maxSeconds': 120,
+            })
+        self.assertEqual(manifest['status'], 'accepted', manifest.get('blocker'))
+        self.assertEqual([row['lodLevel'] for row in manifest['logicalLevels']], [0])
+
+    def test_preview_accepts_source_lod_120k_face_budget(self):
+        import native3d_preview
+        mesh = trimesh.creation.icosphere(subdivisions=2)
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_dir = Path(temporary)
+            src = temp_dir / 'lod0.glb'
+            mesh.export(src)
+            out_direct = temp_dir / 'direct.png'
+            native3d_preview.render(src, out_direct, max_faces=120000)
+            self.assertTrue(out_direct.is_file())
+            with Image.open(out_direct) as im:
+                self.assertEqual(im.format, 'PNG')
+                self.assertGreater(im.width, 0)
+            out_cli = temp_dir / 'cli.png'
+            proc = subprocess.run(
+                [sys.executable, str(Path(__file__).with_name('native3d_preview.py')),
+                 '--source', str(src), '--output', str(out_cli), '--max-faces', '120000'],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(out_cli.is_file())
+            with Image.open(out_cli) as im:
+                self.assertEqual(im.format, 'PNG')
+                self.assertGreater(im.width, 0)
 
 
 if __name__ == '__main__':

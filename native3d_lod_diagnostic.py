@@ -6,7 +6,7 @@ from native3d_report import rasterize,project_vertices,_font,BG
 
 def render_diagnostic(mesh,evidence):
     pairs=evidence.get('intersection_pairs',[])
-    if evidence.get('triangles')!=len(mesh.faces) or not 1<=len(mesh.faces)<=100000:
+    if evidence.get('triangles')!=len(mesh.faces) or not 1<=len(mesh.faces)<=120000:
         raise ValueError('Diagnostic triangle identity/budget mismatch')
     if not isinstance(pairs,list) or len(pairs)>64:
         raise ValueError('Invalid diagnostic pairs')
@@ -32,7 +32,7 @@ def render_diagnostic(mesh,evidence):
         return {'center':center,'right':right,'up':up,'toward':toward,'width':width,'height':height,
                 'scale':.78*min(width/extent[0],height/extent[1])}
     def tile(cam,ids):
-        im=rasterize(mesh,cam,smooth=True,max_faces=100000).convert('RGBA')
+        im=rasterize(mesh,cam,smooth=True,max_faces=120000).convert('RGBA')
         overlay=Image.new('RGBA',im.size);d=ImageDraw.Draw(overlay);p=project_vertices(vertices,cam)
         colors=[(255,85,85,95),(255,200,40,95),(70,210,255,95)]
         for i,f in enumerate(ids):

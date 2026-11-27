@@ -647,20 +647,27 @@ def _reconstruction_face_target(source_faces, reconstructed_faces):
 
 
 def _simplify_to_face_target(mesh, target):
-    import fast_simplification
-    points, indexed = fast_simplification.simplify(
-        np.ascontiguousarray(np.asarray(mesh.vertices, dtype=np.float64)),
-        np.ascontiguousarray(np.asarray(mesh.faces, dtype=np.int64)),
-        target_count=max(4, int(target)))
-    points = np.asarray(points, dtype=np.float64)
-    indexed = np.asarray(indexed, dtype=np.int64)
+    """Decimate a watertight surface with Open3D QEM while preserving winding."""
+    import open3d as o3d
+    legacy = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(np.asarray(mesh.vertices, dtype=np.float64)),
+        o3d.utility.Vector3iVector(np.asarray(mesh.faces, dtype=np.int64)))
+    simplified = legacy.simplify_quadric_decimation(target_number_of_triangles=max(4, int(target)))
+    simplified.remove_duplicated_vertices()
+    simplified.remove_duplicated_triangles()
+    simplified.remove_degenerate_triangles()
+    simplified.remove_unreferenced_vertices()
+    points = np.asarray(simplified.vertices, dtype=np.float64)
+    indexed = np.asarray(simplified.triangles, dtype=np.int64)
     if len(indexed) < 4 or len(points) < 4:
         raise RuntimeError('Reconstruction decimation produced no surface')
     indexed, _removed, _duplicates = _drop_degenerate_and_duplicates(points, indexed)
     points, indexed, _remap = _compact(points, indexed)
     if len(indexed) < 4:
         raise RuntimeError('Reconstruction decimation removed every face')
-    return trimesh.Trimesh(points, indexed, process=False)
+    result = trimesh.Trimesh(points, indexed, process=False)
+    result.fix_normals()
+    return result
 
 
 def _audit_reconstructed_surface(vertices, faces):
@@ -698,8 +705,10 @@ def _audit_reconstructed_surface(vertices, faces):
         'intersectionComplete': bool(report.get('intersectionComplete')),
         'intersection_pairs_count': report.get('intersection_pairs_count'),
         'nonManifoldEdges': report.get('nonmanifold_edges_count'),
+        'nonManifoldVertices': report.get('nonmanifold_vertices_count'),
         'degenerateTriangles': report.get('degenerate_faces_count'),
         'boundaryEdges': report.get('boundary_edges'),
+        'inconsistentWindingEdges': report.get('inconsistent_winding_edges'),
         'intersection_pairs': report.get('intersection_pairs') or [],
         'status': report.get('status'),
         'blocker': report.get('blocker'),
@@ -759,13 +768,102 @@ def _surface_is_clean(audit):
     return audit.get('status') == 'accepted'
 
 
+def _reconstruct_sdf_marching_cubes(source):
+    """Rebuild an orientable zero-intersection watertight mesh via clamped SDF Marching Cubes."""
+    import open3d as o3d
+    from scipy.ndimage import gaussian_filter
+    from skimage.measure import marching_cubes
+
+    src_vertices = np.asarray(source.vertices, dtype=np.float32)
+    src_faces = np.asarray(source.faces, dtype=np.uint32)
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(o3d.core.Tensor(src_vertices), o3d.core.Tensor(src_faces))
+    bounds = np.asarray(source.bounds, dtype=np.float64)
+    extent = np.maximum(bounds[1] - bounds[0], 1e-4)
+    pad = float(np.max(extent)) * 0.05
+    lo = bounds[0] - pad
+    hi = bounds[1] + pad
+    schedule = (
+        [(144, 0.5, (100_000, 80_000)), (128, 0.5, (80_000, 60_000))]
+        if len(src_faces) > 2000
+        else [(48, 0.5, (None, 4_000)), (64, 0.5, (8_000, 4_000))]
+    )
+    attempts = []
+    for res, sigma, qem_targets in schedule:
+        xs = np.linspace(lo[0], hi[0], res, dtype=np.float32)
+        ys = np.linspace(lo[1], hi[1], res, dtype=np.float32)
+        zs = np.linspace(lo[2], hi[2], res, dtype=np.float32)
+        gx, gy, gz = np.meshgrid(xs, ys, zs, indexing='ij')
+        pts = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+        sdf = scene.compute_signed_distance(o3d.core.Tensor(pts)).numpy().reshape((res, res, res)).astype(np.float64)
+        if sigma and sigma > 0:
+            sdf = gaussian_filter(sdf, sigma=float(sigma))
+        spacing = (hi - lo) / (res - 1)
+        floor = max(1e-7, 0.05 * float(np.max(spacing)))
+        sdf = np.where(np.abs(sdf) < floor, np.where(sdf >= 0, floor, -floor), sdf)
+        verts, faces, _, _ = marching_cubes(sdf, level=0.0, spacing=tuple(spacing), method='lewiner')
+        verts = np.asarray(verts, dtype=np.float64) + lo
+        base_mesh = trimesh.Trimesh(verts, np.asarray(faces, dtype=np.int64), process=False)
+        parts = base_mesh.split(only_watertight=False)
+        if len(parts) > 1:
+            base_mesh = max(parts, key=lambda part: len(part.faces))
+        base_mesh.fix_normals()
+        for qem_target in qem_targets:
+            candidate = (
+                _simplify_to_face_target(base_mesh, qem_target)
+                if qem_target is not None and len(base_mesh.faces) > qem_target
+                else base_mesh.copy()
+            )
+            candidate.fix_normals()
+            audit = _audit_reconstructed_surface(candidate.vertices, candidate.faces)
+            attempts.append({
+                'sdfResolution': int(res),
+                'sdfSigma': float(sigma),
+                'targetFaces': qem_target,
+                'faces': _as_int(len(candidate.faces)),
+                'intersectionCheck': audit['method'],
+                'intersectionComplete': audit['intersectionComplete'],
+                'intersection_pairs_count': audit['intersection_pairs_count'],
+                'nonManifoldEdges': audit['nonManifoldEdges'],
+                'nonManifoldVertices': audit.get('nonManifoldVertices'),
+                'inconsistentWindingEdges': audit.get('inconsistentWindingEdges'),
+                'degenerateTriangles': audit['degenerateTriangles'],
+                'status': audit['status'],
+            })
+            if _surface_is_clean(audit):
+                error = _surface_error(source, candidate)
+                return candidate, {
+                    'triggered': True,
+                    'method': 'open3d sdf raycasting + clamped marching cubes + open3d qem',
+                    'linearFit': False,
+                    'sdfResolution': int(res),
+                    'sdfSigma': float(sigma),
+                    'simplified': qem_target is not None and len(base_mesh.faces) > qem_target,
+                    'targetFaces': qem_target,
+                    'attempts': attempts,
+                    'faces': _as_int(len(candidate.faces)),
+                    'intersectionCheck': audit['method'],
+                    'intersectionComplete': audit['intersectionComplete'],
+                    'intersection_pairs_count': audit['intersection_pairs_count'],
+                    'nonManifoldEdges': audit['nonManifoldEdges'],
+                    'nonManifoldVertices': audit.get('nonManifoldVertices'),
+                    'inconsistentWindingEdges': audit.get('inconsistentWindingEdges'),
+                    'degenerateTriangles': audit['degenerateTriangles'],
+                    'surfaceErrorMax': None if error is None else error['max'],
+                    'surfaceErrorMean': None if error is None else error['mean'],
+                    'manifoldAfterReconstruction': True,
+                }
+    return None, {'triggered': True, 'method': 'open3d sdf raycasting + clamped marching cubes + open3d qem', 'attempts': attempts}
+
+
 def _reconstruct_watertight(source, epsilon=1e-5, island_fraction=0.01):
     """Poisson isosurface used only after bounded topology repair is still dirty.
 
     ``linear_fit`` stays off so creases do not grow sliver faces. A heavy
     isosurface is decimated into the 120k–160k band, then the same conservative
-    cleanup removes non-manifold and degenerate faces. The recorded intersection
-    count comes from diagnose or the production auditor, not from a guess.
+    cleanup removes non-manifold and degenerate faces. If Poisson decimation
+    still leaves topology/winding/intersection defects, clamped SDF Marching Cubes
+    with Open3D QEM produces an orientable zero-intersection surface.
     """
     import open3d as o3d
     legacy = o3d.geometry.TriangleMesh(
@@ -832,8 +930,24 @@ def _reconstruct_watertight(source, epsilon=1e-5, island_fraction=0.01):
                 simplified = True
             audit = _audit_reconstructed_surface(mesh.vertices, mesh.faces)
             record(2, loop, audit, removed_intersections)
-    error = _surface_error(source, mesh)
     clean = _surface_is_clean(audit)
+    if not clean:
+        try:
+            sdf_mesh, sdf_meta = _reconstruct_sdf_marching_cubes(source)
+            if sdf_mesh is not None and sdf_meta.get('manifoldAfterReconstruction'):
+                sdf_meta['poissonFallbackReason'] = {
+                    'faces': _as_int(len(mesh.faces)),
+                    'cleanupRounds': rounds,
+                    'status': audit.get('status'),
+                    'blocker': audit.get('blocker'),
+                    'intersection_pairs_count': audit.get('intersection_pairs_count'),
+                    'nonManifoldVertices': audit.get('nonManifoldVertices'),
+                    'inconsistentWindingEdges': audit.get('inconsistentWindingEdges'),
+                }
+                return sdf_mesh, sdf_meta
+        except (RuntimeError, ValueError, ImportError):
+            pass
+    error = _surface_error(source, mesh)
     return mesh, {
         'triggered': True,
         'method': 'open3d poisson watertight isosurface, linear_fit off, taubin, face cap, conservative cleanup',
@@ -849,6 +963,8 @@ def _reconstruct_watertight(source, epsilon=1e-5, island_fraction=0.01):
         'intersectionComplete': False if audit is None else audit['intersectionComplete'],
         'intersection_pairs_count': None if audit is None else audit['intersection_pairs_count'],
         'nonManifoldEdges': None if audit is None else audit['nonManifoldEdges'],
+        'nonManifoldVertices': None if audit is None else audit.get('nonManifoldVertices'),
+        'inconsistentWindingEdges': None if audit is None else audit.get('inconsistentWindingEdges'),
         'degenerateTriangles': None if audit is None else audit['degenerateTriangles'],
         'surfaceErrorMax': None if error is None else error['max'],
         'surfaceErrorMean': None if error is None else error['mean'],
