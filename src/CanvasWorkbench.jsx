@@ -2927,7 +2927,10 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           connectionLineStyle={CONNECTION_LINE_STYLE}
           proOptions={{ hideAttribution: true }}
         >
-          {gridVisible && <Background id="obsidian-grid" variant={BackgroundVariant.Dots} gap={22} size={1.1} color="#ffffff24" />}
+          {gridVisible && <>
+            <Background id="obsidian-minor-grid" variant={BackgroundVariant.Dots} gap={22} size={1} color="#ffffff1f" />
+            <Background id="obsidian-major-grid" variant={BackgroundVariant.Dots} gap={110} size={2} color="#e5b86945" />
+          </>}
           {miniMapVisible && <MiniMap pannable zoomable nodeColor={(node) => node.type === 'group' ? '#34413a' : 'var(--obsidian-' + canvasNodeModality(node.type, node.data) + ')'} maskColor="#080a09dc" />}
           <ProductionZones frames={zoneFrames} editable={!project.readOnly}
             onEdit={changeProductionZone} onMove={dragProductionZone} onMoveEnd={endProductionZoneDrag} />
