@@ -277,3 +277,7 @@
 .obsidian-node[data-task-tone="done"] .obsidian-status-text { color: var(--obsidian-jade); }
 .obsidian-node[data-task-tone="error"] .obsidian-status-text { color: var(--obsidian-danger); }
 .obsidian-node:is([data-task-tone="queued"], [data-task-tone="running"]) .obsidian-status-text { color: var(--node-accent); }
+.obsidian-node:has(> .native3d-node) { border-radius: 0; background: #131614; box-shadow: none; }
+.obsidian-node:has(> .native3d-node)[data-selected] { border: 1.5px solid var(--node-accent); box-shadow: 0 0 12px color-mix(in srgb, var(--node-accent) 28%, transparent); }
+.obsidian-node:has(> .native3d-node) .native3d-node > header { border-radius: 0; }
+.obsidian-node:has(> .native3d-node) .react-flow__handle::after { width: 8px; height: 8px; border-radius: 0; }

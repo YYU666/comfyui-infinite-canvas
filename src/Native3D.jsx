@@ -11,7 +11,8 @@ import {needsCanonicalLODStage} from './native3d-next-step.js';
 import Native3DIssueViewer from './Native3DIssueViewer.jsx';
 import {lodIssueTargets,lodBlockerLabel} from './native3d-lod-issues.js';
 import {nativeProcessorRunLabel} from './native3d-rerun.js';
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { publishNative3DDrawer } from './native3d-drawer.js';
 import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
 import { thumbnailUrl } from './canvas-thumbnails.js';
@@ -149,28 +150,31 @@ export function Native3DNode({ id, data, selected }) {
   const uvLegend=uvMode==='layout' ? '真实UV图集 · 双击放大' : uvMode==='ao' ? 'AO明暗 · 双击放大' : uvMode==='ao-seams' ? '候选：橙红 AO支持 · 紫 粗分块 · 黄 辅助切割' : uvMode==='grey' ? '灰模外形 · 双击放大' : uvMode==='checker' ? 'UV棋盘 · 双击放大' : '橙：最终UV切缝 · 青：网格边界';
   useEffect(()=>{setEnlarged(false);setUVError('');},[api.projectId,data.posterAssetPath,data.assetPath,uvIdentity?.jobId,uvIdentity?.modelAssetPath]);
   useEffect(()=>{if (!enlarged) return; const close=e=>{if(e.key==='Escape'){e.stopPropagation();setEnlarged(false);}}; window.addEventListener('keydown',close,true); return ()=>window.removeEventListener('keydown',close,true);},[enlarged]);
-  return <div className={`native3d-node ${selected ? 'selected' : ''} ${busy?'native3d-busy':''}`} onPointerDownCapture={()=>api.unlockNotificationSound?.()}>
-    <header><strong title={displayedTitle}>{displayedTitle}</strong><span>3D</span></header>
-    {gpuJobText(data.gpu) && <p className="gpu-job-state" data-gpu-state={data.gpu.state} title={data.gpu.device}>{gpuJobText(data.gpu)}</p>}
-    {api.takeover && (outputData.proxyAssetPath || outputData.assetPath || outputData.resultAssetPath || inputLowPreview) &&
-      <button className="native3d-takeover-button nodrag" type="button" onClick={() => {
-        if (api.takeover(id)?.preview) api.view({takeoverNodeId:id});
-        else setUVError('当前步骤没有已保存的可预览模型。');
-      }}>接手模型</button>}
+  const faceText = Number.isInteger(displayTriangles) && displayTriangles > 0 ? (displayTriangles >= 1000 ? `${(displayTriangles / 1000).toFixed(1)}K` : String(displayTriangles)) : '';
+  const badge = bakePreview ? `BAKE · ${bakePreview.selected?.label || '4K'}` : Number.isFinite(uvReport?.islands) ? `UV · ${uvReport.islands}岛` : Number.isInteger(data.metadata?.geometry?.selectedLodLevel) ? `LOD${data.metadata.geometry.selectedLodLevel}${faceText ? ` · ${faceText}` : ''}` : faceText || '3D';
+  const summary = [gpuJobText(data.gpu), acceptedLOD ? `几何检查通过${faceText ? ` · ${faceText}` : ''}` : data.nativeUVPlan ? `切缝已生成 · ${planConfirmed ? '已确认' : '待确认'}` : `${displayTriangles ? `${displayTriangles} 面 · ` : ''}${({idle:'待开始',completed:'已完成',failed:'失败',error:'失败',submitting:'待提交确认',queued:'排队中',running:'处理中',finishing:'保存中',stale:'输入已改变',cancelled:'已取消',uploading:'导入中'}[data.status]||'待开始')}${needsReview?' · 待复核':''}${textureQc?' · 贴图质检告警':''}`].filter(Boolean).join(' · ');
+  const alertLine = uvError || (data.error ? nativeFailureSummary(data.error, data.operation) : '') || orientationError || (!reviewedWarning && !lodResolution(data) && data.metadata?.geometry?.status === 'blocked' ? `几何未通过 · ${lodBlockerLabel(data.metadata.geometry.blocker)}` : '');
+  const runLabel = retry ? '重新交付' : analyzeAction ? analyzeAction.label : (data.nativeNextStep?.action==='next_lod'||data.nativeResolution)&&!data.nativeJobId?`生成${data.nativeParameters?.retryStage?.toUpperCase()}`:nativeProcessorRunLabel(data,retry);
+  const showRun = !planOutput && !failedLOD && !(data.nativeLocalRepair&&data.nativeJobId);
+  const runDisabled = locked || (data.operation==='uv' && !planStatus?.ready && !retry) || (!source && adapter?.ready === false && !retry);
+  const openTakeover = (focusDrawer) => {
+    if (api.takeover?.(id)?.preview || focusDrawer) api.view({ takeoverNodeId: id, focusDrawer: Boolean(focusDrawer) });
+    else setUVError('当前步骤没有已保存的可预览模型。');
+  };
+  const primary = busy
+    ? { label: '取消', disabled: api.readOnly, onClick: () => api.cancel(id) }
+    : data.nativeUVPlan && data.status === 'completed' && !planConfirmed
+      ? { label: '审阅切缝', disabled: locked, onClick: () => { try { api.openPlan(id); } catch (e) { setUVError(e.message); } } }
+      : showRun
+        ? { label: runLabel, disabled: runDisabled, onClick: () => { if (analyzeAction?.action === 'import') input.current?.click(); else (retry ? api.retryDelivery(id) : api.run(id)).catch(e => setUVError(e.message)); } }
+        : failedLOD && /^lod[1-4]$/.test(failedStage || '')
+          ? { label: rerunBusy ? '提交中…' : `重新生成${failedStage.toUpperCase()}（新种子）`, disabled: api.readOnly || rerunBusy, onClick: async () => { setRerunBusy(true); setUVError(''); try { await api.retryLOD(id); } catch (e) { setUVError(e.message); } finally { setRerunBusy(false); } } }
+          : nextActions[0]
+            ? { label: nextActions[0].label, disabled: locked || nextBusy || nextActions[0].disabled, onClick: async () => { setNextBusy(true); setUVError(''); try { await api.nextStep(id, nextActions[0].action); } catch (e) { setUVError(e.message); } finally { setNextBusy(false); } } }
+            : null;
+  const drawer = <div className="native3d-drawer nodrag nowheel">
     {api.setNotificationSoundEnabled&&<button className="native3d-sound-toggle nodrag" aria-pressed={api.notificationSoundEnabled} onClick={()=>api.setNotificationSoundEnabled(!api.notificationSoundEnabled)}>完成提示音：{api.notificationSoundEnabled?'开':'关'}</button>}
-    {busyFeedback&&<section className="native3d-progress-panel" role="status" aria-live="polite"><strong>{busyFeedback.title}{busyFeedback.progress!==null?` · ${busyFeedback.progress}%`:''}</strong>{busyFeedback.stage&&<span>{busyFeedback.stage}</span>}<progress aria-label={busyFeedback.title} max="100" value={busyFeedback.progress??undefined}/>{busyFeedback.historical&&<small>下方为上一次结果，本次任务尚未完成。</small>}</section>}
-    {source && !data.sourceJobId && <Handle type="target" position={Position.Left} id="model" title="模型输入" />}
-    {source && data.sourceJobId && <Handle type="target" position={Position.Left} id="provenance" />}
-    {source && provenance?.referenceNodeId && <Handle type="target" position={Position.Left} id="reference" style={{top:'72%',background:'#8a8263'}} />}
-    {!source && <Handle type="target" position={Position.Left} id={imageToModel ? 'image' : 'model'}
-      title={imageToModel ? '参考图' : data.operation === 'material_wear' ? '已烘焙模型' : '处理模型 / UV低模'} />}
-    {(['uv_plan','uv','bake'].includes(data.operation)||(data.operation==='source_lod'&&/^lod[1-4]$/.test(data.nativeParameters?.localRepairStage||data.nativeParameters?.retryStage||''))) && <><Handle type="target" position={Position.Left} id="high" style={{top:'72%',background:'#ad9368'}} title="高模参考（必接）"/><span className="native3d-port-high">高模</span></>}
-    {data.operation==='uv' && <><Handle type="target" position={Position.Left} id="plan" style={{top:'88%',background:'#a18bd2'}} title="已确认切缝方案"/><span className="native3d-port-plan">方案</span></>}
-    {data.operation==='uv' && data.status==='completed' && data.nativeProcessEvidenceUV?.jobId===data.nativeJobId && data.nativeProcessEvidenceUV?.assetPath===data.resultAssetPath && <Handle type="target" position={Position.Left} id="diagnostic" style={{top:'82%',background:'#8a8263'}} title="流程证据 · 非执行输入" />}
-    <Handle type="source" position={Position.Right} id={planOutput||data.operation==='uv_plan'?'plan':'model'} title={planOutput||data.operation==='uv_plan'?'切缝方案':'模型输出'} />
-    <div className="native3d-poster" onDoubleClick={e=>{if(data.nativeUVPlan){e.stopPropagation();try{api.openPlan(id);}catch(error){setUVError(error.message);}}}}>{poster&&failedPoster!==poster ? <PosterImage {...(posterThumbnail?{source:poster}:{src:poster,onError:()=>setFailedPoster(poster)})} loading="lazy" decoding="async" draggable={false} alt={posterAlt} title={data.nativeUVPlan?'双击3D审阅':'双击放大预览'} onDoubleClick={e=>{if(data.nativeUVPlan)return;e.stopPropagation();setEnlarged(true);}} /> : <span>{failedPoster===poster&&poster?(bakePreview?'贴图文件暂不可用，请切换通道或查看材质效果':'预览文件暂不可用；可手动更新UV预览'):nativeEmptyPoster(data,inputs)}</span>}</div>
-    {enlarged && poster && createPortal(<Native3DImagePreview key={`${api.projectId}:${poster}`} src={poster} alt={posterAlt} close={()=>setEnlarged(false)} />,document.body)}
-    <div className="native3d-body nodrag nowheel">
+
       <nav className="native3d-stepbar" aria-label="3D制作阶段">{['LOD','局部修复','切缝方案','UV展开','材质烘焙'].map((label,i)=><span key={label} aria-current={(data.nativeLocalRepair||data.metadata?.geometry?.localRepair?1:data.nativeUVPlan||data.operation==='uv_plan'?2:data.operation==='uv'||data.metadata?.operation==='uv'?3:data.operation==='bake'||data.metadata?.operation==='bake'?4:0)===i?'step':undefined}>{label}</span>)}</nav>
       {data.nativeUVPlan&&data.status==='completed'&&!planConfirmed&&<section className="native3d-next-step"><strong>下一步：审阅并确认切缝</strong><button disabled={locked} onClick={()=>{try{api.openPlan(id);}catch(e){setUVError(e.message);}}}>先审阅并确认切缝</button><small>方案尚未确认，因此“展开UV”暂不可用。请在3D审阅面板检查切缝后手动确认。</small></section>}
       {reviewedWarning&&<section className="native3d-reviewed-warning" role="status"><strong>{reviewedWarning.message}</strong><details><summary>查看来源警告与复核凭据</summary><p>{reviewedWarning.blocker}</p><small>来源任务：{reviewedWarning.jobId}。轮廓质量仍未通过；本次结果仅供目视检查。</small></details></section>}
@@ -199,7 +203,7 @@ export function Native3DNode({ id, data, selected }) {
       <details className="native3d-settings"><summary>模型与设置</summary>
       <div className="native3d-settings-content"><div>{data.name || `${fbxReady ? 'FBX / ' : ''}GLB / OBJ 静态资产`}</div><small>顶点 {metadata.vertices ?? '—'}</small>
       {provenance && <div className="native3d-lineage"><small>修复与逐级减面 · 阶段输出</small><small>实际前序：{provenance.parentStage || '修复后的工作网格'}{provenance.parentTriangles ? ` · ${provenance.parentTriangles}面` : ''}</small>{provenance.referenceNodeId && <small>虚线：高模参考</small>}</div>}
-      {planOutput ? <small>当前方案在3D面板审阅；调整设置请返回方案处理节点。</small> : source ? <><input hidden ref={input} type="file" accept={fbxReady ? '.fbx,.glb,.obj' : '.glb,.obj'} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) api.importModel(id,file).catch(() => {}); }} /><button disabled={locked} onClick={() => input.current.click()}>导入{fbxReady ? 'FBX / ' : ''}GLB / OBJ</button><small>{fbxReady ? 'FBX限静态单网格、单材质、单UV；支持内嵌底色和法线贴图，变换烘焙为米。外部贴图、多材质和动画暂不支持。' : 'FBX转换器未就绪，暂不支持FBX导入导出。'}</small></> : <>
+      {planOutput ? <small>当前方案在3D面板审阅；调整设置请返回方案处理节点。</small> : source ? <><button disabled={locked} onClick={() => input.current?.click()}>导入{fbxReady ? 'FBX / ' : ''}GLB / OBJ</button><small>{fbxReady ? 'FBX限静态单网格、单材质、单UV；支持内嵌底色和法线贴图，变换烘焙为米。外部贴图、多材质和动画暂不支持。' : 'FBX转换器未就绪，暂不支持FBX导入导出。'}</small></> : <>
         {adapters.length === 0 && adapter ? <label>执行器<output>{adapter.label || adapter.name || ({uv:'本机UV展开',bake:'本机材质烘焙',repair_lod:'本机修复与逐级减面',image_to_3d:'TripoSR · 独立 CUDA',material_wear:'高模凸棱曲率'}[data.operation]) || data.operation}{adapter.ready === false ? ' · 未就绪' : ''}</output></label> : <label>执行器<select disabled={locked||Boolean(data.nativeParameters?.retryStage)||Boolean(data.nativeLocalRepair)} value={data.adapterId || adapter?.id || adapter?.adapterId || ''} onChange={e => api.patch(id,{ adapterId:e.target.value,nativeParameters:data.nativeAdapterParameters?.[e.target.value] || {},nativeAdapterParameters:{...data.nativeAdapterParameters,[data.adapterId || adapter?.id || '']:data.nativeParameters || {}} })}><option value="">选择执行器</option>{adapters.map(a => <option key={a.id || a.adapterId} value={a.id || a.adapterId}>{a.label || a.name || a.id}{a.ready === false ? ' · 未就绪' : ''}</option>)}</select></label>}
         {data.operation === 'ai_lowpoly' && <small>{nativeLowpolyPresetLabel(data)}</small>}
         {data.nativeLocalRepair?<small>固定绑定当前候选与原高模；修复完成后请检查新结果。失败时可保留更多面。</small>:data.operation==='source_lod'&&data.nativeParameters?.retryStage?<><label>保留LOD0百分比<input type="number" min={nativeAdapterSchema(adapter).properties?.retryKeepPercent?.minimum??0} max={data.nativeResolution?.maxPercent??100} step="any" disabled={locked} value={data.nativeParameters.retryKeepPercent??''} onChange={e=>api.parameter(id,'retryKeepPercent',e.target.value===''?undefined:Number(e.target.value))}/></label><small>目标：{data.nativeParameters.retryStage.toUpperCase()} · 当前种子：{data.nativeParameters.seed}。沿用原任务设置；每次重新生成仅重试本档并自动更换种子，不重跑其他LOD。</small></>:<details><summary>{data.operation==='source_lod'?'LOD保留比例 / 面数上限':data.operation==='uv_plan'?'切缝与展开设置':'高级参数'}</summary>{Object.entries(nativeAdapterSchema(adapter).properties || {}).filter(([key])=>!(data.operation==='uv_plan'&&key==='orientationConfirmed') && !/(Evidence|Plan|Hash|planJobId|planSha256|reviewedBoundary|localRepair|bakeJobId)/.test(key) && !(data.operation==='source_lod'&&['retryJobId','retryStage','localRepairJobId','localRepairStage','seed'].includes(key)) && (data.operation!=='uv' || !inputs.plan || Object.hasOwn(inputs.plan.data.nativeUVPlan?.settings || {},key) || key==='externalGeometryReviewed')).map(([key,rule]) => <label key={key} title={rule.description}>{nativeSettingLabel(key,rule.title)}{rule.enum ? <select disabled={locked} value={nativeParameterValue(adapter,displayedParameters,key,rule) ?? ''} onChange={e => api.parameter(id,key,rule.type === 'number' || rule.type === 'integer' ? Number(e.target.value) : e.target.value)}>{rule.enum.map(v=><option key={String(v)} value={v}>{key==='seamPlanningMode'?({'ai_structure_ao_v2':'AI分区 → 凸角 → 凹槽/AO','ai_coarse_harmonic_v3':'保留AI大块 → 必要补缝 → 固定边界展开'}[v]||String(v)):String(v)}</option>)}</select> : <input disabled={locked} type={rule.type === 'boolean' ? 'checkbox' : ['integer','number'].includes(rule.type) ? 'number' : 'text'} min={rule.minimum} max={rule.maximum} step={rule.type === 'integer' ? 1 : 'any'} checked={rule.type === 'boolean' ? (nativeParameterValue(adapter,displayedParameters,key,rule) ?? false) : undefined} value={rule.type === 'boolean' ? undefined : nativeParameterValue(adapter,displayedParameters,key,rule) ?? ''} onChange={e => api.parameter(id,key,rule.type === 'boolean' ? e.target.checked : ['integer','number'].includes(rule.type) ? Number(e.target.value) : e.target.value)} />}</label>)}</details>}
@@ -226,6 +230,32 @@ export function Native3DNode({ id, data, selected }) {
       {(!reviewedWarning?lodIssueTargets(data):[]).map(target=><button key={target.stage} disabled={locked} onClick={()=>api.openIssues(target,id)}>{target.stage.toUpperCase()} · 查看问题位置 / 诊断概览</button>)}
       {data.error && <div><p className="native3d-error">{nativeFailureSummary(data.error,data.operation)}</p><details><summary>失败详情</summary><small style={{overflowWrap:'anywhere'}}>{typeof data.error==='string'?data.error:JSON.stringify(data.error)}</small></details></div>}
 
+  </div>;
+  useLayoutEffect(() => { publishNative3DDrawer(id, drawer); });
+  useLayoutEffect(() => () => publishNative3DDrawer(id, null), [id]);
+  return <div className={`native3d-node ${selected ? 'selected' : ''} ${busy?'native3d-busy':''}`} onPointerDownCapture={()=>api.unlockNotificationSound?.()}>
+    <header><i className="native3d-mark" aria-hidden="true" /><strong title={displayedTitle}>{displayedTitle}</strong><span className="native3d-badge">{badge}</span></header>
+    <input hidden ref={input} type="file" accept={fbxReady ? '.fbx,.glb,.obj' : '.glb,.obj'} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) api.importModel(id,file).catch(() => {}); }} />
+    {source && !data.sourceJobId && <Handle type="target" position={Position.Left} id="model" title="模型输入" />}
+    {source && data.sourceJobId && <Handle type="target" position={Position.Left} id="provenance" />}
+    {source && provenance?.referenceNodeId && <Handle type="target" position={Position.Left} id="reference" style={{top:'72%',background:'#8a8263'}} />}
+    {!source && <Handle type="target" position={Position.Left} id={imageToModel ? 'image' : 'model'}
+      title={imageToModel ? '参考图' : data.operation === 'material_wear' ? '已烘焙模型' : '处理模型 / UV低模'} />}
+    {(['uv_plan','uv','bake'].includes(data.operation)||(data.operation==='source_lod'&&/^lod[1-4]$/.test(data.nativeParameters?.localRepairStage||data.nativeParameters?.retryStage||''))) && <><Handle type="target" position={Position.Left} id="high" style={{top:'72%',background:'#ad9368'}} title="高模参考（必接）"/><span className="native3d-port-high">高模</span></>}
+    {data.operation==='uv' && <><Handle type="target" position={Position.Left} id="plan" style={{top:'88%',background:'#a18bd2'}} title="已确认切缝方案"/><span className="native3d-port-plan">方案</span></>}
+    {data.operation==='uv' && data.status==='completed' && data.nativeProcessEvidenceUV?.jobId===data.nativeJobId && data.nativeProcessEvidenceUV?.assetPath===data.resultAssetPath && <Handle type="target" position={Position.Left} id="diagnostic" style={{top:'82%',background:'#8a8263'}} title="流程证据 · 非执行输入" />}
+    <Handle type="source" position={Position.Right} id={planOutput||data.operation==='uv_plan'?'plan':'model'} title={planOutput||data.operation==='uv_plan'?'切缝方案':'模型输出'} />
+    <div className="native3d-poster" onDoubleClick={e=>{if(data.nativeUVPlan){e.stopPropagation();try{api.openPlan(id);}catch(error){setUVError(error.message);}}}}>{poster&&failedPoster!==poster ? <PosterImage {...(posterThumbnail?{source:poster}:{src:poster,onError:()=>setFailedPoster(poster)})} loading="lazy" decoding="async" draggable={false} alt={posterAlt} title={data.nativeUVPlan?'双击3D审阅':'双击放大预览'} onDoubleClick={e=>{if(data.nativeUVPlan)return;e.stopPropagation();setEnlarged(true);}} /> : <span>{failedPoster===poster&&poster?(bakePreview?'贴图文件暂不可用，请切换通道或查看材质效果':'预览文件暂不可用；可手动更新UV预览'):nativeEmptyPoster(data,inputs)}</span>}
+      {busyFeedback&&<div className="generation-overlay" role="status" aria-live="polite"><div><i style={{width:`${busyFeedback.progress??0}%`}} /></div><span>{busyFeedback.title}{busyFeedback.progress!==null?` ${busyFeedback.progress}%`:''}{busyFeedback.stage?` · ${busyFeedback.stage}`:''}</span></div>}
+    </div>
+    {enlarged && poster && createPortal(<Native3DImagePreview key={`${api.projectId}:${poster}`} src={poster} alt={posterAlt} close={()=>setEnlarged(false)} />,document.body)}
+    <p className="native3d-summary" title={summary}>{summary}</p>
+    {alertLine && <p className="native3d-alert" role="status" title={alertLine}>{alertLine}</p>}
+    {bakePreview&&<div className="native3d-actions">{bakePreview.channels.map(channel=><button key={channel.key} type="button" disabled={api.readOnly} aria-pressed={bakePreview.mode===channel.key} onClick={()=>api.patch(id,{nativeBakePreviewMode:channel.key})}>{channel.label}</button>)}{bakePreview.lodVariants.length>1&&bakePreview.lodVariants.map(v=><button key={v.key} type="button" onClick={()=>api.view({path:v.path,title:data.title,materialPreview:true,lodVariants:bakePreview.lodVariants,initialLodKey:v.key})}>{v.label}{Number.isInteger(v.triangles)?` (${v.triangles.toLocaleString('zh-CN')})`:''}</button>)}</div>}
+    <div className="native3d-card-actions">
+      {primary&&<button type="button" className="nodrag" disabled={primary.disabled} onClick={primary.onClick}>{primary.label}</button>}
+      {api.takeover&&<button className="native3d-takeover-button nodrag" type="button" onClick={()=>openTakeover(false)}>接手模型</button>}
+      <button type="button" className="nodrag" onClick={()=>openTakeover(true)}>参数 / 更多</button>
     </div>
   </div>;
 }
@@ -270,6 +300,7 @@ function Native3DAssetViewer({ asset, projectId, close, takeover }) {
       for (const geometry of geometries) geometry.dispose();
       renderer?.dispose(); renderer?.forceContextLoss(); renderer?.domElement.remove();
     };
+    if (!activePath) { setError(''); setObjects([]); return () => { disposed = true; abort.abort(); }; }
     (async () => {
       const THREE = await import('three');
       const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
@@ -360,7 +391,7 @@ function Native3DAssetViewer({ asset, projectId, close, takeover }) {
           <div ref={host} className="native3d-takeover-viewport" aria-label="实时 3D 视口" data-model-ready={objects.length > 0} />
           {error ? <p role="alert">{error}</p> : !objects.length ? <p role="status">正在加载已保存模型</p> : null}
         </div>
-        <Native3DTakeover {...takeover} objects={objects} />
+        <Native3DTakeover {...takeover} objects={objects} focusDrawer={takeover.focusDrawer} />
       </div>
     </div>
   </div>;
@@ -380,6 +411,7 @@ export function Native3DViewer(props) {
   const api = useContext(Native3DContext);
   if (props.asset.takeoverNodeId) {
     const state = api.takeover?.(props.asset.takeoverNodeId);
-    return state?.preview ? <Native3DAssetViewer {...props} asset={state.preview} takeover={{api,state}} /> : null;
+    if (!state || (!state.preview && !props.asset.focusDrawer)) return null;
+    return <Native3DAssetViewer {...props} asset={state.preview || { path: '', title: state.title, materialPreview: false, lodVariants: [] }} takeover={{api, state, focusDrawer: Boolean(props.asset.focusDrawer)}} />;
   }
   return props.asset.issueTarget ? <Native3DIssueViewer {...props}/> : props.asset.plan ? <Native3DPlanViewer {...props}/> : <Native3DAssetViewer {...props}/>;}

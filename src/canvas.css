@@ -192,7 +192,7 @@
 .canvas-view-compact .media-caption { display: none; }
 .canvas-view-compact .note-shell textarea { height: 78px; resize: none; }
 .canvas-view-compact .video-url-import, .canvas-view-compact .prompt-editor-wrap, .canvas-view-compact .optimizer-run, .canvas-view-compact .optimizer-result, .canvas-view-compact .optimizer-connection { display: none; }
-.canvas-view-compact .native3d-body, .canvas-view-placeholder .native3d-body { display: none !important; }
+.canvas-view-compact .native3d-node .native3d-drawer, .canvas-view-placeholder .native3d-node .native3d-drawer { display: none !important; }
 .canvas-view-placeholder .media-preview, .canvas-view-placeholder .generator-preview { height: 64px; }
 .canvas-view-placeholder .media-preview > img, .canvas-view-placeholder .media-preview > video, .canvas-view-placeholder .generator-preview > img, .canvas-view-placeholder .generator-preview > video { visibility: hidden; }
 .canvas-view-placeholder .media-preview::after, .canvas-view-placeholder .generator-preview::after { content: "轻量占位"; position: absolute; inset: 0; display: grid; place-items: center; color: #65656d; font-size: 9px; pointer-events: none; }
