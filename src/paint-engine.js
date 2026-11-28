@@ -14,7 +14,7 @@ export const PAPER_COLORS = {
 export const BASIC_ROUND_BRUSH = {
   id: 'round', name: '圆笔', kind: 'round', size: 16, hardness: 80, spacing: 12,
   opacity: 100, flow: 100, pressureSize: true, pressureOpacity: false, minDiameter: 20,
-  angle: 0, followDirection: false, sizeJitter: 0, angleJitter: 0, scatter: 0, smoothing: 25, seed: 1,
+  angle: 0, followDirection: false, sizeJitter: 0, angleJitter: 0, scatter: 0, smoothing: 10, seed: 1,
 };
 
 export class PaintBuffer {
@@ -244,10 +244,54 @@ export function scaleStamp(stamp, maxEdge = 512) {
   return clampStampMaxEdge(stamp, maxEdge);
 }
 
-function brushStamp(brush, diameter) {
-  if (brush.stamp?.alpha) return resizeStamp(brush.stamp, Math.max(1, Math.round(diameter)));
-  if (brush.kind === 'pixel') return createRoundStamp(Math.max(1, Math.round(diameter)), 100, true);
-  return createRoundStamp(diameter, brush.hardness ?? 100, false);
+const STAMP_CACHE_LIMIT = 64;
+const brushStampCache = new Map();
+const stampIdentity = new WeakMap();
+let stampSerial = 0;
+
+function brushCacheKey(brush, diameter) {
+  const size = Math.max(1, Math.round(diameter));
+  const pixel = brush.kind === 'pixel' ? 1 : 0;
+  const hardness = pixel ? 100 : Math.round(Number(brush.hardness ?? 100));
+  let stampToken = 'round';
+  if (pixel) stampToken = 'pixel';
+  else if (brush.stamp?.alpha) {
+    let token = stampIdentity.get(brush.stamp);
+    if (!token) {
+      stampSerial += 1;
+      token = stampSerial;
+      stampIdentity.set(brush.stamp, token);
+    }
+    stampToken = `stamp${token}`;
+  }
+  return `${brush.id || 'brush'}|${stampToken}|${size}|${hardness}|${pixel}`;
+}
+
+export function clearBrushStampCache() {
+  brushStampCache.clear();
+}
+
+export function brushStampCacheSize() {
+  return brushStampCache.size;
+}
+
+export function brushStamp(brush, diameter) {
+  const key = brushCacheKey(brush, diameter);
+  const cached = brushStampCache.get(key);
+  if (cached) {
+    brushStampCache.delete(key);
+    brushStampCache.set(key, cached);
+    return cached;
+  }
+  const size = Math.max(1, Math.round(diameter));
+  const stamp = brush.kind === 'pixel'
+    ? createRoundStamp(size, 100, true)
+    : brush.stamp?.alpha
+      ? resizeStamp(brush.stamp, size)
+      : createRoundStamp(size, brush.hardness ?? 100, false);
+  brushStampCache.set(key, stamp);
+  while (brushStampCache.size > STAMP_CACHE_LIMIT) brushStampCache.delete(brushStampCache.keys().next().value);
+  return stamp;
 }
 
 function smoothPoints(points, amount) {
@@ -422,35 +466,20 @@ function unionRect(a, b) {
   return { x, y, width: right - x, height: bottom - y };
 }
 
-function rememberStrokeBefore(session, rect) {
+function accumulateStrokeDirty(session, rect) {
   const bounds = clipRect(session.buffer, rect);
   if (!bounds.width || !bounds.height) return null;
-  if (!session.dirty) {
-    session.dirty = bounds;
-    session.before = captureRect(session.buffer, bounds).pixels;
-    return bounds;
-  }
-  const next = unionRect(session.dirty, bounds);
-  if (next.width === session.dirty.width && next.height === session.dirty.height && next.x === session.dirty.x && next.y === session.dirty.y) return bounds;
-  const pixels = new Uint8ClampedArray(next.width * next.height * 4);
-  const offsetX = session.dirty.x - next.x;
-  const offsetY = session.dirty.y - next.y;
-  for (let y = 0; y < session.dirty.height; y += 1) {
-    pixels.set(session.before.subarray(y * session.dirty.width * 4, (y + 1) * session.dirty.width * 4), ((y + offsetY) * next.width + offsetX) * 4);
-  }
-  for (let y = 0; y < next.height; y += 1) {
-    for (let x = 0; x < next.width; x += 1) {
-      const gx = next.x + x;
-      const gy = next.y + y;
-      const inside = gx >= session.dirty.x && gy >= session.dirty.y && gx < session.dirty.x + session.dirty.width && gy < session.dirty.y + session.dirty.height;
-      if (inside) continue;
-      const from = (gy * session.buffer.width + gx) * 4;
-      pixels.set(session.buffer.data.subarray(from, from + 4), (y * next.width + x) * 4);
-    }
-  }
-  session.dirty = next;
-  session.before = pixels;
+  session.dirty = session.dirty ? unionRect(session.dirty, bounds) : bounds;
   return bounds;
+}
+
+function cropSnapshot(data, sourceWidth, bounds) {
+  const pixels = new Uint8ClampedArray(bounds.width * bounds.height * 4);
+  for (let y = 0; y < bounds.height; y += 1) {
+    const from = ((bounds.y + y) * sourceWidth + bounds.x) * 4;
+    pixels.set(data.subarray(from, from + bounds.width * 4), y * bounds.width * 4);
+  }
+  return pixels;
 }
 
 function placeStrokeSample(session, point, index, previous) {
@@ -473,11 +502,11 @@ function placeStrokeSample(session, point, index, previous) {
     y += Math.sin(heading) * distance;
   }
   const stamp = session.options.eraser && session.options.eraserTip === false
-    ? createRoundStamp(diameter, brush.hardness ?? 100, false)
+    ? brushStamp({ ...brush, stamp: null, kind: 'round' }, diameter)
     : brushStamp(brush, diameter);
   const pad = Math.hypot(stamp.width, stamp.height) / 2 + 3;
   const rect = { x: x - pad, y: y - pad, width: pad * 2, height: pad * 2 };
-  rememberStrokeBefore(session, rect);
+  accumulateStrokeDirty(session, rect);
   stampAt(session.buffer, stamp, x, y, session.color, flow, { ...session.options, angle, eraser: Boolean(session.options.eraser) });
   return clipRect(session.buffer, rect);
 }
@@ -492,7 +521,7 @@ export function createStrokeSession(buffer, brush, color, options = {}) {
     sampleIndex: 0,
     random: mulberry32(options.seed ?? brush.seed ?? 1),
     dirty: null,
-    before: null,
+    beforeSnapshot: buffer?.data ? new Uint8ClampedArray(buffer.data) : null,
     lastDirty: null,
   };
 }
@@ -543,11 +572,15 @@ export function finishStroke(session) {
     const gap = Math.hypot(session.previousSample.x - session.placed.x, session.previousSample.y - session.placed.y);
     if (gap > 0.5) session.lastDirty = placeStrokeSample(session, session.previousSample, session.sampleIndex, session.placed);
   }
-  if (!session.dirty || !session.before) return null;
-  const after = captureRect(session.buffer, session.dirty);
+  const snapshot = session.beforeSnapshot;
+  session.beforeSnapshot = null;
+  if (!session.dirty || !snapshot) return null;
+  const bounds = clipRect(session.buffer, session.dirty);
+  if (!bounds.width || !bounds.height) return null;
+  const after = captureRect(session.buffer, bounds);
   return {
-    type: 'pixels', layerId: session.options.layerId || '', ...session.dirty,
-    before: session.before, after: after.pixels,
+    type: 'pixels', layerId: session.options.layerId || '', ...bounds,
+    before: cropSnapshot(snapshot, session.buffer.width, bounds), after: after.pixels,
   };
 }
 
@@ -1214,6 +1247,33 @@ export function exportPaint(data, buffers, { base = null } = {}) {
   return output;
 }
 
+let fittedBaseCache = new WeakMap();
+let fitCacheHits = 0;
+let fitCacheMisses = 0;
+
+export function previewFitCacheStats() {
+  return { hits: fitCacheHits, misses: fitCacheMisses };
+}
+
+export function resetPreviewFitCache() {
+  fittedBaseCache = new WeakMap();
+  fitCacheHits = 0;
+  fitCacheMisses = 0;
+}
+
+function fittedBase(base, width, height) {
+  if (!base) return null;
+  const cached = fittedBaseCache.get(base);
+  if (cached && cached.width === width && cached.height === height) {
+    fitCacheHits += 1;
+    return cached.buffer;
+  }
+  fitCacheMisses += 1;
+  const buffer = fitBuffer(base, width, height);
+  fittedBaseCache.set(base, { width, height, buffer });
+  return buffer;
+}
+
 function fitBuffer(source, width, height) {
   if (source.width === width && source.height === height) return source;
   const next = new PaintBuffer(width, height);
@@ -1260,7 +1320,8 @@ export function previewComposite(doc, buffers, { base = null, guides = false } =
   const output = new PaintBuffer(doc.paper.width, doc.paper.height, PAPER_COLORS[doc.paper.background] || PAPER_COLORS.transparent);
   if (doc.paper.texture && doc.paper.texture !== 'none') applyTexture(output, doc.paper.texture, doc.paper.textureOpacity);
   const paint = compositeLayers(doc.paper.width, doc.paper.height, doc.layers, buffers);
-  if (base && doc.baseOverlay.visible && doc.baseOverlay.position !== 'above') blendBuffer(output, fitBuffer(base, doc.paper.width, doc.paper.height), 'normal', doc.baseOverlay.opacity / 100);
+  const fitted = base && doc.baseOverlay.visible ? fittedBase(base, doc.paper.width, doc.paper.height) : null;
+  if (fitted && doc.baseOverlay.position !== 'above') blendBuffer(output, fitted, 'normal', doc.baseOverlay.opacity / 100);
   if (doc.outputMode === 'mask') {
     const mask = toMask(paint);
     const tint = parseColor(doc.maskOverlayColor || 'rgba(255,48,56,0.5)');
@@ -1270,7 +1331,7 @@ export function previewComposite(doc, buffers, { base = null, guides = false } =
       output.data.set(next, index);
     }
   } else blendBuffer(output, paint, 'normal', 1);
-  if (base && doc.baseOverlay.visible && doc.baseOverlay.position === 'above') blendBuffer(output, fitBuffer(base, doc.paper.width, doc.paper.height), 'normal', doc.baseOverlay.opacity / 100);
+  if (fitted && doc.baseOverlay.position === 'above') blendBuffer(output, fitted, 'normal', doc.baseOverlay.opacity / 100);
   if (guides) drawGuides(output, doc.paper.guideGrid);
   return output;
 }
@@ -1312,7 +1373,7 @@ export function previewRect(doc, buffers, rect, { base = null, guides = false } 
   const pixels = new Uint8ClampedArray(Math.max(1, bounds.width) * Math.max(1, bounds.height) * 4);
   if (!bounds.width || !bounds.height) return { ...bounds, pixels };
   const paper = (PAPER_COLORS[doc.paper.background] || PAPER_COLORS.transparent).slice();
-  const fitted = base ? fitBuffer(base, width, height) : null;
+  const fitted = base ? fittedBase(base, width, height) : null;
   const lines = guides ? guideLines(doc.paper.guideGrid, width, height) : [];
   const layers = doc.layers || [];
   for (let y = 0; y < bounds.height; y += 1) {

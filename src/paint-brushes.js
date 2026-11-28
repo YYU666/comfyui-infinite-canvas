@@ -71,12 +71,12 @@ function markerStamp(width, height, angle) {
 
 const base = {
   size: 16, hardness: 80, spacing: 12, opacity: 100, flow: 100,
-  pressureSize: false, pressureOpacity: false, minDiameter: 20, smoothing: 20,
+  pressureSize: false, pressureOpacity: false, minDiameter: 20, smoothing: 10,
   angle: 0, followDirection: false, sizeJitter: 0, angleJitter: 0, scatter: 0, blendMode: 'normal',
 };
 
 export const BUILTIN_BRUSHES = [
-  { id: 'builtin-hard-round', builtin: true, group: '内置', name: '硬圆勾线笔', kind: 'round', params: { ...base, size: 8, hardness: 95, spacing: 6, pressureSize: true, minDiameter: 12, smoothing: 18 } },
+  { id: 'builtin-hard-round', builtin: true, group: '内置', name: '硬圆勾线笔', kind: 'round', params: { ...base, size: 8, hardness: 95, spacing: 6, pressureSize: true, minDiameter: 12, smoothing: 10 } },
   { id: 'builtin-soft-air', builtin: true, group: '内置', name: '软边喷枪', kind: 'round', params: { ...base, size: 48, hardness: 0, spacing: 8, opacity: 35, flow: 28, pressureOpacity: true, pressureSize: true, minDiameter: 40, smoothing: 30 } },
   { id: 'builtin-pencil-2b', builtin: true, group: '内置', name: '2B 素描铅笔', kind: 'stamp', stamp: grainStamp(24, 55, 21, 110), params: { ...base, size: 10, spacing: 8, opacity: 80, pressureSize: true, pressureOpacity: true, minDiameter: 25, sizeJitter: 8, smoothing: 12 } },
   { id: 'builtin-charcoal', builtin: true, group: '内置', name: '炭笔肌理笔', kind: 'stamp', stamp: grainStamp(36, 35, 77, 180), params: { ...base, size: 28, spacing: 10, opacity: 70, followDirection: true, angleJitter: 18, scatter: 0.15, pressureSize: true, minDiameter: 30, smoothing: 8 } },
@@ -101,5 +101,5 @@ export function brushState(entry) {
 }
 
 export const IMPORT_BRUSH_PARAMS = {
-  ...base, size: 32, hardness: 100, spacing: 12, pressureSize: true, minDiameter: 20, smoothing: 15,
+  ...base, size: 32, hardness: 100, spacing: 12, pressureSize: true, minDiameter: 20, smoothing: 10,
 };
