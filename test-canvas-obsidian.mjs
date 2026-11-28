@@ -51,5 +51,8 @@ test('connected graph stamp follows neighbor assets and ignores movement', () =>
   assert.equal(connectedGraphStamp('art', edges, lookup), before);
   lookup.get('source').data = { ...lookup.get('source').data, url: '/api/projects/p/assets/a.png', assetPath: 'assets/a.png' };
   assert.notEqual(connectedGraphStamp('art', edges, lookup), before);
+  const adjusted = connectedGraphStamp('art', edges, lookup);
+  lookup.get('source').data = { ...lookup.get('source').data, brightness: 20 };
+  assert.notEqual(connectedGraphStamp('art', edges, lookup), adjusted);
   assert.equal(connectedGraphStamp('note', edges, lookup), '');
 });

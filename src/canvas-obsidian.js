@@ -54,7 +54,10 @@ export function canvasNodeStatus(type, data = {}) {
   return { tone: 'idle', label: '' };
 }
 
-const CONNECTED_FIELDS = ['assetPath', 'url', 'title', 'kind', 'name', 'posterAssetPath', 'mediaRole', 'status', 'resultUrl', 'resultAssetPath'];
+function connectedDataStamp(data) {
+  try { return JSON.stringify(data || {}); }
+  catch { return ''; }
+}
 
 export function connectedGraphStamp(nodeId, edges = [], nodeLookup) {
   let stamp = '';
@@ -62,10 +65,7 @@ export function connectedGraphStamp(nodeId, edges = [], nodeLookup) {
     if (edge.source !== nodeId && edge.target !== nodeId) continue;
     const otherId = edge.source === nodeId ? edge.target : edge.source;
     const other = nodeLookup?.get?.(otherId);
-    const data = other?.data || {};
-    stamp += `${edge.id}\0${edge.source}\0${edge.target}\0${edge.sourceHandle || ''}\0${edge.targetHandle || ''}\0${other?.type || ''}`;
-    for (const field of CONNECTED_FIELDS) stamp += `\0${data[field] || ''}`;
-    stamp += '\n';
+    stamp += `${edge.id}\0${edge.source}\0${edge.target}\0${edge.sourceHandle || ''}\0${edge.targetHandle || ''}\0${other?.type || ''}\0${connectedDataStamp(other?.data)}\n`;
   }
   return stamp;
 }
