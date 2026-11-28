@@ -54,6 +54,22 @@ export function canvasNodeStatus(type, data = {}) {
   return { tone: 'idle', label: '' };
 }
 
+const CONNECTED_FIELDS = ['assetPath', 'url', 'title', 'kind', 'name', 'posterAssetPath', 'mediaRole', 'status', 'resultUrl', 'resultAssetPath'];
+
+export function connectedGraphStamp(nodeId, edges = [], nodeLookup) {
+  let stamp = '';
+  for (const edge of edges) {
+    if (edge.source !== nodeId && edge.target !== nodeId) continue;
+    const otherId = edge.source === nodeId ? edge.target : edge.source;
+    const other = nodeLookup?.get?.(otherId);
+    const data = other?.data || {};
+    stamp += `${edge.id}\0${edge.source}\0${edge.target}\0${edge.sourceHandle || ''}\0${edge.targetHandle || ''}\0${other?.type || ''}`;
+    for (const field of CONNECTED_FIELDS) stamp += `\0${data[field] || ''}`;
+    stamp += '\n';
+  }
+  return stamp;
+}
+
 export function canvasEdgeLook(source, sourceHandle, target, targetHandle) {
   const from = portTone(source, sourceHandle, 'source');
   const mixedReference = target?.type === 'generator' && targetHandle === 'references'
