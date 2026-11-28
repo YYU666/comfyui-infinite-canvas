@@ -39,6 +39,7 @@
 .obsidian-node[data-modality="jade"] { --node-accent: var(--obsidian-jade); --port-accent: var(--obsidian-jade); }
 .obsidian-node[data-modality="coral"] { --node-accent: var(--obsidian-coral); --port-accent: var(--obsidian-coral); }
 .obsidian-node[data-modality="violet"] { --node-accent: var(--obsidian-violet); }
+/* paint nodes share the violet image-creation modality; image ports stay pearl. */
 .obsidian-node:hover { border-color: #ffffff37; }
 .obsidian-node[data-selected] {
   border-color: var(--node-accent);

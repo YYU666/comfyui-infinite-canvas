@@ -24,7 +24,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
-  ArrowDownToLine, ArrowUp, AudioLines, Check, ChevronDown, CircleHelp, Clock3,
+  ArrowDownToLine, ArrowUp, AudioLines, Brush, Check, ChevronDown, CircleHelp, Clock3,
   Cpu, Crosshair, Film, FolderOpen, Grid2X2, History, Image as ImageIcon, Layers3,
   Library, Link2, LoaderCircle, Magnet, Map as MapIcon, Maximize2, MemoryStick, Minus, MoreHorizontal, MousePointer2,
   Music2, Pin, Plus, Redo2, RefreshCw, Search, Settings2, Sparkles, Square, Trash2,
@@ -49,6 +49,9 @@ import PromptEditor from './PromptEditor';
 import QwenReferenceEditor from './QwenReferenceEditor';
 import { qwenCanvasReferences, bindQwenPrompt, validateQwenReferences, compileQwenPrompt } from './qwen-references';
 import MaskEditor from './MaskEditor';
+import PaintNode from './PaintNode';
+import PaintEditor from './PaintEditor';
+import { createPaintData, paintSignature } from './paint-document.js';
 import { isMaskNode, maskSourceKey, canvasMaskGuide, qwenCanvasMask, validateCanvasMask } from './canvas-mask';
 import { planCanvasConnection } from './canvas-connections';
 import ImageLightbox from './ImageLightbox';
@@ -613,6 +616,10 @@ function BuiltinGeneratorNode({ id, data, selected }) {
   </div>;
 }
 
+function PaintCanvasNode(props) {
+  const actions = useContext(NodeContext);
+  return <PaintNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
+}
 function ImageProcessCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <ImageProcessNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
@@ -633,7 +640,7 @@ function SpriteAtlasCanvasNode(props) {
   const actions = useContext(NodeContext);
   return <SpriteAtlasNode {...props} actions={actions} title={<NodeTitle id={props.id} data={props.data} kind="generator" />} toolbar={<NodeActions id={props.id} data={props.data} selected={props.selected} />} />;
 }
-const nodeTypes = frameCanvasNodes({ native3d: React.memo(Native3DNode), videoWhitePlate: React.memo(VideoPlateCanvasNode), videoLocalRepair: React.memo(VideoRepairCanvasNode), videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode) });
+const nodeTypes = frameCanvasNodes({ native3d: React.memo(Native3DNode), videoWhitePlate: React.memo(VideoPlateCanvasNode), videoLocalRepair: React.memo(VideoRepairCanvasNode), videoChromaKey: React.memo(VideoChromaCanvasNode), videoSpeed: React.memo(VideoRhythmCanvasNode), videoTimeRemap: React.memo(VideoRhythmCanvasNode), spriteAtlas: React.memo(SpriteAtlasCanvasNode), artDirector: React.memo(ArtDirectorCanvasNode), note: React.memo(NoteNode), media: React.memo(MediaNode), generator: React.memo(GeneratorNode), prompt: React.memo(PromptOptimizerNode), imageProcess: React.memo(ImageProcessCanvasNode), videoEdit: React.memo(VideoEditCanvasNode), paint: React.memo(PaintCanvasNode) });
 
 function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onReload }) {
   const saved = useMemo(() => {
@@ -728,6 +735,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     } catch (error) { setPixalReadiness('Pixal3D · ' + error.message); }
   };
   const [nodeMenu, setNodeMenu] = useState(null);
+  const [paintEditorId, setPaintEditorId] = useState(null);
+  const [paintLan, setPaintLan] = useState(false);
   const [h3Comparison, setH3Comparison] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const previewCloseRef = useRef(null);
@@ -843,6 +852,15 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       },
     });
   }, [project.readOnly]);
+  const persistPaintProject = useCallback(async () => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try { await persistProject(); return; }
+      catch (error) {
+        if (error?.code !== 'SAVE_DEFERRED' || attempt === 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }, [persistProject]);
   const retryProjectSave = useCallback(() => retryCurrentProjectSave({
     getContext: () => ({ projectId: projectRef.current.id, readOnly: projectRef.current.readOnly,
       switching: switchingRef.current, controller: autoSaveRef.current, revision: revisionRef.current }),
@@ -1113,6 +1131,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     if (mode === 'qwenEdit') return qwenCanvasReferences(node, nodesRef.current, edgesRef.current);
     return edgesRef.current.filter((edge) => edge.target === id).map((edge) => {
       const source = nodesRef.current.find((item) => item.id === edge.source);
+      if (source?.type === 'paint') return { ...source, data: { kind: 'image', title: source.data.title || '绘画节点', url: source.data.url || '', assetPath: source.data.assetPath || '', name: 'paint.png', slot: edge.targetHandle, paintSignature: source.data.paintSignature || '', mediaRole: source.data.outputMode === 'mask' ? 'mask' : undefined } };
       return source?.type === 'media' ? { ...source, data: { ...source.data, slot: edge.targetHandle } } : null;
     }).filter(Boolean).filter((source) => mode === 'customWorkflow' ? source.data.kind === 'image' && Boolean(customInput(node.data, source.data.slot)) : mode === 'mossPose' ? source.data.kind === 'image' && ['guide', 'identity'].includes(source.data.slot) : mode === 'reference' ? source.data.slot === 'references' : mode === 'frames' ? ['first', 'last'].includes(source.data.slot) && source.data.kind === 'image' : ['imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism'].includes(mode) ? source.data.kind === 'image' && (source.data.slot === 'guide' || (mode === 'characterSheet' && ['body_reference', 'back_reference'].includes(source.data.slot)) || (['qwenEdit', 'outfitEdit', 'localRealism'].includes(mode) && source.data.slot === 'identity')) : mode === 'videoSuperResolution' ? source.data.slot === 'guide' && source.data.kind === 'video' : ['swap', 'upscale'].includes(mode) ? (source.data.slot === 'guide' && source.data.kind === 'video') || (source.data.slot === 'identity' && source.data.kind === 'image') : false);
   }, []);
@@ -2079,6 +2098,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     else if (type === 'spriteAtlas') data = { title: '3D 角色转多方向图集', status: 'idle', spriteInputPath: '', spriteOptions: { ...DEFAULT_SPRITE_OPTIONS }, ...extra };
     else if (type === 'artDirector') data = { title: '电子主美 · 图解分析', status: 'idle', brief: '', preserve: '', referencePurposes: {}, ...extra };
     else if (type === 'imageProcess') data = { ...DEFAULT_ADJUSTMENTS, adjustmentType: 'basic', mode: 'colorAdjust', title: '颜色调整', status: 'idle', blendMode: 'normal', opacity: 100, fit: 'cover', maskChannel: 'luminance', maskInvert: false, ...extra };
+    else if (type === 'paint') data = createPaintData(extra);
     else if (type === 'videoSpeed') data = { title: '恒定速度', status: 'idle', ...defaultSpeedSettings(), ...extra };
     else if (type === 'videoTimeRemap') data = { title: '时间重映射', status: 'idle', remapKeyframes: defaultRemapKeyframes(), ...extra };
     else if (type === 'videoChromaKey') data = { title: '绿幕扣像合成', status: 'idle', ...defaultChromaSettings(), ...extra };
@@ -2639,7 +2659,53 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
 
   const resumeVideoAnalysis = useCallback((id, signal) => videoEditRunnerRef.current.resumeAnalysis(id, signal), []);
   const cancelVideoAnalysis = useCallback((id) => videoEditRunnerRef.current.cancelAnalysis(id), []);
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const savePaintDocument = useCallback(async (nodeId, payload) => {
+    if (projectRef.current.readOnly || switchingRef.current) throw new Error('当前画布不可编辑。');
+    const node = nodesRef.current.find((item) => item.id === nodeId);
+    if (!node || node.type !== 'paint') throw new Error('找不到绘画节点。');
+    const layerAssets = {};
+    for (const layer of payload.layers) {
+      const file = new File([layer.blob], `${layer.id}.png`, { type: 'image/png' });
+      const saved = await saveCanvasAsset(file, (result) => ({ ok: true, assetPath: result.asset.path, url: assetUrl(projectRef.current.id, result.asset.path) }), nodeId);
+      if (!saved?.ok) throw new Error(saved?.error?.message || '图层保存失败。');
+      layerAssets[layer.id] = saved;
+    }
+    const flat = new File([payload.flattened], `${payload.data.title || 'paint'}.png`, { type: 'image/png' });
+    const savedFlat = await saveCanvasAsset(flat, (result) => ({ ok: true, assetPath: result.asset.path, url: assetUrl(projectRef.current.id, result.asset.path) }), nodeId);
+    if (!savedFlat?.ok) throw new Error(savedFlat?.error?.message || '绘画输出保存失败。');
+    const data = {
+      ...payload.data,
+      layers: payload.data.layers.map((layer) => ({ ...layer, assetPath: layerAssets[layer.id]?.assetPath || '', url: layerAssets[layer.id]?.url || '' })),
+      assetPath: savedFlat.assetPath,
+      url: savedFlat.url,
+      touched: true,
+    };
+    data.paintSignature = paintSignature(data);
+    flushSync(() => updateNode(nodeId, data));
+    await persistPaintProject();
+    return data;
+  }, [persistPaintProject, saveCanvasAsset, updateNode]);
+  const extractPaintLayer = useCallback(async (nodeId, { blob, mode, title }) => {
+    if (projectRef.current.readOnly || switchingRef.current) throw new Error('当前画布不可编辑。');
+    const source = nodesRef.current.find((item) => item.id === nodeId);
+    if (!source) throw new Error('找不到绘画节点。');
+    const file = new File([blob], `${title || '图层'}.png`, { type: 'image/png' });
+    let id;
+    flushSync(() => {
+      id = addNode('image', { title: mode === 'mask' ? `${title || '图层'} · 遮罩` : `${title || '图层'} · 透明图`, ...(mode === 'mask' ? { mediaRole: 'mask' } : {}) }, { x: source.position.x + 420, y: source.position.y });
+    });
+    const saved = await saveCanvasAsset(file, (result) => {
+      const patch = { name: file.name, assetPath: result.asset.path, url: assetUrl(projectRef.current.id, result.asset.path), localFile: true, kind: 'image', ...(mode === 'mask' ? { mediaRole: 'mask' } : {}) };
+      const nextNodes = nodesRef.current.map((item) => item.id === id ? { ...item, data: { ...item.data, ...patch } } : item);
+      nodesRef.current = nextNodes;
+      setNodes(nextNodes);
+      return { ok: true, assetPath: result.asset.path };
+    }, id);
+    if (!saved?.ok) throw new Error(saved?.error?.message || '拆出图层失败。');
+    await persistPaintProject();
+    return id;
+  }, [addNode, persistPaintProject, saveCanvasAsset, setNodes]);
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, openPaintEditor: (id) => { setPaintLan(false); setPaintEditorId(id); }, openPaintLan: (id) => { setPaintEditorId(id); setPaintLan(true); }, savePaintDocument, extractPaintLayer, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly, savePaintDocument, extractPaintLayer]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -2925,6 +2991,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <div className="add-menu-title">本地图片工具与素材</div>
           <button onClick={() => addNode(...NODE_PRESETS.local_mask, addMenu.flow)}><i><Crosshair size={17} /></i><span>局部遮罩修改<small>绘制修改范围 · 连接图生图遮罩输入</small></span><Plus size={13} /></button>
           <button disabled={project.readOnly} onClick={() => pureRefFileRef.current?.click()}><i><Upload size={17} /></i><span>导入 PureRef 图片<small>.pur 内嵌图片 → 普通图片节点 · 网格排列</small></span><Plus size={13} /></button>
+          <button onClick={() => addNode('paint', { title: '绘画节点' }, addMenu.flow)}><i><Brush size={17} /></i><span>绘画节点<small>纸张 · 12 层 · 透明层 / 成图 / 遮罩</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'colorAdjust', title: '颜色调整' }, addMenu.flow)}><i><Settings2 size={17} /></i><span>图片调色<small>曲线 · 波峰色阶 · 曝光 · HSL · 色彩平衡等</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'imageBlend', title: '图像混合' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>图像混合<small>底图 + 叠加图 · 14 种混合模式 · 可选遮罩</small></span><Plus size={13} /></button>
           <button onClick={() => addNode('imageProcess', { mode: 'channelPack', title: 'RGBA 通道合并', packPreview: 'rgb' }, addMenu.flow)}><i><Layers3 size={17} /></i><span>RGBA 通道合并<small>四张灰度贴图 → RGBA · 32 位 TGA 导出</small></span><Plus size={13} /></button>
@@ -3026,6 +3093,15 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       }} />}
       {nodeShare && <WorkflowShare {...nodeShare} onClose={() => setNodeShare(null)} onSend={async (packet) => { setReferenceLibrary(null); setNodeLibraryMounted(true); setNodeLibraryOpen(true); setSharePacket(packet); setNodeShare(null); }} />}
       {referenceLibraryTab && <ReferenceLibrary library={referenceLibraryTab} open={Boolean(referenceLibrary)} onLibraryChange={openReferenceLibrary} readOnly={project.readOnly} onImport={importReference} onClose={() => setReferenceLibrary(null)} />}
+      {paintEditorId && nodes.some((item) => item.id === paintEditorId) && <PaintEditor key={paintEditorId} node={nodes.find((item) => item.id === paintEditorId)} swatches={nodes.filter((item) => item.type === 'paint' && item.id !== paintEditorId).flatMap((item) => item.data.swatches || [])} baseImage={(() => {
+        const edge = edges.find((item) => item.target === paintEditorId && item.targetHandle === 'base');
+        const source = nodes.find((item) => item.id === edge?.source);
+        if (!source) return null;
+        if (source.type === 'paint' && source.data.url) return { url: source.data.url, width: source.data.paper?.width, height: source.data.paper?.height };
+        if (source.type === 'imageProcess' && source.data.processedUrl) return { url: source.data.processedUrl };
+        if (source.type === 'media' && source.data.kind === 'image' && source.data.url) return { url: source.data.url };
+        return null;
+      })()} readOnly={project.readOnly} lanRequest={paintLan} onClose={() => { setPaintEditorId(null); setPaintLan(false); }} onSave={(payload) => context.savePaintDocument(paintEditorId, payload)} onExtract={(payload) => context.extractPaintLayer(paintEditorId, payload)} />}
     </div>
   </Native3DContext.Provider></NodeContext.Provider></CanvasPreviewTier.Provider>;
 }

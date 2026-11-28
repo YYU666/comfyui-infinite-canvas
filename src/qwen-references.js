@@ -19,7 +19,11 @@ export function orderQwenReferences(refs, order = []) {
 }
 export function qwenCanvasReferences(node, nodes, edges) {
   const refs = edges.filter((edge) => edge.target === node.id && ['guide', 'identity', 'references'].includes(edge.targetHandle))
-    .map((edge) => { const source = nodes.find((item) => item.id === edge.source); return source?.type === 'media' && source.data.kind === 'image' ? { ...source, data: { ...source.data, slot: edge.targetHandle } } : null; }).filter(Boolean);
+    .map((edge) => {
+      const source = nodes.find((item) => item.id === edge.source);
+      if (source?.type === 'paint') return { ...source, data: { kind: 'image', title: source.data.title || '绘画节点', url: source.data.url || '', assetPath: source.data.assetPath || '', slot: edge.targetHandle, paintSignature: source.data.paintSignature || '' } };
+      return source?.type === 'media' && source.data.kind === 'image' ? { ...source, data: { ...source.data, slot: edge.targetHandle } } : null;
+    }).filter(Boolean);
   return orderQwenReferences(refs, node.data.qwenReferenceOrder);
 }
 export function bindQwenPrompt(text = '', refs = []) {

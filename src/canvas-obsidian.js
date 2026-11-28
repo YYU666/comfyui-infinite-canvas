@@ -8,7 +8,7 @@ export function canvasNodeModality(type, data = {}) {
   if (type === 'native3d' || data.kind === 'model') return 'jade';
   if (type === 'media' && ['video', 'audio'].includes(data.kind)) return 'coral';
   if (videoTools.has(type) || type === 'video' || type === 'audio') return 'coral';
-  if (type === 'imageProcess' || type === 'spriteAtlas' || data.mediaRole === 'mask') return 'violet';
+  if (type === 'imageProcess' || type === 'spriteAtlas' || type === 'paint' || data.mediaRole === 'mask') return 'violet';
   if (type === 'note' && data.noteRole === 'videoDownload') return 'coral';
   if (type === 'generator') {
     if (data.mode === 'image') return 'gold';
@@ -34,7 +34,7 @@ function portTone(node, handle, direction) {
     return 'pearl';
   }
   if (type === 'videoChromaKey' && handle === 'bg') return 'pearl';
-  if ((type === 'media' && data.kind === 'image') || ['imageProcess', 'artDirector', 'spriteAtlas'].includes(type)) return 'pearl';
+  if ((type === 'media' && data.kind === 'image') || ['imageProcess', 'artDirector', 'spriteAtlas', 'paint'].includes(type)) return 'pearl';
   return node ? canvasNodeModality(type, data) : 'pearl';
 }
 
@@ -59,9 +59,11 @@ export function canvasEdgeLook(source, sourceHandle, target, targetHandle) {
   const mixedReference = target?.type === 'generator' && targetHandle === 'references'
     && (!target.data?.mode || target.data.mode === 'reference');
   const to = mixedReference ? from : portTone(target, targetHandle, 'target');
+  const paintSelected = (source?.type === 'paint' && source.selected) || (target?.type === 'paint' && target.selected);
   return {
-    from: colors[from],
-    to: colors[to],
+    from: paintSelected ? '#34c77b' : colors[from],
+    to: paintSelected ? '#34c77b' : colors[to],
+    paint: paintSelected,
     linked: Boolean(source?.selected || target?.selected),
     activeEndpoint: canvasNodeStatus(source?.type, source?.data).tone === 'running'
       || canvasNodeStatus(target?.type, target?.data).tone === 'running',

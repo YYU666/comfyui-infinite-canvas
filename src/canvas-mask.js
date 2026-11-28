@@ -26,6 +26,10 @@ export function validateCanvasMask(node, nodes, edges) {
   const connections = edges.filter((item) => item.target === node.id && item.targetHandle === 'mask');
   if (!connections.length) return null;
   const mask = qwenCanvasMask(node.id, nodes, edges);
+  if (connections.length === 1 && mask?.type === 'paint' && mask.data.outputMode === 'mask') {
+    if (!mask.data.url && !mask.data.assetPath) throw new Error('请先保存绘画遮罩。');
+    return { ...mask, data: { ...mask.data, kind: 'image', mediaRole: 'mask', slot: 'mask' } };
+  }
   if (connections.length !== 1 || !isMaskNode(mask)) throw new Error('遮罩端口只接受一个「局部遮罩修改」节点。');
   if (!mask.data.url) throw new Error('请先在「局部遮罩修改」节点绘制或导入遮罩。');
   const source = qwenCanvasReferences(node, nodes, edges)[0];
