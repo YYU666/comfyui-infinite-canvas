@@ -14,6 +14,7 @@ import {nativeProcessorRunLabel} from './native3d-rerun.js';
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
+import { thumbnailUrl } from './canvas-thumbnails.js';
 import { analyzePrimaryButton, nativeAdapterSchema, nativeAssetUrl, nativeLowpolyPresetLabel, nativeParameterValue } from './native3d.js';
 import { WHITE_MESH_STEP_LABEL } from './white-mesh-step.js';
 import './Native3D.css';
@@ -141,7 +142,8 @@ export function Native3DNode({ id, data, selected }) {
   const diagnostic=api.diagnosticPreview?.(id);
   const diagnosticMode=data.nativeUVDiagnosticMode==='checker'&&diagnostic?.checker?'checker':'layout';
   const poster = (bakePreview?nativeAssetUrl(api.projectId,bakePreview.selected.assetPath):null) || (uvMode==='layout'&&!uvPreviews?.layoutAssetPath?uvPreviews?.layoutJobUrl:null) || nativeAssetUrl(api.projectId, diagnostic?diagnostic[diagnosticMode]:planPreviews?planPreviews[planMode]:uvMode==='grey' ? data.posterAssetPath : uvPath(uvMode)) || (imageToModel ? nativeAssetUrl(api.projectId, inputs.image?.data.assetPath) : null);
-  const PosterImage=bakePreview?CanvasImage:'img';
+  const posterThumbnail = typeof poster === 'string' && poster.startsWith('/api/projects/') && thumbnailUrl(poster);
+  const PosterImage = posterThumbnail ? CanvasImage : 'img';
   const posterAlt=bakePreview?(bakePreview.mode==='grey'?'灰模外形（不显示烘焙材质）':`烘焙${bakePreview.selected.label}贴图（二维图集）`):diagnostic?'UV试展开 · 待检查（非合格结果）':planPreviews?`真实切缝候选 · ${planLabels[planMode]}（未展开UV）`:uvIdentity ? ({seams:'真实UV切缝预览：橙色切缝、青色边界',checker:'真实UV棋盘拉伸预览',layout:'真实UV图集',ao:'真实来源AO预览','ao-seams':'AO候选切缝预览（不代表最终切缝）',grey:'灰模外形预览（不显示UV切缝）'}[uvMode]) : data.nativeStage ? `${data.title}真实阶段预览` : '模型分析预览';
   const refreshUV=async()=>{setUVBusy(true);setUVError('');try{await api.refreshUVPreview(id);}catch(error){setUVError(error.message);}finally{setUVBusy(false);}};
   const uvLegend=uvMode==='layout' ? '真实UV图集 · 双击放大' : uvMode==='ao' ? 'AO明暗 · 双击放大' : uvMode==='ao-seams' ? '候选：橙红 AO支持 · 紫 粗分块 · 黄 辅助切割' : uvMode==='grey' ? '灰模外形 · 双击放大' : uvMode==='checker' ? 'UV棋盘 · 双击放大' : '橙：最终UV切缝 · 青：网格边界';
@@ -166,7 +168,7 @@ export function Native3DNode({ id, data, selected }) {
     {data.operation==='uv' && <><Handle type="target" position={Position.Left} id="plan" style={{top:'88%',background:'#a18bd2'}} title="已确认切缝方案"/><span className="native3d-port-plan">方案</span></>}
     {data.operation==='uv' && data.status==='completed' && data.nativeProcessEvidenceUV?.jobId===data.nativeJobId && data.nativeProcessEvidenceUV?.assetPath===data.resultAssetPath && <Handle type="target" position={Position.Left} id="diagnostic" style={{top:'82%',background:'#8a8263'}} title="流程证据 · 非执行输入" />}
     <Handle type="source" position={Position.Right} id={planOutput||data.operation==='uv_plan'?'plan':'model'} title={planOutput||data.operation==='uv_plan'?'切缝方案':'模型输出'} />
-    <div className="native3d-poster" onDoubleClick={e=>{if(data.nativeUVPlan){e.stopPropagation();try{api.openPlan(id);}catch(error){setUVError(error.message);}}}}>{poster&&failedPoster!==poster ? <PosterImage {...(bakePreview?{source:poster}:{src:poster,onError:()=>setFailedPoster(poster)})} loading="lazy" decoding="async" draggable={false} alt={posterAlt} title={data.nativeUVPlan?'双击3D审阅':'双击放大预览'} onDoubleClick={e=>{if(data.nativeUVPlan)return;e.stopPropagation();setEnlarged(true);}} /> : <span>{failedPoster===poster&&poster?(bakePreview?'贴图文件暂不可用，请切换通道或查看材质效果':'预览文件暂不可用；可手动更新UV预览'):nativeEmptyPoster(data,inputs)}</span>}</div>
+    <div className="native3d-poster" onDoubleClick={e=>{if(data.nativeUVPlan){e.stopPropagation();try{api.openPlan(id);}catch(error){setUVError(error.message);}}}}>{poster&&failedPoster!==poster ? <PosterImage {...(posterThumbnail?{source:poster}:{src:poster,onError:()=>setFailedPoster(poster)})} loading="lazy" decoding="async" draggable={false} alt={posterAlt} title={data.nativeUVPlan?'双击3D审阅':'双击放大预览'} onDoubleClick={e=>{if(data.nativeUVPlan)return;e.stopPropagation();setEnlarged(true);}} /> : <span>{failedPoster===poster&&poster?(bakePreview?'贴图文件暂不可用，请切换通道或查看材质效果':'预览文件暂不可用；可手动更新UV预览'):nativeEmptyPoster(data,inputs)}</span>}</div>
     {enlarged && poster && createPortal(<Native3DImagePreview key={`${api.projectId}:${poster}`} src={poster} alt={posterAlt} close={()=>setEnlarged(false)} />,document.body)}
     <div className="native3d-body nodrag nowheel">
       <nav className="native3d-stepbar" aria-label="3D制作阶段">{['LOD','局部修复','切缝方案','UV展开','材质烘焙'].map((label,i)=><span key={label} aria-current={(data.nativeLocalRepair||data.metadata?.geometry?.localRepair?1:data.nativeUVPlan||data.operation==='uv_plan'?2:data.operation==='uv'||data.metadata?.operation==='uv'?3:data.operation==='bake'||data.metadata?.operation==='bake'?4:0)===i?'step':undefined}>{label}</span>)}</nav>

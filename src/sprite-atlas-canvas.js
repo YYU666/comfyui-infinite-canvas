@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { SPRITE_ACTIVE, spriteSnapshot, spriteFiles, spriteRequest, spritePost, recoverSpriteRequest, waitForSpriteJob } from './sprite-atlas.js';
 
@@ -175,5 +175,5 @@ export function useSpriteAtlas({ project, projectRef, revisionRef, switchingRef,
     }
   }, [nodes, project.id, project.readOnly, track, runSpriteAtlas]);
 
-  return { runSpriteAtlas, cancelSpriteAtlas };
+  return useMemo(() => ({ runSpriteAtlas, cancelSpriteAtlas }), [runSpriteAtlas, cancelSpriteAtlas]);
 }

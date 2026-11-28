@@ -1,9 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EMPTY_METRICS, LOCAL_RECONNECTED, probeLocalConnection, requestLocalStart, requestComfyStart, boundedRead } from './local-connection';
 
+const metricListeners = new Set();
+let latestMetrics = { ...EMPTY_METRICS };
+
+export function subscribeLocalMetrics(listener) {
+  listener(latestMetrics);
+  metricListeners.add(listener);
+  return () => metricListeners.delete(listener);
+}
+
+function publishMetrics(metrics) {
+  latestMetrics = { ...(metrics || EMPTY_METRICS) };
+  for (const listener of metricListeners) listener(latestMetrics);
+}
+
+function sameServer(previous, next) {
+  return previous.online === next.online && previous.backendOnline === next.backendOnline
+    && previous.label === next.label && previous.state === next.state
+    && previous.native3dOnline === next.native3dOnline && previous.comfyEnabled === next.comfyEnabled
+    && previous.native3dOnly === next.native3dOnly && previous.comfy?.degraded === next.comfy?.degraded;
+}
+
 export function useLocalConnection({ onReconnect } = {}) {
   const [server, setServer] = useState({ online: false, backendOnline: null, label: '正在连接' });
-  const [metrics, setMetrics] = useState(EMPTY_METRICS);
   const [notice, setNotice] = useState('');
   const [starting, setStarting] = useState(false);
   const [connectionEpoch, setConnectionEpoch] = useState(0);
@@ -37,7 +57,8 @@ export function useLocalConnection({ onReconnect } = {}) {
         if (shownDiagnostic.current) setNotice('本地服务已恢复连接。');
         shownDiagnostic.current = '';
       }
-      setServer(next); setMetrics({ ...next.metrics });
+      setServer((previous) => sameServer(previous, next) ? previous : next);
+      publishMetrics(next.metrics);
     };
     const promise = probeLocalConnection({ signal: abort.signal, onStatus: publish }).then(async (next) => {
       if (!mounted.current || abort.signal.aborted) return next;
@@ -97,5 +118,5 @@ export function useLocalConnection({ onReconnect } = {}) {
     window.addEventListener('focus', checkServer);
     return () => { mounted.current = false; clearInterval(interval); window.removeEventListener('focus', checkServer); pending.current?.abort.abort(); pending.current = null; };
   }, [checkServer]);
-  return { server, metrics, checkServer, onStatusClick, starting, notice, setConnectionNotice: setNotice, dismissNotice: () => setNotice(''), connectionEpoch };
+  return { server, checkServer, onStatusClick, starting, notice, setConnectionNotice: setNotice, dismissNotice: () => setNotice(''), connectionEpoch };
 }

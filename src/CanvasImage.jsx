@@ -73,8 +73,13 @@ export default function CanvasImage({ source, alt = '', ...props }) {
     const observer = new IntersectionObserver((entries) => {
       visible = entries.some((entry) => entry.isIntersecting);
       if (visible) { setFailure(null); load(); }
-      else { unsubscribe?.(); unsubscribe = undefined; blobStarted = false; setDisplay(null); }
-    });
+      else {
+        unsubscribe?.();
+        unsubscribe = undefined;
+        blobStarted = false;
+        // A cached frame stays mounted so a short pan does not flash or decode again.
+      }
+    }, { rootMargin: '240px' });
     if (imageRef.current) observer.observe(imageRef.current);
     return () => { active = false; unsubscribe?.(); observer.disconnect(); };
   }, [source, attempt, suspended]);

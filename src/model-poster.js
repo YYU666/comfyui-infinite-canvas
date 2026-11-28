@@ -1,3 +1,5 @@
+import { installViewerTextureLoader } from './native3d-viewer-textures.js';
+
 const cache = new Map();
 let running = 0;
 const waiters = [];
@@ -28,10 +30,10 @@ export function cachedModelPoster(url) {
   return cache.get(url) || '';
 }
 
-async function renderGlbPoster(url) {
-  const THREE = await import('three');
-  const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-  const response = await fetch(url);
+export async function renderGlbPoster(url, hooks = {}) {
+  const THREE = hooks.THREE || await import('three');
+  const { GLTFLoader } = hooks.GLTFLoader ? { GLTFLoader: hooks.GLTFLoader } : await import('three/addons/loaders/GLTFLoader.js');
+  const response = hooks.fetch ? await hooks.fetch(url) : await fetch(url);
   if (!response.ok) throw new Error('模型预览读取失败');
   const buffer = await response.arrayBuffer();
   const manager = new THREE.LoadingManager();
@@ -39,7 +41,9 @@ async function renderGlbPoster(url) {
     if (/^(blob:|data:)/.test(resource)) return resource;
     throw new Error('预览拒绝加载外部资源');
   });
-  const gltf = await new GLTFLoader(manager).parseAsync(buffer, '');
+  const loader = new GLTFLoader(manager);
+  (hooks.installTextureLoader || installViewerTextureLoader)(loader);
+  const gltf = await loader.parseAsync(buffer, '');
   const model = gltf.scene;
   const owned = [];
   model.traverse((object) => {

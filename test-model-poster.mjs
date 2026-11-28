@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cachedModelPoster, captureModelPoster, clearModelPosterCache } from './src/model-poster.js';
+import { cachedModelPoster, captureModelPoster, clearModelPosterCache, renderGlbPoster } from './src/model-poster.js';
 
 clearModelPosterCache();
 let active = 0;
@@ -18,5 +18,18 @@ assert.equal(await captureModelPoster('b', { render: async () => { throw new Err
 assert.equal(cachedModelPoster('a'), 'data:image/png,a');
 clearModelPosterCache();
 assert.equal(cachedModelPoster('a'), '');
+
+const order = [];
+class FakeLoader {
+  constructor() { order.push('construct'); }
+  register() { order.push('install'); }
+  parseAsync() { order.push('parse'); throw new Error('stop-after-parse'); }
+}
+await assert.rejects(() => renderGlbPoster('blob:textured', {
+  fetch: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(4) }),
+  THREE: { LoadingManager: class { setURLModifier() {} } },
+  GLTFLoader: FakeLoader,
+}), /stop-after-parse/);
+assert.deepEqual(order, ['construct', 'install', 'parse']);
 
 console.log('model poster ok');

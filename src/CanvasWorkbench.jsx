@@ -23,7 +23,7 @@ import { recoverNative3DFragment } from './native3d-recovery.js';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Background, BackgroundVariant, MiniMap, NodeToolbar,
-  Handle, Position, EdgeLabelRenderer, getBezierPath, ConnectionLineType, SelectionMode, addEdge, useNodesState, useEdgesState, useReactFlow, useUpdateNodeInternals, useStoreApi,
+  Handle, Position, EdgeLabelRenderer, getBezierPath, ConnectionLineType, SelectionMode, addEdge, useNodesState, useEdgesState, useReactFlow, useUpdateNodeInternals, useStore, useStoreApi,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
@@ -125,7 +125,8 @@ import { defaultVideoEditDocument, videoEditInputView } from './video-edit-docum
 import { createVideoEditRunner } from './video-edit-runtime';
 import { cancelVideoRun } from './video-submission.js';
 import { assetUrl } from './project-store-http';
-import { useLocalConnection } from './use-local-connection';
+import { subscribeLocalMetrics, useLocalConnection } from './use-local-connection';
+import { EMPTY_METRICS } from './local-connection';
 import { localConnectionPresentation } from './local-connection';
 import { downloadDoctorLogs } from './doctor-client';
 import { Native3DNode, Native3DContext, Native3DViewer } from './Native3D.jsx';
@@ -141,6 +142,41 @@ const KIND_LABEL = { image: '图片', video: '视频', audio: '音频', model: '
 const KIND_ICON = { image: ImageIcon, video: Video, audio: Music2, model: ArrowDownToLine };
 
 const formatGb = (bytes) => Number.isFinite(bytes) ? (bytes / 1024 ** 3).toFixed(1) : '--';
+const PAN_ON_DRAG = [1];
+const SNAP_GRID = [22, 22];
+const FIT_VIEW_OPTIONS = { padding: 0.16, maxZoom: 0.85 };
+const DEFAULT_EDGE_OPTIONS = { type: 'default' };
+const CONNECTION_LINE_STYLE = { stroke: '#e6ddc7', strokeWidth: 1.8 };
+const canvasViewTier = (percent, count) => (percent < 24 && count >= 36 ? 'placeholder' : percent < 58 ? 'compact' : 'full');
+function CanvasZoomPercent() {
+  const percent = useStore((state) => Math.round(state.transform[2] * 100));
+  return <span>{percent}%</span>;
+}
+const HardwareMonitor = React.memo(function HardwareMonitor({ server, memoryCleanup, onClearMemory }) {
+  const [metrics, setMetrics] = useState(EMPTY_METRICS);
+  useEffect(() => subscribeLocalMetrics(setMetrics), []);
+  const vramPercent = metrics.vramTotal ? Math.min(100, Math.max(0, metrics.vramUsed / metrics.vramTotal * 100)) : 0;
+  const cpuPercent = Number.isFinite(metrics.cpuPercent) ? Math.min(100, Math.max(0, metrics.cpuPercent)) : 0;
+  const ramPercent = metrics.ramTotal ? Math.min(100, Math.max(0, metrics.ramUsed / metrics.ramTotal * 100)) : 0;
+  return <div className="hardware-monitor" aria-label="硬件状态" title={`${server.label} · 系统内存 ${formatGb(metrics.ramUsed)} / ${formatGb(metrics.ramTotal)} GB · 每 3 秒刷新`}>
+    <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={onClearMemory} aria-label={memoryCleanup === "busy" ? "清理显存中" : memoryCleanup === "done" ? "已释放显存" : "清理显存"} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
+    <div className="hardware-metric" title={`${metrics.gpuName || 'GPU'}${metrics.gpuIndex != null ? `（设备 ${metrics.gpuIndex}）` : ''} · 整卡显存占用与计算利用率，包含其他程序`}>
+      <span><MemoryStick size={12} />GPU{Number.isFinite(metrics.gpuPercent) ? ` ${Math.round(metrics.gpuPercent)}%` : ' 显存'}</span>
+      <strong>{formatGb(metrics.vramUsed)} <small>/ {formatGb(metrics.vramTotal)} GB</small></strong>
+      <div className="hardware-bar"><i style={{ width: `${vramPercent}%` }} /></div>
+    </div>
+    <div className="hardware-metric cpu-metric">
+      <span><Cpu size={12} />CPU</span>
+      <strong>{Number.isFinite(metrics.cpuPercent) ? `${Math.round(metrics.cpuPercent)}%` : '--'}</strong>
+      <div className="hardware-bar"><i style={{ width: `${cpuPercent}%` }} /></div>
+    </div>
+    <div className="hardware-metric ram-metric">
+      <span>RAM</span>
+      <strong>{formatGb(metrics.ramUsed)} <small>/ {formatGb(metrics.ramTotal)} GB</small></strong>
+      <div className="hardware-bar"><i style={{ width: `${ramPercent}%` }} /></div>
+    </div>
+  </div>;
+});
 
 function canvasSnapshot(nodes, edges, viewport) {
   return persistentCanvas({ nodes, edges, viewport });
@@ -710,7 +746,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   });
   const restoreCurrentProjectAccess = useCallback((options) => accessRecoveryRef.current(options), []);
   useEffect(() => { setProjectConnectionError(''); }, [project.id]);
-  const { server, metrics, checkServer, onStatusClick, starting, notice: localConnectionNotice, dismissNotice, setConnectionNotice: setLocalConnectionNotice, connectionEpoch } = useLocalConnection({ onReconnect: restoreCurrentProjectAccess });
+  const { server, checkServer, onStatusClick, starting, notice: localConnectionNotice, dismissNotice, setConnectionNotice: setLocalConnectionNotice, connectionEpoch } = useLocalConnection({ onReconnect: restoreCurrentProjectAccess });
   const [memoryCleanup, setMemoryCleanup] = useState('idle');
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
@@ -718,6 +754,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const [gridVisible, setGridVisible] = useState(true);
   const [miniMapVisible, setMiniMapVisible] = useState(false);
   const [zoom, setZoom] = useState(Math.round((saved.viewport?.zoom || 1) * 100));
+  const zoomPercentRef = useRef(zoom);
+  const [viewTier, setViewTier] = useState(() => canvasViewTier(Math.round((saved.viewport?.zoom || 1) * 100), saved.nodes.length));
   const [zoomMenuOpen, setZoomMenuOpen] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(() => localStorage.getItem(SNAP_KEY) !== 'false');
   const [addMenu, setAddMenu] = useState(null);
@@ -2593,7 +2631,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     fitView({ nodes: selected.length ? selected : undefined, duration: 350, padding: selected.length ? 0.32 : 0.15, maxZoom: 1 });
   };
   // Refmuse-style progressive detail: only cross render tiers, not on every zoom frame.
-  const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
+  useEffect(() => { setViewTier(canvasViewTier(zoomPercentRef.current, nodes.length)); }, [nodes.length]);
   const saveNativeFile = async (file) => {
     if (switchingRef.current || project.readOnly) throw new Error('当前画布不可编辑。');
     const savedProjectId=project.id,savedAutoSave=autoSaveRef.current;
@@ -2677,7 +2715,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   }, [setNodes]);
   const resumeVideoAnalysis = useCallback((id, signal) => videoEditRunnerRef.current.resumeAnalysis(id, signal), []);
   const cancelVideoAnalysis = useCallback((id) => videoEditRunnerRef.current.cancelAnalysis(id), []);
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, extractInlineResult, persistGeneratedModel, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, extractInlineResult, persistGeneratedModel, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, extractInlineResult, persistGeneratedModel, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, extractInlineResult, persistGeneratedModel, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -2805,9 +2843,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     });
   };
   const pinnedNodes = nodes.filter((node) => node.data.pinned);
-  const vramPercent = metrics.vramTotal ? Math.min(100, Math.max(0, metrics.vramUsed / metrics.vramTotal * 100)) : 0;
-  const cpuPercent = Number.isFinite(metrics.cpuPercent) ? Math.min(100, Math.max(0, metrics.cpuPercent)) : 0;
-  return <CanvasPreviewTier.Provider value={viewTier}><NodeContext.Provider value={context}><Native3DContext.Provider value={native3d}>
+  return <CanvasPreviewTier.Provider value={viewTier}><NodeContext.Provider value={context}><Native3DContext.Provider value={native3d.api}>
     {native3d.viewer && <Native3DViewer onRepair={native3d.repairLOD} onResolve={native3d.createResolution} readOnly={native3d.readOnly} asset={native3d.viewer} projectId={project.id} close={native3d.closeViewer} onLoaded={native3d.planLoaded} onConfirm={native3d.confirmPlan} onPreviews={native3d.planPreviews} />}
     <div className="neo-app">
       <header className="neo-header" inert={libraryModalOpen ? true : undefined}>
@@ -2867,22 +2903,31 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           onEdgeClick={(event, edge) => { if (event.altKey) { event.preventDefault(); event.stopPropagation(); disconnectEdge(edge.id); } }}
           deleteKeyCode={project.readOnly || workflowInspection || libraryModalOpen ? null : ['Backspace', 'Delete']}
           defaultViewport={saved.viewport} fitView={!saved.viewport}
-          fitViewOptions={{ padding: 0.16, maxZoom: 0.85 }}
+          fitViewOptions={FIT_VIEW_OPTIONS}
           minZoom={0.12} maxZoom={1.8} zoomOnScroll zoomOnPinch zoomOnDoubleClick={false}
-          panOnDrag={[1]} panOnScroll={false} selectionOnDrag selectionMode={SelectionMode.Partial}
+          panOnDrag={PAN_ON_DRAG} panOnScroll={false} selectionOnDrag selectionMode={SelectionMode.Partial}
           multiSelectionKeyCode={['Shift']}
-          snapToGrid={snapEnabled} snapGrid={[22, 22]}
-          onMove={(_, viewport) => setZoom(Math.round(viewport.zoom * 100))}
-          onMoveEnd={(_, viewport) => { viewportRef.current = viewport; saveViewport(project.id, viewport); }}
-          defaultEdgeOptions={{ type: 'default' }}
+          snapToGrid={snapEnabled} snapGrid={SNAP_GRID}
+          onMove={(_, viewport) => {
+            const percent = viewport.zoom * 100;
+            zoomPercentRef.current = percent;
+            const next = canvasViewTier(percent, nodesRef.current.length);
+            setViewTier((current) => current === next ? current : next);
+          }}
+          onMoveEnd={(_, viewport) => {
+            viewportRef.current = viewport;
+            const percent = Math.round(viewport.zoom * 100);
+            zoomPercentRef.current = percent;
+            setZoom(percent);
+            setViewTier(canvasViewTier(percent, nodesRef.current.length));
+            saveViewport(project.id, viewport);
+          }}
+          defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
           connectionLineType={ConnectionLineType.Bezier}
-          connectionLineStyle={{ stroke: '#e6ddc7', strokeWidth: 1.8 }}
+          connectionLineStyle={CONNECTION_LINE_STYLE}
           proOptions={{ hideAttribution: true }}
         >
-          {gridVisible && <>
-            <Background id="obsidian-minor-grid" variant={BackgroundVariant.Dots} gap={22} size={1} color="#ffffff1f" />
-            <Background id="obsidian-major-grid" variant={BackgroundVariant.Dots} gap={110} size={2} color="#e5b86945" />
-          </>}
+          {gridVisible && <Background id="obsidian-grid" variant={BackgroundVariant.Dots} gap={22} size={1.1} color="#ffffff24" />}
           {miniMapVisible && <MiniMap pannable zoomable nodeColor={(node) => node.type === 'group' ? '#34413a' : 'var(--obsidian-' + canvasNodeModality(node.type, node.data) + ')'} maskColor="#080a09dc" />}
           <ProductionZones frames={zoneFrames} editable={!project.readOnly}
             onEdit={changeProductionZone} onMove={dragProductionZone} onMoveEnd={endProductionZoneDrag} />
@@ -2892,7 +2937,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         <div className="canvas-bottom-left">
           {zoomMenuOpen && <div className="zoom-menu">
             <button onClick={() => zoomOut({ duration: 160 })} title="缩小"><Minus size={14} /></button>
-            <button className="zoom-current" onClick={() => zoomTo(1, { duration: 200 })} title="恢复到 100%">{zoom}%</button>
+            <button className="zoom-current" onClick={() => zoomTo(1, { duration: 200 })} title="恢复到 100%"><CanvasZoomPercent /></button>
             <button onClick={() => zoomIn({ duration: 160 })} title="放大"><Plus size={14} /></button>
             <i />
             <button onClick={() => { fitView({ duration: 350, padding: 0.15 }); setZoomMenuOpen(false); }} title="适应全部节点"><Maximize2 size={14} /></button>
@@ -2904,7 +2949,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
             <button onClick={() => applyHistory('redo')} disabled={project.readOnly || !historyState.canRedo} title="重做 · Ctrl+Shift+Z" aria-label="重做"><Redo2 size={15} /></button>
             <button className={gridVisible ? 'active' : ''} onClick={() => setGridVisible(!gridVisible)} title="显示或隐藏网格"><Grid2X2 size={15} /></button>
             <button className={miniMapVisible ? 'active' : ''} onClick={() => setMiniMapVisible(!miniMapVisible)} title="小地图"><MapIcon size={15} /></button>
-            <button className={zoomMenuOpen ? 'zoom-button active' : 'zoom-button'} onClick={() => setZoomMenuOpen(!zoomMenuOpen)} title="缩放" aria-expanded={zoomMenuOpen}><Search size={13} /><span>{zoom}%</span></button>
+            <button className={zoomMenuOpen ? 'zoom-button active' : 'zoom-button'} onClick={() => setZoomMenuOpen(!zoomMenuOpen)} title="缩放" aria-expanded={zoomMenuOpen}><Search size={13} /><CanvasZoomPercent /></button>
           </div>
           {viewTier !== 'full' && <span className="canvas-performance-mode" role="status">{viewTier === 'placeholder' ? '占位浏览' : '轻量浏览'} · 放大恢复编辑</span>}
           <button className="round-control" onClick={locateContent} title="快速定位当前选择或全部内容"><Crosshair size={16} /></button>
@@ -2921,24 +2966,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={async () => { if (!switchingRef.current && !hasActiveTask()) { try { await persistProject(); onSimpleMode(); } catch { /* Keep the unsaved canvas open. */ } } }} title="工作台设置与简易模式"><Settings2 size={17} /></button>
           <button className={pinOpen ? 'active' : ''} onClick={() => { setPinOpen(!pinOpen); setLibraryOpen(false); }} title={`Pin 节点 ${pinnedNodes.length}`}><Pin size={16} /></button>
         </div>
-          <div className="hardware-monitor" aria-label="硬件状态" title={`${server.label} · 系统内存 ${formatGb(metrics.ramUsed)} / ${formatGb(metrics.ramTotal)} GB · 每 3 秒刷新`}>
-            <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={clearMemory} aria-label={memoryCleanup === "busy" ? "清理显存中" : memoryCleanup === "done" ? "已释放显存" : "清理显存"} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
-            <div className="hardware-metric" title={`${metrics.gpuName || 'GPU'}${metrics.gpuIndex != null ? `（设备 ${metrics.gpuIndex}）` : ''} · 整卡显存占用与计算利用率，包含其他程序`}>
-              <span><MemoryStick size={12} />GPU{Number.isFinite(metrics.gpuPercent) ? ` ${Math.round(metrics.gpuPercent)}%` : ' 显存'}</span>
-              <strong>{formatGb(metrics.vramUsed)} <small>/ {formatGb(metrics.vramTotal)} GB</small></strong>
-              <div className="hardware-bar"><i style={{ width: `${vramPercent}%` }} /></div>
-            </div>
-            <div className="hardware-metric cpu-metric">
-              <span><Cpu size={12} />CPU</span>
-              <strong>{Number.isFinite(metrics.cpuPercent) ? `${Math.round(metrics.cpuPercent)}%` : '--'}</strong>
-              <div className="hardware-bar"><i style={{ width: `${cpuPercent}%` }} /></div>
-            </div>
-            <div className="hardware-metric ram-metric">
-              <span>RAM</span>
-              <strong>{formatGb(metrics.ramUsed)} <small>/ {formatGb(metrics.ramTotal)} GB</small></strong>
-              <div className="hardware-bar"><i style={{ width: `${metrics.ramTotal ? Math.min(100, Math.max(0, metrics.ramUsed / metrics.ramTotal * 100)) : 0}%` }} /></div>
-            </div>
-          </div>
+          <HardwareMonitor server={server} memoryCleanup={memoryCleanup} onClearMemory={clearMemory} />
         </div>
         {addMenu && <div className="add-node-menu" role="menu" aria-label="添加节点" style={{ left: addMenu.x, top: addMenu.y }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}>
           <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>
