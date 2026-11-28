@@ -77,7 +77,8 @@ export default function CanvasImage({ source, alt = '', ...props }) {
         unsubscribe?.();
         unsubscribe = undefined;
         blobStarted = false;
-        // A cached frame stays mounted so a short pan does not flash or decode again.
+        // The 240px margin keeps a short pan loaded. Past that, drop the bitmap.
+        setDisplay(null);
       }
     }, { rootMargin: '240px' });
     if (imageRef.current) observer.observe(imageRef.current);
