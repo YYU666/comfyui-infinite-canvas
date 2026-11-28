@@ -77,7 +77,8 @@
 .paint-actions button:disabled,
 .paint-editor button:disabled { opacity: .45; }
 
-.paint-editor { position: fixed; inset: 0; z-index: 80; display: grid; grid-template-columns: 48px 240px minmax(0, 1fr) 260px; grid-template-rows: 44px minmax(0, 1fr); background: var(--paint-bg-canvas); color-scheme: dark; }
+.paint-editor { position: fixed; inset: 0; z-index: 80; display: grid; grid-template-columns: 48px 240px minmax(0, 1fr) 260px; grid-template-rows: 44px minmax(0, 1fr); background: var(--paint-bg-canvas); color-scheme: dark; user-select: none; -webkit-user-select: none; }
+.paint-editor input, .paint-editor textarea { user-select: text; -webkit-user-select: text; }
 .paint-editor button,
 .paint-editor select { border: 1px solid transparent; background: var(--paint-surface-elevated); color: var(--paint-text-primary); }
 .paint-editor input:not([type="checkbox"]):not([type="range"]):not([type="color"]) {
@@ -130,8 +131,9 @@
 .paint-stage-hud label { display: flex; align-items: center; gap: 4px; }
 .paint-stage-hud input[type="range"] { width: 64px; accent-color: #34c77b; }
 .paint-ink { color: var(--paint-text-muted); font-variant-numeric: tabular-nums; }
+.paint-input-source { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border: 1px solid rgba(154, 164, 158, .45); font-variant-numeric: tabular-nums; }
 .paint-stage-frame { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
-.paint-stage { display: block; background: #111; touch-action: none; cursor: crosshair; }
+.paint-stage { display: block; background: #111; touch-action: none; cursor: crosshair; user-select: none; -webkit-user-select: none; }
 .paint-stage.is-transparent { background-image: linear-gradient(45deg, #242826 25%, transparent 25%), linear-gradient(-45deg, #242826 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #242826 75%), linear-gradient(-45deg, transparent 75%, #242826 75%); background-size: 18px 18px; background-position: 0 0, 0 9px, 9px -9px, -9px 0; background-color: #171a18; }
 .paint-polygon { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .paint-polygon polyline { fill: rgba(52, 199, 123, .12); stroke: #34c77b; stroke-width: 1; }

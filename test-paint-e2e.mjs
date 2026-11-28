@@ -177,6 +177,7 @@ try {
     return Array.from(canvas.getContext('2d').getImageData(x, y, 1, 1).data);
   }, { x, y });
   assert.ok(await ink() > 0, 'pen pressure strokes left no ink');
+  await page.waitForFunction(() => /^笔 \d+%$/.test(document.querySelector('[data-testid="paint-input-source"]')?.textContent || ''));
   const drawn = await ink();
   await page.getByTestId('paint-palm').check();
   await pointerStroke(stage, [[20, 20], [80, 80]], { pointerType: 'touch', pressure: 1, width: 48 });

@@ -31,7 +31,22 @@ export function forwardPaintViewport(x, y, view = {}) {
   };
 }
 
-export function clientToCanvasPoint(clientX, clientY, frame) {
+export function capturePaintViewport(frame) {
+  const parent = frame?.offsetParent || frame?.parentElement;
+  if (!frame || !parent || typeof DOMMatrix === 'undefined') return null;
+  const parentRect = parent.getBoundingClientRect();
+  const layoutLeft = parentRect.left + frame.offsetLeft - parent.scrollLeft;
+  const layoutTop = parentRect.top + frame.offsetTop - parent.scrollTop;
+  const raw = getComputedStyle(frame).transform;
+  const matrix = new DOMMatrix(raw && raw !== 'none' ? raw : 'matrix(1, 0, 0, 1, 0, 0)');
+  return { layoutLeft, layoutTop, inverse: matrix.inverse() };
+}
+
+export function clientToCanvasPoint(clientX, clientY, frame, viewport) {
+  if (viewport?.inverse) {
+    const local = viewport.inverse.transformPoint(new DOMPoint(clientX - viewport.layoutLeft, clientY - viewport.layoutTop));
+    return { x: local.x, y: local.y };
+  }
   const parent = frame?.offsetParent || frame?.parentElement;
   if (!frame || !parent || typeof DOMMatrix === 'undefined') {
     const rect = frame?.getBoundingClientRect?.() || { left: 0, top: 0, width: 1, height: 1 };

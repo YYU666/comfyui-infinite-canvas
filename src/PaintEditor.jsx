@@ -15,11 +15,12 @@ import {
   rectSelection, ellipseSelection, lassoSelection, magicWandSelection, combineSelection, invertSelection,
   fillColor, clearSelection, copySelection, moveSelectionPixels, translateBuffer, selectionOutline,
   captureRect, restoreRect, resizeBuffers, createBuffers, compositeLayers, exportPaint, toMask,
-  mergeDown, stampVisible, tintBuffer, hsvToRgb, rgbToHsv, colorToHex, parseColor, constrainPoint, rasterShape,
+  mergeDown, stampVisible, tintBuffer, hsvToRgb, rgbToHsv, colorToHex, parseColor, constrainPoint, rasterShape, previewComposite,
   transformBuffer, sampleColor, featherSelection, growSelection, createStrokeSession, strokeTo, finishStroke,
   selectionContains, opaqueBounds, clearBuffer, countInk, offsetSelection,
 } from './paint-engine.js';
-import { clientToCanvasPoint } from './paint-viewport.js';
+import { capturePaintViewport, clientToCanvasPoint } from './paint-viewport.js';
+import { classifyPointerDown, coalescedPointerEvents, hoverShouldFinish, inputSourceLabel, isForeignPointer, isPalmTouch } from './paint-pointer.js';
 import { parseAbr } from './paint-abr-parser.js';
 import { qrSvg } from './paint-qr.js';
 import { builtinBrushes, brushState, IMPORT_BRUSH_PARAMS } from './paint-brushes.js';
@@ -69,13 +70,14 @@ export function bufferToPngBlob(buffer) {
   return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG 编码失败')), 'image/png'));
 }
 
-function paintPoint(event, canvas) {
+function paintPoint(event, canvas, viewport, fallback) {
   const frame = canvas.closest('.paint-stage-frame') || canvas.parentElement;
-  const local = clientToCanvasPoint(event.clientX, event.clientY, frame);
+  const local = clientToCanvasPoint(event.clientX, event.clientY, frame, viewport);
   const scaleX = canvas.width / (frame.offsetWidth || canvas.width);
   const scaleY = canvas.height / (frame.offsetHeight || canvas.height);
-  const pressure = event.pointerType === 'pen' ? (event.pressure || 0) : (event.pressure > 0 && event.pressure < 1 ? event.pressure : 1);
-  return { x: local.x * scaleX, y: local.y * scaleY, pressure: event.pointerType === 'mouse' ? 1 : pressure, pointerType: event.pointerType || 'mouse', tiltX: event.tiltX || 0, tiltY: event.tiltY || 0 };
+  const pointerType = event.pointerType || fallback?.pointerType || 'mouse';
+  const pressure = pointerType === 'pen' ? (event.pressure || 0) : (event.pressure > 0 && event.pressure < 1 ? event.pressure : 1);
+  return { x: local.x * scaleX, y: local.y * scaleY, pressure: pointerType === 'mouse' ? 1 : pressure, pointerType, tiltX: event.tiltX || 0, tiltY: event.tiltY || 0 };
 }
 
 export default function PaintEditor({ node, baseImage, swatches = [], onClose, onSave, onExtract, readOnly = false, lanRequest = false }) {
@@ -113,6 +115,7 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
   const [polygon, setPolygon] = useState([]);
   const [saving, setSaving] = useState(false);
   const [ink, setInk] = useState(0);
+  const [inputSource, setInputSource] = useState('鼠标');
   const canvasRef = useRef(null);
   const dialogRef = useRef(null);
   const buffersRef = useRef(createBuffers(initial));
@@ -136,6 +139,10 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
   const polygonRef = useRef([]);
   const eraserTipRef = useRef(true);
   const lanRef = useRef(null);
+  const palmRef = useRef(false);
+  const inputSourceRef = useRef('鼠标');
+  const inputFrameRef = useRef(0);
+  const endDrawRef = useRef(null);
 
   useEffect(() => { docRef.current = doc; }, [doc]);
   useEffect(() => { selectionRef.current = selection; }, [selection]);
@@ -145,6 +152,7 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
   useEffect(() => { transformRef.current = transform; }, [transform]);
   useEffect(() => { polygonRef.current = polygon; }, [polygon]);
   useEffect(() => { eraserTipRef.current = eraserTip; }, [eraserTip]);
+  useEffect(() => { palmRef.current = palmReject; }, [palmReject]);
   useEffect(() => { lanRef.current = lan; }, [lan]);
   useEffect(() => { outlineRef.current = selectionOutline(selection); }, [selection]);
 
@@ -482,127 +490,27 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
     }
   };
 
-  const onPointerDown = (event) => {
-    if (readOnly) return;
-    const canvas = canvasRef.current;
-    try { canvas.setPointerCapture?.(event.pointerId); } catch { /* synthetic pointer events */ }
-    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    if (pointersRef.current.size >= 2 || spaceRef.current) {
-      drawRef.current = { kind: 'pan', x: event.clientX, y: event.clientY, pan: { ...pan } };
-      return;
-    }
-    if (palmReject && event.pointerType === 'touch') return;
-    const point = paintPoint(event, canvas);
-    const currentTool = altRef.current ? 'picker' : toolRef.current;
-    if (currentTool.startsWith('select') && !event.shiftKey && !event.altKey && selectionContains(selectionRef.current, point.x, point.y) && lassoMode !== 'polygon') {
-      drawRef.current = { kind: 'select-offset', start: point, selection: selectionRef.current };
-      return;
-    }
-    if (currentTool === 'select-lasso' && lassoMode === 'polygon') {
-      const existing = polygonRef.current;
-      if (existing.length >= 3 && Math.hypot(point.x - existing[0].x, point.y - existing[0].y) < 8) {
-        const next = lassoSelection(docRef.current.paper.width, docRef.current.paper.height, existing);
-        setSelection(combineSelection(selectionRef.current, next, event.shiftKey ? 'add' : event.altKey ? 'subtract' : selectionMode));
-        setPolygon([]);
-        return;
-      }
-      setPolygon([...existing, point]);
-      return;
-    }
-    if (currentTool === 'picker') {
-      const sample = sampleAll ? previewComposite(docRef.current, buffersRef.current, { base: baseRef.current }) : activeBuffer();
-      setColor(colorToHex(sampleColor(sample, point.x, point.y)));
-      return;
-    }
-    if (currentTool === 'bucket') {
-      const reference = bucketAll ? compositeLayers(docRef.current.paper.width, docRef.current.paper.height, docRef.current.layers, buffersRef.current) : null;
-      commitPixels(floodFill(activeBuffer(), point.x, point.y, colorRef.current, { tolerance, expand, selection: selectionRef.current, reference, alphaLock: activeLayer().alphaLock }));
-      return;
-    }
-    if (currentTool.startsWith('select')) {
-      drawRef.current = { kind: currentTool, start: point, points: [point], mode: event.shiftKey ? 'add' : event.altKey ? 'subtract' : selectionMode };
-      return;
-    }
-    if (currentTool === 'move') {
-      const before = captureRect(activeBuffer(), { x: 0, y: 0, width: activeBuffer().width, height: activeBuffer().height });
-      drawRef.current = { kind: 'move', start: point, last: point, before, selection: selectionRef.current };
-      return;
-    }
-    if (currentTool === 'geometry') {
-      const before = captureRect(activeBuffer(), { x: 0, y: 0, width: activeBuffer().width, height: activeBuffer().height });
-      drawRef.current = { kind: 'geometry', start: point, before };
-      return;
-    }
-    const brushForStroke = currentTool === 'eraser' && !eraserTipRef.current ? { ...brushRef.current, stamp: null, kind: 'round' } : brushRef.current;
-    const session = currentTool === 'smudge' ? null : createStrokeSession(activeBuffer(), brushForStroke, colorRef.current, {
-      ...strokeOptions(), eraser: currentTool === 'eraser', eraserTip: eraserTipRef.current,
+  const stageViewport = (canvas) => capturePaintViewport(canvas?.closest?.('.paint-stage-frame') || canvas?.parentElement);
+  const noteInput = (event, eraserEnd = false) => {
+    const label = inputSourceLabel(event, eraserEnd);
+    if (label === inputSourceRef.current) return;
+    inputSourceRef.current = label;
+    if (inputFrameRef.current) return;
+    inputFrameRef.current = requestAnimationFrame(() => {
+      inputFrameRef.current = 0;
+      setInputSource(inputSourceRef.current);
     });
-    drawRef.current = { kind: currentTool, points: [point], session };
-    if (session) schedulePaint(strokeTo(session, point));
   };
-
-  const onPointerMove = (event) => {
-    const canvas = canvasRef.current;
-    if (!drawRef.current || !canvas) return;
-    if (drawRef.current.kind === 'pan') {
-      setPan({ x: drawRef.current.pan.x + event.clientX - drawRef.current.x, y: drawRef.current.pan.y + event.clientY - drawRef.current.y });
-      return;
-    }
-    const point = paintPoint(event, canvas);
-    const events = event.getCoalescedEvents?.() || [event];
-    if (drawRef.current.kind === 'select-offset') {
-      const dx = point.x - drawRef.current.start.x;
-      const dy = point.y - drawRef.current.start.y;
-      setSelection(offsetSelection(drawRef.current.selection, dx, dy));
-      return;
-    }
-    if (drawRef.current.kind === 'brush' || drawRef.current.kind === 'eraser' || drawRef.current.kind === 'smudge') {
-      const buffer = activeBuffer();
-      if (drawRef.current.kind !== 'smudge' && !drawRef.current.session) {
-        const brush = drawRef.current.kind === 'eraser' && !eraserTipRef.current ? { ...brushRef.current, stamp: null, kind: 'round' } : brushRef.current;
-        drawRef.current.session = createStrokeSession(buffer, brush, colorRef.current, {
-          ...strokeOptions(), eraser: drawRef.current.kind === 'eraser', eraserTip: eraserTipRef.current,
-        });
-        schedulePaint(strokeTo(drawRef.current.session, drawRef.current.points[0]));
-      }
-      for (const sample of events) {
-        const next = paintPoint(sample, canvas);
-        drawRef.current.points.push(next);
-        if (drawRef.current.kind !== 'smudge') schedulePaint(strokeTo(drawRef.current.session, next));
-      }
-      if (drawRef.current.kind === 'smudge') {
-        if (drawRef.current.before) restoreRect(buffer, { ...drawRef.current.bounds, pixels: drawRef.current.before });
-        const entry = smudgeStroke(buffer, drawRef.current.points, Math.max(2, brushRef.current.size / 2), brushRef.current.flow || 50, selectionRef.current);
-        if (entry) {
-          drawRef.current.bounds = entry;
-          drawRef.current.before = entry.before;
-          drawRef.current.entry = entry;
-          schedulePaint(entry);
-        }
-      }
-      return;
-    }
-    if (String(drawRef.current.kind).startsWith('select') && drawRef.current.kind !== 'select-wand') {
-      drawRef.current.points.push(point);
-      drawRef.current.end = point;
-      return;
-    }
-    if (drawRef.current.kind === 'geometry') {
-      restoreRect(activeBuffer(), { ...drawRef.current.before, pixels: drawRef.current.before.pixels });
-      rasterShape(activeBuffer(), shape, drawRef.current.start, point, brushRef.current, colorRef.current, { ...strokeOptions(), shift: event.shiftKey });
-      redraw();
-      drawRef.current.end = point;
-      drawRef.current.shift = event.shiftKey;
-    }
-  };
-
-  const onPointerUp = (event) => {
-    pointersRef.current.delete(event.pointerId);
+  const endPointer = (event) => {
     const action = drawRef.current;
     drawRef.current = null;
-    if (!action || action.kind === 'pan') return;
+    if (event?.pointerId != null) pointersRef.current.delete(event.pointerId);
+    if (!action || action.kind === 'pan' || String(action.kind || '').startsWith('transform')) return;
     const canvas = canvasRef.current;
-    const point = paintPoint(event, canvas);
+    const point = event && canvas
+      ? paintPoint(event, canvas, action.viewport, event)
+      : (action.end || action.points?.at(-1) || action.last || action.start);
+    if (!point) return;
     if (action.kind === 'select-offset') return;
     if (action.kind === 'brush' || action.kind === 'eraser') {
       const entry = action.session ? finishStroke(action.session) : action.entry;
@@ -647,12 +555,172 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
       return;
     }
     if (action.kind === 'select-rect' || action.kind === 'select-ellipse') {
-      const end = constrainPoint(action.start, action.end || point, action.kind === 'select-ellipse' ? 'ellipse' : 'rect', event.shiftKey);
+      const end = constrainPoint(action.start, action.end || point, action.kind === 'select-ellipse' ? 'ellipse' : 'rect', Boolean(event?.shiftKey));
       const next = action.kind === 'select-ellipse'
         ? ellipseSelection(docRef.current.paper.width, docRef.current.paper.height, action.start.x, action.start.y, end.x, end.y)
         : rectSelection(docRef.current.paper.width, docRef.current.paper.height, action.start.x, action.start.y, end.x, end.y);
       setSelection(combineSelection(selectionRef.current, next, action.mode));
     }
+  };
+  endDrawRef.current = endPointer;
+  useEffect(() => {
+    const onBlur = () => {
+      pointersRef.current.clear();
+      if (drawRef.current) endDrawRef.current?.(null);
+      drawRef.current = null;
+      pointersRef.current.clear();
+    };
+    window.addEventListener('blur', onBlur);
+    return () => window.removeEventListener('blur', onBlur);
+  }, []);
+
+  const onPointerDown = (event) => {
+    if (readOnly) return;
+    const actionKind = classifyPointerDown(event);
+    noteInput(event, actionKind === 'eraser');
+    if (actionKind === 'ignore') {
+      event.preventDefault?.();
+      return;
+    }
+    const canvas = canvasRef.current;
+    const viewport = stageViewport(canvas);
+    const drawing = Boolean(drawRef.current && drawRef.current.kind !== 'pan');
+    if (isPalmTouch(palmRef.current, event.pointerType, drawing)) return;
+    if (!(palmRef.current && event.pointerType === 'touch')) pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (actionKind === 'pan' || spaceRef.current || pointersRef.current.size >= 2) {
+      if (drawRef.current?.session) {
+        const entry = finishStroke(drawRef.current.session);
+        if (entry) commitPixels(entry);
+      }
+      try { canvas?.setPointerCapture?.(event.pointerId); } catch { /* synthetic pointer events */ }
+      drawRef.current = { kind: 'pan', pointerId: event.pointerId, x: event.clientX, y: event.clientY, pan: { ...pan }, viewport };
+      return;
+    }
+    if (palmRef.current && event.pointerType === 'touch') return;
+    if (isForeignPointer(drawRef.current?.pointerId, event.pointerId)) return;
+    try { canvas?.setPointerCapture?.(event.pointerId); } catch { /* synthetic pointer events */ }
+    const point = paintPoint(event, canvas, viewport, event);
+    const currentTool = actionKind === 'eraser' ? 'eraser' : (altRef.current ? 'picker' : toolRef.current);
+    if (currentTool.startsWith('select') && !event.shiftKey && !event.altKey && selectionContains(selectionRef.current, point.x, point.y) && lassoMode !== 'polygon') {
+      drawRef.current = { kind: 'select-offset', pointerId: event.pointerId, viewport, start: point, selection: selectionRef.current };
+      return;
+    }
+    if (currentTool === 'select-lasso' && lassoMode === 'polygon') {
+      const existing = polygonRef.current;
+      if (existing.length >= 3 && Math.hypot(point.x - existing[0].x, point.y - existing[0].y) < 8) {
+        const next = lassoSelection(docRef.current.paper.width, docRef.current.paper.height, existing);
+        setSelection(combineSelection(selectionRef.current, next, event.shiftKey ? 'add' : event.altKey ? 'subtract' : selectionMode));
+        setPolygon([]);
+        return;
+      }
+      setPolygon([...existing, point]);
+      return;
+    }
+    if (currentTool === 'picker') {
+      const sample = sampleAll ? previewComposite(docRef.current, buffersRef.current, { base: baseRef.current }) : activeBuffer();
+      setColor(colorToHex(sampleColor(sample, point.x, point.y)));
+      return;
+    }
+    if (currentTool === 'bucket') {
+      const reference = bucketAll ? compositeLayers(docRef.current.paper.width, docRef.current.paper.height, docRef.current.layers, buffersRef.current) : null;
+      commitPixels(floodFill(activeBuffer(), point.x, point.y, colorRef.current, { tolerance, expand, selection: selectionRef.current, reference, alphaLock: activeLayer().alphaLock }));
+      return;
+    }
+    if (currentTool.startsWith('select')) {
+      drawRef.current = { kind: currentTool, pointerId: event.pointerId, viewport, start: point, points: [point], mode: event.shiftKey ? 'add' : event.altKey ? 'subtract' : selectionMode };
+      return;
+    }
+    if (currentTool === 'move') {
+      const before = captureRect(activeBuffer(), { x: 0, y: 0, width: activeBuffer().width, height: activeBuffer().height });
+      drawRef.current = { kind: 'move', pointerId: event.pointerId, viewport, start: point, last: point, before, selection: selectionRef.current };
+      return;
+    }
+    if (currentTool === 'geometry') {
+      const before = captureRect(activeBuffer(), { x: 0, y: 0, width: activeBuffer().width, height: activeBuffer().height });
+      drawRef.current = { kind: 'geometry', pointerId: event.pointerId, viewport, start: point, before };
+      return;
+    }
+    const brushForStroke = currentTool === 'eraser' && !eraserTipRef.current ? { ...brushRef.current, stamp: null, kind: 'round' } : brushRef.current;
+    const session = currentTool === 'smudge' ? null : createStrokeSession(activeBuffer(), brushForStroke, colorRef.current, {
+      ...strokeOptions(), eraser: currentTool === 'eraser', eraserTip: eraserTipRef.current,
+    });
+    drawRef.current = { kind: currentTool, pointerId: event.pointerId, viewport, temporaryEraser: actionKind === 'eraser', points: [point], session };
+    if (session) schedulePaint(strokeTo(session, point));
+  };
+
+  const onPointerMove = (event) => {
+    const canvas = canvasRef.current;
+    const action = drawRef.current;
+    if (!action || !canvas) {
+      if (!action) noteInput(event, false);
+      return;
+    }
+    if (isForeignPointer(action.pointerId, event.pointerId)) return;
+    noteInput(event, action.temporaryEraser || action.kind === 'eraser');
+    if (hoverShouldFinish(action.kind, event.buttons)) {
+      endPointer(event);
+      pointersRef.current.clear();
+      return;
+    }
+    if (!action.viewport) action.viewport = stageViewport(canvas);
+    if (action.kind === 'pan') {
+      setPan({ x: action.pan.x + event.clientX - action.x, y: action.pan.y + event.clientY - action.y });
+      return;
+    }
+    const samples = coalescedPointerEvents(event);
+    const point = paintPoint(samples[samples.length - 1], canvas, action.viewport, event);
+    if (action.kind === 'select-offset') {
+      const dx = point.x - action.start.x;
+      const dy = point.y - action.start.y;
+      setSelection(offsetSelection(action.selection, dx, dy));
+      return;
+    }
+    if (action.kind === 'brush' || action.kind === 'eraser' || action.kind === 'smudge') {
+      const buffer = activeBuffer();
+      if (action.kind !== 'smudge' && !action.session) {
+        const brush = action.kind === 'eraser' && !eraserTipRef.current ? { ...brushRef.current, stamp: null, kind: 'round' } : brushRef.current;
+        action.session = createStrokeSession(buffer, brush, colorRef.current, {
+          ...strokeOptions(), eraser: action.kind === 'eraser', eraserTip: eraserTipRef.current,
+        });
+        schedulePaint(strokeTo(action.session, action.points[0]));
+      }
+      for (const sample of samples) {
+        const next = paintPoint(sample, canvas, action.viewport, event);
+        action.points.push(next);
+        if (action.kind !== 'smudge') schedulePaint(strokeTo(action.session, next));
+      }
+      if (action.kind === 'smudge') {
+        if (action.before) restoreRect(buffer, { ...action.bounds, pixels: action.before });
+        const entry = smudgeStroke(buffer, action.points, Math.max(2, brushRef.current.size / 2), brushRef.current.flow || 50, selectionRef.current);
+        if (entry) {
+          action.bounds = entry;
+          action.before = entry.before;
+          action.entry = entry;
+          schedulePaint(entry);
+        }
+      }
+      return;
+    }
+    if (String(action.kind).startsWith('select') && action.kind !== 'select-wand') {
+      action.points.push(point);
+      action.end = point;
+      return;
+    }
+    if (action.kind === 'geometry') {
+      restoreRect(activeBuffer(), { ...action.before, pixels: action.before.pixels });
+      rasterShape(activeBuffer(), shape, action.start, point, brushRef.current, colorRef.current, { ...strokeOptions(), shift: event.shiftKey });
+      redraw();
+      action.end = point;
+      action.shift = event.shiftKey;
+    }
+  };
+
+  const onPointerUp = (event) => {
+    if (isForeignPointer(drawRef.current?.pointerId, event.pointerId)) {
+      pointersRef.current.delete(event.pointerId);
+      return;
+    }
+    endPointer(event);
   };
 
   const updatePaper = (patch) => {
@@ -898,9 +966,10 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
           <input data-testid="paint-rotation" type="range" min="-180" max="180" value={rotation} onChange={(event) => setRotation(Number(event.target.value))} />
         </label>
         <span className="paint-ink" data-testid="paint-ink">{ink}</span>
+        <span className="paint-input-source" data-testid="paint-input-source">{inputSource}</span>
       </div>
       <div className="paint-stage-frame" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${rotation}deg) scaleX(${flip ? -1 : 1})` }}>
-        <canvas ref={canvasRef} className={`paint-stage${doc.outputMode === 'transparent' ? ' is-transparent' : ''}`} data-testid="paint-stage" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onDoubleClick={() => {
+        <canvas ref={canvasRef} className={`paint-stage${doc.outputMode === 'transparent' ? ' is-transparent' : ''}`} data-testid="paint-stage" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onLostPointerCapture={onPointerUp} onContextMenu={(event) => event.preventDefault()} onDoubleClick={() => {
           if (polygon.length < 3) return;
           const next = lassoSelection(doc.paper.width, doc.paper.height, polygon);
           setSelection(combineSelection(selectionRef.current, next, selectionMode));
@@ -908,11 +977,13 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
         }} />
         {polygon.length > 0 && <svg className="paint-polygon" viewBox={`0 0 ${doc.paper.width} ${doc.paper.height}`}><polyline points={polygon.map((point) => `${point.x},${point.y}`).join(' ')} /></svg>}
         {transform && <div className="paint-transform" data-testid="paint-transform" style={{ left: transform.bounds.x + transform.dx, top: transform.bounds.y + transform.dy, width: Math.abs(transform.bounds.width * transform.scaleX), height: Math.abs(transform.bounds.height * transform.scaleY), transform: `rotate(${transform.rotation}deg) scaleX(${transform.flipH ? -1 : 1}) scaleY(${transform.flipV ? -1 : 1})` }}
-          onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture?.(event.pointerId); const start = paintPoint(event, canvasRef.current); drawRef.current = { kind: 'transform-move', start, base: { ...transform } }; }}
+          onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture?.(event.pointerId); const canvas = canvasRef.current; const viewport = stageViewport(canvas); const start = paintPoint(event, canvas, viewport, event); drawRef.current = { kind: 'transform-move', pointerId: event.pointerId, viewport, start, base: { ...transform } }; }}
           onPointerMove={(event) => {
             const action = drawRef.current;
             if (!action || !String(action.kind).startsWith('transform')) return;
-            const point = paintPoint(event, canvasRef.current);
+            if (isForeignPointer(action.pointerId, event.pointerId)) return;
+            if (event.buttons === 0) { drawRef.current = null; pointersRef.current.clear(); return; }
+            const point = paintPoint(event, canvasRef.current, action.viewport, event);
             if (action.kind === 'transform-move') setTransform({ ...action.base, dx: action.base.dx + point.x - action.start.x, dy: action.base.dy + point.y - action.start.y });
             if (action.kind === 'transform-scale') {
               const width = Math.max(1, action.base.bounds.width);
@@ -935,8 +1006,8 @@ export default function PaintEditor({ node, baseImage, swatches = [], onClose, o
             }
           }}
           onPointerUp={() => { if (String(drawRef.current?.kind || '').startsWith('transform')) drawRef.current = null; }}>
-          {['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((handle) => <i key={handle} data-handle={handle} onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture?.(event.pointerId); drawRef.current = { kind: 'transform-scale', handle, start: paintPoint(event, canvasRef.current), base: { ...transform } }; }} />)}
-          <b data-handle="rotate" onPointerDown={(event) => { event.stopPropagation(); drawRef.current = { kind: 'transform-rotate', start: paintPoint(event, canvasRef.current), base: { ...transform } }; }} />
+          {['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((handle) => <i key={handle} data-handle={handle} onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture?.(event.pointerId); const canvas = canvasRef.current; const viewport = stageViewport(canvas); drawRef.current = { kind: 'transform-scale', pointerId: event.pointerId, viewport, handle, start: paintPoint(event, canvas, viewport, event), base: { ...transform } }; }} />)}
+          <b data-handle="rotate" onPointerDown={(event) => { event.stopPropagation(); const canvas = canvasRef.current; const viewport = stageViewport(canvas); drawRef.current = { kind: 'transform-rotate', pointerId: event.pointerId, viewport, start: paintPoint(event, canvas, viewport, event), base: { ...transform } }; }} />
         </div>}
       </div>
     </div>
