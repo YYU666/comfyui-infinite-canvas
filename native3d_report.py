@@ -152,7 +152,7 @@ def rasterize(mesh, camera, *, return_buffers=False, smooth=False, max_faces=MAX
     depth increases toward the viewer; the largest value wins. No GPU/OpenGL.
     """
     vertices, faces = _arrays(mesh)
-    if type(max_faces) is not int or not 1 <= max_faces <= 100000:
+    if type(max_faces) is not int or not 1 <= max_faces <= 120000:
         raise ValueError('Invalid bounded rasterization face budget')
     if len(faces) > max_faces:
         raise ValueError('Use an explicitly labelled display proxy before rasterization')

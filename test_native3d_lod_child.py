@@ -106,7 +106,7 @@ class ChildRetryTests(unittest.TestCase):
         parent=_canonical_mesh(*self.sphere_arrays(3))
         context={'retryJobId':'old','retryStage':'lod3','parentStage':'lod2',
                  'parentMeshHash':mesh_hash(parent.vertices,parent.faces),'parentFileSha256':'a'*64,
-                 'originalSourceSha256':'b'*64,'lod0Triangles':len(parent.faces)*4,'settings':resolve_lod_settings()}
+                 'originalSourceSha256':'b'*64,'lod0Triangles':len(parent.faces)*4,'settings':resolve_lod_settings({'lod1KeepPercent':50,'lod2KeepPercent':25,'lod3KeepPercent':12.5,'lod4KeepPercent':6.25})}
         return parent,{'retryJobId':'old','retryStage':'lod3','seed':29},context
 
     def sphere_arrays(self,n):

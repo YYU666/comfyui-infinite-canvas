@@ -1,16 +1,14 @@
+import { isInlineBackingMedia } from './image-inline-output.js';
+
 export const PRODUCTION_ZONE_TITLE = '生产分区';
 export const PRODUCTION_ZONE_TITLE_LIMIT = 80;
 
 const HORIZONTAL_PADDING = 24;
 const HEADER_PADDING = 58;
 
-function isInlineOutput(node, owner) {
-  return node.type === 'media' && node.data?.kind === 'image' && node.data.output && owner?.type === 'generator';
-}
-
 function visibleZoneMembers(nodes, candidates) {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
-  return candidates.filter((node) => !node.hidden && !isInlineOutput(node, nodeById.get(node.data?.inlineImageOwnerId)));
+  return candidates.filter((node) => !node.hidden && !isInlineBackingMedia(node, nodeById.get(node.data?.inlineImageOwnerId)));
 }
 
 export function selectedProductionZoneMembers(nodes) {
@@ -45,7 +43,7 @@ export function moveProductionZone(nodes, id, { x, y }) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   return nodes.map((node) => {
     const owner = byId.get(node.data?.inlineImageOwnerId);
-    const zone = isInlineOutput(node, owner) ? owner.data.productionZone : node.data?.productionZone;
+    const zone = isInlineBackingMedia(node, owner) ? owner.data.productionZone : node.data?.productionZone;
     if (zone?.id !== id || !node.position) return node;
     return { ...node, position: { x: node.position.x + x, y: node.position.y + y } };
   });

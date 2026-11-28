@@ -193,7 +193,7 @@ class PlanTests(unittest.TestCase):
         saved=planner.geometry_sha(mesh);planner.validate_mesh(mesh,False)
         self.assertEqual(planner.geometry_sha(mesh),saved)
         too_many=trimesh.Trimesh(mesh.vertices,np.tile(mesh.faces,(2,1)),process=False)
-        with self.assertRaisesRegex(ValueError,'100000'):planner.validate_mesh(too_many,True)
+        with self.assertRaisesRegex(ValueError,'120000'):planner.validate_mesh(too_many,True)
 
 
 if __name__=='__main__':unittest.main()

@@ -194,9 +194,9 @@ MCP 等价工具：`canvas_current`、`canvas_call`（等到页面工具返回�
 
 ### 3.2 本地可选工具（需本机注册）
 
-Pixal3D 单图转 3D 走「节点库 → 本地节点／导入工作流」。在「3D 资产加工」菜单运行「检查 Pixal3D 图生 3D 依赖」，核对本机 ComfyUI 的节点和六份权重。若还要做 LOD，另看同一菜单里的「Native3D LOD」状态；Agent 可用 `canvas_native3d_capabilities` 读取 `source_lod` 就绪状态和缺失项。
+阶段 2 图生白模走内置 TripoSR，或从「节点库 → 本地节点／导入工作流」导入几何白模工作流。它只接参考图，只输出未展 UV、无材质的 GLB。在「3D 资产加工」菜单运行「检查 Pixal3D 图生 3D 依赖」时，核对的仍是灯罩完整配方的节点和六份权重。若还要做 LOD，另看同一菜单里的「Native3D LOD」状态；Agent 可用 `canvas_native3d_capabilities` 读取 `source_lod` 就绪状态和缺失项。
 
-在当前项目的可见节点连接参考图，提交并等待 Pixal3D 结果。可下载 GLB，或用 `canvas_connect_nodes` 将结果卡片的 `model` 输出连到 `model_lod` 节点的模型输入。第一次运行 LOD 时，画布将该 ComfyUI GLB 保存到当前项目再提交加工。「保存生成的 GLB」期间应留在当前项目；项目、写入权限或输入发生变化会阻止继续提交。几何校验未通过时先查看诊断。
+在当前项目的可见节点把参考图连到「图生白模 · 未展UV无材质」，提交并等待该节点内的 GLB。这一步只输出未展 UV、无材质贴图的几何模型。用 `canvas_connect_nodes` 把该生成节点的 `model` 输出连到下游修模、LOD 或分析节点的模型输入。完成后 GLB 已在当前项目 `assets/`。尚未落盘的旧地址会在第一次 Native3D 加工时保存。「保存生成的 GLB」期间应留在当前项目；项目、写入权限或输入发生变化会阻止继续提交。几何校验未通过时先查看诊断。
 
 Native3D 用 `canvas_generate_node`（`wait:false`）提交，保留返回的 `jobId`。用 `canvas_wait_for_node` 传原 `nodeId` 和 `jobId`；`pending:true` 时再查同一任务，页桥每次等待请求使用新的 `opId`。任务更换或中断时重新读取节点状态。完成后用 `canvas_get_state` 核对当前项目的结果节点。 [Pixal3D 工作流](REFMUSE_LOCAL_IMAGE_TO_3D.md) · [Native3D 配置](NATIVE3D.md)
 

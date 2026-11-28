@@ -159,9 +159,19 @@ def check_saved_submission(document, payload, encoded, page, proof, find_job):
         _mismatch("节点尚未保存待提交的本次来源与参数，或它们已改变。")
     _check_derivation(canvas, data, payload.get("parameters", {}), page, find_job)
     if payload["operation"] == "analyze":
-        source_id = payload["nodeId"]
-        imported = _object(data.get("nativePendingSource")).get("path")
-        source = {"assetPath": imported or data.get("assetPath"), "originalAssetPath": imported or data.get("originalAssetPath")}
+        pending = _object(data.get("nativePendingSource"))
+        imported = pending.get("path") if isinstance(pending.get("path"), str) else None
+        own_path = imported or data.get("assetPath")
+        model_edge = any(
+            edge.get("target") == payload["nodeId"] and edge.get("targetHandle") == "model"
+            for edge in canvas["edges"]
+        )
+        # Match sourceFor: an analyze node with no saved import reads the model wire.
+        if not data.get("sourceJobId") and not imported and not data.get("assetPath") and model_edge:
+            source_id, source = _output_on_edge(canvas, payload["nodeId"], "model")
+        else:
+            source_id = payload["nodeId"]
+            source = {"assetPath": own_path, "originalAssetPath": imported or data.get("originalAssetPath")}
     else:
         handle = "image" if payload["operation"] == "image_to_3d" else "model"
         source_id, source = _output_on_edge(canvas, payload["nodeId"], handle)

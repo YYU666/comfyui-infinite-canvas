@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { nativeAssetUrl } from './native3d.js';
 import { nativeReceiptError } from './native3d-takeover.js';
+import { Native3DDrawerSlot } from './native3d-drawer.js';
 import './Native3DTakeover.css';
 
 function Parameter({ field, disabled, change }) {
@@ -29,7 +30,7 @@ const visibleParameters = {
   material_wear: ['strength'],
 };
 
-export default function Native3DTakeover({ api, state, objects }) {
+export default function Native3DTakeover({ api, state, objects, focusDrawer }) {
   const [action, setAction] = useState('');
   const [error, setError] = useState('');
   const status = state.busy ? '任务进行中' : state.pending ? '待重算' : ({
@@ -51,7 +52,13 @@ export default function Native3DTakeover({ api, state, objects }) {
     try { api.parameter(state.processorId, key, value); setError(''); }
     catch (error) { setError(nativeReceiptError(error) || '操作失败。'); }
   };
-  return <aside className="native3d-takeover-sidebar" aria-label="模型接手详情">
+  const drawerRef = useRef(null);
+  useEffect(() => { if (focusDrawer) drawerRef.current?.scrollIntoView({ block: 'nearest' }); }, [focusDrawer]);
+  return <aside className="native3d-takeover-sidebar" aria-label="模型接手详情" data-focus={focusDrawer ? 'drawer' : undefined}>
+    <section ref={drawerRef} aria-label="参数与更多">
+      <h3>参数 / 更多</h3>
+      <Native3DDrawerSlot id={state.nodeId} />
+    </section>
     <section>
       <h3>来源与步骤</h3>
       <dl>

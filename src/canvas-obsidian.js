@@ -54,6 +54,22 @@ export function canvasNodeStatus(type, data = {}) {
   return { tone: 'idle', label: '' };
 }
 
+function connectedDataStamp(data) {
+  try { return JSON.stringify(data || {}); }
+  catch { return ''; }
+}
+
+export function connectedGraphStamp(nodeId, edges = [], nodeLookup) {
+  let stamp = '';
+  for (const edge of edges) {
+    if (edge.source !== nodeId && edge.target !== nodeId) continue;
+    const otherId = edge.source === nodeId ? edge.target : edge.source;
+    const other = nodeLookup?.get?.(otherId);
+    stamp += `${edge.id}\0${edge.source}\0${edge.target}\0${edge.sourceHandle || ''}\0${edge.targetHandle || ''}\0${other?.type || ''}\0${connectedDataStamp(other?.data)}\n`;
+  }
+  return stamp;
+}
+
 export function canvasEdgeLook(source, sourceHandle, target, targetHandle) {
   const from = portTone(source, sourceHandle, 'source');
   const mixedReference = target?.type === 'generator' && targetHandle === 'references'

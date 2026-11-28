@@ -33,7 +33,8 @@
   border: 1px solid var(--obsidian-border);
   border-radius: 16px;
   background: linear-gradient(180deg, #181b19, #0e100f);
-  box-shadow: 0 12px 34px #0008, inset 0 1px 0 #ffffff0e;
+  box-shadow: 0 4px 12px #0006;
+  contain: layout style;
   transition: border-color 150ms, box-shadow 150ms;
 }
 .obsidian-node[data-modality="jade"] { --node-accent: var(--obsidian-jade); --port-accent: var(--obsidian-jade); }
@@ -167,8 +168,7 @@
   stroke-width: 2.8;
   stroke-opacity: 1;
 }
-.canvas-view-full .react-flow__edge:is(:hover, .selected, :focus-visible) .obsidian-edge .react-flow__edge-path,
-.canvas-view-full .obsidian-edge[data-linked] .react-flow__edge-path { filter: drop-shadow(0 0 2px #e6ddc788); }
+.canvas-view-full .react-flow__edge:is(:hover, .selected, :focus-visible) .obsidian-edge .react-flow__edge-path { filter: drop-shadow(0 0 2px #e6ddc788); }
 .obsidian-edge-active-endpoint {
   stroke-width: 2.5;
   stroke-dasharray: 6 10;
@@ -277,3 +277,7 @@
 .obsidian-node[data-task-tone="done"] .obsidian-status-text { color: var(--obsidian-jade); }
 .obsidian-node[data-task-tone="error"] .obsidian-status-text { color: var(--obsidian-danger); }
 .obsidian-node:is([data-task-tone="queued"], [data-task-tone="running"]) .obsidian-status-text { color: var(--node-accent); }
+.obsidian-node:has(> .native3d-node) { border-radius: 0; background: #131614; box-shadow: none; }
+.obsidian-node:has(> .native3d-node)[data-selected] { border: 1.5px solid var(--node-accent); box-shadow: 0 0 12px color-mix(in srgb, var(--node-accent) 28%, transparent); }
+.obsidian-node:has(> .native3d-node) .native3d-node > header { border-radius: 0; }
+.obsidian-node:has(> .native3d-node) .react-flow__handle::after { width: 8px; height: 8px; border-radius: 0; }

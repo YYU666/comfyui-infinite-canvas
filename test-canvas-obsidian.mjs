@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { canvasEdgeLook, canvasNodeModality, canvasNodeStatus } from './src/canvas-obsidian.js';
+import { canvasEdgeLook, canvasNodeModality, canvasNodeStatus, connectedGraphStamp } from './src/canvas-obsidian.js';
 
 test('node accents classify legacy, local and public nodes by content', () => {
   assert.equal(canvasNodeModality('generator', { mode: 'image' }), 'gold');
@@ -38,4 +38,21 @@ test('selection and activity describe endpoints independently of saved outputs',
   assert.equal(canvasNodeStatus('media', { kind: 'image', url: 'an-external-preview' }).label, '');
   assert.equal(canvasNodeStatus('media', { kind: 'image', url: 'saved-preview', assetPath: 'images/example.png' }).tone, 'done');
   assert.equal(canvasNodeStatus('note', { noteRole: 'videoDownload', downloadStatus: 'failed' }).tone, 'error');
+});
+
+test('connected graph stamp follows neighbor assets and ignores movement', () => {
+  const lookup = new Map([
+    ['source', { type: 'media', position: { x: 0, y: 0 }, data: { kind: 'image', url: '', title: '原图' } }],
+    ['art', { type: 'artDirector', position: { x: 400, y: 0 }, data: {} }],
+  ]);
+  const edges = [{ id: 'source-art', source: 'source', target: 'art', sourceHandle: 'ref', targetHandle: 'artwork' }];
+  const before = connectedGraphStamp('art', edges, lookup);
+  lookup.get('source').position = { x: 80, y: 40 };
+  assert.equal(connectedGraphStamp('art', edges, lookup), before);
+  lookup.get('source').data = { ...lookup.get('source').data, url: '/api/projects/p/assets/a.png', assetPath: 'assets/a.png' };
+  assert.notEqual(connectedGraphStamp('art', edges, lookup), before);
+  const adjusted = connectedGraphStamp('art', edges, lookup);
+  lookup.get('source').data = { ...lookup.get('source').data, brightness: 20 };
+  assert.notEqual(connectedGraphStamp('art', edges, lookup), adjusted);
+  assert.equal(connectedGraphStamp('note', edges, lookup), '');
 });

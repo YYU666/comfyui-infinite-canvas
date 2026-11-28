@@ -9,7 +9,7 @@ from native3d_report import camera_for_bounds, rasterize
 
 def render(source, target, *, max_faces=20000, diagnostic=None):
     mesh = read_mesh(Path(source))
-    if type(max_faces) is not int or max_faces not in (20000,100000) or not 1 <= len(mesh.faces) <= max_faces:
+    if type(max_faces) is not int or max_faces not in (20000,100000,120000) or not 1 <= len(mesh.faces) <= max_faces:
         raise ValueError('LOD poster exceeds explicit bounded triangle budget')
     if diagnostic is None:
         image = rasterize(mesh, camera_for_bounds(mesh.bounds, 480, 360, 'front'),max_faces=max_faces)
@@ -34,7 +34,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--source', required=True)
     parser.add_argument('--output', required=True)
-    parser.add_argument('--max-faces',type=int,choices=[20000,100000],default=20000)
+    parser.add_argument('--max-faces',type=int,choices=[20000,100000,120000],default=20000)
     parser.add_argument('--diagnostic')
     args = parser.parse_args()
     render(args.source, args.output,max_faces=args.max_faces,diagnostic=args.diagnostic)

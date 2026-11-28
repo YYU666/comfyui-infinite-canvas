@@ -73,8 +73,14 @@ export default function CanvasImage({ source, alt = '', ...props }) {
     const observer = new IntersectionObserver((entries) => {
       visible = entries.some((entry) => entry.isIntersecting);
       if (visible) { setFailure(null); load(); }
-      else { unsubscribe?.(); unsubscribe = undefined; blobStarted = false; setDisplay(null); }
-    });
+      else {
+        unsubscribe?.();
+        unsubscribe = undefined;
+        blobStarted = false;
+        // The 240px margin keeps a short pan loaded. Past that, drop the bitmap.
+        setDisplay(null);
+      }
+    }, { rootMargin: '240px' });
     if (imageRef.current) observer.observe(imageRef.current);
     return () => { active = false; unsubscribe?.(); observer.disconnect(); };
   }, [source, attempt, suspended]);

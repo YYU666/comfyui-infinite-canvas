@@ -1,6 +1,6 @@
 import React, { useId } from 'react';
 import { BaseEdge, useStore } from '@xyflow/react';
-import { canvasEdgeLook, canvasNodeModality, canvasNodeStatus } from './canvas-obsidian.js';
+import { canvasEdgeLook, canvasNodeModality, canvasNodeStatus, connectedGraphStamp } from './canvas-obsidian.js';
 
 export function ObsidianStatus({ type, data }) {
   const status = canvasNodeStatus(type, data);
@@ -12,6 +12,7 @@ export function frameCanvasNodes(nodeTypes) {
     if (type === 'group') return [type, Node];
     const FramedNode = React.memo(function ObsidianNode(props) {
       const { data, selected } = props;
+      const graphStamp = useStore((state) => connectedGraphStamp(props.id, state.edges, state.nodeLookup));
       const status = canvasNodeStatus(type, data);
       const hasOwnStatus = type === 'native3d'
         || (/^video/.test(type) && type !== 'video')
@@ -20,7 +21,7 @@ export function frameCanvasNodes(nodeTypes) {
         || type === 'spriteAtlas';
       return <div className="obsidian-node" data-modality={canvasNodeModality(type, data)} data-canvas-mode={data.mode}
         data-selected={selected || undefined} data-task-tone={status.tone}>
-        <Node {...props} />
+        <Node {...props} graphStamp={graphStamp} />
         {!hasOwnStatus && status.label && <div className="obsidian-node-status"><ObsidianStatus type={type} data={data} /></div>}
       </div>;
     });

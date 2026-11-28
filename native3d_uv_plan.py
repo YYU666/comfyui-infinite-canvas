@@ -47,7 +47,7 @@ def digest(value):return hashlib.sha256(canonical(value).encode()).hexdigest()
 def geometry_sha(mesh):return hashlib.sha256(np.asarray(mesh.vertices,dtype='<f8').tobytes()+np.asarray(mesh.faces,dtype='<i8').tobytes()).hexdigest()
 
 def validate_mesh(mesh,orientation_confirmed):
-    if not 1<=len(mesh.faces)<=100000 or not np.isfinite(mesh.vertices).all() or not mesh.nondegenerate_faces().all():raise ValueError('uv_plan requires 1..100000 finite nondegenerate low triangles')
+    if not 1<=len(mesh.faces)<=120000 or not np.isfinite(mesh.vertices).all() or not mesh.nondegenerate_faces().all():raise ValueError('uv_plan requires 1..120000 finite nondegenerate low triangles')
     _,counts=np.unique(mesh.edges_sorted,axis=0,return_counts=True)
     if np.any(counts>2):raise ValueError('uv_plan rejects nonmanifold edges')
     from native3d_uv import structural_edges

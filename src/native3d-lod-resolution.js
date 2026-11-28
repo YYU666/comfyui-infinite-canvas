@@ -1,4 +1,5 @@
 import {nativeLODStageRetryPlan} from './native3d-rerun.js';
+import {lodCountOf,lodStageLabel} from './native3d-next-step.js';
 export function boundaryFailure(value='') {
  const text=String(value);
  const match=text.match(/Original boundary distance exceeds independent shape budget:\s*([\d.eE+-]+)\s*>\s*([\d.eE+-]+)/);
@@ -24,8 +25,8 @@ export function lodResolution(data) {
  return {...failure,stage,baseTriangles:base,currentPercent:current,currentFaces,maxPercent,maxFaces,suggestedPercent:suggested,suggestedFaces,available:suggestedFaces>currentFaces,reason:suggestedFaces>currentFaces?'':'原硬面数上限不允许增加目标面数。'};
 }
 export function currentLODTitle(data) {
- if(!/^LOD[0-4] · 待生成(?: · (?:未通过诊断|结果))?$/.test(data?.title||'')||!(data.nativeJobId||data.sourceJobId))return data?.title;
- const stage=data.nativeParameters?.retryStage?.toUpperCase()||data.title.split(' · ')[0];
+ if(!/^(?:LOD[0-4]|High（高模）|Medium（中模）|Low（低模）) · 待生成(?: · (?:未通过诊断|结果))?$/.test(data?.title||'')||!(data.nativeJobId||data.sourceJobId))return data?.title;
+ const stage=data.nativeParameters?.retryStage?lodStageLabel(Number(data.nativeParameters.retryStage.slice(3)),lodCountOf(data)):data.title.split(' · ')[0];
  const state=data.metadata?.geometry?.status==='blocked'?'检查未通过':['queued','running','finishing'].includes(data.status)?'处理中':data.metadata?.geometry?.status==='accepted'?'几何检查通过':data.status==='error'||data.status==='failed'?'失败':'已执行';
  return `${stage} · ${state}`;
 }

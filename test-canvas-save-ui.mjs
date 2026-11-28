@@ -155,15 +155,13 @@ try {
   assert.equal(await page.getByRole('button', { name: '保存快照并重新载入' }).isDisabled(), true, 'running task blocks reload');
   await finish();
   await waitForCanvas((state) => state.edges.some((edge) => edge.source === 'gen' && edge.targetHandle === 'preview'));
-  await page.evaluate(async () => {
-    const state = JSON.parse(await window.fixtureCanvasTools.canvas_get_state.execute({ nodeId: 'gen' }));
-    const result = state.edges.find((edge) => edge.source === 'gen' && edge.targetHandle === 'preview');
-    await window.fixtureCanvasTools.canvas_focus_node.execute({ nodeId: result.target });
-  });
-  await page.locator('.react-flow__node-media video').waitFor({ state: 'attached' });
+  await page.evaluate(async () => window.fixtureCanvasTools.canvas_focus_node.execute({ nodeId: 'gen' }));
+  const inlineVideo = page.locator('.react-flow__node[data-id="gen"] video');
+  await inlineVideo.waitFor({ state: 'attached' });
   await page.waitForTimeout(1200);
   assert.equal(writes.length, conflictCount, 'completion after 409 stays local without retries');
-  assert.ok((await page.locator('.react-flow__node-media video').getAttribute('src')).includes('H3_CharacterSwap_00006_'));
+  assert.ok((await inlineVideo.getAttribute('src')).includes('H3_CharacterSwap_00006_'));
+  assert.equal(await page.locator('.react-flow__node-media video').count(), 0, 'a single video result stays on the generating node');
   await page.getByTitle('快速定位当前选择或全部内容').click();
   await note.locator('textarea').fill('冲突后最新文字');
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));

@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { flushSync } from 'react-dom';
 import { artDirectorSnapshot, assertArtWritable, validateAnalysis, invalidateArtOutputs, guideGeometry } from './art-director.js';
 import { renderArtBoard, requestArtAnalysis } from './art-director-runtime.js';
@@ -107,5 +107,5 @@ export function useArtDirector({ project, projectRef, switchingRef, nodes, edges
   },[project.readOnly,addNode,chooseMedia,onConnect,persistProject]);
   const disconnectArtInput=useCallback((id,slot)=>{if(project.readOnly||switchingRef.current||localImageJobsRef.current.has(id))return;setEdges(items=>items.filter(e=>!(e.target===id&&e.targetHandle===slot)));},[project.readOnly,setEdges]);
   const createArtDirector=useCallback(sourceId=>{if(project.readOnly||switchingRef.current)return;const source=nodesRef.current.find(n=>n.id===sourceId);if(source?.type!=='media'||source.data.kind!=='image')return;const existing=edgesRef.current.find(e=>e.source===sourceId&&e.targetHandle==='artwork'&&nodesRef.current.some(n=>n.id===e.target&&n.type==='artDirector'));if(existing)return existing.target;let id;flushSync(()=>{id=addNode('artDirector',{}, {x:source.position.x+440,y:source.position.y},true);});onConnect({source:sourceId,sourceHandle:'ref',target:id,targetHandle:'artwork'});return id;},[project.readOnly,addNode,onConnect]);
-  return {getArtDirectorState,applyArtAnalysis,runArtAnalysis,exportArtBoard,cancelArtDirector,attachArtInput,disconnectArtInput,createArtDirector,persistProject};
+  return useMemo(() => ({getArtDirectorState,applyArtAnalysis,runArtAnalysis,exportArtBoard,cancelArtDirector,attachArtInput,disconnectArtInput,createArtDirector,persistProject}), [getArtDirectorState,applyArtAnalysis,runArtAnalysis,exportArtBoard,cancelArtDirector,attachArtInput,disconnectArtInput,createArtDirector,persistProject]);
 }

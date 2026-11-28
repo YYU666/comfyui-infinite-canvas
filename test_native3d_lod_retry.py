@@ -74,7 +74,7 @@ class RetryTests(unittest.TestCase):
         context={'retryJobId':params['retryJobId'],'retryStage':'lod3','parentStage':'lod2',
                  'parentMeshHash':mesh_hash(mesh.vertices,mesh.faces),'parentFileSha256':'a'*64,
                  'originalSourceSha256':'b'*64,'lod0Triangles':len(mesh.faces)*4,
-                 'settings':resolve_lod_settings()}
+                 'settings':resolve_lod_settings({'lod1KeepPercent':50,'lod2KeepPercent':25,'lod3KeepPercent':12.5,'lod4KeepPercent':6.25})}
         hashes=[]
         for seed in (7,7,8):
             with tempfile.TemporaryDirectory() as tmp:

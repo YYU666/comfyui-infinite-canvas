@@ -6,7 +6,10 @@ import { captureVisibleExecution, stageVisibleExecutionPreview, getVisibleExecut
   visibleGenerationRecord, visibleGenerationFailure } from './visible-generation.js';
 import { frameCanvasNodes, ObsidianEdge, ObsidianStatus } from './CanvasObsidian.jsx';
 import { canvasNodeModality } from './canvas-obsidian.js';
-import { inlineImageView, compactInlineImages, imageCompactArgs } from './image-inline-output.js';
+import { inlineImageView, compactInlineImages, imageCompactArgs, inlineSingleResult, extractInlineOutput } from './image-inline-output.js';
+import { ModelResultPreview } from './ModelResultPreview.jsx';
+import { persistedModelFields, persistGeneratedModelFiles, readGeneratedModelFile } from './model-result.js';
+import { isWhiteMeshStep } from './white-mesh-step.js';
 import CharacterSheetControls from './CharacterSheetControls.jsx';
 import { CHARACTER_SHEET_STAGES } from './character-sheet-settings.js';
 import VideoSuperResolutionNode from './VideoSuperResolutionNode.jsx';
@@ -20,7 +23,7 @@ import { recoverNative3DFragment } from './native3d-recovery.js';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Background, BackgroundVariant, MiniMap, NodeToolbar,
-  Handle, Position, EdgeLabelRenderer, getBezierPath, ConnectionLineType, SelectionMode, addEdge, useNodesState, useEdgesState, useReactFlow, useUpdateNodeInternals, useStoreApi,
+  Handle, Position, EdgeLabelRenderer, getBezierPath, ConnectionLineType, SelectionMode, addEdge, useNodesState, useEdgesState, useReactFlow, useUpdateNodeInternals, useStore, useStoreApi,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
@@ -122,7 +125,8 @@ import { defaultVideoEditDocument, videoEditInputView } from './video-edit-docum
 import { createVideoEditRunner } from './video-edit-runtime';
 import { cancelVideoRun } from './video-submission.js';
 import { assetUrl } from './project-store-http';
-import { useLocalConnection } from './use-local-connection';
+import { subscribeLocalMetrics, useLocalConnection } from './use-local-connection';
+import { EMPTY_METRICS } from './local-connection';
 import { localConnectionPresentation } from './local-connection';
 import { downloadDoctorLogs } from './doctor-client';
 import { Native3DNode, Native3DContext, Native3DViewer } from './Native3D.jsx';
@@ -138,6 +142,41 @@ const KIND_LABEL = { image: '图片', video: '视频', audio: '音频', model: '
 const KIND_ICON = { image: ImageIcon, video: Video, audio: Music2, model: ArrowDownToLine };
 
 const formatGb = (bytes) => Number.isFinite(bytes) ? (bytes / 1024 ** 3).toFixed(1) : '--';
+const PAN_ON_DRAG = [1];
+const SNAP_GRID = [22, 22];
+const FIT_VIEW_OPTIONS = { padding: 0.16, maxZoom: 0.85 };
+const DEFAULT_EDGE_OPTIONS = { type: 'default' };
+const CONNECTION_LINE_STYLE = { stroke: '#e6ddc7', strokeWidth: 1.8 };
+const canvasViewTier = (percent, count) => (percent < 24 && count >= 36 ? 'placeholder' : percent < 58 ? 'compact' : 'full');
+function CanvasZoomPercent() {
+  const percent = useStore((state) => Math.round(state.transform[2] * 100));
+  return <span>{percent}%</span>;
+}
+const HardwareMonitor = React.memo(function HardwareMonitor({ server, memoryCleanup, onClearMemory }) {
+  const [metrics, setMetrics] = useState(EMPTY_METRICS);
+  useEffect(() => subscribeLocalMetrics(setMetrics), []);
+  const vramPercent = metrics.vramTotal ? Math.min(100, Math.max(0, metrics.vramUsed / metrics.vramTotal * 100)) : 0;
+  const cpuPercent = Number.isFinite(metrics.cpuPercent) ? Math.min(100, Math.max(0, metrics.cpuPercent)) : 0;
+  const ramPercent = metrics.ramTotal ? Math.min(100, Math.max(0, metrics.ramUsed / metrics.ramTotal * 100)) : 0;
+  return <div className="hardware-monitor" aria-label="硬件状态" title={`${server.label} · 系统内存 ${formatGb(metrics.ramUsed)} / ${formatGb(metrics.ramTotal)} GB · 每 3 秒刷新`}>
+    <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={onClearMemory} aria-label={memoryCleanup === "busy" ? "清理显存中" : memoryCleanup === "done" ? "已释放显存" : "清理显存"} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
+    <div className="hardware-metric" title={`${metrics.gpuName || 'GPU'}${metrics.gpuIndex != null ? `（设备 ${metrics.gpuIndex}）` : ''} · 整卡显存占用与计算利用率，包含其他程序`}>
+      <span><MemoryStick size={12} />GPU{Number.isFinite(metrics.gpuPercent) ? ` ${Math.round(metrics.gpuPercent)}%` : ' 显存'}</span>
+      <strong>{formatGb(metrics.vramUsed)} <small>/ {formatGb(metrics.vramTotal)} GB</small></strong>
+      <div className="hardware-bar"><i style={{ width: `${vramPercent}%` }} /></div>
+    </div>
+    <div className="hardware-metric cpu-metric">
+      <span><Cpu size={12} />CPU</span>
+      <strong>{Number.isFinite(metrics.cpuPercent) ? `${Math.round(metrics.cpuPercent)}%` : '--'}</strong>
+      <div className="hardware-bar"><i style={{ width: `${cpuPercent}%` }} /></div>
+    </div>
+    <div className="hardware-metric ram-metric">
+      <span>RAM</span>
+      <strong>{formatGb(metrics.ramUsed)} <small>/ {formatGb(metrics.ramTotal)} GB</small></strong>
+      <div className="hardware-bar"><i style={{ width: `${ramPercent}%` }} /></div>
+    </div>
+  </div>;
+});
 
 function canvasSnapshot(nodes, edges, viewport) {
   return persistentCanvas({ nodes, edges, viewport });
@@ -295,7 +334,7 @@ function MediaDragSurface({ videoRef, video = false, onActivate }) {
 }
 
 function MediaNode({ id, data, selected }) {
-  const { chooseMedia, openImagePreview, viewTier, getMaskGuide, readOnly, createArtDirector } = useContext(NodeContext);
+  const { chooseMedia, openImagePreview, viewTier, getMaskGuide, readOnly, createArtDirector, projectId, persistGeneratedModel } = useContext(NodeContext);
   const input = useRef(null);
   const videoRef = useRef(null);
   const [maskEditorOpen, setMaskEditorOpen] = useState(false);
@@ -318,7 +357,7 @@ function MediaNode({ id, data, selected }) {
   };
   if (kind === 'model') return <div className={`media-shell media-model ${selected ? 'selected' : ''}`}>
     <NodeTitle id={id} data={data} kind="media" /><NodeActions id={id} data={data} selected={selected} />
-    <div className="media-empty"><ArrowDownToLine size={24} /><strong>{data.name || 'GLB 模型'}</strong>{data.url && <a className="nodrag" href={data.url} download={data.name}>下载 GLB</a>}</div>
+    <ModelResultPreview projectId={projectId} data={data} onPersist={readOnly ? undefined : (record) => persistGeneratedModel(id, record)} />
     <Handle type="target" position={Position.Left} id="preview" className="neo-handle target" />
     {isGeneratedGLB({type:'media',data}) && <Handle type="source" position={Position.Right} id="model" className="neo-handle source" title="连接到 3D LOD" />}
   </div>;
@@ -397,7 +436,7 @@ function CustomWorkflowNode({ id, data, selected }) {
   const presentation = useResultPresentation(data, data.resultUrl);
   const updateNodeInternals = useUpdateNodeInternals();
   useEffect(() => { updateNodeInternals(id); }, [id, data.workflowDefinition, data.resultUrl, presentation.compact, updateNodeInternals]);
-  const { updateNode, generateNode, cancelNode, serverOnline, getReferences, openNodeShare, checkNodeDependencies } = useContext(NodeContext);
+  const { updateNode, generateNode, cancelNode, serverOnline, getReferences, openNodeShare, checkNodeDependencies, extractInlineResult, projectId, persistGeneratedModel, readOnly } = useContext(NodeContext);
   const running = ['uploading', 'queued', 'running', 'finishing'].includes(data.status);
   const refs = getReferences(id);
   return <div className={`generator-shell h3-node custom-workflow-node ${presentation.compact ? 'result-compact' : ''} ${selected ? 'selected' : ''}`}>
@@ -405,7 +444,8 @@ function CustomWorkflowNode({ id, data, selected }) {
     <GpuJobStatus gpu={data.gpu} />
     <ResultSettingsToggle presentation={presentation} />
     <div className="custom-workflow-identity" title={data.extensionDigest}>{data.extensionPackageId} · {data.extensionVersion} · {data.extensionDigest?.slice(0, 12)}</div>
-    {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'model' ? <a className="nodrag" href={data.resultUrl} download>下载 GLB</a> : data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
+    {data.resultUrl && <div className="generator-preview">{data.workflowDefinition?.outputs?.[0]?.type === 'model' ? <ModelResultPreview projectId={projectId} data={{ ...data, name: data.resultFilename || data.name, url: data.resultUrl, assetPath: data.resultAssetPath, bytes: data.resultBytes }} onPersist={readOnly ? undefined : (record) => persistGeneratedModel(id, record, { generator: true })} /> : data.workflowDefinition?.outputs?.[0]?.type === 'video' ? <CanvasVideo className="nodrag" src={data.resultUrl} controls /> : <CanvasImage source={data.resultUrl} alt={data.title} />}</div>}
+    {data.inlineImageOutputId && <button type="button" className="extract-inline-result nodrag" onClick={() => extractInlineResult(id)}>提取到画布</button>}
     {(data.workflowDefinition?.inputs || []).map((port, index, ports) => <div className="custom-workflow-port" key={port.id} style={{ "--compact-port-top": `${20 + index * 60 / Math.max(1, ports.length - 1)}%` }}><Handle type="target" position={Position.Left} id={port.id} title={port.label || port.name || port.id} className="neo-handle target" /><strong>{port.label || port.name || port.id}</strong> · {port.required ? '必填图片' : '可选图片'}<span> · {refs.find((ref) => ref.data.slot === port.id)?.data.title || '未连接'}</span></div>)}
     <div className="custom-workflow-params nodrag nowheel">{Object.entries(data.workflowDefinition?.parameters?.properties || {}).map(([key, field]) => {
       const value = data.workflowParameters?.[key] ?? field.default ?? (field.type === 'boolean' ? false : '');
@@ -434,7 +474,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
   const [sheetAdvanced, setSheetAdvanced] = useState(false);
   const {
     updateNode, generateNode, cancelNode, reviewImageNode, serverOnline, getReferences,
-    getMentionItems, attachFilesToGenerator, openImagePreview, viewTier, openNodeShare, changeQwenReferences, addQwenMask, getQwenMask, readOnly,
+    getMentionItems, attachFilesToGenerator, openImagePreview, extractInlineResult, viewTier, openNodeShare, changeQwenReferences, addQwenMask, getQwenMask, readOnly,
   } = useContext(NodeContext);
   const promptEditorRef = useRef(null);
   const uploadRef = useRef(null);
@@ -495,6 +535,7 @@ function BuiltinGeneratorNode({ id, data, selected }) {
       </div>}
       {running && <div className="generation-overlay"><div><i style={{ width: `${data.progress || 3}%` }} /></div><span>{data.stage} · {data.progress || 0}%</span></div>}
     </div>
+    {data.inlineImageOutputId && <button type="button" className="extract-inline-result nodrag" onClick={() => extractInlineResult(id)}>提取到画布</button>}
     <div className="generator-subline"><span>{mode === 'characterSheet' ? `${(data.characterSheetStage || 'all') === 'all' ? '单格 1152 × 2048 · 整图 2304 × 4096' : `${CHARACTER_SHEET_STAGES[data.characterSheetStage]} · 1152 × 2048`} · ${data.qwenSteps || 40} 步` : mode === 'localRealism' ? `原图尺寸 · 局部 ${data.localRealismSize || 768} · 保护未选区域` : mode === 'outfitEdit' ? `${data.outfitPanel ? '单视图' : '四张单图'} · ${models.outfitHdLabel} · ${(data.outfitLayout || 'legacy') === 'legacy' ? '旧版拼接' : '原版面合成'}` : mode === 'qwenEdit' ? h3Image ? `保持图1比例 · ${data.h3ImageResolution || '4MP'} · 6 步` : isFlux3 ? `保持图1比例 · ${data.flux3Resolution || '1MP'} · 16 步` : `继承原图比例 · 参考精度 ${data.qwenRefResolution || 1024} · ${models.qwenSteps} 步` : ['image', 'identityEdit'].includes(mode) ? `${data.ratio} · ${outputWidth} × ${outputHeight} · ${imageSteps} 步` : mode === 'imageUpscale' ? `${data.imageScale || 1.5} 倍 · 独立图片高清` : `${data.ratio} · ${resolution}${mode === 'upscale' ? ' · 独立二采' : ` · ${data.duration} 秒`}`}</span><ObsidianStatus type="generator" data={data} /></div>
     <ModelLicenseNotice data={data} />
     {mode === 'qwenEdit' && !h3Image && <div className="qwen-mask-row nodrag">
@@ -705,7 +746,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   });
   const restoreCurrentProjectAccess = useCallback((options) => accessRecoveryRef.current(options), []);
   useEffect(() => { setProjectConnectionError(''); }, [project.id]);
-  const { server, metrics, checkServer, onStatusClick, starting, notice: localConnectionNotice, dismissNotice, setConnectionNotice: setLocalConnectionNotice, connectionEpoch } = useLocalConnection({ onReconnect: restoreCurrentProjectAccess });
+  const { server, checkServer, onStatusClick, starting, notice: localConnectionNotice, dismissNotice, setConnectionNotice: setLocalConnectionNotice, connectionEpoch } = useLocalConnection({ onReconnect: restoreCurrentProjectAccess });
   const [memoryCleanup, setMemoryCleanup] = useState('idle');
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
@@ -713,6 +754,8 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const [gridVisible, setGridVisible] = useState(true);
   const [miniMapVisible, setMiniMapVisible] = useState(false);
   const [zoom, setZoom] = useState(Math.round((saved.viewport?.zoom || 1) * 100));
+  const zoomPercentRef = useRef(zoom);
+  const [viewTier, setViewTier] = useState(() => canvasViewTier(Math.round((saved.viewport?.zoom || 1) * 100), saved.nodes.length));
   const [zoomMenuOpen, setZoomMenuOpen] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(() => localStorage.getItem(SNAP_KEY) !== 'false');
   const [addMenu, setAddMenu] = useState(null);
@@ -732,6 +775,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
   const [imagePreview, setImagePreview] = useState(null);
   const previewCloseRef = useRef(null);
   const completedJobsRef = useRef(new Set());
+  const saveGeneratedFileRef = useRef(null);
   const pendingRegistrationsRef = useRef(new Map());
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
@@ -1192,12 +1236,19 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const customFiles = source?.data.mode === 'customWorkflow' ? extensionMedia(history?.[promptId], source.data.workflowOutputs || source.data.workflowDefinition?.outputs) : null;
       const isImage = customFiles ? customFiles[0]?.kind !== 'video' : ['image', 'imageUpscale', 'identityEdit', 'qwenEdit', 'characterSheet', 'outfitEdit', 'localRealism', 'mossPose'].includes(source?.data.mode);
       const outputEntry = source?.data.mode === 'customWorkflow' ? declaredHistory(history?.[promptId], source.data.workflowOutputs || source.data.workflowDefinition?.outputs) : history?.[promptId];
-      const files = customFiles || (isImage ? extractImages(outputEntry) : extractVideos(outputEntry));
-      if (!files.length) throw new Error(`任务已结束，但没有找到${isImage ? '图片' : '视频'}输出。`);
+      const rawFiles = customFiles || (isImage ? extractImages(outputEntry) : extractVideos(outputEntry));
+      if (!rawFiles.length) throw new Error(`任务已结束，但没有找到${isImage ? '图片' : '视频'}输出。`);
+      const files = customFiles ? await persistGeneratedModelFiles(rawFiles, async (file) => {
+        if (file.kind !== 'model') return {};
+        if (!saveGeneratedFileRef.current) throw new Error('模型保存尚未就绪。');
+        const blob = await readGeneratedModelFile(file.url, file.filename);
+        return persistedModelFields(await saveGeneratedFileRef.current(blob), blob.size);
+      }) : rawFiles;
       const singleOutfit = source?.data.mode === 'outfitEdit' && (source?.data.outfitPanel || source?.data.panelId);
       const preferredImage = files.find((file) => source?.data.mode === 'characterSheet' ? file.filename?.startsWith('H3_CharacterSheet_') : source?.data.mode === 'outfitEdit' ? file.filename?.startsWith(singleOutfit ? `H3_OutfitHD_${singleOutfit}_` : 'H3_OutfitQuad_') : source?.data.mode === 'qwenEdit' ? file.filename?.startsWith(isH3Image(source.data) ? 'H3_Image_Edit_' : 'H3_Qwen21Edit_') : source?.data.mode === 'identityEdit' ? file.filename?.startsWith('H3_IdentityV2_') : source?.data.mode === 'imageUpscale' ? file.filename?.startsWith('H3_Image_HD') : source?.data.mode === 'image' && source?.data.imageModel === 'moss' ? file.filename?.startsWith('H3_MOSS_Image_') : file.filename?.startsWith('H3_Image_'));
-      const result = customFiles ? customFiles[0] : isImage ? preferredImage || files[0] : selectCompletedVideo(source?.data.mode, files);
+      const result = customFiles ? files[0] : isImage ? preferredImage || files[0] : selectCompletedVideo(source?.data.mode, files);
       const resultKind = customFiles ? result.kind : isImage ? 'image' : 'video';
+      const persistedModel = resultKind === 'model' && result.assetPath ? { assetPath: result.assetPath, bytes: result.bytes } : null;
       const resultModels = describeNodeModels(source?.data);
       const outfitTitle = singleOutfit ? `${resolveOutfitPanels(source.data).find((panel) => panel.id === singleOutfit)?.label || singleOutfit} · ${result.filename?.startsWith(`H3_OutfitSingle_${singleOutfit}_`) ? '原生尺寸 · 未高清' : '独立高清'}` : `四视图 · 单图按需高清${(source?.data.outfitLayout || 'legacy') === 'legacy' ? '拼接' : '原版面合成'}`;
       const title = isH3Image(source?.data) ? (source.data.mode === 'qwenEdit' ? 'H3-Image 编辑' : 'H3-Image 生图') : source?.data.mode === 'characterSheet' ? '角色四视图生成' : source?.data.mode === 'outfitEdit' ? outfitTitle : source?.data.mode === 'qwenEdit' ? '图生图' : source?.data.mode === 'localRealism' ? '局部写实修复' : source?.data.mode === 'identityEdit' ? '母图编辑 V2' : source?.data.mode === 'image' ? (source?.data.imageModel === 'moss' ? 'MOSS 生图' : 'Krea2 生图') : source?.data.mode === 'imageUpscale' ? '图片高清' : source?.data.mode === 'swap' ? '换人一采' : source?.data.mode === 'upscale' ? '高清二采' : '成片';
@@ -1205,7 +1256,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       const resultPosition = findFreePosition(nodesRef.current, { x: (source?.position.x || 0) + 540, y: (source?.position.y || 0) + resultIndex * 340 }, 'media');
       const mediaNode = {
         id: uid(resultKind), type: 'media', position: resultPosition,
-        data: { ...result, kind: resultKind, output: true, title: `${source?.data.title || title}${['outfitEdit', 'qwenEdit', 'imageUpscale'].includes(source?.data.mode) ? ` · ${source.data.mode === 'outfitEdit' ? `${resultModels.outfitModelLabel} · ${resultModels.outfitHdLabel}` : source.data.mode === 'qwenEdit' ? resultModels.qwenModelLabel : resultModels.upscaleModelLabel}` : ''} · 成品 ${resultIndex + 1}`, name: result.filename, prompt: source?.data.prompt, sourcePromptId: promptId, sourceQueueJobId: source?.data.queueJobId || null, sourceGeneratorId: id },
+        data: { ...result, kind: resultKind, output: true, title: `${source?.data.title || title}${['outfitEdit', 'qwenEdit', 'imageUpscale'].includes(source?.data.mode) ? ` · ${source.data.mode === 'outfitEdit' ? `${resultModels.outfitModelLabel} · ${resultModels.outfitHdLabel}` : source.data.mode === 'qwenEdit' ? resultModels.qwenModelLabel : resultModels.upscaleModelLabel}` : ''} · 成品 ${resultIndex + 1}`, name: result.filename, prompt: source?.data.prompt, sourcePromptId: promptId, sourceQueueJobId: source?.data.queueJobId || null, sourceGeneratorId: id, ...(persistedModel || {}), ...(isWhiteMeshStep(source?.data) ? { whiteMesh: true } : {}) },
       };
       const registerTake = async () => {
           const current = { ...projectRef.current, revision: revisionRef.current };
@@ -1229,16 +1280,23 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       if (patch.takePending) {
         mediaNode.data = { ...mediaNode.data, shotId: source.data.shotId, takePending: true, title: `${mediaNode.data.title} · 待登记 Take` };
       }
-      setNodes((items) => items.map((node) => node.id === id ? {
-        ...node,
-        data: {
+      const fileCount = customFiles?.length || 1;
+      const inline = pinMedia ? inlineSingleResult(id, mediaNode, fileCount) : { mediaNode, inlined: false };
+      const delivered = inline.mediaNode;
+      setNodes((items) => items.map((node) => {
+        if (node.id !== id) return node;
+        const data = {
           ...node.data, ...patch, promptId,
+          ...(persistedModel ? { resultAssetPath: persistedModel.assetPath, resultBytes: persistedModel.bytes, resultFilename: result.filename } : {}),
           runs: [{ promptId, status: 'done', stage: patch.takePending ? patch.stage : `${title}已输出`, time: new Date().toLocaleString('zh-CN') }, ...(node.data.runs || [])].slice(0, 12),
-        },
-      } : node).concat(pinMedia ? [mediaNode] : []));
-      if (pinMedia) setEdges((items) => addEdge({ id: `edge-${id}-${mediaNode.id}`, source: id, target: mediaNode.id, sourceHandle: resultKind, targetHandle: 'preview' }, items));
+        };
+        if (pinMedia && inline.inlined) data.inlineImageOutputId = delivered.id;
+        else if (pinMedia) delete data.inlineImageOutputId;
+        return { ...node, data };
+      }).concat(pinMedia ? [delivered] : []));
+      if (pinMedia) setEdges((items) => addEdge({ id: `edge-${id}-${delivered.id}`, source: id, target: delivered.id, sourceHandle: resultKind, targetHandle: 'preview' }, items));
       if (pinMedia && customFiles?.length > 1) {
-        const extraNodes = customFiles.slice(1).map((file, index) => ({
+        const extraNodes = files.slice(1).map((file, index) => ({
           id: uid(file.kind), type: 'media', position: { x: resultPosition.x, y: resultPosition.y + (index + 1) * 340 },
           data: { ...file, output: true, title: `${source.data.title} · ${file.extensionOutputId} ${index + 2}`, name: file.filename, sourcePromptId: promptId, sourceQueueJobId: source.data.queueJobId || null, sourceGeneratorId: id },
         }));
@@ -2573,7 +2631,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     fitView({ nodes: selected.length ? selected : undefined, duration: 350, padding: selected.length ? 0.32 : 0.15, maxZoom: 1 });
   };
   // Refmuse-style progressive detail: only cross render tiers, not on every zoom frame.
-  const viewTier = zoom < 24 && nodes.length >= 36 ? 'placeholder' : zoom < 58 ? 'compact' : 'full';
+  useEffect(() => { setViewTier(canvasViewTier(zoomPercentRef.current, nodes.length)); }, [nodes.length]);
   const saveNativeFile = async (file) => {
     if (switchingRef.current || project.readOnly) throw new Error('当前画布不可编辑。');
     const savedProjectId=project.id,savedAutoSave=autoSaveRef.current;
@@ -2600,6 +2658,15 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
       if(projectRef.current.id===savedProjectId&&autoSaveRef.current===savedAutoSave&&!switchingRef.current&&!projectRef.current.readOnly)savedAutoSave?.observe(nameRef.current, { nodes: nodesRef.current, edges: edgesRef.current, viewport: viewportRef.current }, { defer: mediaWritesRef.current.size > 0 || interactionRef.current });
     }
   };
+  saveGeneratedFileRef.current = saveNativeFile;
+  const persistGeneratedModel = useCallback(async (nodeId, record, { generator = false } = {}) => {
+    const save = saveGeneratedFileRef.current;
+    if (!save) throw new Error('模型保存尚未就绪。');
+    const file = await readGeneratedModelFile(record.url, record.name || record.filename || 'model.glb');
+    const fields = persistedModelFields(await save(file), file.size);
+    updateNode(nodeId, generator ? { resultAssetPath: fields.assetPath, resultBytes: fields.bytes, resultFilename: file.name } : fields);
+    return fields;
+  }, [updateNode]);
   const nativePatch = (id, patch) => {
     if (switchingRef.current || project.readOnly) throw new Error('当前画布不可编辑。');
     const next = nodesRef.current.map(n => n.id === id ? { ...n, data: { ...n.data, ...patch } } : n);
@@ -2637,9 +2704,18 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     }
   }, [project.id, project.readOnly]);
 
+  const extractInlineResult = useCallback((id) => {
+    if (projectRef.current.readOnly || switchingRef.current) return;
+    const result = extractInlineOutput(nodesRef.current, id);
+    if (!result.extracted) return;
+    historyRef.current?.observe(nodesRef.current, edgesRef.current);
+    nodesRef.current = result.nodes;
+    flushSync(() => setNodes(result.nodes));
+    historyRef.current?.observe(result.nodes, edgesRef.current);
+  }, [setNodes]);
   const resumeVideoAnalysis = useCallback((id, signal) => videoEditRunnerRef.current.resumeAnalysis(id, signal), []);
   const cancelVideoAnalysis = useCallback((id) => videoEditRunnerRef.current.cancelAnalysis(id), []);
-  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, edges, nodes, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
+  const context = useMemo(() => ({ ...spriteAtlas, ...artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, serverOnline: server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, extractInlineResult, persistGeneratedModel, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, getImageProcessState, getVideoRhythmState, resumeVideoRhythm: id => videoRhythmRunnerRef.current.resume(id), cancelVideoRhythm: id => { if (!projectRef.current.readOnly) videoRhythmRunnerRef.current.cancel(id); }, getVideoChromaState, previewVideoChroma: (id, options) => videoChromaRunnerRef.current.preview(id, options), resumeVideoChroma: id => videoChromaRunnerRef.current.resume(id), cancelVideoChroma: id => { if (!projectRef.current.readOnly) videoChromaRunnerRef.current.cancel(id); }, getVideoRepairState, previewVideoRepair: (id, options) => videoRepairRunnerRef.current.preview(id, options), resumeVideoRepair: id => videoRepairRunnerRef.current.resume(id), cancelVideoRepair: id => { if (!projectRef.current.readOnly) videoRepairRunnerRef.current.cancel(id); }, getVideoPlateState, resumeVideoPlate: id => videoPlateRunnerRef.current.resume(id), cancelVideoPlate: id => { if (!projectRef.current.readOnly) videoPlateRunnerRef.current.cancel(id); }, getVideoEditState, openMotion, resumeVideoEdit: id => videoEditRunnerRef.current.resume(id), cancelVideoEdit: id => { if (!projectRef.current.readOnly) videoEditRunnerRef.current.cancel(id); }, prepareVideoEdit: id => videoEditRunnerRef.current.prepare(id), analyzeVideoEdit: (id, inputs, signal) => videoEditRunnerRef.current.analyze(id, inputs, signal), resumeVideoAnalysis, cancelVideoAnalysis, projectId: project.id, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, readOnly: project.readOnly }), [openMotion, resumeVideoAnalysis, cancelVideoAnalysis, getVideoChromaState, getVideoRhythmState, getVideoRepairState, getVideoPlateState, getVideoEditState, project.id, spriteAtlas, artDirector, updateNode, removeNode, reviewImageNode, chooseMedia, togglePin, generateNode, retryGeneration, cancelNode, server.online, getReferences, getMaskGuide, getMentionItems, getPromptTarget, optimizePromptNode, attachFilesToGenerator, importVideoReference, openImagePreview, extractInlineResult, persistGeneratedModel, openNodeShare, checkNodeDependencies, changeQwenReferences, addQwenMask, getQwenMask, disconnectEdge, viewTier, runImageProcess, isImageProcessBusy, localImageJobsVersion, getImageProcessState, getImageProcessMask, attachImageProcessInput, disconnectImageProcessInput, attachImageProcessMask, disconnectImageProcessMask, project.readOnly]);
   const inspectNode = useCallback((nodeId, stage) => new Promise((resolve, reject) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
     if (!node) { reject(new Error('找不到要查看的节点。')); return; }
@@ -2767,9 +2843,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
     });
   };
   const pinnedNodes = nodes.filter((node) => node.data.pinned);
-  const vramPercent = metrics.vramTotal ? Math.min(100, Math.max(0, metrics.vramUsed / metrics.vramTotal * 100)) : 0;
-  const cpuPercent = Number.isFinite(metrics.cpuPercent) ? Math.min(100, Math.max(0, metrics.cpuPercent)) : 0;
-  return <CanvasPreviewTier.Provider value={viewTier}><NodeContext.Provider value={context}><Native3DContext.Provider value={native3d}>
+  return <CanvasPreviewTier.Provider value={viewTier}><NodeContext.Provider value={context}><Native3DContext.Provider value={native3d.api}>
     {native3d.viewer && <Native3DViewer onRepair={native3d.repairLOD} onResolve={native3d.createResolution} readOnly={native3d.readOnly} asset={native3d.viewer} projectId={project.id} close={native3d.closeViewer} onLoaded={native3d.planLoaded} onConfirm={native3d.confirmPlan} onPreviews={native3d.planPreviews} />}
     <div className="neo-app">
       <header className="neo-header" inert={libraryModalOpen ? true : undefined}>
@@ -2829,16 +2903,28 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           onEdgeClick={(event, edge) => { if (event.altKey) { event.preventDefault(); event.stopPropagation(); disconnectEdge(edge.id); } }}
           deleteKeyCode={project.readOnly || workflowInspection || libraryModalOpen ? null : ['Backspace', 'Delete']}
           defaultViewport={saved.viewport} fitView={!saved.viewport}
-          fitViewOptions={{ padding: 0.16, maxZoom: 0.85 }}
+          fitViewOptions={FIT_VIEW_OPTIONS}
           minZoom={0.12} maxZoom={1.8} zoomOnScroll zoomOnPinch zoomOnDoubleClick={false}
-          panOnDrag={[1]} panOnScroll={false} selectionOnDrag selectionMode={SelectionMode.Partial}
+          panOnDrag={PAN_ON_DRAG} panOnScroll={false} selectionOnDrag selectionMode={SelectionMode.Partial}
           multiSelectionKeyCode={['Shift']}
-          snapToGrid={snapEnabled} snapGrid={[22, 22]}
-          onMove={(_, viewport) => setZoom(Math.round(viewport.zoom * 100))}
-          onMoveEnd={(_, viewport) => { viewportRef.current = viewport; saveViewport(project.id, viewport); }}
-          defaultEdgeOptions={{ type: 'default' }}
+          snapToGrid={snapEnabled} snapGrid={SNAP_GRID}
+          onMove={(_, viewport) => {
+            const percent = viewport.zoom * 100;
+            zoomPercentRef.current = percent;
+            const next = canvasViewTier(percent, nodesRef.current.length);
+            setViewTier((current) => current === next ? current : next);
+          }}
+          onMoveEnd={(_, viewport) => {
+            viewportRef.current = viewport;
+            const percent = Math.round(viewport.zoom * 100);
+            zoomPercentRef.current = percent;
+            setZoom(percent);
+            setViewTier(canvasViewTier(percent, nodesRef.current.length));
+            saveViewport(project.id, viewport);
+          }}
+          defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
           connectionLineType={ConnectionLineType.Bezier}
-          connectionLineStyle={{ stroke: '#e6ddc7', strokeWidth: 1.8 }}
+          connectionLineStyle={CONNECTION_LINE_STYLE}
           proOptions={{ hideAttribution: true }}
         >
           {gridVisible && <>
@@ -2854,7 +2940,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
         <div className="canvas-bottom-left">
           {zoomMenuOpen && <div className="zoom-menu">
             <button onClick={() => zoomOut({ duration: 160 })} title="缩小"><Minus size={14} /></button>
-            <button className="zoom-current" onClick={() => zoomTo(1, { duration: 200 })} title="恢复到 100%">{zoom}%</button>
+            <button className="zoom-current" onClick={() => zoomTo(1, { duration: 200 })} title="恢复到 100%"><CanvasZoomPercent /></button>
             <button onClick={() => zoomIn({ duration: 160 })} title="放大"><Plus size={14} /></button>
             <i />
             <button onClick={() => { fitView({ duration: 350, padding: 0.15 }); setZoomMenuOpen(false); }} title="适应全部节点"><Maximize2 size={14} /></button>
@@ -2866,7 +2952,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
             <button onClick={() => applyHistory('redo')} disabled={project.readOnly || !historyState.canRedo} title="重做 · Ctrl+Shift+Z" aria-label="重做"><Redo2 size={15} /></button>
             <button className={gridVisible ? 'active' : ''} onClick={() => setGridVisible(!gridVisible)} title="显示或隐藏网格"><Grid2X2 size={15} /></button>
             <button className={miniMapVisible ? 'active' : ''} onClick={() => setMiniMapVisible(!miniMapVisible)} title="小地图"><MapIcon size={15} /></button>
-            <button className={zoomMenuOpen ? 'zoom-button active' : 'zoom-button'} onClick={() => setZoomMenuOpen(!zoomMenuOpen)} title="缩放" aria-expanded={zoomMenuOpen}><Search size={13} /><span>{zoom}%</span></button>
+            <button className={zoomMenuOpen ? 'zoom-button active' : 'zoom-button'} onClick={() => setZoomMenuOpen(!zoomMenuOpen)} title="缩放" aria-expanded={zoomMenuOpen}><Search size={13} /><CanvasZoomPercent /></button>
           </div>
           {viewTier !== 'full' && <span className="canvas-performance-mode" role="status">{viewTier === 'placeholder' ? '占位浏览' : '轻量浏览'} · 放大恢复编辑</span>}
           <button className="round-control" onClick={locateContent} title="快速定位当前选择或全部内容"><Crosshair size={16} /></button>
@@ -2883,24 +2969,7 @@ function CanvasInner({ onSimpleMode, onLauncher, project, onProjectChange, onRel
           <button onClick={async () => { if (!switchingRef.current && !hasActiveTask()) { try { await persistProject(); onSimpleMode(); } catch { /* Keep the unsaved canvas open. */ } } }} title="工作台设置与简易模式"><Settings2 size={17} /></button>
           <button className={pinOpen ? 'active' : ''} onClick={() => { setPinOpen(!pinOpen); setLibraryOpen(false); }} title={`Pin 节点 ${pinnedNodes.length}`}><Pin size={16} /></button>
         </div>
-          <div className="hardware-monitor" aria-label="硬件状态" title={`${server.label} · 系统内存 ${formatGb(metrics.ramUsed)} / ${formatGb(metrics.ramTotal)} GB · 每 3 秒刷新`}>
-            <button className={`memory-cleanup ${memoryCleanup}`} disabled={!server.online || memoryCleanup === 'busy'} onClick={clearMemory} aria-label={memoryCleanup === "busy" ? "清理显存中" : memoryCleanup === "done" ? "已释放显存" : "清理显存"} title="仅在无运行或排队任务时卸载 ComfyUI 模型并释放显存"><MemoryStick size={14} /><span>{memoryCleanup === 'busy' ? '清理中' : memoryCleanup === 'done' ? '已释放' : '清理显存'}</span></button>
-            <div className="hardware-metric" title={`${metrics.gpuName || 'GPU'}${metrics.gpuIndex != null ? `（设备 ${metrics.gpuIndex}）` : ''} · 整卡显存占用与计算利用率，包含其他程序`}>
-              <span><MemoryStick size={12} />GPU{Number.isFinite(metrics.gpuPercent) ? ` ${Math.round(metrics.gpuPercent)}%` : ' 显存'}</span>
-              <strong>{formatGb(metrics.vramUsed)} <small>/ {formatGb(metrics.vramTotal)} GB</small></strong>
-              <div className="hardware-bar"><i style={{ width: `${vramPercent}%` }} /></div>
-            </div>
-            <div className="hardware-metric cpu-metric">
-              <span><Cpu size={12} />CPU</span>
-              <strong>{Number.isFinite(metrics.cpuPercent) ? `${Math.round(metrics.cpuPercent)}%` : '--'}</strong>
-              <div className="hardware-bar"><i style={{ width: `${cpuPercent}%` }} /></div>
-            </div>
-            <div className="hardware-metric ram-metric">
-              <span>RAM</span>
-              <strong>{formatGb(metrics.ramUsed)} <small>/ {formatGb(metrics.ramTotal)} GB</small></strong>
-              <div className="hardware-bar"><i style={{ width: `${metrics.ramTotal ? Math.min(100, Math.max(0, metrics.ramUsed / metrics.ramTotal * 100)) : 0}%` }} /></div>
-            </div>
-          </div>
+          <HardwareMonitor server={server} memoryCleanup={memoryCleanup} onClearMemory={clearMemory} />
         </div>
         {addMenu && <div className="add-node-menu" role="menu" aria-label="添加节点" style={{ left: addMenu.x, top: addMenu.y }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}>
           <div className="add-menu-title">添加节点 · 右键画布 <button onClick={() => setAddMenu(null)} aria-label="关闭添加节点菜单"><X size={13} /></button></div>

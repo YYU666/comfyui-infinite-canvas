@@ -12,13 +12,14 @@ import {lodIssueTargets} from './native3d-lod-issues.js';
 import {nativeNextStepPlan,nextStepActions,nextStepOrigin} from './native3d-next-step.js';
 import {nativeRerunTarget,withNativeRerunLock,nativeAutomaticLODStages,layoutNativeResultDelivery,nextNativeLODSeed,nativeLODStageRetryPlan} from './native3d-rerun.js';
 import { findFreePosition } from './canvas-layout.js';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { checkGLBLayout, checkSavedGLBLayout } from "./native3d-glb-layout.js";
-import { isGeneratedGLB, nativeRequest, nativeRunIdentity, nativeParameters, nativeAdapterSchema, nativeGeometryInputError } from './native3d.js';
+import { GENERATED_GLB_OPERATIONS, isGeneratedGLB, nativeRequest, nativeRunIdentity, nativeParameters, nativeAdapterSchema, nativeGeometryInputError } from './native3d.js';
 import {nativeInputs,planRecord,planConfirmationKey,assertPlanCurrent,assertConfirmedPlan,planUVParameters} from './native3d-plan.js';
 import { transferNativeArtifacts, nativeRunIsCurrent, commitNativeDelivery } from './native3d-delivery.js';
 import { nativeStagePlan, applyNativeStagePlan, saveNativeStagePoster } from './native3d-stage.js';
 import { nativeUVIdentity, nativeUVHasLayout, saveNativeUVPreviews, nativeUVDeliveredPreviews } from './native3d-uv-preview.js';
+import { extractBakeTextureNode } from './native3d-bake-preview.js';
 
 function matchesNativePageJob(job, submission, origin, originNodeId) {
   return Boolean(job.canvasSubmission) && job.canvasSubmission.origin === origin
@@ -112,6 +113,7 @@ export function useNative3D(options) {
   const rerunLocks=useRef(new Set());
   const localRepairPromises=useRef(new Map());
   const latest = useRef(options); latest.current = options;
+  const actionRef = useRef({});
   const [capabilities, setCapabilities] = useState(null);
   const [capabilityError, setCapabilityError] = useState('');
   const [viewer, setViewer] = useState(null);
@@ -134,9 +136,16 @@ export function useNative3D(options) {
     return o;
   };
   const patch = (id, data) => {const o=current(),node=o.nodesRef.current.find(n=>n.id===id);o.updateNode(id,node?.data.nativeCurrentOutputId?nativePatchOutputData(node.data,data):data);};
-  const sourceFor = (o, node) => node?.data.operation === 'analyze'
-    ? (node.data.nativePendingSource ? { ...node, data: { ...node.data, assetPath: node.data.nativePendingSource.path, originalAssetPath: node.data.nativePendingSource.path } } : node)
-    : nativeInputs(node,o.nodesRef.current,o.edgesRef.current)[node?.data.operation === 'image_to_3d' ? 'image' : 'model'];
+  const sourceFor = (o, node) => {
+    if (node?.data.operation === 'analyze' && !node.data.sourceJobId && !node.data.nativePendingSource && !node.data.assetPath) {
+      const connected = nativeInputs(node, o.nodesRef.current, o.edgesRef.current).model;
+      if (connected && (connected.data?.assetPath || isGeneratedGLB(connected))) return connected;
+    }
+    if (node?.data.operation === 'analyze') {
+      return node.data.nativePendingSource ? { ...node, data: { ...node.data, assetPath: node.data.nativePendingSource.path, originalAssetPath: node.data.nativePendingSource.path } } : node;
+    }
+    return nativeInputs(node,o.nodesRef.current,o.edgesRef.current)[node?.data.operation === 'image_to_3d' ? 'image' : 'model'];
+  };
   const inputsFor=(o,node)=>nativeInputs(node,o.nodesRef.current,o.edgesRef.current);
   const identityFor=(node,source)=>{
     const inputs=inputsFor(latest.current,node);
@@ -205,7 +214,7 @@ export function useNative3D(options) {
     }
     let source = sourceFor(o, node);
     const usesGeneratedReference = node.data.operation === 'image_to_3d' && generatedReference(source);
-    const usesGeneratedModel = ['source_lod','repair_lod'].includes(node.data.operation) && isGeneratedGLB(source);
+    const usesGeneratedModel = GENERATED_GLB_OPERATIONS.includes(node.data.operation) && isGeneratedGLB(source);
     if ((usesGeneratedReference || usesGeneratedModel) && !source.data.assetPath) {
       const previous = {status:node.data.status || 'idle', stage:node.data.stage || ''};
       const importId = crypto.randomUUID();
@@ -552,7 +561,16 @@ export function useNative3D(options) {
             const beforeDeliveryNodes=o.nodesRef.current,beforeDeliveryEdges=o.edgesRef.current,beforeProcessorData=structuredClone(now.data);
             await commitNativeDelivery({ assertCurrent,
               apply: () => {
-                if (now.data.operation === 'analyze') o.updateNode(node.id, { ...common, ...(now.data.nativePendingSource ? { assetPath: now.data.nativePendingSource.path, name: now.data.nativePendingSource.name, kind: 'model', nativePendingSource: null } : {}) });
+                if (now.data.operation === 'analyze') {
+                  const pending = now.data.nativePendingSource;
+                  const run = now.data.nativeRun || {};
+                  const edgeDriven = run.sourceId && run.sourceId !== node.id && run.sourceAssetPath;
+                  const sourceName = sourceFor(o, now)?.data?.name || (run.sourceAssetPath ? String(run.sourceAssetPath).split('/').pop() : now.data.name);
+                  const persisted = pending
+                    ? { assetPath: pending.path, originalAssetPath: pending.path, name: pending.name, kind: 'model', nativePendingSource: null }
+                    : (edgeDriven ? { assetPath: run.sourceAssetPath, originalAssetPath: run.originalAssetPath || run.sourceAssetPath, name: sourceName, kind: 'model' } : {});
+                  o.updateNode(node.id, { ...common, ...persisted });
+                }
                 else {
                   let resultNode = { id: resultId, type: 'native3d', position: resultPosition, data: { ...common,...(!reviewedDownstream&&geometry?.returnedDiagnosticStage?{nativeStage:geometry.returnedDiagnosticStage,nativeStageDiagnostic:true,eligibleForDownstream:false}:{}), title: `${now.data.title} · ${geometry?.status==='blocked'&&!reviewedDownstream?'未通过诊断':uvPlan ? '待确认方案':now.data.operation==='source_lod'&&Number.isInteger(geometry?.selectedLodLevel)?`LOD${geometry.selectedLodLevel}结果`:'结果'}`, operation: 'analyze', ...(saved.model ? {assetPath:saved.model.path,resultAssetPath:saved.model.path,name:saved.model.name}:{}),sourceJobId: job.id, sourceNodeId: node.id } };
                   const inlineData=nativeAppendOutput(now,resultNode);
@@ -793,7 +811,17 @@ export function useNative3D(options) {
     const o = latest.current;
     return nativeTakeover(id, o.nodesRef.current, o.edgesRef.current, capabilities);
   };
-  return { takeover, compactResults,output:id=>nativeOutputNode(latest.current.nodesRef.current.find(n=>n.id===id)),notificationSoundEnabled,setNotificationSoundEnabled,unlockNotificationSound:()=>native3DNotifications.unlock(),syncTask,retryLOD, repairLOD, createResolution, nextStep, nextActions: id=>{const node=nextSource(id);return nextStepActions(node).map(action=>{if(action.action!=='unwrap')return action;try{assertLivePlan(node.data.nativeUVPlan,current());return action;}catch{return {...action,disabled:true};}});}, projectId: options.projectId, readOnly: options.readOnly, capabilities, capabilityError, patch, run, rerunStatus, rerunResult, importModel, retryDelivery, refreshUVPreview,refreshDiagnosticPreview,
+  const extractBakeTexture=(id,channel)=>{
+    const o=current();
+    if(o.readOnly)throw Error('当前项目只读。');
+    const node=o.nodesRef.current.find(n=>n.id===id);
+    const plan=extractBakeTextureNode({node,channel,projectId:o.projectId,id:`tex_${channel}_${crypto.randomUUID()}`,position:findFreePosition(o.nodesRef.current,{x:(node?.position?.x||0)+390,y:node?.position?.y||0},'media')});
+    o.recordHistory?.(o.nodesRef.current,o.edgesRef.current);
+    o.nodesRef.current=o.nodesRef.current.concat(plan.nodes);
+    o.setNodes(o.nodesRef.current);
+    return {nodeId:plan.nodes[0].id,assetPath:plan.nodes[0].data.assetPath};
+  };
+  const actions = { takeover, compactResults,extractBakeTexture,output:id=>nativeOutputNode(latest.current.nodesRef.current.find(n=>n.id===id)),notificationSoundEnabled,setNotificationSoundEnabled,unlockNotificationSound:()=>native3DNotifications.unlock(),syncTask,retryLOD, repairLOD, createResolution, nextStep, nextActions: id=>{const node=nextSource(id);return nextStepActions(node).map(action=>{if(action.action!=='unwrap')return action;try{assertLivePlan(node.data.nativeUVPlan,current());return action;}catch{return {...action,disabled:true};}});}, projectId: options.projectId, readOnly: options.readOnly, capabilities, capabilityError, patch, run, rerunStatus, rerunResult, importModel, retryDelivery, refreshUVPreview,refreshDiagnosticPreview,
     diagnosticPreview:id=>{const o=latest.current,n=o.nodesRef.current.find(n=>n.id===id),p=n?.data.nativeUVDiagnosticPreviews;return p?.diagnosticOnly===true&&p.acceptedUV===false&&p.bakeAllowed===false&&p.projectId===o.projectId&&p.nodeId===id&&p.jobId===n.data.nativeJobId&&n.data.operation==='uv'&&['error','failed'].includes(n.data.status)&&p.inputIdentity===identityFor(n,sourceFor(o,n))?p:null;},
     persist:()=>current().persistProject(),
     inputs:id=>inputsFor(latest.current,latest.current.nodesRef.current.find(n=>n.id===id)),
@@ -875,5 +903,22 @@ export function useNative3D(options) {
       const o = current(); const n = o.nodesRef.current.find(n => n.id === id); const snapshot = { ...n.data.nativeRun, jobId: n.data.nativeJobId };
       try { await nativeRequest(`/jobs/${encodeURIComponent(snapshot.jobId)}/cancel`, {}); }
       catch (error) { try { assertRun(o.projectId, id, snapshot); patch(id, { error: error.message }); } catch { /* superseded run */ } }
-    }, openRepair: repairTarget => setViewer({issueTarget:repairTarget,repairPreview:true}), openIssues: (issueTarget,nodeId) => {const node=current().nodesRef.current.find(n=>n.id===nodeId);if(!lodIssueTargets(node?.data).some(t=>JSON.stringify(t)===JSON.stringify(issueTarget)))throw Error('诊断来源已改变。');setViewer({issueTarget,nodeId,resolution:lodResolution(node.data)?{...lodResolution(node.data),repairAttempt:Boolean(node.data.nativeLocalRepair||node.data.metadata?.geometry?.localRepair)}:null});}, view: setViewer, viewer, closeViewer: () => setViewer(null) };
+    }, openRepair: repairTarget => setViewer({issueTarget:repairTarget,repairPreview:true}), openIssues: (issueTarget,nodeId) => {const node=current().nodesRef.current.find(n=>n.id===nodeId);if(!lodIssueTargets(node?.data).some(t=>JSON.stringify(t)===JSON.stringify(issueTarget)))throw Error('诊断来源已改变。');setViewer({issueTarget,nodeId,resolution:lodResolution(node.data)?{...lodResolution(node.data),repairAttempt:Boolean(node.data.nativeLocalRepair||node.data.metadata?.geometry?.localRepair)}:null});}, view: setViewer, closeViewer: () => setViewer(null) };
+  actionRef.current = actions;
+  const api = useMemo(() => {
+    const call = (name) => (...args) => actionRef.current[name](...args);
+    return {
+      projectId: options.projectId, readOnly: options.readOnly, capabilities, capabilityError, notificationSoundEnabled,
+      takeover: call('takeover'), compactResults: call('compactResults'), extractBakeTexture: call('extractBakeTexture'), output: call('output'),
+      setNotificationSoundEnabled: call('setNotificationSoundEnabled'), unlockNotificationSound: call('unlockNotificationSound'),
+      syncTask: call('syncTask'), retryLOD: call('retryLOD'), repairLOD: call('repairLOD'), createResolution: call('createResolution'),
+      nextStep: call('nextStep'), nextActions: call('nextActions'), patch: call('patch'), run: call('run'), rerunStatus: call('rerunStatus'),
+      rerunResult: call('rerunResult'), importModel: call('importModel'), retryDelivery: call('retryDelivery'), refreshUVPreview: call('refreshUVPreview'),
+      refreshDiagnosticPreview: call('refreshDiagnosticPreview'), diagnosticPreview: call('diagnosticPreview'), persist: call('persist'), inputs: call('inputs'),
+      planStatus: call('planStatus'), openPlan: call('openPlan'), planLoaded: call('planLoaded'), planPreviews: call('planPreviews'),
+      confirmPlan: call('confirmPlan'), createStage: call('createStage'), parameter: call('parameter'), cancel: call('cancel'),
+      openRepair: call('openRepair'), openIssues: call('openIssues'), view: call('view'), closeViewer: call('closeViewer'),
+    };
+  }, [options.projectId, options.readOnly, capabilities, capabilityError, notificationSoundEnabled]);
+  return { ...api, api, viewer };
 }
